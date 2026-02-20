@@ -229,7 +229,7 @@ EMBEDDED_CONFIG = {
     # REMOVED: ATLASSIAN_CLIENT_SECRET - now on AI Server only (security fix)
     # REMOVED: SUPABASE_URL, SUPABASE_ANON_KEY, SUPABASE_SERVICE_ROLE_KEY - fetched from AI Server
     'AI_SERVER_URL': 'https://forgesync.amzur.com',  # AI Server for secure token exchange & config
-    'CAPTURE_INTERVAL': '5',  # 5 seconds for testing portal permission (change to 300 for production)
+    'CAPTURE_INTERVAL': '300',  # 5 seconds for testing portal permission (change to 300 for production)
     'WEB_PORT': '51777',
     'ADMIN_PASSWORD': 'admin123'
 }
@@ -2996,7 +2996,7 @@ class TimeTracker:
             'screenshot_monitoring_enabled': True,
             'screenshot_interval_seconds': self.capture_interval,  # Use config value (60s for testing, 300s for production)
             'tracking_mode': 'interval',  # 'interval' or 'event'
-            'event_tracking_enabled': False,
+            'event_tracking_enabled': True,  # Capture screenshot on window switch
             'track_window_changes': True,
             'track_idle_time': True,
             'idle_threshold_seconds': 300,  # 5 minutes
@@ -4681,7 +4681,7 @@ class TimeTracker:
                 
                 self.tracking_settings_last_fetch = time.time()
                 tracking_mode = self.tracking_settings.get('tracking_mode', 'interval')
-                event_enabled = self.tracking_settings.get('event_tracking_enabled', False)
+                event_enabled = self.tracking_settings.get('event_tracking_enabled', True)
                 mode_str = "interval + event" if (event_enabled or tracking_mode == 'event') else "interval-only"
                 print(f"[OK] Tracking settings loaded - mode: {mode_str}, interval: {self.capture_interval}s")
                 print(f"     - Whitelist enabled: {self.tracking_settings['whitelist_enabled']}, apps: {self.tracking_settings['whitelisted_apps']}")
@@ -4721,7 +4721,7 @@ class TimeTracker:
 
                         self.tracking_settings_last_fetch = time.time()
                         tracking_mode = self.tracking_settings.get('tracking_mode', 'interval')
-                        event_enabled = self.tracking_settings.get('event_tracking_enabled', False)
+                        event_enabled = self.tracking_settings.get('event_tracking_enabled', True)
                         mode_str = "interval + event" if (event_enabled or tracking_mode == 'event') else "interval-only"
                         print(f"[OK] Tracking settings loaded (global fallback) - mode: {mode_str}, interval: {self.capture_interval}s")
                         self.add_admin_log('INFO', f'Settings loaded (global): interval={self.capture_interval}s, mode={mode_str}')
@@ -5378,27 +5378,19 @@ class TimeTracker:
         storage_client = self.supabase_service if self.supabase_service else self.supabase
         
         try:
-            # Convert screenshot to bytes
+            # Convert screenshot to JPEG (saves ~80% storage vs PNG)
+            img = screenshot.copy()
+            if img.mode == 'RGBA':
+                img = img.convert('RGB')
             img_buffer = BytesIO()
-            screenshot.save(img_buffer, format='PNG')
+            img.save(img_buffer, format='JPEG', quality=85)
             img_bytes = img_buffer.getvalue()
             
-            # Create thumbnail (convert RGBA to RGB for JPEG compatibility)
-            thumbnail = screenshot.copy()
-            if thumbnail.mode == 'RGBA':
-                thumbnail = thumbnail.convert('RGB')
-            thumbnail.thumbnail((400, 300))
-            thumb_buffer = BytesIO()
-            thumbnail.save(thumb_buffer, format='JPEG', quality=70)
-            thumb_bytes = thumb_buffer.getvalue()
-            
-            # Generate filenames
+            # Generate filename
             timestamp = datetime.now(timezone.utc)
-            filename = f"screenshot_{int(timestamp.timestamp())}.png"
-            thumb_filename = f"thumb_{int(timestamp.timestamp())}.jpg"
+            filename = f"screenshot_{int(timestamp.timestamp())}.jpg"
             
             storage_path = f"{self.current_user_id}/{filename}"
-            thumb_path = f"{self.current_user_id}/{thumb_filename}"
             
             # Event-based tracking: Calculate start_time and end_time
             # end_time is when screenshot is taken (now)
@@ -5489,7 +5481,7 @@ class TimeTracker:
             if not is_online:
                 # OFFLINE MODE: Save locally
                 local_id = self.offline_manager.save_screenshot_offline(
-                    screenshot_data, img_bytes, thumb_bytes
+                    screenshot_data, img_bytes
                 )
                 
                 if local_id:
@@ -5539,7 +5531,7 @@ class TimeTracker:
                 print(f"[ERROR] Screenshot storage upload failed - response: {screenshot_result}")
                 # Save offline as fallback
                 local_id = self.offline_manager.save_screenshot_offline(
-                    screenshot_data, img_bytes, thumb_bytes
+                    screenshot_data, img_bytes
                 )
                 if local_id:
                     self.last_screenshot_end_time = end_time
@@ -5549,21 +5541,13 @@ class TimeTracker:
             # Upload succeeded - get public URL
             screenshot_url = storage_client.storage.from_('screenshots').get_public_url(storage_path)
 
-            # Upload thumbnail
-            thumb_result = storage_client.storage.from_('screenshots').upload(
-                thumb_path, thumb_bytes, file_options={'content-type': 'image/jpeg'}
-            )
-
-            thumb_url = None
-            if thumb_result:
-                thumb_url = storage_client.storage.from_('screenshots').get_public_url(thumb_path)
-                
-                # Issues cache was already refreshed before building screenshot_data
-
-                # Update screenshot_data with URLs for database insert
-                screenshot_data['storage_url'] = screenshot_url
-                screenshot_data['thumbnail_url'] = thumb_url
-                screenshot_data['status'] = 'pending'
+            # Update screenshot_data with URLs for database insert
+            # No separate thumbnail - use same URL (JPEG is already small)
+            screenshot_data['storage_url'] = screenshot_url
+            screenshot_data['thumbnail_url'] = screenshot_url  # Same as main image
+            screenshot_data['status'] = 'pending'
+            
+            if True:  # Maintain indentation level for minimal diff
                 
                 # Use service client for database insert to bypass RLS
                 db_client = self.supabase_service if self.supabase_service else self.supabase
@@ -5701,12 +5685,6 @@ class TimeTracker:
 
     def monitor_user_activity(self):
         """Monitor mouse and keyboard activity for idle detection"""
-        # Disable pynput on Linux due to threading bugs - use simpler approach
-        if IS_LINUX:
-            print("[INFO] Using simplified idle detection on Linux (no pynput)")
-            print("[INFO] Idle detection based on screenshot changes only")
-            return
-        
         try:
             from pynput import mouse, keyboard
         except ImportError:
@@ -5737,6 +5715,10 @@ class TimeTracker:
             mouse_listener.start()
         except Exception as e:
             print(f"[WARN] Could not start mouse listener: {e}")
+            if IS_LINUX:
+                print("[INFO] On Linux, you may need to add user to 'input' group:")
+                print("       sudo usermod -aG input $USER")
+                print("       Then log out and log back in")
 
         # Start keyboard listener
         try:
@@ -5747,6 +5729,8 @@ class TimeTracker:
             keyboard_listener.start()
         except Exception as e:
             print(f"[WARN] Could not start keyboard listener: {e}")
+            if IS_LINUX:
+                print("[INFO] On Linux Wayland, keyboard monitoring may require X11 compatibility")
 
         print("[OK] Activity monitoring started (5-minute idle timeout)")
 
@@ -5987,7 +5971,7 @@ class TimeTracker:
         
         # Log actual tracking mode from settings
         tracking_mode = self.tracking_settings.get('tracking_mode', 'interval')
-        event_enabled = self.tracking_settings.get('event_tracking_enabled', False)
+        event_enabled = self.tracking_settings.get('event_tracking_enabled', True)
         if event_enabled or tracking_mode == 'event':
             print("[OK] Tracking started (interval + event-based)")
         else:
@@ -5995,7 +5979,7 @@ class TimeTracker:
         
         # Track last screenshot time to prevent too frequent captures (for window switches)
         last_screenshot_time = 0
-        min_screenshot_interval = 10  # Minimum 10 seconds between window switch screenshots
+        min_screenshot_interval = 3  # Minimum 3 seconds between window switch screenshots
         
         # Track time for refreshing settings
         last_settings_refresh = time.time()
@@ -6105,7 +6089,23 @@ class TimeTracker:
                     continue
 
                 # Check for idle timeout (use configurable threshold)
-                idle_duration = time.time() - self.last_activity_time
+                # On Linux/Wayland, use D-Bus IdleMonitor (pynput doesn't work on Wayland)
+                _linux_idle_available = False
+                if IS_LINUX:
+                    try:
+                        from desktop_app_linux import get_idle_time_linux, is_idle_detection_available_linux
+                        if is_idle_detection_available_linux():
+                            idle_duration = get_idle_time_linux()
+                            # Update last_activity_time based on idle duration for consistency
+                            self.last_activity_time = time.time() - idle_duration
+                            _linux_idle_available = True
+                        else:
+                            idle_duration = time.time() - self.last_activity_time
+                    except Exception:
+                        idle_duration = time.time() - self.last_activity_time
+                else:
+                    idle_duration = time.time() - self.last_activity_time
+                    
                 current_idle_timeout = self.tracking_settings.get('idle_threshold_seconds', self.idle_timeout)
                 if idle_duration > current_idle_timeout:
                     if not self.is_idle:
@@ -6124,12 +6124,20 @@ class TimeTracker:
                         self.add_admin_log('INFO', f'User idle (no activity for {int(idle_duration)}s)')
 
                     # While idle, check every 5 seconds for activity
-                    # Don't skip if needs_idle_resume is set - we need to process the resume
-                    if not self.needs_idle_resume:
+                    # On Linux/Wayland, D-Bus will directly tell us when user becomes active
+                    if _linux_idle_available:
                         time.sleep(5)
                         continue
+                    # On Windows/macOS, check pynput's needs_idle_resume flag
+                    elif not self.needs_idle_resume:
+                        time.sleep(5)
+                        continue
+                else:
+                    # Not idle - if we were idle, we need to resume
+                    if self.is_idle:
+                        self.needs_idle_resume = True
 
-                # Resume from idle if activity was detected by pynput
+                # Resume from idle if activity was detected
                 if self.needs_idle_resume:
                     resume_time = datetime.now(timezone.utc)
                     print(f"[INFO] Activity detected at {resume_time.strftime('%H:%M:%S')} UTC, resuming tracking from idle")
@@ -6275,7 +6283,7 @@ class TimeTracker:
                 capture_reason = None
                 
                 # Check if event-based tracking is enabled (window switch captures)
-                event_tracking_enabled = self.tracking_settings.get('event_tracking_enabled', False)
+                event_tracking_enabled = self.tracking_settings.get('event_tracking_enabled', True)
                 tracking_mode = self.tracking_settings.get('tracking_mode', 'interval')
                 
                 # Only capture on window switch if event tracking is enabled
@@ -7026,6 +7034,15 @@ class TimeTracker:
         self._update_desktop_status(logged_in=False)
 
         self.stop_tracking()
+        
+        # Cleanup Linux resources (PipeWire session)
+        if IS_LINUX:
+            try:
+                from desktop_app_linux import cleanup_linux
+                cleanup_linux()
+            except Exception:
+                pass
+        
         if self.tray:
             self.tray.stop()
         sys.exit(0)
