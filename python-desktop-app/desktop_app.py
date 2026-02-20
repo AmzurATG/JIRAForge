@@ -65,6 +65,39 @@ except ImportError:
     print("[WARN] tkinter not available - pause popup window disabled")
 
 # ============================================================================
+# OS DETECTION AND PLATFORM-SPECIFIC IMPORTS
+# ============================================================================
+
+# Detect operating system
+IS_LINUX = sys.platform.startswith('linux')
+IS_WINDOWS = sys.platform == 'win32'
+
+print(f"[INFO] Detected OS: {'Linux' if IS_LINUX else 'Windows' if IS_WINDOWS else 'Other'}")
+
+# Import Linux-specific functions if on Linux
+if IS_LINUX:
+    try:
+        from desktop_app_linux import (
+            capture_screenshot_linux,
+            get_active_window_linux,
+            show_notification_linux,
+            acquire_single_instance_lock_linux,
+            release_single_instance_lock_linux,
+            add_to_startup_linux,
+            remove_from_startup_linux,
+            is_in_startup_linux,
+            get_app_data_dir_linux,
+        )
+        LINUX_FUNCTIONS_AVAILABLE = True
+        print("[OK] Linux functions imported successfully")
+    except ImportError as e:
+        LINUX_FUNCTIONS_AVAILABLE = False
+        print(f"[ERROR] Failed to import Linux functions: {e}")
+        print("[ERROR] Make sure desktop_app_linux.py exists in the same directory")
+else:
+    LINUX_FUNCTIONS_AVAILABLE = False
+
+# ============================================================================
 # SINGLE INSTANCE LOCK
 # ============================================================================
 
@@ -78,6 +111,11 @@ def acquire_single_instance_lock():
     """
     global _instance_mutex
 
+    # Use Linux implementation if available
+    if IS_LINUX and LINUX_FUNCTIONS_AVAILABLE:
+        lock_file = os.path.join(get_app_data_dir(), '.lock')
+        return acquire_single_instance_lock_linux(lock_file)
+    
     if not WIN32_AVAILABLE:
         # On non-Windows, use a lock file approach
         return _acquire_lock_file()
@@ -141,6 +179,11 @@ def release_single_instance_lock():
     """Release the single instance lock"""
     global _instance_mutex
 
+    # Use Linux implementation if available
+    if IS_LINUX and LINUX_FUNCTIONS_AVAILABLE:
+        release_single_instance_lock_linux()
+        return
+
     if _instance_mutex:
         try:
             win32event.ReleaseMutex(_instance_mutex)
@@ -186,7 +229,7 @@ EMBEDDED_CONFIG = {
     # REMOVED: ATLASSIAN_CLIENT_SECRET - now on AI Server only (security fix)
     # REMOVED: SUPABASE_URL, SUPABASE_ANON_KEY, SUPABASE_SERVICE_ROLE_KEY - fetched from AI Server
     'AI_SERVER_URL': 'https://forgesync.amzur.com',  # AI Server for secure token exchange & config
-    'CAPTURE_INTERVAL': '300',
+    'CAPTURE_INTERVAL': '5',  # 5 seconds for testing portal permission (change to 300 for production)
     'WEB_PORT': '51777',
     'ADMIN_PASSWORD': 'admin123'
 }
@@ -426,6 +469,10 @@ def get_local_timezone_name():
 
 def get_app_data_dir():
     """Get the application data directory in LocalAppData"""
+    # Use Linux implementation if available
+    if IS_LINUX and LINUX_FUNCTIONS_AVAILABLE:
+        return get_app_data_dir_linux()
+    
     if sys.platform == 'win32':
         app_data = os.environ.get('LOCALAPPDATA', os.path.expanduser('~'))
     else:
@@ -885,7 +932,12 @@ APP_NAME = "TimeTracker"
 REGISTRY_PATH = r"Software\Microsoft\Windows\CurrentVersion\Run"
 
 def add_to_startup():
-    """Add application to Windows startup via registry"""
+    """Add application to startup (Windows registry or Linux autostart)"""
+    # Use Linux implementation if on Linux
+    if IS_LINUX and LINUX_FUNCTIONS_AVAILABLE:
+        exe_path = get_app_executable_path()
+        return add_to_startup_linux(APP_NAME, exe_path)
+    
     if sys.platform != 'win32':
         print("[INFO] Auto-start only supported on Windows")
         return False
@@ -924,7 +976,11 @@ def add_to_startup():
         return False
 
 def remove_from_startup():
-    """Remove application from Windows startup"""
+    """Remove application from startup (Windows registry or Linux autostart)"""
+    # Use Linux implementation if on Linux
+    if IS_LINUX and LINUX_FUNCTIONS_AVAILABLE:
+        return remove_from_startup_linux()
+    
     if sys.platform != 'win32':
         return False
 
@@ -952,7 +1008,11 @@ def remove_from_startup():
         return False
 
 def is_in_startup():
-    """Check if application is in Windows startup"""
+    """Check if application is in startup (Windows registry or Linux autostart)"""
+    # Use Linux implementation if on Linux
+    if IS_LINUX and LINUX_FUNCTIONS_AVAILABLE:
+        return is_in_startup_linux()
+    
     if sys.platform != 'win32':
         return False
 
@@ -2934,7 +2994,7 @@ class TimeTracker:
         # ============================================================================
         self.tracking_settings = {
             'screenshot_monitoring_enabled': True,
-            'screenshot_interval_seconds': 900,  # 15 minutes default
+            'screenshot_interval_seconds': self.capture_interval,  # Use config value (60s for testing, 300s for production)
             'tracking_mode': 'interval',  # 'interval' or 'event'
             'event_tracking_enabled': False,
             'track_window_changes': True,
@@ -5205,7 +5265,15 @@ class TimeTracker:
     def capture_screenshot(self):
         """Capture screenshot and return PIL Image"""
         try:
-            screenshot = ImageGrab.grab()
+            # Use Linux implementation if on Linux
+            if IS_LINUX and LINUX_FUNCTIONS_AVAILABLE:
+                screenshot = capture_screenshot_linux()
+            else:
+                screenshot = ImageGrab.grab()
+            
+            if screenshot is None:
+                return None
+            
             screenshot_bytes = screenshot.tobytes()
             current_hash = hashlib.md5(screenshot_bytes).hexdigest()
             
@@ -5221,21 +5289,29 @@ class TimeTracker:
     
     def get_active_window(self):
         """Get active window information and detect window switches for event-based tracking"""
-        if not WIN32_AVAILABLE:
+        # Use Linux implementation if on Linux
+        if IS_LINUX and LINUX_FUNCTIONS_AVAILABLE:
+            window_info = get_active_window_linux()
+            title = window_info.get('title', 'Unknown')
+            app_name = window_info.get('app', 'Unknown')
+            window_key = window_info.get('window_key', 'unknown')
+        elif not WIN32_AVAILABLE:
             return {'title': 'Unknown', 'app': 'Unknown', 'window_key': 'unknown', 'is_new_window': False}
+        else:
+            try:
+                hwnd = win32gui.GetForegroundWindow()
+                title = win32gui.GetWindowText(hwnd)
+                
+                # Get process name
+                _, pid = win32process.GetWindowThreadProcessId(hwnd)
+                process = psutil.Process(pid)
+                app_name = process.name()
+                window_key = f"{app_name}|||{title}"
+            except Exception as e:
+                print(f"[WARN] Failed to get window info: {e}")
+                return {'title': 'Unknown', 'app': 'Unknown', 'window_key': 'unknown', 'is_new_window': False}
         
         try:
-            hwnd = win32gui.GetForegroundWindow()
-            title = win32gui.GetWindowText(hwnd)
-            
-            # Get process name
-            _, pid = win32process.GetWindowThreadProcessId(hwnd)
-            process = psutil.Process(pid)
-            app_name = process.name()
-            
-            # Create unique window key (app + title) to detect window switches
-            window_key = f"{app_name}|||{title}"
-            
             # Detect window switch
             is_new_window = False
             if window_key != self.current_window_key:
@@ -5307,8 +5383,10 @@ class TimeTracker:
             screenshot.save(img_buffer, format='PNG')
             img_bytes = img_buffer.getvalue()
             
-            # Create thumbnail
+            # Create thumbnail (convert RGBA to RGB for JPEG compatibility)
             thumbnail = screenshot.copy()
+            if thumbnail.mode == 'RGBA':
+                thumbnail = thumbnail.convert('RGB')
             thumbnail.thumbnail((400, 300))
             thumb_buffer = BytesIO()
             thumbnail.save(thumb_buffer, format='JPEG', quality=70)
@@ -5494,6 +5572,11 @@ class TimeTracker:
                 if result.data:
                     screenshot_id = result.data[0]['id']
                     print(f"[OK] Screenshot uploaded and saved to database:")
+                    print(f"     - App: {window_info['app']}")
+                    print(f"     - Title: {window_info['title'][:60]}..." if len(window_info['title']) > 60 else f"     - Title: {window_info['title']}")
+                    print(f"     - Duration: {duration_seconds}s")
+                    print(f"     - Storage: {storage_path}")
+                    print(f"     - Record ID: {result.data[0].get('id')}")
                     print(f"     - File: {filename}")
                     print(f"     - Database ID: {screenshot_id}")
                     print(f"     - Storage: {storage_path}")
@@ -5618,6 +5701,12 @@ class TimeTracker:
 
     def monitor_user_activity(self):
         """Monitor mouse and keyboard activity for idle detection"""
+        # Disable pynput on Linux due to threading bugs - use simpler approach
+        if IS_LINUX:
+            print("[INFO] Using simplified idle detection on Linux (no pynput)")
+            print("[INFO] Idle detection based on screenshot changes only")
+            return
+        
         try:
             from pynput import mouse, keyboard
         except ImportError:
@@ -5627,25 +5716,37 @@ class TimeTracker:
 
         def on_activity(*args, **kwargs):
             """Called on any mouse or keyboard activity"""
-            self.last_activity_time = time.time()
+            try:
+                self.last_activity_time = time.time()
 
-            # Signal that we need to resume from idle (tracking loop will handle the state reset)
-            if self.is_idle:
-                self.needs_idle_resume = True
+                # Signal that we need to resume from idle (tracking loop will handle the state reset)
+                if self.is_idle:
+                    self.needs_idle_resume = True
+            except Exception:
+                # Suppress all errors to avoid spam
+                pass
 
         # Start mouse listener
-        mouse_listener = mouse.Listener(
-            on_move=on_activity,
-            on_click=on_activity,
-            on_scroll=on_activity
-        )
-        mouse_listener.start()
+        try:
+            mouse_listener = mouse.Listener(
+                on_move=on_activity,
+                on_click=on_activity,
+                on_scroll=on_activity,
+                suppress=False
+            )
+            mouse_listener.start()
+        except Exception as e:
+            print(f"[WARN] Could not start mouse listener: {e}")
 
         # Start keyboard listener
-        keyboard_listener = keyboard.Listener(
-            on_press=on_activity
-        )
-        keyboard_listener.start()
+        try:
+            keyboard_listener = keyboard.Listener(
+                on_press=on_activity,
+                suppress=False
+            )
+            keyboard_listener.start()
+        except Exception as e:
+            print(f"[WARN] Could not start keyboard listener: {e}")
 
         print("[OK] Activity monitoring started (5-minute idle timeout)")
 
@@ -6242,8 +6343,10 @@ class TimeTracker:
                     capture_reason = "interval"
                 
                 if should_capture and not self.is_idle:
+                    print(f"[INFO] Capturing screenshot ({capture_reason})...")
                     screenshot = self.capture_screenshot()
                     if screenshot:
+                        print(f"[INFO] Screenshot captured, uploading...")
                         # Upload screenshot with event-based tracking (start_time and end_time)
                         # For window switches: start_time is when new window became active
                         # For intervals: start_time is now (after updating previous record)
@@ -6269,7 +6372,16 @@ class TimeTracker:
 
                         # Always update last_screenshot_time (for min_screenshot_interval check)
                         last_screenshot_time = time.time()  # Also use fresh time here
-                        print(f"[OK] Screenshot captured ({capture_reason})")
+                        print(f"[OK] Screenshot captured and uploaded ({capture_reason})")
+                    else:
+                        # Screenshot was None (unchanged hash) - still reset interval timer to avoid spam
+                        if capture_reason == "interval":
+                            self.last_interval_time = time.time()
+                        last_screenshot_time = time.time()
+                        # Only log unchanged screenshots occasionally to reduce spam
+                        if not hasattr(self, '_last_unchanged_log') or time.time() - self._last_unchanged_log > 30:
+                            print(f"[INFO] Screenshot unchanged, skipping upload")
+                            self._last_unchanged_log = time.time()
                 
                 # Sleep for shorter interval to check for window switches more frequently
                 # But still respect the minimum screenshot interval
