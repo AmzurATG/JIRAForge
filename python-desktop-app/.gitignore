@@ -41,4 +41,11 @@ Thumbs.db
 # Application data
 *.json
 !package.json
+*.zip
+*.dmg
+*.app
+distribution/
+TimeTracker-Distribution/
+*.md
+tests/
 

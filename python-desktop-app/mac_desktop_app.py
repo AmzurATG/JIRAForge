@@ -44,6 +44,14 @@ except ImportError:
     KEYRING_AVAILABLE = False
     print("[WARN] keyring module not available - tokens will be stored in plain text")
 
+# Auto-updater support (macOS)
+try:
+    from mac_auto_updater import MacAppAutoUpdater, check_and_handle_updates, initialize_auto_updater
+    AUTO_UPDATER_AVAILABLE = True
+except ImportError:
+    AUTO_UPDATER_AVAILABLE = False
+    print("[WARN] Auto-updater not available - update checking disabled")
+
 # Windows-specific imports
 try:
     import win32gui
@@ -54,6 +62,17 @@ try:
     WIN32_AVAILABLE = True
 except ImportError:
     WIN32_AVAILABLE = False
+
+# macOS-specific imports
+try:
+    import Quartz
+    from Cocoa import NSWorkspace, NSScreen, NSApp, NSApplicationActivationPolicyAccessory
+    from Quartz import CGWindowListCopyWindowInfo, CGImageGetDataProvider, CGDataProviderCopyData, CGImageGetWidth, CGImageGetHeight, CGImageGetBytesPerRow, CGImageGetBitsPerComponent, CGImageGetBitsPerPixel, CGImageGetColorSpace, CGColorSpaceCreateDeviceRGB, CGImageCreate, CGBitmapContextCreate, CGBitmapContextCreateImage, CGContextFillRect, CGRectMake, CFArrayGetValueAtIndex, CFArrayGetCount, kCGWindowListOptionOnScreenOnly, kCGWindowListExcludeDesktopElements, kCGNullWindowID, CGWindowListCreateImage, kCGWindowImageDefault
+    from Quartz.CoreGraphics import CGDisplayCreateImage, CGMainDisplayID
+    MACOS_AVAILABLE = True
+except ImportError:
+    MACOS_AVAILABLE = False
+    print("[WARN] macOS frameworks (PyObjC) not available - window detection and screenshot capture will be limited")
 
 # Tkinter for pause popup window
 try:
@@ -72,16 +91,17 @@ _instance_mutex = None
 
 def acquire_single_instance_lock():
     """
-    Acquire a system-wide mutex to ensure only one instance runs.
+    Acquire a system-wide lock to ensure only one instance runs.
     Returns True if lock acquired (this is the only instance).
     Returns False if another instance is already running.
     """
     global _instance_mutex
 
-    if not WIN32_AVAILABLE:
-        # On non-Windows, use a lock file approach
+    # On macOS (and other non-Windows), use a lock file approach
+    if sys.platform == 'darwin' or not WIN32_AVAILABLE:
         return _acquire_lock_file()
 
+    # Windows-specific code (preserved for compatibility)
     try:
         # Create a named mutex - if it already exists, another instance is running
         mutex_name = "TimeTracker_SingleInstance_Mutex"
@@ -157,13 +177,20 @@ def release_single_instance_lock():
     except:
         pass
 
-# Windows toast notifications
+# Cross-platform notifications
+try:
+    from plyer import notification
+    PLYER_AVAILABLE = True
+except ImportError:
+    PLYER_AVAILABLE = False
+    print("[WARN] plyer not available - desktop notifications disabled")
+
+# Windows toast notifications (fallback for Windows)
 try:
     from winotify import Notification, audio
     WINOTIFY_AVAILABLE = True
 except ImportError:
     WINOTIFY_AVAILABLE = False
-    print("[WARN] winotify not available - desktop notifications disabled")
 
 # Note: AI analysis is now handled by the separate AI server
 # Desktop app only captures and uploads screenshots to Supabase
@@ -365,46 +392,73 @@ def verify_download_checksum(file_path, expected_checksum):
 
 def show_update_notification(update_info, callback=None):
     """
-    Show a Windows toast notification about available update.
+    Show a notification about available update (cross-platform).
     
     Args:
         update_info: Dict with update information from check_for_updates()
         callback: Optional callback function to call when notification is clicked
     """
-    if not WINOTIFY_AVAILABLE:
-        print(f"[INFO] Update available: v{update_info.get('latest_version')} (notifications not available)")
-        return
+    latest_version = update_info.get('latest_version', 'unknown')
+    release_notes = update_info.get('release_notes', 'A new version is available.')
+    is_mandatory = update_info.get('is_mandatory', False)
     
-    try:
-        latest_version = update_info.get('latest_version', 'unknown')
-        release_notes = update_info.get('release_notes', 'A new version is available.')
-        is_mandatory = update_info.get('is_mandatory', False)
-        
-        # Truncate release notes if too long
-        if len(release_notes) > 200:
-            release_notes = release_notes[:197] + "..."
-        
-        title = "Update Required" if is_mandatory else "Update Available"
-        
-        notification = Notification(
-            app_id="Time Tracker",
-            title=f"{title}: v{latest_version}",
-            msg=release_notes,
-            duration="long" if is_mandatory else "short"
-        )
-        
-        # Add download URL as launch action
-        download_url = update_info.get('download_url')
-        if download_url:
-            notification.set_audio(audio.Default, loop=False)
-            notification.add_actions(label="Download Update", launch=download_url)
-        
-        notification.show()
-        
-        print(f"[OK] Update notification shown: v{latest_version}")
-        
-    except Exception as e:
-        print(f"[WARN] Could not show update notification: {e}")
+    # Try cross-platform notification first (macOS/Linux)
+    if PLYER_AVAILABLE and sys.platform in ['darwin', 'linux']:
+        try:
+            # Truncate release notes if too long
+            if len(release_notes) > 200:
+                release_notes = release_notes[:197] + "..."
+            
+            title = "Update Required" if is_mandatory else "Update Available"
+            
+            notification.notify(
+                title=f"{title}: v{latest_version}",
+                message=release_notes,
+                app_name="Time Tracker",
+                timeout=10 if is_mandatory else 5
+            )
+            
+            print(f"[OK] Update notification shown: v{latest_version}")
+            return
+            
+        except Exception as e:
+            print(f"[WARN] Could not show cross-platform notification: {e}")
+    
+    # Fallback to Windows notifications if available
+    if WINOTIFY_AVAILABLE and sys.platform == 'win32':
+        try:
+            # Truncate release notes if too long
+            if len(release_notes) > 200:
+                release_notes = release_notes[:197] + "..."
+            
+            title = "Update Required" if is_mandatory else "Update Available"
+            
+            win_notification = Notification(
+                app_id="Time Tracker",
+                title=f"{title}: v{latest_version}",
+                msg=release_notes,
+                duration="long" if is_mandatory else "short"
+            )
+            
+            # Add download URL as launch action
+            download_url = update_info.get('download_url')
+            if download_url:
+                win_notification.set_audio(audio.Default, loop=False)
+                win_notification.add_actions(label="Download Update", launch=download_url)
+            
+            win_notification.show()
+            
+            print(f"[OK] Update notification shown: v{latest_version}")
+            return
+            
+        except Exception as e:
+            print(f"[WARN] Could not show Windows notification: {e}")
+    
+    # Final fallback - console message
+    print(f"[INFO] Update available: v{latest_version}")
+    print(f"[INFO] {release_notes}")
+    if is_mandatory:
+        print("[WARN] This update is mandatory!")
 
 def get_local_timezone_name():
     """
@@ -457,8 +511,16 @@ def get_app_executable_path():
         return os.path.abspath(__file__)
 
 def get_installed_exe_path():
-    """Get the path where the exe should be installed"""
-    return os.path.join(get_app_data_dir(), 'TimeTracker.exe')
+    """Get the path where the executable should be installed (cross-platform)"""
+    if sys.platform == 'darwin':
+        # On macOS, we can install as .app bundle or just as a script
+        app_dir = get_app_data_dir()
+        return os.path.join(app_dir, 'TimeTracker.app') if getattr(sys, 'frozen', False) else os.path.join(app_dir, 'mac_desktop_app.py')
+    elif sys.platform == 'win32':
+        return os.path.join(get_app_data_dir(), 'TimeTracker.exe')
+    else:
+        # Linux and other Unix-like systems
+        return os.path.join(get_app_data_dir(), 'timetracker')
 
 def get_shutdown_signal_path():
     """Get the path to the shutdown signal file"""
@@ -498,7 +560,7 @@ def request_graceful_shutdown():
     try:
         signal_path = get_shutdown_signal_path()
         with open(signal_path, 'w') as f:
-            f.write(f"shutdown_requested_at={datetime.now().isoformat()}\n")
+            f.write(f"shutdown_requested_at={datetime.now(timezone.utc).isoformat()}\n")
             f.write(f"requested_by_pid={os.getpid()}\n")
         print("[INFO] Shutdown signal sent to running instance")
         return True
@@ -884,88 +946,166 @@ rmdir /s /q "%INSTALL_DIR%" 2>nul
 APP_NAME = "TimeTracker"
 REGISTRY_PATH = r"Software\Microsoft\Windows\CurrentVersion\Run"
 
+def get_launch_agent_path():
+    """Get path to macOS Launch Agent plist"""
+    home = os.path.expanduser("~")
+    return os.path.join(home, "Library/LaunchAgents/com.amzur.timetracker.plist")
+
 def add_to_startup():
-    """Add application to Windows startup via registry"""
-    if sys.platform != 'win32':
-        print("[INFO] Auto-start only supported on Windows")
-        return False
+    """Add application to startup (cross-platform: macOS Launch Agent or Windows Registry)"""
+    if sys.platform == 'darwin':
+        # macOS Launch Agent
+        try:
+            executable_path = get_app_executable_path()
+            plist_content = f'''<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.amzur.timetracker</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>python3</string>
+        <string>{executable_path}</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <false/>
+    <key>WorkingDirectory</key>
+    <string>{os.path.dirname(executable_path)}</string>
+</dict>
+</plist>'''
+            
+            plist_path = get_launch_agent_path()
+            os.makedirs(os.path.dirname(plist_path), exist_ok=True)
+            
+            with open(plist_path, 'w') as f:
+                f.write(plist_content)
+            
+            print(f"[OK] Added to macOS startup: {plist_path}")
+            return True
 
-    try:
-        import winreg
+        except Exception as e:
+            print(f"[ERROR] Failed to add to macOS startup: {e}")
+            return False
+    
+    elif sys.platform == 'win32':
+        # Windows Registry
+        try:
+            import winreg
 
-        exe_path = get_app_executable_path()
+            # Prefer the installed path only if it actually exists; otherwise fall back
+            # to the current executable path to avoid writing a broken startup entry.
+            if getattr(sys, 'frozen', False):
+                installed_exe = get_installed_exe_path()
+                if installed_exe and os.path.isfile(installed_exe):
+                    exe_path = installed_exe
+                else:
+                    exe_path = get_app_executable_path()
+            else:
+                exe_path = get_app_executable_path()
 
-        # Open registry key
-        key = winreg.OpenKey(
-            winreg.HKEY_CURRENT_USER,
-            REGISTRY_PATH,
-            0,
-            winreg.KEY_SET_VALUE
-        )
+            # Open registry key
+            key = winreg.OpenKey(
+                winreg.HKEY_CURRENT_USER,
+                REGISTRY_PATH,
+                0,
+                winreg.KEY_SET_VALUE
+            )
 
-        # Set the value
-        winreg.SetValueEx(key, APP_NAME, 0, winreg.REG_SZ, f'"{exe_path}"')
-        winreg.CloseKey(key)
+            # Set the value
+            winreg.SetValueEx(key, APP_NAME, 0, winreg.REG_SZ, f'"{exe_path}"')
+            winreg.CloseKey(key)
 
-        print(f"[OK] Added to Windows startup: {exe_path}")
-        return True
+            print(f"[OK] Added to Windows startup: {exe_path}")
+            return True
 
-    except Exception as e:
-        print(f"[ERROR] Failed to add to startup: {e}")
+        except Exception as e:
+            print(f"[ERROR] Failed to add to Windows startup: {e}")
+            return False
+    else:
+        print("[INFO] Auto-start only supported on macOS and Windows")
         return False
 
 def remove_from_startup():
-    """Remove application from Windows startup"""
-    if sys.platform != 'win32':
-        return False
-
-    try:
-        import winreg
-
-        key = winreg.OpenKey(
-            winreg.HKEY_CURRENT_USER,
-            REGISTRY_PATH,
-            0,
-            winreg.KEY_SET_VALUE
-        )
-
+    """Remove application from startup (cross-platform)"""
+    if sys.platform == 'darwin':
+        # macOS Launch Agent
         try:
-            winreg.DeleteValue(key, APP_NAME)
-            print(f"[OK] Removed from Windows startup")
-        except FileNotFoundError:
-            print("[INFO] App was not in startup")
+            plist_path = get_launch_agent_path()
+            if os.path.exists(plist_path):
+                os.remove(plist_path)
+                print("[OK] Removed from macOS startup")
+            else:
+                print("[INFO] App was not in macOS startup")
+            return True
+        except Exception as e:
+            print(f"[ERROR] Failed to remove from macOS startup: {e}")
+            return False
+    
+    elif sys.platform == 'win32':
+        # Windows Registry
+        try:
+            import winreg
 
-        winreg.CloseKey(key)
-        return True
+            key = winreg.OpenKey(
+                winreg.HKEY_CURRENT_USER,
+                REGISTRY_PATH,
+                0,
+                winreg.KEY_SET_VALUE
+            )
 
-    except Exception as e:
-        print(f"[ERROR] Failed to remove from startup: {e}")
+            try:
+                winreg.DeleteValue(key, APP_NAME)
+                print(f"[OK] Removed from Windows startup")
+            except FileNotFoundError:
+                print("[INFO] App was not in startup")
+
+            winreg.CloseKey(key)
+            return True
+
+        except Exception as e:
+            print(f"[ERROR] Failed to remove from startup: {e}")
+            return False
+    else:
+        print("[INFO] Auto-start removal only supported on macOS and Windows")
         return False
 
 def is_in_startup():
-    """Check if application is in Windows startup"""
-    if sys.platform != 'win32':
-        return False
-
-    try:
-        import winreg
-
-        key = winreg.OpenKey(
-            winreg.HKEY_CURRENT_USER,
-            REGISTRY_PATH,
-            0,
-            winreg.KEY_READ
-        )
-
+    """Check if application is in startup (cross-platform)"""
+    if sys.platform == 'darwin':
+        # macOS Launch Agent
         try:
-            value, _ = winreg.QueryValueEx(key, APP_NAME)
-            winreg.CloseKey(key)
-            return True
-        except FileNotFoundError:
-            winreg.CloseKey(key)
+            plist_path = get_launch_agent_path()
+            return os.path.exists(plist_path)
+        except Exception as e:
+            print(f"[ERROR] Failed to check macOS startup: {e}")
             return False
+    
+    elif sys.platform == 'win32':
+        # Windows Registry
+        try:
+            import winreg
 
-    except Exception as e:
+            key = winreg.OpenKey(
+                winreg.HKEY_CURRENT_USER,
+                REGISTRY_PATH,
+                0,
+                winreg.KEY_READ
+            )
+
+            try:
+                value, _ = winreg.QueryValueEx(key, APP_NAME)
+                winreg.CloseKey(key)
+                return True
+            except FileNotFoundError:
+                winreg.CloseKey(key)
+                return False
+
+        except Exception as e:
+            return False
+    else:
         return False
 
 # ============================================================================
@@ -981,13 +1121,23 @@ SENSITIVE_TOKEN_KEYS = ['access_token', 'refresh_token', 'supabase_token']
 # Windows Credential Manager has a 2560-byte limit per credential (CredWrite API).
 # OAuth/JWT tokens often exceed this, causing error 1783 "The stub received bad data".
 # We chunk large tokens across multiple keyring entries to work around this limit.
+# Using base64 encoding to avoid special character issues with Windows Credential Manager.
 KEYRING_CHUNK_SIZE = 2400  # Leave some headroom below the 2560-byte limit
 
 
 def _keyring_set(service, key, value):
-    """Save a value to keyring, chunking if it exceeds Windows Credential Manager limits."""
-    if len(value.encode('utf-8')) <= KEYRING_CHUNK_SIZE:
-        keyring.set_password(service, key, value)
+    """Save a value to keyring, base64-encoding and chunking if needed.
+    
+    Base64 encoding prevents Windows Credential Manager issues with special chars
+    in JWT tokens that can cause error 1783 'The stub received bad data'.
+    """
+    import base64
+    # Base64 encode to avoid special character issues
+    encoded = base64.b64encode(value.encode('utf-8')).decode('ascii')
+    encoded_with_marker = f"__b64__:{encoded}"
+    
+    if len(encoded_with_marker) <= KEYRING_CHUNK_SIZE:
+        keyring.set_password(service, key, encoded_with_marker)
         # Clean up any leftover chunks from previous saves
         for i in range(1, 10):
             try:
@@ -995,23 +1145,13 @@ def _keyring_set(service, key, value):
             except Exception:
                 break
     else:
-        # Split into chunks on character boundaries to avoid corrupting multi-byte UTF-8
+        # Split into chunks (base64 is ASCII-safe, so byte boundaries are fine)
         chunks = []
-        current_chunk = ""
-        current_size = 0
-        for char in value:
-            char_size = len(char.encode('utf-8'))
-            if current_size + char_size > KEYRING_CHUNK_SIZE:
-                chunks.append(current_chunk)
-                current_chunk = char
-                current_size = char_size
-            else:
-                current_chunk += char
-                current_size += char_size
-        if current_chunk:
-            chunks.append(current_chunk)
+        for i in range(0, len(encoded), KEYRING_CHUNK_SIZE - 20):  # Leave room for marker
+            chunks.append(encoded[i:i + KEYRING_CHUNK_SIZE - 20])
+        
         # Store chunk count in the main key
-        keyring.set_password(service, key, f"__chunked__:{len(chunks)}")
+        keyring.set_password(service, key, f"__b64_chunked__:{len(chunks)}")
         for i, chunk in enumerate(chunks):
             keyring.set_password(service, f"{key}_chunk{i+1}", chunk)
         # Clean up extra old chunks beyond current count
@@ -1023,12 +1163,54 @@ def _keyring_set(service, key, value):
 
 
 def _keyring_get(service, key):
-    """Load a value from keyring, reassembling chunks if needed."""
+    """Load a value from keyring, decoding base64 and reassembling chunks if needed."""
+    import base64
     value = keyring.get_password(service, key)
     if value is None:
         return None
+    
+    # Handle base64-encoded chunked values
+    if value.startswith("__b64_chunked__:"):
+        try:
+            num_chunks = int(value.split(":")[1])
+        except (ValueError, IndexError):
+            # Corrupted chunk marker - clean up and return None
+            try:
+                keyring.delete_password(service, key)
+            except Exception:
+                pass
+            return None
+        parts = []
+        for i in range(1, num_chunks + 1):
+            chunk = keyring.get_password(service, f"{key}_chunk{i}")
+            if chunk is None:
+                return None  # Corrupted, missing chunk
+            parts.append(chunk)
+        encoded = "".join(parts)
+        try:
+            return base64.b64decode(encoded.encode('ascii')).decode('utf-8')
+        except Exception:
+            return None
+    
+    # Handle base64-encoded single values
+    if value.startswith("__b64__:"):
+        encoded = value[8:]  # Skip "__b64__:" prefix
+        try:
+            return base64.b64decode(encoded.encode('ascii')).decode('utf-8')
+        except Exception:
+            return None
+    
+    # Legacy: handle old chunked format (non-base64)
     if value.startswith("__chunked__:"):
-        num_chunks = int(value.split(":")[1])
+        try:
+            num_chunks = int(value.split(":")[1])
+        except (ValueError, IndexError):
+            # Corrupted chunk marker - clean up and return None
+            try:
+                keyring.delete_password(service, key)
+            except Exception:
+                pass
+            return None
         parts = []
         for i in range(1, num_chunks + 1):
             chunk = keyring.get_password(service, f"{key}_chunk{i}")
@@ -1036,6 +1218,8 @@ def _keyring_get(service, key):
                 return None  # Corrupted, missing chunk
             parts.append(chunk)
         return "".join(parts)
+    
+    # Legacy: plain value (will be re-encoded on next save)
     return value
 
 
@@ -1043,8 +1227,11 @@ def _keyring_delete(service, key):
     """Delete a value from keyring, including any chunks."""
     try:
         value = keyring.get_password(service, key)
-        if value and value.startswith("__chunked__:"):
-            num_chunks = int(value.split(":")[1])
+        if value and (value.startswith("__chunked__:") or value.startswith("__b64_chunked__:")):
+            try:
+                num_chunks = int(value.split(":")[1])
+            except (ValueError, IndexError):
+                num_chunks = 0  # Corrupted marker, skip chunk deletion
             for i in range(1, num_chunks + 1):
                 try:
                     keyring.delete_password(service, f"{key}_chunk{i}")
@@ -1063,7 +1250,7 @@ class AtlassianAuthManager:
         self.redirect_uri = f'http://localhost:{web_port}/auth/callback'
         self.authorization_url = 'https://auth.atlassian.com/authorize'
         # Token exchange now goes through AI Server
-        self.ai_server_url = get_env_var('AI_SERVER_URL', 'http://216.48.190.255:3001')
+        self.ai_server_url = get_env_var('AI_SERVER_URL', 'https://forgesync.amzur.com')
         self.store_path = store_path or os.path.join(get_app_data_dir(), 'time_tracker_auth.json')
 
         # Migrate from plain-text to keyring if needed
@@ -1218,17 +1405,43 @@ class AtlassianAuthManager:
             raise ValueError("Missing code_verifier - PKCE flow was not properly initiated")
 
         # Exchange code for tokens via AI Server (client_secret is on server only)
+        # Use (connect, read) timeout tuple - the AI server itself calls Atlassian's
+        # token endpoint which can take up to 30s, so we need a longer read timeout.
+        # Retry up to 3 times since the server may be cold-starting or temporarily slow.
         print("[INFO] Exchanging OAuth code via AI Server (with PKCE)...")
-        response = requests.post(
-            f"{self.ai_server_url}/api/auth/atlassian/callback",
-            json={
-                'code': code,
-                'redirect_uri': self.redirect_uri,
-                'code_verifier': code_verifier  # PKCE: Send verifier to AI server
-            },
-            headers={'Content-Type': 'application/json'},
-            timeout=30
-        )
+        payload = {
+            'code': code,
+            'redirect_uri': self.redirect_uri,
+            'code_verifier': code_verifier  # PKCE: Send verifier to AI server
+        }
+        headers = {'Content-Type': 'application/json'}
+
+        response = None
+        last_error = None
+        for attempt in range(3):
+            try:
+                response = requests.post(
+                    f"{self.ai_server_url}/api/auth/atlassian/callback",
+                    json=payload,
+                    headers=headers,
+                    timeout=(30, 90)  # Generous timeouts: 30s connect, 90s read
+                )
+                break  # Success — exit retry loop
+            except (requests.exceptions.ConnectTimeout, requests.exceptions.ConnectionError) as e:
+                last_error = e
+                if attempt < 2:
+                    wait = (attempt + 1) * 5
+                    print(f"[WARN] Token exchange attempt {attempt + 1} failed ({type(e).__name__}), retrying in {wait}s...")
+                    time.sleep(wait)
+                else:
+                    print(f"[ERROR] Token exchange failed after 3 attempts: {e}")
+            except requests.exceptions.Timeout as e:
+                last_error = e
+                print(f"[ERROR] Token exchange timed out (read): {e}")
+                break  # Read timeout means server received the request; don't resend to avoid double-exchange
+
+        if response is None:
+            raise Exception(f"Could not reach the authentication server. Please check your internet connection and try again. ({last_error})")
 
         if response.status_code != 200:
             error_data = response.json() if response.headers.get('content-type', '').startswith('application/json') else {}
@@ -1311,7 +1524,7 @@ class AtlassianAuthManager:
                     'refresh_token': refresh_token
                 },
                 headers={'Content-Type': 'application/json'},
-                timeout=30
+                timeout=(10, 60)
             )
 
             if response.status_code != 200:
@@ -1319,8 +1532,9 @@ class AtlassianAuthManager:
                 error = error_data.get('error', response.text)
                 print(f"[ERROR] Token refresh failed: {error}")
                 # Check if re-authentication is required
-                if error_data.get('requiresReauth'):
+                if error_data.get('requiresReauth') or 'invalid' in str(error).lower():
                     print("[WARN] Refresh token expired - user must re-authenticate")
+                    self._show_reauth_notification()
                 return False
 
             result = response.json()
@@ -1335,6 +1549,7 @@ class AtlassianAuthManager:
             })
             self._save_tokens()
 
+            self._reauth_notification_shown = False  # Reset on successful refresh
             print("[OK] Access token refreshed successfully via AI Server")
             return True
         except Exception as e:
@@ -1342,8 +1557,15 @@ class AtlassianAuthManager:
             return False
 
     def is_authenticated(self):
-        """Check if user is authenticated"""
-        return bool(self.tokens.get('access_token'))
+        """Check if user is authenticated (has a valid or refreshable access token)"""
+        if not self.tokens.get('access_token'):
+            return False
+        # If we have expiry info and the token is expired, try to refresh it now
+        expires_at = self.tokens.get('expires_at', 0)
+        if expires_at and time.time() > expires_at:
+            print("[INFO] Access token expired, attempting refresh...")
+            return self.refresh_access_token()
+        return True
 
     def get_supabase_token(self):
         """Get Supabase JWT from AI Server using Atlassian token"""
@@ -1360,7 +1582,7 @@ class AtlassianAuthManager:
                     'atlassian_token': access_token
                 },
                 headers={'Content-Type': 'application/json'},
-                timeout=30
+                timeout=(10, 60)
             )
 
             if response.status_code == 401:
@@ -1425,7 +1647,7 @@ class AtlassianAuthManager:
             response = requests.post(
                 f"{ai_server_url}/api/auth/supabase-config",
                 json={'atlassian_token': access_token},
-                timeout=30
+                timeout=(10, 60)
             )
 
             if response.status_code == 401:
@@ -1480,9 +1702,15 @@ class AtlassianAuthManager:
 class OfflineManager:
     """Manages offline data storage and synchronization with Supabase"""
     
-    def __init__(self, db_path=None):
-        """Initialize offline manager with SQLite database"""
+    def __init__(self, db_path=None, parent=None):
+        """Initialize offline manager with SQLite database
+        
+        Args:
+            db_path: Path to SQLite database file
+            parent: Reference to parent TimeTracker instance for accessing organization_id
+        """
         self.db_path = db_path or os.path.join(get_app_data_dir(), 'time_tracker_offline.db')
+        self.parent = parent  # Reference to TimeTracker instance
         self.is_online = True
         self._last_connectivity_check = 0
         self._connectivity_check_interval = 30  # Check every 30 seconds
@@ -1834,6 +2062,44 @@ class OfflineManager:
             print(f"[ERROR] Failed to associate anonymous records: {e}")
             return 0
 
+    def update_missing_organization_ids(self, organization_id):
+        """Update offline records that are missing organization_id
+        
+        This is needed for records created before multi-tenancy was implemented.
+        
+        Args:
+            organization_id: The organization UUID to set
+            
+        Returns:
+            int: Number of records updated
+        """
+        if not organization_id:
+            return 0
+            
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            # Update records with missing organization_id
+            cursor.execute('''
+                UPDATE offline_screenshots 
+                SET organization_id = ?
+                WHERE synced = 0 AND (organization_id IS NULL OR organization_id = '')
+            ''', (organization_id,))
+            
+            updated = cursor.rowcount
+            conn.commit()
+            conn.close()
+            
+            if updated > 0:
+                print(f"[OK] Updated {updated} offline records with organization_id: {organization_id}")
+            
+            return updated
+            
+        except Exception as e:
+            print(f"[ERROR] Failed to update missing organization_ids: {e}")
+            return 0
+
     def cleanup_synced(self, days_old=0):
         """Remove synced screenshots from local database
         
@@ -1885,6 +2151,10 @@ class OfflineManager:
             self._syncing = True
             
         try:
+            # Update offline records that are missing organization_id (from before multi-tenancy)
+            if self.parent and hasattr(self.parent, 'organization_id') and self.parent.organization_id:
+                self.update_missing_organization_ids(self.parent.organization_id)
+            
             pending = self.get_pending_screenshots(limit=50)
             
             if not pending:
@@ -2020,10 +2290,35 @@ class OfflineManager:
             user_issues = json.loads(record.get('user_assigned_issues') or '[]')
             metadata = json.loads(record.get('metadata') or '{}')
 
+            # Handle missing organization_id in offline records (from before multi-tenancy)
+            record_org_id = record.get('organization_id')
+            if not record_org_id:
+                print(f"[WARN] Offline record {record['id']} missing organization_id - using current organization")
+                # Try to get current organization_id from parent TimeTracker instance
+                # This is a fallback for records created before multi-tenancy was implemented
+                if self.parent and hasattr(self.parent, 'organization_id'):
+                    record_org_id = self.parent.organization_id
+                    print(f"[OK] Using organization_id from parent: {record_org_id}")
+                
+                if not record_org_id and self.parent:
+                    # Try to load from cache as last resort
+                    try:
+                        cached_user = self.parent._load_cached_user_info()
+                        if cached_user and cached_user.get('organization_id'):
+                            record_org_id = cached_user.get('organization_id')
+                            print(f"[OK] Using organization_id from cache: {record_org_id}")
+                    except:
+                        pass
+                
+                if not record_org_id:
+                    print(f"[ERROR] Cannot sync record {record['id']}: Missing organization_id and no fallback available")
+                    print("[ERROR] This record was likely created before multi-tenancy. Please re-authenticate to fix.")
+                    return False
+
             # Prepare database record
             screenshot_data = {
                 'user_id': user_id,
-                'organization_id': record.get('organization_id'),
+                'organization_id': record_org_id,
                 'timestamp': timestamp,
                 'storage_url': screenshot_url,
                 'storage_path': storage_path,
@@ -2040,14 +2335,36 @@ class OfflineManager:
                 'metadata': metadata
             }
             
-            # Insert into database
-            result = db_client.table('screenshots').insert(screenshot_data).execute()
+            # Debug logging for troubleshooting
+            print(f"[DEBUG] Syncing record {record['id']} - user_id: {user_id}, organization_id: {record_org_id}")
             
-            if result.data:
-                print(f"[OK] Synced offline screenshot to Supabase (DB ID: {result.data[0]['id']})")
-                return True
-            
-            return False
+            # Insert into database with detailed error handling
+            try:
+                result = db_client.table('screenshots').insert(screenshot_data).execute()
+                
+                if result.data:
+                    print(f"[OK] Synced offline screenshot to Supabase (DB ID: {result.data[0]['id']})")
+                    return True
+                else:
+                    print(f"[ERROR] Database insert returned no data for record {record['id']}")
+                    return False
+                    
+            except Exception as db_error:
+                error_message = str(db_error)
+                print(f"[ERROR] Database insert failed for record {record['id']}: {error_message}")
+                
+                # Provide specific guidance for common database errors
+                if 'null value in column "organization_id"' in error_message:
+                    print("[ERROR] Hint: organization_id is null. This usually means:")
+                    print("[ERROR]   1. You need to complete the OAuth login process")
+                    print("[ERROR]   2. The record was created before multi-tenancy support")
+                    print("[ERROR] Solution: Please re-authenticate via the web interface")
+                elif 'violates not-null constraint' in error_message:
+                    print(f"[ERROR] Hint: Required field is missing. Data: {screenshot_data}")
+                elif 'violates foreign key constraint' in error_message:
+                    print("[ERROR] Hint: Referenced record doesn't exist (user_id or organization_id)")
+                    
+                raise db_error
             
         except Exception as e:
             print(f"[ERROR] Error syncing screenshot: {e}")
@@ -2904,6 +3221,8 @@ class TimeTracker:
         self.idle_timeout = 300  # 5 minutes idle timeout (in seconds)
         self._tracking_thread = None
         self._activity_monitor_thread = None  # Activity monitoring thread
+        self._system_event_thread = None  # Windows sleep/lock event listener
+        self._system_event_hwnd = None  # HWND for the system event message-only window
         self.screenshot_hash = None
         
         # Event-based tracking: Window switch detection
@@ -2942,7 +3261,7 @@ class TimeTracker:
         self.jira_instance_url = None  # Jira instance URL
         
         # Offline mode support
-        self.offline_manager = OfflineManager()
+        self.offline_manager = OfflineManager(parent=self)
         self._sync_thread = None
         self._last_sync_time = 0
         self._sync_interval = 60  # Try to sync every 60 seconds when online
@@ -3143,6 +3462,9 @@ class TimeTracker:
 
                 print(f"[OK] Authenticated user: {user_info.get('email', 'unknown')}")
 
+                # Reset reauth notification flag on successful login
+                self._reauth_notification_shown = False
+
                 # Update desktop app status to logged in
                 self._update_desktop_status(logged_in=True)
 
@@ -3169,7 +3491,19 @@ class TimeTracker:
             except Exception as e:
                 print(f"[ERROR] Auth callback failed: {e}")
                 traceback.print_exc()
-                return f"Authentication failed: {str(e)}", 500
+                # Show a user-friendly error page with a retry button
+                error_msg = str(e)
+                is_timeout = 'timeout' in error_msg.lower() or 'connect' in error_msg.lower()
+                retry_hint = "The server may be temporarily slow. Please try again." if is_timeout else "Please try again."
+                return f"""<!DOCTYPE html><html><head><title>Authentication Failed</title>
+                    <style>body{{font-family:system-ui,sans-serif;display:flex;justify-content:center;align-items:center;min-height:100vh;margin:0;background:#f4f5f7}}
+                    .card{{background:#fff;border-radius:8px;padding:40px;max-width:500px;text-align:center;box-shadow:0 2px 8px rgba(0,0,0,.1)}}
+                    h2{{color:#de350b;margin-bottom:8px}}p{{color:#5e6c84;line-height:1.5}}
+                    .btn{{display:inline-block;margin-top:20px;padding:10px 24px;background:#0052CC;color:#fff;border-radius:4px;text-decoration:none;font-weight:500}}
+                    .btn:hover{{background:#0747a6}}.detail{{font-size:12px;color:#97a0af;margin-top:16px;word-break:break-all}}</style></head>
+                    <body><div class="card"><h2>Authentication Failed</h2><p>{retry_hint}</p>
+                    <a class="btn" href="/login">Try Again</a>
+                    <p class="detail">{error_msg}</p></div></body></html>""", 500
         
         @self.app.route('/success')
         def success():
@@ -3341,7 +3675,9 @@ class TimeTracker:
                 self.add_admin_log('INFO', 'Admin logged in successfully')
 
                 response = redirect('/admin/dashboard')
-                response.set_cookie('admin_session', self.admin_session_token, httponly=True, max_age=3600)
+                # Set cookie with SameSite=Lax for better compatibility
+                response.set_cookie('admin_session', self.admin_session_token, httponly=True, max_age=3600, samesite='Lax')
+                print(f"[OK] Admin logged in successfully, session token set")
                 return response
             else:
                 self.add_admin_log('WARN', 'Failed admin login attempt')
@@ -3368,7 +3704,8 @@ class TimeTracker:
         def api_admin_logs():
             """Get admin logs"""
             session_token = request.cookies.get('admin_session')
-            if not session_token or session_token != self.admin_session_token:
+            if not session_token or not self.admin_session_token or session_token != self.admin_session_token:
+                print(f"[DEBUG] Admin logs auth failed - cookie: {bool(session_token)}, token: {bool(self.admin_session_token)}, match: {session_token == self.admin_session_token if session_token and self.admin_session_token else False}")
                 return jsonify({'error': 'Unauthorized'}), 401
 
             # Get optional filters
@@ -3385,15 +3722,16 @@ class TimeTracker:
         def api_admin_status():
             """Get detailed admin status"""
             session_token = request.cookies.get('admin_session')
-            if not session_token or session_token != self.admin_session_token:
+            if not session_token or not self.admin_session_token or session_token != self.admin_session_token:
+                print(f"[DEBUG] Admin status auth failed - cookie: {bool(session_token)}, token: {bool(self.admin_session_token)}, match: {session_token == self.admin_session_token if session_token and self.admin_session_token else False}")
                 return jsonify({'error': 'Unauthorized'}), 401
 
             # Count screenshots from today's logs
-            from datetime import date
-            today = date.today().isoformat()
+            # Use UTC date to match log timestamps which are stored in UTC
+            today_utc = datetime.now(timezone.utc).date().isoformat()
             screenshots_today = sum(1 for log in self.admin_logs 
                                    if 'Screenshot captured' in log.get('message', '') 
-                                   and log.get('timestamp', '').startswith(today))
+                                   and log.get('timestamp', '').startswith(today_utc))
 
             # Get session start time from first log or tracking start
             session_start = None
@@ -3432,7 +3770,8 @@ class TimeTracker:
         def api_admin_control():
             """Admin control actions"""
             session_token = request.cookies.get('admin_session')
-            if not session_token or session_token != self.admin_session_token:
+            if not session_token or not self.admin_session_token or session_token != self.admin_session_token:
+                print(f"[DEBUG] Admin control auth failed - cookie: {bool(session_token)}, token: {bool(self.admin_session_token)}, match: {session_token == self.admin_session_token if session_token and self.admin_session_token else False}")
                 return jsonify({'error': 'Unauthorized'}), 401
 
             data = request.get_json() or {}
@@ -3680,7 +4019,7 @@ class TimeTracker:
             details: Optional dict with additional details to display
         """
         log_entry = {
-            'timestamp': datetime.now().isoformat(),
+            'timestamp': datetime.now(timezone.utc).isoformat(),
             'level': level.upper(),
             'message': message
         }
@@ -3802,7 +4141,7 @@ class TimeTracker:
                 'name': atlassian_user.get('name'),
                 'user_id': user_id,
                 'organization_id': self.organization_id,
-                'cached_at': datetime.now().isoformat()
+                'cached_at': datetime.now(timezone.utc).isoformat()
             }
             with open(self._get_user_cache_path(), 'w') as f:
                 json.dump(cache_data, f)
@@ -3851,7 +4190,7 @@ class TimeTracker:
 
             update_data = {
                 'desktop_logged_in': logged_in,
-                'desktop_last_heartbeat': datetime.now().isoformat()
+                'desktop_last_heartbeat': datetime.now(timezone.utc).isoformat()
             }
 
             # Add app version if logging in
@@ -3877,7 +4216,7 @@ class TimeTracker:
                 return
 
             client.table('users').update({
-                'desktop_last_heartbeat': datetime.now().isoformat(),
+                'desktop_last_heartbeat': datetime.now(timezone.utc).isoformat(),
                 'desktop_app_version': self.app_version
             }).eq('id', self.current_user_id).execute()
 
@@ -4475,7 +4814,7 @@ class TimeTracker:
             
             # Fetch settings for current organization (or global settings)
             query = client.table('tracking_settings').select('*')
-            
+
             # If we have an organization_id, filter by it
             if self.organization_id:
                 query = query.eq('organization_id', self.organization_id)
@@ -4484,9 +4823,16 @@ class TimeTracker:
                 query = query.is_('organization_id', 'null')
             
             result = query.limit(1).execute()
-            
+
             if result.data and len(result.data) > 0:
                 settings = result.data[0]
+                
+                # Debug: Log what settings were fetched from database
+                print(f"[DEBUG] Fetched tracking settings from database:")
+                print(f"[DEBUG]   - screenshot_monitoring_enabled: {settings.get('screenshot_monitoring_enabled', 'NOT SET')}")
+                print(f"[DEBUG]   - screenshot_interval_seconds: {settings.get('screenshot_interval_seconds', 'NOT SET')}")
+                print(f"[DEBUG]   - organization_id in settings: {settings.get('organization_id', 'NOT SET')}")
+                print(f"[DEBUG]   - Current organization_id: {self.organization_id}")
                 
                 # Map database columns to local settings
                 self.tracking_settings = {
@@ -4507,6 +4853,19 @@ class TimeTracker:
                     'private_sites': settings.get('private_sites') or []  # Handle None values
                 }
                 
+                # TEMPORARY FIX: Force enable screenshot monitoring if disabled
+                if not self.tracking_settings['screenshot_monitoring_enabled']:
+                    print("[WARN] Screenshot monitoring was disabled in settings - forcing enable for testing")
+                    self.tracking_settings['screenshot_monitoring_enabled'] = True
+                    # Also update in database to fix the issue permanently
+                    try:
+                        client.table('tracking_settings').update({
+                            'screenshot_monitoring_enabled': True
+                        }).eq('id', settings.get('id')).execute()
+                        print("[OK] Updated database to enable screenshot monitoring")
+                    except Exception as e:
+                        print(f"[ERROR] Failed to update database: {e}")
+                
                 # Update capture interval from settings
                 self.capture_interval = self.tracking_settings['screenshot_interval_seconds']
                 self.idle_timeout = self.tracking_settings['idle_threshold_seconds']
@@ -4521,9 +4880,47 @@ class TimeTracker:
                 self.add_admin_log('INFO', f'Settings loaded: interval={self.capture_interval}s, mode={mode_str}')
 
             else:
+                # Fallback: try global settings (organization_id IS NULL)
+                # This matches the Forge app's getTrackingSettings fallback behavior
+                if self.organization_id:
+                    fallback_result = client.table('tracking_settings').select('*').is_('organization_id', 'null').limit(1).execute()
+                    if fallback_result.data and len(fallback_result.data) > 0:
+                        result = fallback_result
+                        settings = result.data[0]
+
+                        # Map database columns to local settings
+                        self.tracking_settings = {
+                            'screenshot_monitoring_enabled': settings.get('screenshot_monitoring_enabled', True),
+                            'screenshot_interval_seconds': settings.get('screenshot_interval_seconds', 900),
+                            'tracking_mode': settings.get('tracking_mode', 'interval'),
+                            'event_tracking_enabled': settings.get('event_tracking_enabled', False),
+                            'track_window_changes': settings.get('track_window_changes', True),
+                            'track_idle_time': settings.get('track_idle_time', True),
+                            'idle_threshold_seconds': settings.get('idle_threshold_seconds', 300),
+                            'whitelist_enabled': settings.get('whitelist_enabled', True),
+                            'whitelisted_apps': settings.get('whitelisted_apps') or [],
+                            'blacklist_enabled': settings.get('blacklist_enabled', True),
+                            'blacklisted_apps': settings.get('blacklisted_apps') or [],
+                            'non_work_threshold_percent': settings.get('non_work_threshold_percent', 30),
+                            'flag_excessive_non_work': settings.get('flag_excessive_non_work', True),
+                            'private_sites_enabled': settings.get('private_sites_enabled', True),
+                            'private_sites': settings.get('private_sites') or []
+                        }
+
+                        self.capture_interval = self.tracking_settings['screenshot_interval_seconds']
+                        self.idle_timeout = self.tracking_settings['idle_threshold_seconds']
+
+                        self.tracking_settings_last_fetch = time.time()
+                        tracking_mode = self.tracking_settings.get('tracking_mode', 'interval')
+                        event_enabled = self.tracking_settings.get('event_tracking_enabled', False)
+                        mode_str = "interval + event" if (event_enabled or tracking_mode == 'event') else "interval-only"
+                        print(f"[OK] Tracking settings loaded (global fallback) - mode: {mode_str}, interval: {self.capture_interval}s")
+                        self.add_admin_log('INFO', f'Settings loaded (global): interval={self.capture_interval}s, mode={mode_str}')
+                        return
+
                 print("[INFO] No tracking settings found in Supabase, using defaults")
                 self.tracking_settings_last_fetch = time.time()
-                
+
         except Exception as e:
             print(f"[WARN] Failed to fetch tracking settings: {e}")
             # Continue with default settings
@@ -4651,11 +5048,7 @@ class TimeTracker:
             return None
     
     def show_unassigned_work_notification(self, summary):
-        """Show Windows toast notification for unassigned work"""
-        if not WINOTIFY_AVAILABLE:
-            print("[INFO] Notifications not available (winotify not installed)")
-            return
-
+        """Show cross-platform notification for unassigned work"""
         if not summary or summary['pending_groups'] == 0:
             return
 
@@ -4665,31 +5058,94 @@ class TimeTracker:
                 time_str = f"{summary['total_hours']}h"
             else:
                 time_str = f"{summary['total_minutes']}m"
-
-            notification = Notification(
-                app_id="Time Tracker",
-                title="📋 Unassigned Work Reminder",
-                msg=f"You have {summary['pending_groups']} work session(s) ({time_str}) that need to be assigned to Jira issues.",
-                duration="long"
-            )
-
-            # Set notification sound
-            notification.set_audio(audio.Default, loop=False)
-
-            # Show the notification
-            notification.show()
-
-            print(f"[OK] Unassigned work notification shown - {summary['pending_groups']} groups, {time_str} total")
+            
+            title = "📋 Unassigned Work Reminder"
+            message = f"You have {summary['pending_groups']} work session(s) ({time_str}) that need to be assigned to Jira issues."
+            
+            # Try cross-platform notification first (macOS/Linux)
+            if PLYER_AVAILABLE and sys.platform in ['darwin', 'linux']:
+                try:
+                    notification.notify(
+                        title=title,
+                        message=message,
+                        app_name="Time Tracker",
+                        timeout=10
+                    )
+                    print(f"[OK] Unassigned work notification shown - {summary['pending_groups']} groups, {time_str} total")
+                    return
+                except Exception as e:
+                    print(f"[WARN] Cross-platform notification failed: {e}")
+            
+            # Fallback to Windows notifications
+            if WINOTIFY_AVAILABLE and sys.platform == 'win32':
+                try:
+                    win_notification = Notification(
+                        app_id="Time Tracker",
+                        title=title,
+                        msg=message,
+                        duration="long"
+                    )
+                    win_notification.set_audio(audio.Default, loop=False)
+                    win_notification.show()
+                    print(f"[OK] Unassigned work notification shown - {summary['pending_groups']} groups, {time_str} total")
+                    return
+                except Exception as e:
+                    print(f"[WARN] Windows notification failed: {e}")
+            
+            # Console fallback
+            print(f"[INFO] {title}: {message}")
 
         except Exception as e:
             print(f"[WARN] Failed to show notification: {e}")
 
-    def show_pause_reminder_notification(self):
-        """Show notification reminding user they have paused tracking"""
-        if not WINOTIFY_AVAILABLE:
-            print("[INFO] Pause reminder skipped - winotify not available")
-            return
+    def _show_reauth_notification(self):
+        """Show a one-time notification that the user needs to re-authenticate"""
+        if getattr(self, '_reauth_notification_shown', False):
+            return  # Already shown, don't spam
+        self._reauth_notification_shown = True
 
+        title = "Authentication Expired"
+        message = "Your session has expired. Please open Time Tracker and log in again to continue syncing with Jira."
+        
+        try:
+            # Try cross-platform notification first (macOS/Linux)
+            if PLYER_AVAILABLE and sys.platform in ['darwin', 'linux']:
+                try:
+                    notification.notify(
+                        title=title,
+                        message=message,
+                        app_name="Time Tracker",
+                        timeout=10
+                    )
+                    print("[OK] Re-authentication notification shown to user")
+                    return
+                except Exception as e:
+                    print(f"[WARN] Cross-platform reauth notification failed: {e}")
+            
+            # Fallback to Windows notifications
+            if WINOTIFY_AVAILABLE and sys.platform == 'win32':
+                try:
+                    win_notification = Notification(
+                        app_id="Time Tracker",
+                        title=title,
+                        msg=message,
+                        duration="long"
+                    )
+                    win_notification.set_audio(audio.Default, loop=False)
+                    win_notification.show()
+                    print("[OK] Re-authentication notification shown to user")
+                    return
+                except Exception as e:
+                    print(f"[WARN] Windows reauth notification failed: {e}")
+            
+            # Console fallback
+            print(f"[WARN] Re-authentication required: {message}")
+            
+        except Exception as e:
+            print(f"[WARN] Failed to show reauth notification: {e}")
+
+    def show_pause_reminder_notification(self):
+        """Show cross-platform notification reminding user they have paused tracking"""
         if not self.pause_start_time:
             return
 
@@ -4704,18 +5160,44 @@ class TimeTracker:
                 mins = minutes % 60
                 time_str = f"{hours}h {mins}m"
 
-            notification = Notification(
-                app_id="Time Tracker",
-                title="Tracking Paused",
-                msg=f"You've been paused for {time_str}. If you're doing productive work, resume from the system tray.",
-                duration="long"
-            )
-
-            notification.set_audio(audio.Default, loop=False)
-            notification.show()
-
+            title = "Tracking Paused"
+            message = f"You've been paused for {time_str}. If you're doing productive work, resume from the system tray."
+            
+            # Try cross-platform notification first (macOS/Linux)
+            if PLYER_AVAILABLE and sys.platform in ['darwin', 'linux']:
+                try:
+                    notification.notify(
+                        title=title,
+                        message=message,
+                        app_name="Time Tracker",
+                        timeout=8
+                    )
+                    self.last_pause_reminder_time = time.time()
+                    print(f"[OK] Pause reminder notification shown - paused for {time_str}")
+                    return
+                except Exception as e:
+                    print(f"[WARN] Cross-platform pause notification failed: {e}")
+            
+            # Fallback to Windows notifications
+            if WINOTIFY_AVAILABLE and sys.platform == 'win32':
+                try:
+                    win_notification = Notification(
+                        app_id="Time Tracker",
+                        title=title,
+                        msg=message,
+                        duration="long"
+                    )
+                    win_notification.set_audio(audio.Default, loop=False)
+                    win_notification.show()
+                    self.last_pause_reminder_time = time.time()
+                    print(f"[OK] Pause reminder notification shown - paused for {time_str}")
+                    return
+                except Exception as e:
+                    print(f"[WARN] Windows pause notification failed: {e}")
+            
+            # Console fallback
+            print(f"[INFO] Pause reminder: {message}")
             self.last_pause_reminder_time = time.time()
-            print(f"[OK] Pause reminder notification shown - paused for {time_str}")
 
         except Exception as e:
             print(f"[WARN] Failed to show pause reminder notification: {e}")
@@ -4919,14 +5401,6 @@ class TimeTracker:
             if self.app_matches(app_name, whitelist_entry):
                 return True
 
-        # Debug: Log when app is not found in whitelist (first occurrence only)
-        if not hasattr(self, '_whitelist_debug_logged'):
-            self._whitelist_debug_logged = set()
-        normalized_app = self.normalize_app_name(app_name)
-        if normalized_app not in self._whitelist_debug_logged:
-            self._whitelist_debug_logged.add(normalized_app)
-            print(f"[DEBUG] '{normalized_app}' not matched in whitelist: {whitelisted_apps}")
-
         return False
 
     def is_in_blacklist(self, app_name):
@@ -5042,87 +5516,211 @@ class TimeTracker:
         return (False, None)
 
     def capture_screenshot(self):
-        """Capture screenshot and return PIL Image"""
+        """Capture screenshot and return PIL Image (cross-platform)"""
         try:
-            screenshot = ImageGrab.grab()
-            screenshot_bytes = screenshot.tobytes()
-            current_hash = hashlib.md5(screenshot_bytes).hexdigest()
+            # Import global variables
+            global MACOS_AVAILABLE
             
-            # Skip if unchanged
-            if current_hash == self.screenshot_hash:
+            print(f"[DEBUG] Starting screenshot capture (macOS available: {MACOS_AVAILABLE})")
+            
+            if sys.platform == 'darwin' and MACOS_AVAILABLE:
+                # macOS: Use Quartz for high-quality screenshots
+                try:
+                    print(f"[DEBUG] Attempting Quartz screenshot...")
+                    # Get screen dimensions
+                    region = Quartz.CGRectInfinite
+                    image_ref = Quartz.CGWindowListCreateImage(
+                        region,
+                        Quartz.kCGWindowListOptionOnScreenOnly,
+                        Quartz.kCGNullWindowID,
+                        Quartz.kCGWindowImageDefault
+                    )
+                    
+                    # Convert CGImage to PIL Image
+                    # This is complex, so we'll use the simpler PIL approach for now
+                    screenshot = ImageGrab.grab()
+                    print(f"[DEBUG] Quartz screenshot successful, falling back to PIL for conversion")
+                    
+                except Exception as quartz_error:
+                    print(f"[WARN] Quartz screenshot failed, falling back to PIL: {quartz_error}")
+                    screenshot = ImageGrab.grab()
+            else:
+                # Fallback to PIL ImageGrab (works on most platforms)
+                print(f"[DEBUG] Using PIL ImageGrab for screenshot")
+                screenshot = ImageGrab.grab()
+            
+            if screenshot:
+                print(f"[DEBUG] Screenshot captured: {screenshot.size[0]}x{screenshot.size[1]}")
+                
+                # Check for changes
+                screenshot_bytes = screenshot.tobytes()
+                current_hash = hashlib.md5(screenshot_bytes).hexdigest()
+                
+                # Skip if unchanged
+                if current_hash == self.screenshot_hash:
+                    print(f"[DEBUG] Screenshot unchanged (hash: {current_hash[:8]}...), skipping")
+                    return None
+                
+                print(f"[DEBUG] Screenshot changed (new hash: {current_hash[:8]}...), processing")
+                self.screenshot_hash = current_hash
+                return screenshot
+            else:
+                print(f"[ERROR] Screenshot capture returned None")
                 return None
-            
-            self.screenshot_hash = current_hash
-            return screenshot
+                
         except Exception as e:
             print(f"[ERROR] Screenshot capture failed: {e}")
+            traceback.print_exc()
             return None
     
     def get_active_window(self):
-        """Get active window information and detect window switches for event-based tracking"""
-        if not WIN32_AVAILABLE:
-            return {'title': 'Unknown', 'app': 'Unknown', 'window_key': 'unknown', 'is_new_window': False}
+        """Get active window information and detect window switches for event-based tracking (cross-platform)"""
         
-        try:
-            hwnd = win32gui.GetForegroundWindow()
-            title = win32gui.GetWindowText(hwnd)
-            
-            # Get process name
-            _, pid = win32process.GetWindowThreadProcessId(hwnd)
-            process = psutil.Process(pid)
-            app_name = process.name()
-            
-            # Create unique window key (app + title) to detect window switches
-            window_key = f"{app_name}|||{title}"
-            
-            # Detect window switch
-            is_new_window = False
-            if window_key != self.current_window_key:
-                is_new_window = True
-                # Save previous window info before updating (for final screenshot with full duration)
-                # ALWAYS save the previous window info so we can track time properly
-                # The screenshot_id may be None if no screenshot was taken (rapid switching)
-                if self.current_window_key is not None:
-                    self.previous_window_key = self.current_window_key
-                    self.previous_window_start_time = self.current_window_start_time
-                    self.previous_window_db_start_time = self.current_window_db_start_time  # Actual DB start_time
-                    self.previous_window_screenshot_id = self.current_window_screenshot_id  # May be None if no screenshot
-                    # Parse previous window info from window_key format: "app|||title"
-                    if '|||' in self.current_window_key:
-                        prev_app, prev_title = self.current_window_key.split('|||', 1)
-                    else:
-                        prev_app = 'Unknown'
-                        prev_title = 'Unknown'
-                    self.previous_window_info = {
-                        'title': prev_title,
-                        'app': prev_app,
-                        'window_key': self.current_window_key
-                    }
-                # Update current window tracking
-                # IMPORTANT: Start time is set to NOW, so the next screenshot will cover from this moment
-                self.current_window_key = window_key
-                self.current_window_start_time = datetime.now()
-                self.current_window_screenshot_id = None  # Reset - will be set when screenshot is captured
-                self.current_window_record_created_at = None  # Reset - will be set when screenshot is captured
-                if self.current_window_key and self.current_window_key != 'unknown':
-                    print(f"[INFO] Window switched at {self.current_window_start_time.strftime('%H:%M:%S')}:")
-                    print(f"     - App: {app_name}")
-                    print(f"     - Title: {title[:50]}")
-                    self.add_admin_log('INFO', f'Window switch: {app_name}', {
+        # Import global variables
+        global MACOS_AVAILABLE, WIN32_AVAILABLE
+        
+        if sys.platform == 'darwin' and MACOS_AVAILABLE:
+            # macOS implementation using Cocoa/Quartz
+            try:
+                # Get frontmost application
+                workspace = NSWorkspace.sharedWorkspace()
+                frontmost_app = workspace.frontmostApplication()
+                
+                if frontmost_app:
+                    app_name = frontmost_app.localizedName()
+                    bundle_id = frontmost_app.bundleIdentifier()
+                    
+                    # Try to get window title using Accessibility API
+                    window_title = app_name  # Default to app name
+                    try:
+                        window_list = Quartz.CGWindowListCopyWindowInfo(
+                            Quartz.kCGWindowListOptionOnScreenOnly,
+                            Quartz.kCGNullWindowID
+                        )
+                        
+                        for window in window_list:
+                            owner_name = window.get('kCGWindowOwnerName', '')
+                            if owner_name == app_name:
+                                title = window.get('kCGWindowName', '')
+                                if title:  # Only use if we got a real title
+                                    window_title = title
+                                    break
+                    except Exception as accessibility_error:
+                        print(f"[WARN] Could not get window title: {accessibility_error}")
+                    
+                    # Create unique window key (app + title) to detect window switches
+                    window_key = f"{app_name}|||{window_title}"
+                    
+                    # Detect window switch
+                    is_new_window = False
+                    if window_key != self.current_window_key:
+                        is_new_window = True
+                        # Save previous window info before updating (for final screenshot with full duration)
+                        if self.current_window_key is not None:
+                            self.previous_window_key = self.current_window_key
+                            self.previous_window_start_time = self.current_window_start_time
+                            self.previous_window_db_start_time = self.current_window_db_start_time
+                            self.previous_window_screenshot_id = self.current_window_screenshot_id
+                            # Parse previous window info from window_key format: "app|||title"
+                            if '|||' in self.current_window_key:
+                                prev_app, prev_title = self.current_window_key.split('|||', 1)
+                            else:
+                                prev_app = 'Unknown'
+                                prev_title = 'Unknown'
+                            self.previous_window_info = {
+                                'title': prev_title,
+                                'app': prev_app,
+                                'window_key': self.current_window_key
+                            }
+                        
+                        # Update current window tracking
+                        self.current_window_key = window_key
+                        self.current_window_start_time = datetime.now(timezone.utc)
+                        self.current_window_screenshot_id = None
+                        self.current_window_record_created_at = None
+                        
+                        if self.current_window_key and self.current_window_key != 'unknown':
+                            print(f"[INFO] Window switched at {self.current_window_start_time.strftime('%H:%M:%S')}:")
+                            print(f"     - App: {app_name}")
+                            print(f"     - Title: {window_title[:50]}")
+                            self.add_admin_log('INFO', f'Window switch: {app_name}', {
+                                'app': app_name,
+                                'title': window_title[:60] if window_title else '',
+                                'time': self.current_window_start_time.strftime('%H:%M:%S')
+                            })
+                    
+                    return {
+                        'title': window_title,
                         'app': app_name,
-                        'title': title[:60] if title else '',
-                        'time': self.current_window_start_time.strftime('%H:%M:%S')
-                    })
-            
-            return {
-                'title': title,
-                'app': app_name,
-                'window_key': window_key,
-                'is_new_window': is_new_window
-            }
-        except Exception as e:
-            print(f"[WARN] Failed to get window info: {e}")
-            return {'title': 'Unknown', 'app': 'Unknown', 'window_key': 'unknown', 'is_new_window': False}
+                        'window_key': window_key,
+                        'is_new_window': is_new_window,
+                        'bundle_id': bundle_id
+                    }
+                    
+            except Exception as e:
+                print(f"[WARN] macOS window detection failed: {e}")
+        
+        elif sys.platform == 'win32' and WIN32_AVAILABLE:
+            # Windows implementation using win32gui
+            try:
+                hwnd = win32gui.GetForegroundWindow()
+                title = win32gui.GetWindowText(hwnd)
+                
+                # Get process name
+                _, pid = win32process.GetWindowThreadProcessId(hwnd)
+                process = psutil.Process(pid)
+                app_name = process.name()
+                
+                # Create unique window key (app + title) to detect window switches
+                window_key = f"{app_name}|||{title}"
+                
+                # Detect window switch (same logic as macOS)
+                is_new_window = False
+                if window_key != self.current_window_key:
+                    is_new_window = True
+                    if self.current_window_key is not None:
+                        self.previous_window_key = self.current_window_key
+                        self.previous_window_start_time = self.current_window_start_time
+                        self.previous_window_db_start_time = self.current_window_db_start_time
+                        self.previous_window_screenshot_id = self.current_window_screenshot_id
+                        if '|||' in self.current_window_key:
+                            prev_app, prev_title = self.current_window_key.split('|||', 1)
+                        else:
+                            prev_app = 'Unknown'
+                            prev_title = 'Unknown'
+                        self.previous_window_info = {
+                            'title': prev_title,
+                            'app': prev_app,
+                            'window_key': self.current_window_key
+                        }
+                    
+                    self.current_window_key = window_key
+                    self.current_window_start_time = datetime.now(timezone.utc)
+                    self.current_window_screenshot_id = None
+                    self.current_window_record_created_at = None
+                    
+                    if self.current_window_key and self.current_window_key != 'unknown':
+                        print(f"[INFO] Window switched at {self.current_window_start_time.strftime('%H:%M:%S')}:")
+                        print(f"     - App: {app_name}")
+                        print(f"     - Title: {title[:50]}")
+                        self.add_admin_log('INFO', f'Window switch: {app_name}', {
+                            'app': app_name,
+                            'title': title[:60] if title else '',
+                            'time': self.current_window_start_time.strftime('%H:%M:%S')
+                        })
+                
+                return {
+                    'title': title,
+                    'app': app_name,
+                    'window_key': window_key,
+                    'is_new_window': is_new_window
+                }
+            except Exception as e:
+                print(f"[WARN] Windows window detection failed: {e}")
+        
+        # Fallback for unsupported platforms or when detection fails
+        print(f"[WARN] Window detection not available on {sys.platform}")
+        return {'title': 'Unknown', 'app': 'Unknown', 'window_key': 'unknown', 'is_new_window': False}
     
     def upload_screenshot(self, screenshot, window_info, use_previous_window=False):
         """Upload screenshot to Supabase with event-based tracking (start_time and end_time)
@@ -5140,22 +5738,79 @@ class TimeTracker:
         # Since we're using Atlassian OAuth, not Supabase Auth, we need service role
         storage_client = self.supabase_service if self.supabase_service else self.supabase
         
+        # Initialize variables outside try block to ensure they're available in exception handlers
+        img_bytes = None
+        thumb_bytes = None
+        screenshot_data = None
+        
         try:
-            # Convert screenshot to bytes
+            # Convert screenshot to bytes with compression to prevent "Payload too large" errors
             img_buffer = BytesIO()
-            screenshot.save(img_buffer, format='PNG')
+            
+            # COMPRESS large screenshots to prevent upload failures
+            # Check if screenshot is too large and needs resizing
+            max_dimension = 1920  # Max width or height
+            original_size = screenshot.size
+            needs_resize = max(screenshot.width, screenshot.height) > max_dimension
+            
+            if needs_resize:
+                # Calculate new size maintaining aspect ratio
+                ratio = max_dimension / max(screenshot.width, screenshot.height)
+                new_width = int(screenshot.width * ratio)
+                new_height = int(screenshot.height * ratio)
+                screenshot = screenshot.resize((new_width, new_height), Image.Resampling.LANCZOS)
+                print(f"[DEBUG] Resized screenshot: {original_size[0]}x{original_size[1]} → {new_width}x{new_height}")
+            
+            # Save as JPEG with compression instead of PNG for smaller file size
+            # Convert RGBA to RGB for JPEG compatibility
+            if screenshot.mode == 'RGBA':
+                print("[DEBUG] Converting RGBA screenshot to RGB for JPEG compression")
+                rgb_screenshot = Image.new('RGB', screenshot.size, (255, 255, 255))
+                rgb_screenshot.paste(screenshot, mask=screenshot.split()[-1])
+                screenshot = rgb_screenshot
+            elif screenshot.mode not in ['RGB', 'L']:
+                print(f"[DEBUG] Converting {screenshot.mode} screenshot to RGB")
+                screenshot = screenshot.convert('RGB')
+            
+            # Save as JPEG with quality=85 (good quality, smaller size)
+            screenshot.save(img_buffer, format='JPEG', quality=85, optimize=True)
             img_bytes = img_buffer.getvalue()
             
-            # Create thumbnail
+            print(f"[DEBUG] Compressed screenshot size: {len(img_bytes)} bytes ({len(img_bytes) / 1024 / 1024:.2f}MB)")
+            
+            # Create thumbnail - MUST convert RGBA to RGB for JPEG
             thumbnail = screenshot.copy()
             thumbnail.thumbnail((400, 300))
+            
+            # CRITICAL: Convert RGBA to RGB for JPEG compatibility (JPEG doesn't support transparency)
+            print(f"[DEBUG] Thumbnail mode before conversion: {thumbnail.mode}")
+            if thumbnail.mode == 'RGBA':
+                print("[DEBUG] Converting RGBA thumbnail to RGB for JPEG compatibility")
+                # Create RGB image with white background
+                rgb_thumbnail = Image.new('RGB', thumbnail.size, (255, 255, 255))
+                rgb_thumbnail.paste(thumbnail, mask=thumbnail.split()[-1])  # Use alpha as mask
+                thumbnail = rgb_thumbnail
+                print(f"[DEBUG] Thumbnail mode after conversion: {thumbnail.mode}")
+            elif thumbnail.mode not in ['RGB', 'L']:
+                print(f"[DEBUG] Converting {thumbnail.mode} thumbnail to RGB")
+                # Convert other modes to RGB
+                thumbnail = thumbnail.convert('RGB')
+                print(f"[DEBUG] Thumbnail mode after conversion: {thumbnail.mode}")
+            
+            # Save thumbnail as JPEG
             thumb_buffer = BytesIO()
-            thumbnail.save(thumb_buffer, format='JPEG', quality=70)
-            thumb_bytes = thumb_buffer.getvalue()
+            try:
+                thumbnail.save(thumb_buffer, format='JPEG', quality=70)
+                thumb_bytes = thumb_buffer.getvalue()
+                print(f"[DEBUG] Thumbnail JPEG save successful, size: {len(thumb_bytes)} bytes")
+            except Exception as jpeg_error:
+                print(f"[ERROR] JPEG save failed even after conversion: {jpeg_error}")
+                print(f"[ERROR] Thumbnail mode at save time: {thumbnail.mode}")
+                raise
             
             # Generate filenames
-            timestamp = datetime.now()
-            filename = f"screenshot_{int(timestamp.timestamp())}.png"
+            timestamp = datetime.now(timezone.utc)
+            filename = f"screenshot_{int(timestamp.timestamp())}.jpg"  # Changed to .jpg
             thumb_filename = f"thumb_{int(timestamp.timestamp())}.jpg"
             
             storage_path = f"{self.current_user_id}/{filename}"
@@ -5221,6 +5876,17 @@ class TimeTracker:
             # Priority: assigned issues > accessible projects
             project_key = self.get_user_project_key()
 
+            # Ensure organization_id is available before creating screenshot data
+            if not self.organization_id:
+                print("[WARN] No organization_id available - attempting to restore from cache")
+                cached_user = self._load_cached_user_info()
+                if cached_user and cached_user.get('organization_id'):
+                    self.organization_id = cached_user.get('organization_id')
+                    print(f"[OK] Restored organization_id from cache: {self.organization_id}")
+                else:
+                    print("[ERROR] Cannot upload screenshot: Missing organization_id and no cache available")
+                    return None
+
             screenshot_data = {
                 'user_id': self.current_user_id,
                 'organization_id': self.organization_id,  # Multi-tenancy support
@@ -5236,13 +5902,16 @@ class TimeTracker:
                 'user_assigned_issues': self.user_issues,
                 # Timezone support for correct date grouping
                 'user_timezone': get_local_timezone_name(),  # e.g., 'Asia/Kolkata'
-                'work_date': timestamp.date().isoformat(),   # Local date: 'YYYY-MM-DD'
+                'work_date': datetime.now().date().isoformat(),   # Local date: 'YYYY-MM-DD'
                 'metadata': {
                     'work_type': work_type,
                     'is_blacklisted': is_blacklisted,
                     'tracking_mode': self.tracking_settings.get('tracking_mode', 'interval')
                 }
             }
+            
+            # Debug logging for troubleshooting
+            print(f"[DEBUG] Screenshot data - user_id: {self.current_user_id}, organization_id: {self.organization_id}")
             
             # Check network connectivity
             is_online = self.offline_manager.check_connectivity()
@@ -5270,7 +5939,7 @@ class TimeTracker:
             
             # ONLINE MODE: Upload to Supabase
             screenshot_result = storage_client.storage.from_('screenshots').upload(
-                storage_path, img_bytes, file_options={'content-type': 'image/png'}
+                storage_path, img_bytes, file_options={'content-type': 'image/jpeg'}  # Changed to image/jpeg
             )
 
             # Validate upload response - Supabase SDK returns dict with 'path' or 'Key' on success
@@ -5364,7 +6033,7 @@ class TimeTracker:
 
                     # Track when this record was actually created (for interval safeguard)
                     # This is different from start_time which may be from last_screenshot_end_time
-                    self.current_window_record_created_at = datetime.now()
+                    self.current_window_record_created_at = datetime.now(timezone.utc)
 
                     # Track end_time for continuity - next screenshot will start from here
                     # This ensures no gaps between records
@@ -5383,13 +6052,20 @@ class TimeTracker:
             # Network error - save offline
             print("[WARN] Connection error - saving screenshot offline")
             self.add_admin_log('WARN', 'Connection error - saving screenshot offline')
-            local_id = self.offline_manager.save_screenshot_offline(
-                screenshot_data, img_bytes, thumb_bytes
-            )
-            if local_id:
-                self.last_screenshot_end_time = end_time
-                self.offline_manager.is_online = False
-                return f"offline_{local_id}"
+            
+            # Only attempt offline save if we have the necessary data
+            if screenshot_data is not None and img_bytes is not None:
+                local_id = self.offline_manager.save_screenshot_offline(
+                    screenshot_data, img_bytes, thumb_bytes
+                )
+                if local_id:
+                    # Update tracking state even when offline
+                    if 'end_time' in screenshot_data:
+                        self.last_screenshot_end_time = datetime.fromisoformat(screenshot_data['end_time'].replace('Z', '+00:00'))
+                    self.offline_manager.is_online = False
+                    return f"offline_{local_id}"
+            else:
+                print("[ERROR] Cannot save offline - screenshot_data or img_bytes not available")
             return None
             
         except Exception as e:
@@ -5400,16 +6076,97 @@ class TimeTracker:
             # Try to save offline as fallback
             try:
                 print("[INFO] Attempting to save screenshot offline as fallback...")
-                local_id = self.offline_manager.save_screenshot_offline(
-                    screenshot_data, img_bytes, thumb_bytes
-                )
-                if local_id:
-                    self.last_screenshot_end_time = end_time
-                    return f"offline_{local_id}"
+                
+                # If screenshot_data wasn't created due to early error, create minimal version
+                if screenshot_data is None and img_bytes is not None:
+                    timestamp = datetime.now(timezone.utc)
+                    end_time = timestamp
+                    start_time = self.last_screenshot_end_time if self.last_screenshot_end_time else end_time
+                    duration_seconds = max(1, int((end_time - start_time).total_seconds()))
+                    
+                    screenshot_data = {
+                        'user_id': self.current_user_id,
+                        'organization_id': self.organization_id,
+                        'timestamp': timestamp.isoformat(),
+                        'storage_path': f"{self.current_user_id}/screenshot_{int(timestamp.timestamp())}.jpg",  # Changed to .jpg
+                        'window_title': window_info.get('title', 'Unknown'),
+                        'application_name': window_info.get('app', 'Unknown'),
+                        'file_size_bytes': len(img_bytes),
+                        'start_time': start_time.isoformat(),
+                        'end_time': end_time.isoformat(),
+                        'duration_seconds': duration_seconds,
+                        'project_key': None,
+                        'user_assigned_issues': [],
+                        'user_timezone': get_local_timezone_name(),
+                        'work_date': datetime.now().date().isoformat(),
+                        'metadata': {
+                            'work_type': 'office',
+                            'is_blacklisted': False,
+                            'tracking_mode': 'interval'
+                        }
+                    }
+                
+                # Only attempt offline save if we have the necessary data
+                if screenshot_data is not None and img_bytes is not None:
+                    local_id = self.offline_manager.save_screenshot_offline(
+                        screenshot_data, img_bytes, thumb_bytes
+                    )
+                    if local_id:
+                        # Update tracking state even when offline
+                        if 'end_time' in screenshot_data:
+                            self.last_screenshot_end_time = datetime.fromisoformat(screenshot_data['end_time'].replace('Z', '+00:00'))
+                        return f"offline_{local_id}"
+                else:
+                    print("[ERROR] Cannot save offline - insufficient data (screenshot_data or img_bytes is None)")
+                    
             except Exception as offline_err:
                 print(f"[ERROR] Offline save also failed: {offline_err}")
         
         return None
+
+    def _finalize_active_session(self, reason="idle"):
+        """Finalize the current work session by updating its end_time in the DB.
+        Called when entering idle (timeout, system sleep, or screen lock)."""
+        if self.current_window_screenshot_id is None or self.current_window_db_start_time is None:
+            return
+        try:
+            end_time = datetime.fromtimestamp(self.last_activity_time, tz=timezone.utc)
+            duration_seconds = int((end_time - self.current_window_db_start_time).total_seconds())
+
+            # Sanity check: cap duration to prevent inflated records
+            # (e.g., if last_activity_time was updated by pynput after system wake)
+            capture_interval = self.tracking_settings.get('screenshot_interval_seconds', self.capture_interval)
+            max_duration = max(capture_interval * 2, 600)
+            if duration_seconds > max_duration:
+                print(f"[WARN] Finalize duration {duration_seconds}s exceeds max {max_duration}s — capping")
+                duration_seconds = max_duration
+                end_time = self.current_window_db_start_time + timedelta(seconds=duration_seconds)
+
+            if duration_seconds < 1:
+                duration_seconds = 1
+                end_time = self.current_window_db_start_time + timedelta(seconds=1)
+
+            db_client = self.supabase_service if self.supabase_service else self.supabase
+            update_result = db_client.table('screenshots').update({
+                'end_time': end_time.isoformat(),
+                'timestamp': end_time.isoformat(),
+                'duration_seconds': duration_seconds
+            }).eq('id', self.current_window_screenshot_id).execute()
+
+            if update_result.data:
+                print(f"[OK] Finalized work session ({reason}):")
+                print(f"     - Record ID: {self.current_window_screenshot_id}")
+                print(f"     - Start: {self.current_window_db_start_time.strftime('%H:%M:%S')} (from DB)")
+                print(f"     - End (last activity): {end_time.strftime('%H:%M:%S')}")
+                print(f"     - Duration: {duration_seconds}s")
+
+            self.current_window_screenshot_id = None
+            self.current_window_record_created_at = None
+            self.current_window_start_time = None
+            self.current_window_db_start_time = None
+            self.last_screenshot_end_time = end_time
+        except Exception as e:
+            print(f"[ERROR] Error finalizing session ({reason}): {e}")
 
     def monitor_user_activity(self):
         """Monitor mouse and keyboard activity for idle detection"""
@@ -5428,21 +6185,180 @@ class TimeTracker:
             if self.is_idle:
                 self.needs_idle_resume = True
 
-        # Start mouse listener
-        mouse_listener = mouse.Listener(
-            on_move=on_activity,
-            on_click=on_activity,
-            on_scroll=on_activity
-        )
-        mouse_listener.start()
+        # Start mouse listener with error handling
+        mouse_listener = None
+        keyboard_listener = None
+        
+        try:
+            mouse_listener = mouse.Listener(
+                on_move=on_activity,
+                on_click=on_activity,
+                on_scroll=on_activity
+            )
+            mouse_listener.start()
+            print("[OK] Mouse activity monitoring started")
+        except Exception as e:
+            print(f"[WARN] Mouse listener failed to start: {e}")
+            print("[INFO] Mouse activity detection disabled - using timeout-based idle detection only")
 
-        # Start keyboard listener
-        keyboard_listener = keyboard.Listener(
-            on_press=on_activity
-        )
-        keyboard_listener.start()
+        # Start keyboard listener with macOS compatibility handling
+        try:
+            keyboard_listener = keyboard.Listener(
+                on_press=on_activity
+            )
+            keyboard_listener.start()
+            print("[OK] Keyboard activity monitoring started")
+        except Exception as e:
+            print(f"[WARN] Keyboard listener failed to start: {e}")
+            if sys.platform == 'darwin':
+                print("[INFO] This is a known compatibility issue on macOS with pynput/PyObjC")
+                print("[INFO] Mouse monitoring will still work for idle detection")
+                print("[INFO] Consider updating to a newer pynput version when available")
+            else:
+                print("[INFO] Keyboard activity detection disabled - using timeout-based idle detection")
 
-        print("[OK] Activity monitoring started (5-minute idle timeout)")
+        # Provide feedback on what's working
+        if mouse_listener or keyboard_listener:
+            active_monitors = []
+            if mouse_listener: active_monitors.append("mouse")
+            if keyboard_listener: active_monitors.append("keyboard") 
+            print(f"[OK] Activity monitoring started ({', '.join(active_monitors)} - 5-minute idle timeout)")
+        else:
+            print("[WARN] No activity monitors started - using timeout-based idle detection only")
+            print("[INFO] Idle detection will still work but may be less responsive")
+
+    def monitor_system_events(self):
+        """Monitor Windows sleep/lock events to instantly detect inactivity.
+        Runs on a daemon thread. Uses a message-only window to receive
+        WM_POWERBROADCAST (sleep/wake) and WM_WTSSESSION_CHANGE (lock/unlock)."""
+        try:
+            import ctypes
+            from ctypes import wintypes
+        except Exception as e:
+            print(f"[WARN] ctypes not available — system event monitoring disabled: {e}")
+            return
+
+        try:
+            user32 = ctypes.windll.user32
+            kernel32 = ctypes.windll.kernel32
+            wtsapi32 = ctypes.windll.wtsapi32
+
+            # Window message constants
+            WM_POWERBROADCAST = 0x0218
+            PBT_APMSUSPEND = 0x0004
+            PBT_APMRESUMEAUTOMATIC = 0x0012
+            WM_WTSSESSION_CHANGE = 0x02B1
+            WTS_SESSION_LOCK = 0x7
+            WTS_SESSION_UNLOCK = 0x8
+            HWND_MESSAGE = wintypes.HWND(-3)
+            NOTIFY_FOR_THIS_SESSION = 0
+
+            # On 64-bit Windows, LRESULT/WPARAM/LPARAM are 64-bit.
+            # ctypes.c_long is only 32-bit on Windows, causing overflow errors.
+            LRESULT = ctypes.c_longlong
+
+            # Set proper arg/return types for DefWindowProcW to avoid overflow
+            user32.DefWindowProcW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
+            user32.DefWindowProcW.restype = LRESULT
+
+            WNDPROC = ctypes.WINFUNCTYPE(
+                LRESULT,             # LRESULT (64-bit on x64)
+                wintypes.HWND,       # hWnd
+                wintypes.UINT,       # uMsg
+                wintypes.WPARAM,     # wParam
+                wintypes.LPARAM,     # lParam
+            )
+
+            def wnd_proc(hwnd, msg, wparam, lparam):
+                try:
+                    if msg == WM_POWERBROADCAST:
+                        if wparam == PBT_APMSUSPEND:
+                            print("[INFO] System sleep detected — finalizing session")
+                            if not self.is_idle:
+                                self._finalize_active_session("system sleep")
+                                self.is_idle = True
+                                self.update_tray_icon()
+                                self.add_admin_log('INFO', 'System sleep detected — entered idle')
+                        elif wparam == PBT_APMRESUMEAUTOMATIC:
+                            print("[INFO] System wake detected — will resume tracking on activity")
+                            self.needs_idle_resume = True
+                    elif msg == WM_WTSSESSION_CHANGE:
+                        if wparam == WTS_SESSION_LOCK:
+                            print("[INFO] Screen lock detected — finalizing session")
+                            if not self.is_idle:
+                                self._finalize_active_session("screen lock")
+                                self.is_idle = True
+                                self.update_tray_icon()
+                                self.add_admin_log('INFO', 'Screen locked — entered idle')
+                        elif wparam == WTS_SESSION_UNLOCK:
+                            print("[INFO] Screen unlock detected — will resume tracking on activity")
+                            self.needs_idle_resume = True
+                except Exception as e:
+                    print(f"[ERROR] Error in system event handler: {e}")
+                return user32.DefWindowProcW(hwnd, msg, wparam, lparam)
+
+            # Store callback on self to prevent garbage collection while window is alive
+            self._wndproc_callback = WNDPROC(wnd_proc)
+
+            class WNDCLASSEXW(ctypes.Structure):
+                _fields_ = [
+                    ("cbSize", wintypes.UINT),
+                    ("style", wintypes.UINT),
+                    ("lpfnWndProc", WNDPROC),
+                    ("cbClsExtra", ctypes.c_int),
+                    ("cbWndExtra", ctypes.c_int),
+                    ("hInstance", wintypes.HINSTANCE),
+                    ("hIcon", wintypes.HANDLE),
+                    ("hCursor", wintypes.HANDLE),
+                    ("hbrBackground", wintypes.HANDLE),
+                    ("lpszMenuName", wintypes.LPCWSTR),
+                    ("lpszClassName", wintypes.LPCWSTR),
+                    ("hIconSm", wintypes.HANDLE),
+                ]
+
+            wc = WNDCLASSEXW()
+            wc.cbSize = ctypes.sizeof(WNDCLASSEXW)
+            wc.lpfnWndProc = self._wndproc_callback
+            wc.hInstance = kernel32.GetModuleHandleW(None)
+            wc.lpszClassName = "JIRAForgeSysEventWnd"
+
+            atom = user32.RegisterClassExW(ctypes.byref(wc))
+            if not atom:
+                print("[ERROR] Failed to register window class for system event monitoring")
+                return
+
+            hwnd = user32.CreateWindowExW(
+                0, wc.lpszClassName, "JIRAForge System Event Monitor",
+                0, 0, 0, 0, 0,
+                HWND_MESSAGE, None, wc.hInstance, None
+            )
+            if not hwnd:
+                print("[ERROR] Failed to create message-only window for system event monitoring")
+                return
+
+            # Store hwnd for potential cleanup
+            self._system_event_hwnd = hwnd
+
+            # Register for session notifications (lock/unlock)
+            try:
+                if not wtsapi32.WTSRegisterSessionNotification(hwnd, NOTIFY_FOR_THIS_SESSION):
+                    print("[WARN] WTSRegisterSessionNotification failed — lock/unlock detection disabled")
+                    print("[INFO] Sleep/wake detection is still active")
+            except Exception as e:
+                print(f"[WARN] Could not register for session notifications: {e}")
+                print("[INFO] Sleep/wake detection is still active")
+
+            print("[OK] System event monitoring started (sleep/wake, lock/unlock)")
+
+            # Message pump
+            msg = wintypes.MSG()
+            while user32.GetMessageW(ctypes.byref(msg), None, 0, 0) > 0:
+                user32.TranslateMessage(ctypes.byref(msg))
+                user32.DispatchMessageW(ctypes.byref(msg))
+
+        except Exception as e:
+            print(f"[WARN] System event monitoring failed to start: {e}")
+            print("[INFO] Idle detection will still work via activity timeout")
 
     def sync_offline_data(self, force=False):
         """Sync offline data to Supabase when online
@@ -5488,10 +6404,12 @@ class TimeTracker:
         return result
 
     def start_sync_thread(self):
-        """Start background thread for periodic offline sync and heartbeat"""
+        """Start background thread for periodic offline sync, heartbeat, and token refresh"""
         def sync_worker():
             heartbeat_counter = 0
             heartbeat_interval = 480  # Send heartbeat every 480 iterations (4 hours at 30s interval)
+            token_refresh_counter = 0
+            token_refresh_interval = 100  # Check token expiry every 100 iterations (~50 min at 30s)
 
             # Send initial heartbeat immediately on thread start
             if self.current_user_id and not self.current_user_id.startswith('anonymous_'):
@@ -5513,6 +6431,21 @@ class TimeTracker:
                         if heartbeat_counter >= heartbeat_interval:
                             self._send_heartbeat()
                             heartbeat_counter = 0
+
+                    # Proactive token refresh: check if access token is near expiry
+                    # and refresh it BEFORE it expires, so API calls never hit a 401.
+                    if self.auth_manager.is_authenticated():
+                        token_refresh_counter += 1
+                        if token_refresh_counter >= token_refresh_interval:
+                            token_refresh_counter = 0
+                            expires_at = self.auth_manager.tokens.get('expires_at', 0)
+                            # Refresh if token expires within the next 5 minutes
+                            if expires_at and time.time() > (expires_at - 300):
+                                print("[INFO] Access token nearing expiry, refreshing proactively...")
+                                if self.auth_manager.refresh_access_token():
+                                    print("[OK] Proactive token refresh successful")
+                                else:
+                                    print("[WARN] Proactive token refresh failed — will retry on next cycle")
 
                 except Exception as e:
                     print(f"[ERROR] Sync thread error: {e}")
@@ -5536,6 +6469,16 @@ class TimeTracker:
             print("[OK] Tracking started (interval + event-based)")
         else:
             print("[OK] Tracking started (interval-only mode)")
+        
+        # Debug: Log initial tracking settings
+        interval = self.tracking_settings.get('screenshot_interval_seconds', self.capture_interval)
+        monitoring_enabled = self.tracking_settings.get('screenshot_monitoring_enabled', True)
+        print(f"[DEBUG] Tracking loop starting:")
+        print(f"[DEBUG]   - Screenshot interval: {interval}s")
+        print(f"[DEBUG]   - Screenshot monitoring enabled: {monitoring_enabled}")
+        print(f"[DEBUG]   - Event tracking enabled: {event_enabled}")
+        print(f"[DEBUG]   - User ID: {self.current_user_id}")
+        print(f"[DEBUG]   - Organization ID: {getattr(self, 'organization_id', 'None')}")
         
         # Track last screenshot time to prevent too frequent captures (for window switches)
         last_screenshot_time = 0
@@ -5568,33 +6511,7 @@ class TimeTracker:
                 if time_since_last_loop > 30:  # 30s threshold (loop normally runs every 2-5s)
                     print(f"[INFO] Large time gap detected: {int(time_since_last_loop)}s — system was likely suspended")
                     # Finalize current session using last known activity time
-                    if self.current_window_screenshot_id is not None and self.current_window_db_start_time is not None:
-                        try:
-                            end_time = datetime.fromtimestamp(self.last_activity_time)
-                            duration_seconds = int((end_time - self.current_window_db_start_time).total_seconds())
-                            # Sanity check: cap duration to prevent inflated records
-                            # (e.g., if last_activity_time was updated by pynput after system wake)
-                            capture_interval = self.tracking_settings.get('screenshot_interval_seconds', self.capture_interval)
-                            max_finalize_duration = max(capture_interval * 2, 600)
-                            if duration_seconds > max_finalize_duration:
-                                print(f"[WARN] Finalize duration {duration_seconds}s exceeds max {max_finalize_duration}s — capping")
-                                duration_seconds = max_finalize_duration
-                                end_time = self.current_window_db_start_time + timedelta(seconds=duration_seconds)
-                            if duration_seconds < 1:
-                                duration_seconds = 1
-                                end_time = self.current_window_db_start_time + timedelta(seconds=1)
-                            db_client = self.supabase_service if self.supabase_service else self.supabase
-                            update_result = db_client.table('screenshots').update({
-                                'end_time': end_time.isoformat(),
-                                'timestamp': end_time.isoformat(),
-                                'duration_seconds': duration_seconds
-                            }).eq('id', self.current_window_screenshot_id).execute()
-                            if update_result.data:
-                                print(f"[OK] Finalized work session (system suspension detected):")
-                                print(f"     - Record ID: {self.current_window_screenshot_id}")
-                                print(f"     - Duration: {duration_seconds}s")
-                        except Exception as e:
-                            print(f"[ERROR] Error finalizing session on suspension: {e}")
+                    self._finalize_active_session("system suspension detected")
                     # Reset ALL tracking state — new session starts fresh
                     self.is_idle = False
                     self.needs_idle_resume = False
@@ -5652,23 +6569,26 @@ class TimeTracker:
                     time.sleep(1)
                     continue
 
-                # Periodically refresh tracking settings from Supabase
-                if time.time() - last_settings_refresh > settings_refresh_interval:
-                    self.fetch_tracking_settings()
-                    last_settings_refresh = time.time()
+                # Skip periodic checks while idle — no need to hit APIs when user is away
+                if not self.is_idle:
+                    # Periodically refresh tracking settings from Supabase
+                    if time.time() - last_settings_refresh > settings_refresh_interval:
+                        self.fetch_tracking_settings()
+                        last_settings_refresh = time.time()
 
-                # Periodically check for app updates (every 4 hours by default)
-                # This runs in the background and shows notification if update available
-                if time.time() - self.last_version_check_time > self.version_check_interval:
-                    self.check_for_app_updates(show_notification=True)
+                    # Periodically check for app updates (every 4 hours by default)
+                    # This runs in the background and shows notification if update available
+                    if time.time() - self.last_version_check_time > self.version_check_interval:
+                        self.check_for_app_updates(show_notification=True)
 
-                # Periodically check for unassigned work and send notifications
-                if time.time() - last_notification_check > notification_check_interval:
-                    self.check_and_notify_unassigned_work()
-                    last_notification_check = time.time()
+                    # Periodically check for unassigned work and send notifications
+                    if time.time() - last_notification_check > notification_check_interval:
+                        self.check_and_notify_unassigned_work()
+                        last_notification_check = time.time()
                 
                 # Check if screenshot monitoring is enabled
                 if not self.tracking_settings.get('screenshot_monitoring_enabled', True):
+                    print("[DEBUG] Screenshot monitoring disabled in settings")
                     time.sleep(10)  # Sleep longer when disabled
                     continue
 
@@ -5677,49 +6597,15 @@ class TimeTracker:
                 current_idle_timeout = self.tracking_settings.get('idle_threshold_seconds', self.idle_timeout)
                 if idle_duration > current_idle_timeout:
                     if not self.is_idle:
-                        idle_start_time = datetime.now()
-                        last_activity = datetime.fromtimestamp(self.last_activity_time)
-                        print(f"[INFO] Entering idle mode at {idle_start_time.strftime('%H:%M:%S')}:")
-                        print(f"     - Last activity: {last_activity.strftime('%H:%M:%S')}")
+                        idle_start_time = datetime.now(timezone.utc)
+                        last_activity = datetime.fromtimestamp(self.last_activity_time, tz=timezone.utc)
+                        print(f"[INFO] Entering idle mode at {idle_start_time.strftime('%H:%M:%S')} UTC:")
+                        print(f"     - Last activity: {last_activity.strftime('%H:%M:%S')} UTC")
                         print(f"     - Idle duration: {int(idle_duration)}s (threshold: {current_idle_timeout}s)")
                         
-                        # IMPORTANT: Finalize the current window's duration BEFORE going idle
+                        # Finalize the current window's duration BEFORE going idle
                         # This prevents idle time from being counted as work time
-                        if self.current_window_screenshot_id is not None and self.current_window_db_start_time is not None:
-                            try:
-                                # Use the last activity time as the end time, not current time
-                                # This gives us the actual work duration before user went idle
-                                end_time = datetime.fromtimestamp(self.last_activity_time)
-                                # Use the ACTUAL start_time from database for accurate duration calculation
-                                duration_seconds = int((end_time - self.current_window_db_start_time).total_seconds())
-
-                                if duration_seconds < 1:
-                                    duration_seconds = 1
-                                    end_time = self.current_window_db_start_time + timedelta(seconds=1)
-
-                                db_client = self.supabase_service if self.supabase_service else self.supabase
-                                update_result = db_client.table('screenshots').update({
-                                    'end_time': end_time.isoformat(),
-                                    'timestamp': end_time.isoformat(),
-                                    'duration_seconds': duration_seconds
-                                }).eq('id', self.current_window_screenshot_id).execute()
-
-                                if update_result.data:
-                                    print(f"[OK] Finalized work session before idle:")
-                                    print(f"     - Record ID: {self.current_window_screenshot_id}")
-                                    print(f"     - Start: {self.current_window_db_start_time.strftime('%H:%M:%S')} (from DB)")
-                                    print(f"     - End (last activity): {end_time.strftime('%H:%M:%S')}")
-                                    print(f"     - Duration: {duration_seconds}s")
-
-                                # Reset tracking state - will start fresh when resuming
-                                self.current_window_screenshot_id = None
-                                self.current_window_record_created_at = None
-                                self.current_window_start_time = None
-                                self.current_window_db_start_time = None
-                                self.last_screenshot_end_time = end_time
-
-                            except Exception as e:
-                                print(f"[ERROR] Error finalizing session before idle: {e}")
+                        self._finalize_active_session("idle timeout")
                         
                         self.is_idle = True
                         self.update_tray_icon()
@@ -5733,8 +6619,8 @@ class TimeTracker:
 
                 # Resume from idle if activity was detected by pynput
                 if self.needs_idle_resume:
-                    resume_time = datetime.now()
-                    print(f"[INFO] Activity detected at {resume_time.strftime('%H:%M:%S')}, resuming tracking from idle")
+                    resume_time = datetime.now(timezone.utc)
+                    print(f"[INFO] Activity detected at {resume_time.strftime('%H:%M:%S')} UTC, resuming tracking from idle")
                     print(f"     - All tracking state reset - new session will start fresh")
                     self.is_idle = False
                     self.needs_idle_resume = False
@@ -5759,6 +6645,11 @@ class TimeTracker:
                 # This allows us to capture screenshots immediately on window switch
                 window_info = self.get_active_window()
                 current_time = time.time()
+                
+                # Debug: Log window info periodically
+                if not hasattr(self, '_last_window_debug') or time.time() - self._last_window_debug > 120:
+                    print(f"[DEBUG] Current window: {window_info.get('app', 'Unknown')} - {window_info.get('title', 'Unknown')[:40]}")
+                    self._last_window_debug = time.time()
                 
                 # Get current capture interval from settings
                 current_capture_interval = self.tracking_settings.get('screenshot_interval_seconds', self.capture_interval)
@@ -5799,6 +6690,8 @@ class TimeTracker:
                     remaining = current_capture_interval - time_since_last_interval
                     if remaining > 0:
                         print(f"[INTERVAL] {int(time_since_last_interval)}s elapsed, {int(remaining)}s until next interval capture")
+                    else:
+                        print(f"[DEBUG] Interval threshold reached: {int(time_since_last_interval)}s >= {current_capture_interval}s")
 
                 # IMPORTANT: Always update the previous window record when switching, regardless of interval
                 # The interval check only applies to creating NEW screenshots, not updating existing ones
@@ -5814,7 +6707,7 @@ class TimeTracker:
                         # 1. Previous record's end_time
                         # 2. Next record's start_time (via last_screenshot_end_time)
                         # This ensures PERFECT continuity with NO gaps or overlaps
-                        end_time = datetime.now()
+                        end_time = datetime.now(timezone.utc)
 
                         # Set last_screenshot_end_time IMMEDIATELY so upload_screenshot uses this exact value
                         self.last_screenshot_end_time = end_time
@@ -5870,7 +6763,7 @@ class TimeTracker:
                         # If we always reset to now(), we'd create gaps when window switches are
                         # skipped due to min_screenshot_interval cooldown
                         if self.last_screenshot_end_time is None:
-                            self.last_screenshot_end_time = datetime.now()
+                            self.last_screenshot_end_time = datetime.now(timezone.utc)
 
                 # Decide whether to capture a new screenshot
                 should_capture = False
@@ -5896,7 +6789,7 @@ class TimeTracker:
                         # This exact timestamp will be used for both:
                         # 1. Current record's end_time
                         # 2. Next record's start_time (via last_screenshot_end_time)
-                        end_time = datetime.now()
+                        end_time = datetime.now(timezone.utc)
 
                         # Set last_screenshot_end_time IMMEDIATELY so upload_screenshot uses this exact value
                         self.last_screenshot_end_time = end_time
@@ -5944,9 +6837,11 @@ class TimeTracker:
                     should_capture = True
                     capture_reason = "interval"
                 
-                if should_capture:
+                if should_capture and not self.is_idle:
+                    print(f"[DEBUG] Attempting screenshot capture (reason: {capture_reason})")
                     screenshot = self.capture_screenshot()
                     if screenshot:
+                        print(f"[DEBUG] Screenshot captured successfully, uploading...")
                         # Upload screenshot with event-based tracking (start_time and end_time)
                         # For window switches: start_time is when new window became active
                         # For intervals: start_time is now (after updating previous record)
@@ -5973,6 +6868,16 @@ class TimeTracker:
                         # Always update last_screenshot_time (for min_screenshot_interval check)
                         last_screenshot_time = time.time()  # Also use fresh time here
                         print(f"[OK] Screenshot captured ({capture_reason})")
+                    else:
+                        print(f"[DEBUG] Screenshot capture returned None (no changes or error)")
+                else:
+                    if should_capture and self.is_idle:
+                        print(f"[DEBUG] Screenshot capture skipped - user is idle")
+                    elif not should_capture:
+                        # Debug why capture was not triggered
+                        if not hasattr(self, '_last_capture_debug') or time.time() - self._last_capture_debug > 30:
+                            print(f"[DEBUG] No capture needed - window_switched: {window_switched}, time_since_interval: {int(time_since_last_interval)}s/{current_capture_interval}s, time_since_screenshot: {int(time_since_last_screenshot)}s")
+                            self._last_capture_debug = time.time()
                 
                 # Sleep for shorter interval to check for window switches more frequently
                 # But still respect the minimum screenshot interval
@@ -6036,6 +6941,13 @@ class TimeTracker:
                 target=self.monitor_user_activity, daemon=True
             )
             self._activity_monitor_thread.start()
+
+        # Start system event monitoring thread (sleep/lock detection)
+        if WIN32_AVAILABLE and (not self._system_event_thread or not self._system_event_thread.is_alive()):
+            self._system_event_thread = threading.Thread(
+                target=self.monitor_system_events, daemon=True
+            )
+            self._system_event_thread.start()
 
         # Start offline sync thread
         if not self._sync_thread or not self._sync_thread.is_alive():
@@ -6441,42 +7353,125 @@ class TimeTracker:
         # menu_items.append(pystray.Menu.SEPARATOR)
         # menu_items.append(item('Settings', open_settings))
 
+        # Add Send Feedback menu item
+        def send_feedback_action():
+            self._open_feedback_form()
+
+        menu_items.append(item('Send Feedback', send_feedback_action))
+
         # Add separator and update-related menu items
         menu_items.append(pystray.Menu.SEPARATOR)
-        
-        # Check for Updates / Download Update menu item
+
+        # Check for Updates / Install Update menu item
         def check_updates_action():
-            """Check for updates and open download URL if available"""
-            update_info = self.check_for_app_updates(show_notification=True, force=True)
-            if update_info and update_info.get('update_available'):
-                download_url = update_info.get('download_url')
-                if download_url:
-                    webbrowser.open(download_url)
+            """Check for updates and handle installation on macOS"""
+            if AUTO_UPDATER_AVAILABLE and sys.platform == 'darwin':
+                # Use new auto-updater for macOS
+                try:
+                    update_info = check_and_handle_updates(
+                        self.auth_manager.ai_server_url or get_env_var('AI_SERVER_URL'),
+                        APP_VERSION,
+                        auto_install=False,  # Let user choose
+                        show_notification=True
+                    )
+                    if not update_info:
+                        # Show "up to date" notification
+                        try:
+                            from plyer import notification
+                            notification.notify(
+                                title="No Updates Available",
+                                message=f"You're running the latest version (v{APP_VERSION})",
+                                timeout=5
+                            )
+                        except Exception:
+                            print("[INFO] No updates available")
+                except Exception as e:
+                    print(f"[WARN] Update check failed: {e}")
             else:
-                # Show a notification that app is up to date
-                if WINOTIFY_AVAILABLE:
+                # Fallback to old method for other platforms or if auto-updater not available
+                update_info = self.check_for_app_updates(show_notification=True, force=True)
+                if update_info and update_info.get('update_available'):
+                    download_url = update_info.get('download_url')
+                    if download_url:
+                        webbrowser.open(download_url)
+                else:
+                    # Show notification that app is up to date
                     try:
-                        from winotify import Notification
-                        notification = Notification(
-                            app_id="Time Tracker",
-                            title="No Updates Available",
-                            msg=f"You're running the latest version (v{self.app_version})",
-                            duration="short"
+                        from plyer import notification
+                        notification.notify(
+                            title="No Updates Available", 
+                            message=f"You're running the latest version (v{APP_VERSION})",
+                            timeout=5
                         )
-                        notification.show()
                     except Exception:
-                        pass
+                        print("[INFO] No updates available")
         
         # Dynamic label based on update status
         def get_update_label():
             if getattr(self, 'update_available', False):
                 latest = self.latest_version_info.get('latest_version', '') if self.latest_version_info else ''
-                return f"⬇ Download Update (v{latest})" if latest else "⬇ Download Update"
-            return f"Check for Updates (v{self.app_version})"
+                return f"⬇ Install Update (v{latest})" if latest else "⬇ Install Update"
+            return f"Check for Updates (v{APP_VERSION})"
         
         menu_items.append(item(lambda text: get_update_label(), check_updates_action))
 
         return pystray.Menu(*menu_items)
+
+    def _open_feedback_form(self):
+        """Open the feedback form in the browser via a session-authenticated URL"""
+        try:
+            access_token = self.auth_manager.tokens.get('access_token')
+            if not access_token:
+                print("[WARN] No access token available for feedback, opening login")
+                webbrowser.open(f'http://localhost:{self.web_port}/login')
+                return
+
+            cloud_id = self.get_jira_cloud_id()
+            if not cloud_id:
+                print("[WARN] No Jira Cloud ID available for feedback")
+                return
+
+            # Create a feedback session on the AI server
+            print("[INFO] Creating feedback session...")
+            ai_server_url = self.auth_manager.ai_server_url
+            response = requests.post(
+                f"{ai_server_url}/api/feedback/session",
+                json={
+                    'atlassian_token': access_token,
+                    'cloud_id': cloud_id
+                },
+                timeout=15
+            )
+
+            # Handle 401 - token expired, try refresh
+            if response.status_code == 401:
+                print("[WARN] Token expired for feedback session, refreshing...")
+                if self.auth_manager.refresh_access_token():
+                    access_token = self.auth_manager.tokens.get('access_token')
+                    response = requests.post(
+                        f"{ai_server_url}/api/feedback/session",
+                        json={
+                            'atlassian_token': access_token,
+                            'cloud_id': cloud_id
+                        },
+                        timeout=15
+                    )
+                else:
+                    print("[ERROR] Token refresh failed for feedback")
+                    return
+
+            if response.status_code == 200:
+                result = response.json()
+                feedback_url = result.get('feedback_url')
+                if feedback_url:
+                    print(f"[OK] Opening feedback form: {feedback_url}")
+                    webbrowser.open(feedback_url)
+                else:
+                    print("[ERROR] No feedback URL in response")
+            else:
+                print(f"[ERROR] Failed to create feedback session: {response.status_code} - {response.text}")
+        except Exception as e:
+            print(f"[ERROR] Failed to open feedback form: {e}")
 
     def _exit_app(self):
         """Exit the application from tray menu"""
@@ -6579,10 +7574,18 @@ class TimeTracker:
             time.sleep(3)
             sys.exit(1)
 
-        # Add to Windows startup (runs on system boot)
-        # Uses the installed path, not the downloaded path
-        if not is_in_startup():
+        # Add to Windows startup (runs on system boot) - ONLY when running as built exe
+        # When running from source (python desktop_app.py), get_app_executable_path() returns
+        # the .py file path - Windows would open it in the editor instead of running the app.
+        # ALWAYS update registry when running as exe (overwrites any stale/wrong path from
+        # e.g. previous run from source, moved exe, or corrupted entry).
+        if getattr(sys, 'frozen', False):
             add_to_startup()
+        else:
+            # Development mode: do not modify Windows startup configuration.
+            # Auto-start is only configured when running the built executable.
+            # We don't remove existing entries as they may be valid (pointing to installed exe).
+            print("[INFO] Running in development mode - auto-start is only configured for the built exe.")
 
         # Check network connectivity first
         is_online = self.offline_manager.check_connectivity(force=True)
@@ -6590,8 +7593,17 @@ class TimeTracker:
         # Check authentication
         if self.auth_manager.is_authenticated():
             if is_online:
-                # Online: try to get user info from Atlassian
-                user_info = self.auth_manager.get_user_info()
+                # Online: try to get user info from Atlassian (with retries)
+                user_info = None
+                for attempt in range(3):
+                    user_info = self.auth_manager.get_user_info()
+                    if user_info:
+                        break
+                    if attempt < 2:
+                        wait_secs = (attempt + 1) * 3
+                        print(f"[WARN] get_user_info attempt {attempt + 1} failed, retrying in {wait_secs}s...")
+                        time.sleep(wait_secs)
+
                 if user_info:
                     self.current_user = user_info
                     try:
@@ -6610,8 +7622,24 @@ class TimeTracker:
                     print(f"[OK] Welcome back, {user_info.get('email', 'User')}!")
                     self.add_admin_log('INFO', f"User logged in: {user_info.get('email', 'User')}")
                 else:
-                    print("[WARN] Failed to get user info, please re-authenticate")
-                    self.auth_manager.logout()
+                    # All retries failed — fall back to cached user info instead of destroying tokens.
+                    # Only logout if the server explicitly rejected the refresh token (handled inside refresh).
+                    # Network glitches, timeouts, and temporary server issues should NOT force re-login.
+                    print("[WARN] Could not verify user info after 3 attempts — falling back to cached data")
+                    cached_user = self._load_cached_user_info()
+                    if cached_user:
+                        self.current_user = cached_user
+                        self.current_user_id = cached_user.get('user_id')
+                        # Ensure organization_id is restored from cache
+                        if cached_user.get('organization_id') and not self.organization_id:
+                            self.organization_id = cached_user.get('organization_id')
+                            print(f"[OK] Restored organization_id from cache: {self.organization_id}")
+                        print(f"[OK] Using cached credentials for {cached_user.get('email', 'User')}")
+                        print("[INFO] Will retry authentication in the background")
+                    else:
+                        # No cache AND no server response — only NOW force re-auth
+                        print("[WARN] No cached credentials available, please re-authenticate")
+                        self.auth_manager.logout()
             else:
                 # Offline: try to use cached credentials
                 print("[INFO] Starting in OFFLINE MODE...")
@@ -6619,6 +7647,10 @@ class TimeTracker:
                 if cached_user:
                     self.current_user = cached_user
                     self.current_user_id = cached_user.get('user_id')
+                    # Ensure organization_id is restored from cache
+                    if cached_user.get('organization_id') and not self.organization_id:
+                        self.organization_id = cached_user.get('organization_id')
+                        print(f"[OK] Restored organization_id from cache: {self.organization_id}")
                     print(f"[OK] Offline mode - Welcome back, {cached_user.get('email', 'User')}!")
                     print("[INFO] Screenshots will be saved locally until online")
                 else:
@@ -6684,6 +7716,14 @@ class TimeTracker:
             print("[INFO] ANONYMOUS MODE - Login to associate screenshots with your account")
         print("[OK] Check system tray for application icon")
         
+        # Initialize auto-updater (macOS)
+        if AUTO_UPDATER_AVAILABLE and sys.platform == 'darwin':
+            try:
+                initialize_auto_updater(self)
+                print("[OK] Auto-updater initialized - will check for updates")
+            except Exception as e:
+                print(f"[WARN] Auto-updater initialization failed: {e}")
+        
         # Setup system tray (blocking)
         try:
             self.setup_system_tray()
@@ -6708,92 +7748,107 @@ class TimeTracker:
             display: flex;
             align-items: center;
             justify-content: center;
-            background: #f5f5f5;
+            background: linear-gradient(135deg, #FAFBFC 0%, #DFE1E6 100%);
         }
         .login-card {
             background: white;
-            border-radius: 8px;
-            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
-            padding: 32px;
+            border-radius: 12px;
+            box-shadow: 0 8px 30px rgba(9, 30, 66, 0.12), 0 0 1px rgba(9, 30, 66, 0.2);
+            padding: 40px 36px;
             width: 100%;
-            max-width: 400px;
+            max-width: 420px;
+            text-align: center;
         }
-        .header {
+        .app-logo {
+            width: 56px;
+            height: 56px;
+            background: linear-gradient(135deg, #0052CC 0%, #2684FF 100%);
+            border-radius: 14px;
             display: flex;
             align-items: center;
-            gap: 10px;
-            margin-bottom: 8px;
+            justify-content: center;
+            margin: 0 auto 20px;
+            box-shadow: 0 4px 12px rgba(0, 82, 204, 0.3);
         }
-        .header .clock-icon {
-            font-size: 24px;
+        .app-logo svg {
+            width: 30px;
+            height: 30px;
         }
-        .header h1 {
+        h1 {
             font-size: 22px;
-            font-weight: 600;
-            color: #333;
+            font-weight: 700;
+            color: #172B4D;
+            margin-bottom: 6px;
         }
         .subtitle {
-            color: #666;
+            color: #6B778C;
             font-size: 14px;
-            margin-bottom: 24px;
+            line-height: 1.5;
+            margin-bottom: 28px;
         }
-        .info-box {
-            background: #e3f2fd;
-            border-radius: 6px;
-            padding: 16px;
-            margin-bottom: 20px;
-        }
-        .info-box h3 {
-            font-size: 14px;
-            font-weight: 600;
-            color: #333;
-            margin-bottom: 4px;
-        }
-        .info-box p {
-            font-size: 13px;
-            color: #666;
+        .divider {
+            height: 1px;
+            background: #EBECF0;
+            margin-bottom: 28px;
         }
         .login-btn {
             width: 100%;
-            height: 44px;
-            background: #4285f4;
+            height: 48px;
+            background: #0052CC;
             color: white;
             border: none;
             border-radius: 6px;
             font-size: 15px;
-            font-weight: 500;
+            font-weight: 600;
             cursor: pointer;
             display: flex;
             align-items: center;
             justify-content: center;
-            gap: 8px;
-            transition: background 0.2s;
+            gap: 10px;
+            transition: background 0.2s, box-shadow 0.2s;
+            letter-spacing: 0.2px;
         }
         .login-btn:hover {
-            background: #3367d6;
+            background: #0065FF;
+            box-shadow: 0 4px 12px rgba(0, 82, 204, 0.35);
+        }
+        .login-btn:active {
+            background: #0747A6;
+            box-shadow: none;
+        }
+        .login-btn svg {
+            flex-shrink: 0;
+        }
+        .info-text {
+            margin-top: 20px;
+            font-size: 12px;
+            color: #97A0AF;
+            line-height: 1.5;
         }
     </style>
 </head>
 <body>
     <div class="login-card">
-        <div class="header">
-            <span class="clock-icon">&#128337;</span>
-            <h1>Amzur Timesheet Tracker</h1>
+        <div class="app-logo">
+            <svg viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <circle cx="12" cy="12" r="10"/>
+                <polyline points="12 6 12 12 16 14"/>
+            </svg>
         </div>
-        <p class="subtitle">Please sign in with your Atlassian account to start tracking time.</p>
+        <h1>Amzur Timesheet Tracker</h1>
+        <p class="subtitle">Sign in with your Atlassian account to start tracking time on this computer.</p>
 
-        <div class="info-box">
-            <h3>Desktop Application</h3>
-            <p>This will authorize time tracking on this computer.</p>
-        </div>
+        <div class="divider"></div>
 
         <button class="login-btn" onclick="window.location.href='/auth/atlassian'">
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
-                <path d="M7.127 14.456c-.18-.24-.46-.226-.617.07L3.14 20.99c-.12.232.013.472.27.472h5.177c.127 0 .246-.075.308-.195.71-1.418.425-3.567-1.774-6.857l.006.046z"/>
-                <path d="M11.04 4.156c-1.37 2.343-1.298 4.978.19 7.907.053.103.14.217.26.34l3.597 6.874c.063.117.182.192.31.192h5.177c.256 0 .389-.24.268-.472L12.315 4.156c-.12-.232-.397-.361-.638-.361-.24 0-.517.13-.637.361z"/>
+            <svg width="20" height="20" viewBox="0 0 32 32" fill="none">
+                <path d="M10.68 19.76c-.27-.36-.7-.35-.94.1L4.75 28.67c-.18.35.02.71.4.71h7.79c.2 0 .37-.11.47-.29 1.07-2.14.64-5.37-2.67-10.35l-.06.02z" fill="white" fill-opacity="0.65"/>
+                <path d="M15.58 4.67c-2.07 3.53-1.97 7.52.28 11.93.08.16.21.33.4.51l5.42 10.36c.1.18.27.29.47.29h7.79c.38 0 .58-.36.4-.71L17.54 4.67c-.18-.35-.6-.55-.96-.55-.36 0-.78.2-.96.55z" fill="white"/>
             </svg>
             Sign in with Atlassian
         </button>
+
+        <p class="info-text">This will authorize time tracking on this computer via Atlassian OAuth.</p>
     </div>
 </body>
 </html>'''

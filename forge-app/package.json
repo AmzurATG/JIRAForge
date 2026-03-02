@@ -1,6 +1,7 @@
 {
   "name": "brd-automate-time-tracker",
   "version": "1.0.0",
+  "type": "module",
   "description": "BRD Automation & Time Tracker for Jira",
   "main": "src/index.js",
   "scripts": {
@@ -9,7 +10,13 @@
     "build:settings": "cd static/settings && npm run build",
     "deploy": "forge deploy",
     "install-app": "forge install",
-    "tunnel": "forge tunnel"
+    "tunnel": "forge tunnel",
+    "dev": "npm run build && forge tunnel --port 3000",
+    "dev:local": "LOCAL_DEV_MODE=true FORGE_ENVIRONMENT=local npm run dev",
+    "dev:macos": "MACOS_ENVIRONMENT=true LOCAL_DEV_MODE=true FORGE_ENVIRONMENT=local npm run dev",
+    "setup:local": "npm install && npm run build && echo 'Local development setup complete'",
+    "logs": "forge logs",
+    "status": "forge status"
   },
   "keywords": [
     "jira",
@@ -21,10 +28,11 @@
   "author": "",
   "license": "MIT",
   "dependencies": {
-    "@forge/api": "^3.0.0",
-    "@forge/resolver": "^1.5.0"
+    "@forge/api": "^7.0.2",
+    "@forge/resolver": "^1.5.0",
+    "@supabase/supabase-js": "^2.39.0"
   },
   "devDependencies": {
-    "@forge/cli": "^12.0.0"
+    "@forge/cli": "^10.13.6"
   }
 }

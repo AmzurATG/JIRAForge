@@ -1,0 +1,335 @@
+name: Build Multi-Platform Desktop App
+
+on:
+  push:
+    tags:
+      - 'v*'  # Trigger on version tags like v1.0.0
+  pull_request:
+    branches: [ main, develop ]
+  workflow_dispatch:  # Allow manual trigger
+    inputs:
+      version:
+        description: 'Version number'
+        required: true
+        default: '1.0.0'
+      create_release:
+        description: 'Create GitHub Release'
+        type: boolean
+        default: false
+
+env:
+  APP_NAME: TimeTracker
+
+jobs:
+  # Get version from tag or input
+  get-version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.get_version.outputs.version }}
+    steps:
+      - name: Get version
+        id: get_version
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            echo "version=${{ github.event.inputs.version }}" >> $GITHUB_OUTPUT
+          elif [[ "${{ github.ref }}" =~ refs/tags/v(.+) ]]; then
+            echo "version=${BASH_REMATCH[1]}" >> $GITHUB_OUTPUT
+          else
+            echo "version=dev-$(date +%Y%m%d-%H%M%S)" >> $GITHUB_OUTPUT
+          fi
+
+  # Build for Windows
+  build-windows:
+    needs: get-version
+    runs-on: windows-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+          
+      - name: Cache pip dependencies
+        uses: actions/cache@v3
+        with:
+          path: ~\AppData\Local\pip\Cache
+          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+          
+      - name: Install dependencies
+        run: |
+          cd python-desktop-app
+          pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
+          
+      - name: Update version in code
+        run: |
+          cd python-desktop-app
+          $version = "${{ needs.get-version.outputs.version }}"
+          (Get-Content desktop_app.py) -replace 'APP_VERSION = "[^"]*"', "APP_VERSION = `"$version`"" | Set-Content desktop_app.py
+          (Get-Content desktop_app.spec) -replace "version='[^']*'", "version='$version'" | Set-Content desktop_app.spec
+          
+      - name: Build Windows executable
+        run: |
+          cd python-desktop-app
+          pyinstaller desktop_app.spec
+          
+      - name: Verify build
+        run: |
+          cd python-desktop-app
+          if (Test-Path "dist\TimeTracker.exe") {
+            Write-Host "✅ Windows build successful"
+            $size = (Get-Item "dist\TimeTracker.exe").Length / 1MB
+            Write-Host "Size: $([math]::Round($size, 2)) MB"
+          } else {
+            Write-Host "❌ Windows build failed"
+            exit 1
+          }
+          
+      - name: Upload Windows artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: windows-build
+          path: python-desktop-app/dist/TimeTracker.exe
+          
+  # Build for macOS
+  build-macos:
+    needs: get-version
+    runs-on: macos-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+          
+      - name: Cache pip dependencies
+        uses: actions/cache@v3
+        with:
+          path: ~/Library/Caches/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements-macos.txt') }}
+          
+      - name: Install dependencies
+        run: |
+          cd python-desktop-app
+          pip install --upgrade pip
+          pip install -r requirements-macos.txt
+          pip install pyinstaller
+          
+      - name: Update version in code
+        run: |
+          cd python-desktop-app
+          VERSION="${{ needs.get-version.outputs.version }}"
+          sed -i '' "s/APP_VERSION = \"[^\"]*\"/APP_VERSION = \"$VERSION\"/" mac_desktop_app.py
+          sed -i '' "s/version='[^']*'/version='$VERSION'/" desktop_app_mac.spec
+          
+      - name: Build macOS application
+        run: |
+          cd python-desktop-app
+          chmod +x build_macos.sh
+          ./build_macos.sh --version ${{ needs.get-version.outputs.version }} --dmg
+          
+      - name: Verify build
+        run: |
+          cd python-desktop-app
+          if [ -d "dist/TimeTracker.app" ]; then
+            echo "✅ macOS build successful"
+            du -sh dist/TimeTracker.app
+          else
+            echo "❌ macOS build failed"
+            exit 1
+          fi
+          
+      - name: Upload macOS artifacts
+        uses: actions/upload-artifact@v3
+        with:
+          name: macos-build
+          path: |
+            python-desktop-app/dist/TimeTracker.app
+            python-desktop-app/dist/*.dmg
+            python-desktop-app/dist/*.zip
+            
+  # Build for Linux  
+  build-linux:
+    needs: get-version
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+          
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y python3-tk python3-dev
+          
+      - name: Cache pip dependencies
+        uses: actions/cache@v3
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+          
+      - name: Install dependencies
+        run: |
+          cd python-desktop-app
+          pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
+          # Install Linux-specific packages
+          pip install plyer pystray
+          
+      - name: Create Linux build script
+        run: |
+          cd python-desktop-app
+          cat > build_linux.sh << 'EOF'
+          #!/bin/bash
+          set -e
+          echo "Building for Linux..."
+          
+          # Create Linux spec file based on Windows one
+          cp desktop_app.spec desktop_app_linux.spec
+          
+          # Remove Windows-specific imports
+          sed -i 's/win32gui/# win32gui/' desktop_app_linux.spec
+          sed -i 's/win32process/# win32process/' desktop_app_linux.spec
+          sed -i 's/winotify/plyer/' desktop_app_linux.spec
+          
+          # Build
+          pyinstaller desktop_app_linux.spec --clean --onefile
+          
+          # Verify
+          if [ -f "dist/TimeTracker" ]; then
+            echo "✅ Linux build successful"
+            chmod +x "dist/TimeTracker"
+          else
+            echo "❌ Linux build failed"
+            exit 1
+          fi
+          EOF
+          
+          chmod +x build_linux.sh
+          
+      - name: Build Linux executable
+        run: |
+          cd python-desktop-app
+          ./build_linux.sh
+          
+      - name: Upload Linux artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: linux-build
+          path: python-desktop-app/dist/TimeTracker
+
+  # Create release if triggered by tag or manual input
+  create-release:
+    needs: [get-version, build-windows, build-macos, build-linux]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && github.event.inputs.create_release == 'true')
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        
+      - name: Download all artifacts
+        uses: actions/download-artifact@v3
+        
+      - name: Prepare release files
+        run: |
+          VERSION="${{ needs.get-version.outputs.version }}"
+          mkdir -p release
+          
+          # Windows
+          if [ -f "windows-build/TimeTracker.exe" ]; then
+            cp "windows-build/TimeTracker.exe" "release/TimeTracker-${VERSION}-Windows.exe"
+          fi
+          
+          # macOS
+          if [ -d "macos-build" ]; then
+            find macos-build -name "*.dmg" -exec cp {} "release/" \;
+            find macos-build -name "*.zip" -exec cp {} "release/" \;
+          fi
+          
+          # Linux
+          if [ -f "linux-build/TimeTracker" ]; then
+            cp "linux-build/TimeTracker" "release/TimeTracker-${VERSION}-Linux"
+            chmod +x "release/TimeTracker-${VERSION}-Linux"
+          fi
+          
+          # List files
+          echo "Release files:"
+          ls -la release/
+          
+      - name: Generate release notes
+        run: |
+          VERSION="${{ needs.get-version.outputs.version }}"
+          cat > release_notes.md << EOF
+          # JIRAForge Time Tracker v${VERSION}
+          
+          ## What's New
+          - Multi-platform support (Windows, macOS, Linux)
+          - Improved OAuth token refresh system
+          - Enhanced screenshot capture system
+          - Better error handling and logging
+          
+          ## Download
+          
+          **Windows**: TimeTracker-${VERSION}-Windows.exe
+          **macOS**: TimeTracker-${VERSION}-macOS.dmg
+          **Linux**: TimeTracker-${VERSION}-Linux
+          
+          ## Installation
+          
+          ### Windows
+          1. Download TimeTracker-${VERSION}-Windows.exe
+          2. Run the executable (Windows may show security warning - click "More info" → "Run anyway")
+          3. The app will start and show in system tray
+          
+          ### macOS
+          1. Download TimeTracker-${VERSION}-macOS.dmg
+          2. Open the DMG and drag TimeTracker.app to Applications
+          3. First run: Right-click → Open (to bypass Gatekeeper)
+          4. Grant Screen Recording and Accessibility permissions
+          
+          ### Linux
+          1. Download TimeTracker-${VERSION}-Linux
+          2. Make executable: \`chmod +x TimeTracker-${VERSION}-Linux\`
+          3. Run: \`./TimeTracker-${VERSION}-Linux\`
+          
+          ## System Requirements
+          - **Windows**: Windows 10 or later
+          - **macOS**: macOS 10.14 (Mojave) or later
+          - **Linux**: Most modern distributions with X11
+          
+          ## Support
+          Report issues on [GitHub Issues](https://github.com/YOUR_USERNAME/JIRAForge/issues)
+          EOF
+          
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: v${{ needs.get-version.outputs.version }}
+          name: JIRAForge Time Tracker v${{ needs.get-version.outputs.version }}
+          body_path: release_notes.md
+          files: release/*
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          
+      - name: Update version control database
+        run: |
+          # This would call your release manager script to update Supabase
+          echo "TODO: Update Supabase app_releases table"
+          echo "Files ready for upload:"
+          ls -la release/
