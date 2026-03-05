@@ -41,7 +41,7 @@ export async function uploadBRDDocument(accountId, cloudId, fileName, fileType, 
   }
 
   // Convert base64 to Uint8Array (Forge doesn't support Buffer)
-  const base64String = fileData.replace(/^data:.*,/, ''); // Remove data URL prefix if present
+  const base64String = fileData.replaceAll(/^data:.*,/g, ''); // Remove data URL prefix if present
   const binaryString = atob(base64String);
   const bytes = new Uint8Array(binaryString.length);
   for (let i = 0; i < binaryString.length; i++) {

@@ -77,7 +77,7 @@ export async function supabaseRequest(supabaseConfig, endpoint, options = {}) {
 
       // Handle OR filter (e.g., "or=(col1.eq.val,col2.eq.val)")
       if (key === 'or') {
-        query.or = value.replace(/^\(|\)$/g, '');
+        query.or = value.replaceAll(/^\(|\)$/g, '');
         continue;
       }
 
@@ -96,7 +96,7 @@ export async function supabaseRequest(supabaseConfig, endpoint, options = {}) {
         if (!query[operator]) query[operator] = {};
         // Handle 'in' operator which expects an array
         if (operator === 'in') {
-          query[operator][key] = val.replace(/[()]/g, '').split(',');
+          query[operator][key] = val.replaceAll(/[()]/g, '').split(',');
         } else if (operator === 'is' && val === 'null') {
           query[operator][key] = null;
         } else {

@@ -389,9 +389,18 @@ exports.computeChecksum = async (req, res) => {
   }
 };
 
+// Trusted domains for download URLs.
+// Override via comma-separated ALLOWED_DOWNLOAD_DOMAINS env var.
+const ALLOWED_DOWNLOAD_DOMAINS = (
+  process.env.ALLOWED_DOWNLOAD_DOMAINS ||
+  'github.com,objects.githubusercontent.com,releases.githubusercontent.com,' +
+  'amazonaws.com,cloudfront.net,supabase.co,blob.core.windows.net,storage.googleapis.com'
+).split(',').map(d => d.trim().toLowerCase()).filter(Boolean);
+
 /**
- * Validates a download URL for SSRF safety.
- * Only HTTPS to public (non-private) hosts is allowed.
+ * Validates a download URL against an allowlist of trusted domains.
+ * Only HTTPS URLs whose hostname matches (or is a subdomain of) an allowed
+ * domain are accepted — prevents SSRF via private/internal hosts.
  * @param {string} url
  * @returns {string|null} Error message, or null if valid
  */
@@ -406,10 +415,11 @@ function validateDownloadUrl(url) {
     return 'Only HTTPS URLs are allowed';
   }
   const host = parsed.hostname.toLowerCase();
-  if (host === 'localhost' || host === '0.0.0.0' ||
-      host.startsWith('127.') || host.startsWith('10.') ||
-      host.startsWith('192.168.') || host.startsWith('169.254.')) {
-    return 'Internal/private URLs are not allowed';
+  const isAllowed = ALLOWED_DOWNLOAD_DOMAINS.some(
+    domain => host === domain || host.endsWith(`.${domain}`)
+  );
+  if (!isAllowed) {
+    return `Download domain not in allowed list: ${host}`;
   }
   return null;
 }

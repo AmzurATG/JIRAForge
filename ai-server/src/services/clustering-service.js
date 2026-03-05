@@ -33,7 +33,7 @@ const WORK_APPS = [
  */
 function normalizeAppName(appName) {
   if (!appName) return 'unknown';
-  return appName.toLowerCase().replace('.exe', '').replace(/\s+/g, '').trim();
+  return appName.toLowerCase().replace('.exe', '').replaceAll(/\s+/g, '').trim();
 }
 
 /**
@@ -241,8 +241,8 @@ CRITICAL - DESCRIPTIONS MUST BE SPECIFIC:
 
     // Remove markdown code blocks if present
     let cleanedResponse = responseText
-      .replace(/```json\n?/g, '')
-      .replace(/```\n?/g, '')
+      .replaceAll(/```json\n?/g, '')
+      .replaceAll(/```\n?/g, '')
       .trim();
 
     // Try to extract JSON if response contains extra text
@@ -278,7 +278,7 @@ CRITICAL - DESCRIPTIONS MUST BE SPECIFIC:
       }
 
       // Remove trailing comma before closing bracket/brace
-      fixedResponse = fixedResponse.replace(/,\s*\]/g, ']').replace(/,\s*\}/g, '}');
+      fixedResponse = fixedResponse.replaceAll(/,\s*\]/g, ']').replaceAll(/,\s*\}/g, '}');
 
       try {
         clusteringResult = JSON.parse(fixedResponse);
@@ -460,8 +460,8 @@ function findSimilarGroup(groups, label) {
 function normalizeLabel(label) {
   return label
     .toLowerCase()
-    .replace(/[^a-z0-9\s]/g, ' ')  // Remove special chars
-    .replace(/\s+/g, ' ')          // Normalize spaces
+    .replaceAll(/[^a-z0-9\s]/g, ' ')  // Remove special chars
+    .replaceAll(/\s+/g, ' ')          // Normalize spaces
     .trim();
 }
 

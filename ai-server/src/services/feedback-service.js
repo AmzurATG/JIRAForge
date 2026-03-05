@@ -58,7 +58,7 @@ function getDefaultAIResults(feedback) {
  * @returns {Object} Parsed JSON object
  */
 function parseAIResponse(content) {
-  const jsonStr = content.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
+  const jsonStr = content.replaceAll(/```json\n?/g, '').replaceAll(/```\n?/g, '').trim();
   return JSON.parse(jsonStr);
 }
 

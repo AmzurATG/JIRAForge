@@ -15,7 +15,7 @@ module.exports = {
     },
 
     html: ({ displayName, orgName, users, downloadUrl }) => {
-        const esc = s => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+        const esc = s => String(s ?? '').replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;');
         const rows = users.map(u => `
             <tr>
               <td style="padding:8px 12px;border-bottom:1px solid #eee">${esc(u.name)}</td>

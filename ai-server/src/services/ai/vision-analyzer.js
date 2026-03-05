@@ -150,8 +150,8 @@ function extractJsonCandidates(content) {
  */
 function tryFixJsonString(raw) {
   let s = raw
-    .replace(/,(\s*[}\]])/g, '$1')  // trailing commas before } or ]
-    .replace(/\r\n/g, '\n')
+    .replaceAll(/,(\s*[}\]])/g, '$1')  // trailing commas before } or ]
+    .replaceAll('\r\n', '\n')
     .trim();
   // If truncated (unclosed object), append closing brace(s) by balance
   const open = (s.match(/\{/g) || []).length;
@@ -190,7 +190,7 @@ function parseAIResponse(content) {
 
   // Log a short sample for debugging (avoid logging huge or sensitive content)
   const sample = content.length > 400 ? content.substring(0, 400) + '...' : content;
-  logger.warn('[AI] Failed to parse response as JSON. Sample: %s', sample.replace(/\n/g, ' '));
+  logger.warn('[AI] Failed to parse response as JSON. Sample: %s', sample.replaceAll('\n', ' '));
   throw new Error('Invalid JSON response from AI');
 }
 
