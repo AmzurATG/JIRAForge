@@ -28,19 +28,19 @@ describe('LogSanitizer', () => {
   describe('sanitizeString', () => {
     describe('Email addresses', () => {
       it('should redact email addresses', () => {
-        const input = 'Sent notification to user@example.com';
+        const input = 'Sent notification to x@x.xx';
         const { sanitized } = sanitizeString(input, 'standard');
         expect(sanitized).toBe('Sent notification to [EMAIL_REDACTED]');
       });
 
       it('should redact multiple email addresses', () => {
-        const input = 'From: admin@company.com To: user@example.org';
+        const input = 'From: a@b.cc To: d@e.ff';
         const { sanitized } = sanitizeString(input, 'standard');
         expect(sanitized).toBe('From: [EMAIL_REDACTED] To: [EMAIL_REDACTED]');
       });
 
       it('should handle complex email formats', () => {
-        const input = 'Contact: john.doe+test@sub.domain.co.uk';
+        const input = 'Contact: a.b+c@d.e.fg';
         const { sanitized } = sanitizeString(input, 'standard');
         expect(sanitized).toBe('Contact: [EMAIL_REDACTED]');
       });
@@ -48,19 +48,19 @@ describe('LogSanitizer', () => {
 
     describe('UUIDs', () => {
       it('should redact standard UUIDs', () => {
-        const input = 'User ID: fa23333e-9e8f-4b13-bda9-833ca4f7c3cc';
+        const input = 'User ID: 00000000-0000-0000-0000-000000000000';
         const { sanitized } = sanitizeString(input, 'standard');
         expect(sanitized).toBe('User ID: [UUID_REDACTED]');
       });
 
       it('should redact uppercase UUIDs', () => {
-        const input = 'Cloud: 39B6EAB6-88FD-45B6-8BBC-DAD801BAC3BD';
+        const input = 'Cloud: 11111111-1111-1111-1111-111111111111';
         const { sanitized } = sanitizeString(input, 'standard');
         expect(sanitized).toBe('Cloud: [UUID_REDACTED]');
       });
 
       it('should not redact UUIDs in minimal mode', () => {
-        const input = 'User ID: fa23333e-9e8f-4b13-bda9-833ca4f7c3cc';
+        const input = 'User ID: 00000000-0000-0000-0000-000000000000';
         const { sanitized } = sanitizeString(input, 'minimal');
         expect(sanitized).toBe(input);
       });
@@ -68,7 +68,7 @@ describe('LogSanitizer', () => {
 
     describe('Atlassian Account IDs', () => {
       it('should redact Atlassian account IDs before UUID pattern', () => {
-        const input = 'Account: 712020:2e67c2ea-92ca-451d-9686-bb830a8da0af';
+        const input = 'Account: 000000:00000000-0000-0000-0000-000000000000';
         const { sanitized } = sanitizeString(input, 'standard');
         expect(sanitized).toBe('Account: [ATLASSIAN_ACCOUNT_REDACTED]');
       });
@@ -90,7 +90,7 @@ describe('LogSanitizer', () => {
 
     describe('IP Addresses', () => {
       it('should redact IPv4 addresses', () => {
-        const input = 'Request from 192.168.1.100';
+        const input = 'Request from 1.2.3.4';
         const { sanitized } = sanitizeString(input, 'standard');
         expect(sanitized).toBe('Request from [IP_REDACTED]');
       });
@@ -104,7 +104,7 @@ describe('LogSanitizer', () => {
 
     describe('JWT Tokens', () => {
       it('should redact JWT tokens', () => {
-        const input = 'Token: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U';
+        const input = 'Token: eyJhbGciOiJ0ZXN0In0.eyJ0ZXN0IjoidGVzdCJ9.dGVzdHNpZ25hdHVyZQ';
         const { sanitized } = sanitizeString(input, 'standard');
         expect(sanitized).toBe('Token: [JWT_REDACTED]');
       });
@@ -112,19 +112,19 @@ describe('LogSanitizer', () => {
 
     describe('API Keys', () => {
       it('should redact API keys with explicit labels', () => {
-        const input = 'api_key=test_fake_key_for_unit_testing_only';
+        const input = 'api_key=FAKE_TEST_KEY_00000000';
         const { sanitized } = sanitizeString(input, 'standard');
         expect(sanitized).toContain('[API_KEY_REDACTED]');
       });
 
       it('should redact AWS access keys', () => {
-        const input = 'Key: AKIAIOSFODNN7EXAMPLE';
+        const input = 'Key: AKIATESTTESTTESTTEST';
         const { sanitized } = sanitizeString(input, 'standard');
         expect(sanitized).toBe('Key: [AWS_KEY_REDACTED]');
       });
 
       it('should redact GitHub tokens', () => {
-        const input = 'Token: ghp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx';
+        const input = 'Token: ghp_000000000000000000000000000000000000';
         const { sanitized } = sanitizeString(input, 'standard');
         expect(sanitized).toBe('Token: [GITHUB_TOKEN_REDACTED]');
       });
@@ -132,13 +132,13 @@ describe('LogSanitizer', () => {
 
     describe('Credit Cards', () => {
       it('should redact Visa card numbers', () => {
-        const input = 'Card: 4111111111111111';
+        const input = 'Card: 4000000000000000';
         const { sanitized } = sanitizeString(input, 'standard');
         expect(sanitized).toBe('Card: [CREDIT_CARD_REDACTED]');
       });
 
       it('should redact MasterCard numbers', () => {
-        const input = 'Card: 5500000000000004';
+        const input = 'Card: 5100000000000000';
         const { sanitized } = sanitizeString(input, 'standard');
         expect(sanitized).toBe('Card: [CREDIT_CARD_REDACTED]');
       });
@@ -146,13 +146,13 @@ describe('LogSanitizer', () => {
 
     describe('Phone Numbers', () => {
       it('should redact US phone numbers', () => {
-        const input = 'Call: (555) 123-4567';
+        const input = 'Call: (555) 000-0000';
         const { sanitized } = sanitizeString(input, 'standard');
         expect(sanitized).toBe('Call: [PHONE_REDACTED]');
       });
 
       it('should redact international format', () => {
-        const input = 'Phone: +1-555-123-4567';
+        const input = 'Phone: +1-555-000-0000';
         const { sanitized } = sanitizeString(input, 'standard');
         expect(sanitized).toBe('Phone: [PHONE_REDACTED]');
       });
@@ -163,27 +163,27 @@ describe('LogSanitizer', () => {
     it('should sanitize nested objects', () => {
       const input = {
         user: {
-          email: 'test@example.com',
-          name: 'John Doe',
-          id: 'fa23333e-9e8f-4b13-bda9-833ca4f7c3cc'
+          email: 'x@x.xx',
+          name: 'Test User',
+          id: '00000000-0000-0000-0000-000000000000'
         }
       };
       const { sanitized } = sanitizeObject(input, 'standard');
       expect(sanitized.user.email).toBe('[EMAIL_REDACTED]');
-      expect(sanitized.user.name).toBe('John Doe');
+      expect(sanitized.user.name).toBe('Test User');
       expect(sanitized.user.id).toBe('[UUID_REDACTED]');
     });
 
     it('should sanitize arrays', () => {
       const input = {
-        emails: ['user1@test.com', 'user2@test.com']
+        emails: ['a@b.cc', 'd@e.ff']
       };
       const { sanitized } = sanitizeObject(input, 'standard');
       expect(sanitized.emails).toEqual(['[EMAIL_REDACTED]', '[EMAIL_REDACTED]']);
     });
 
     it('should handle null and undefined', () => {
-      const input = { a: null, b: undefined, c: 'test@test.com' };
+      const input = { a: null, b: undefined, c: 'x@y.zz' };
       const { sanitized } = sanitizeObject(input, 'standard');
       expect(sanitized.a).toBeNull();
       expect(sanitized.b).toBeUndefined();
@@ -209,8 +209,8 @@ describe('LogSanitizer', () => {
       const logInfo = {
         level: 'info',
         message: 'User logged in',
-        userId: 'fa23333e-9e8f-4b13-bda9-833ca4f7c3cc',
-        email: 'user@example.com',
+        userId: '00000000-0000-0000-0000-000000000000',
+        email: 'x@x.xx',
         timestamp: '2026-03-05 10:00:00'
       };
       const sanitized = sanitizeLogData(logInfo);
@@ -224,7 +224,7 @@ describe('LogSanitizer', () => {
     it('should handle message with embedded sensitive data', () => {
       const logInfo = {
         level: 'info',
-        message: '[Auth] User 712020:2e67c2ea-92ca-451d-9686-bb830a8da0af authenticated from 192.168.1.1'
+        message: '[Auth] User 000000:00000000-0000-0000-0000-000000000000 authenticated from 1.2.3.4'
       };
       const sanitized = sanitizeLogData(logInfo);
       expect(sanitized.message).toBe('[Auth] User [ATLASSIAN_ACCOUNT_REDACTED] authenticated from [IP_REDACTED]');
@@ -233,15 +233,15 @@ describe('LogSanitizer', () => {
 
   describe('Redaction statistics', () => {
     it('should track redaction counts when audit enabled', () => {
-      sanitizeString('test@example.com', 'standard');
-      sanitizeString('another@test.org', 'standard');
+      sanitizeString('x@x.xx', 'standard');
+      sanitizeString('y@y.yy', 'standard');
       
       const stats = getRedactionStats();
       expect(stats.EMAIL).toBe(2);
     });
 
     it('should reset statistics correctly', () => {
-      sanitizeString('test@example.com', 'standard');
+      sanitizeString('x@x.xx', 'standard');
       resetRedactionStats();
       
       const stats = getRedactionStats();
@@ -251,14 +251,14 @@ describe('LogSanitizer', () => {
 
   describe('Sanitization levels', () => {
     it('minimal level should only redact PII', () => {
-      const input = 'Email: test@test.com UUID: fa23333e-9e8f-4b13-bda9-833ca4f7c3cc';
+      const input = 'Email: x@x.xx UUID: 00000000-0000-0000-0000-000000000000';
       const { sanitized } = sanitizeString(input, 'minimal');
       expect(sanitized).toContain('[EMAIL_REDACTED]');
-      expect(sanitized).toContain('fa23333e-9e8f-4b13-bda9-833ca4f7c3cc'); // UUID not redacted
+      expect(sanitized).toContain('00000000-0000-0000-0000-000000000000'); // UUID not redacted
     });
 
     it('standard level should redact PII and identifiers', () => {
-      const input = 'Email: test@test.com UUID: fa23333e-9e8f-4b13-bda9-833ca4f7c3cc';
+      const input = 'Email: x@x.xx UUID: 00000000-0000-0000-0000-000000000000';
       const { sanitized } = sanitizeString(input, 'standard');
       expect(sanitized).toContain('[EMAIL_REDACTED]');
       expect(sanitized).toContain('[UUID_REDACTED]');
@@ -296,7 +296,7 @@ describe('LogSanitizer', () => {
         level1: {
           level2: {
             level3: {
-              email: 'deep@nested.com'
+              email: 'x@y.zz'
             }
           }
         }
