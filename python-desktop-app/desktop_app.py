@@ -44,6 +44,8 @@ import fnmatch
 # OCR for text extraction
 from ocr import extract_text_from_image
 
+# Secure logging (PII sanitization)
+from secure_logger import secure_log, sanitize_value
 
 # Secure credential storage
 try:
@@ -2110,7 +2112,7 @@ class OfflineManager:
             conn.close()
             
             if updated > 0:
-                print(f"[OK] Associated {updated} anonymous screenshots with user {user_id}")
+                secure_log(f"[OK] Associated {updated} anonymous screenshots with user", user_id=user_id)
             
             return updated
             
@@ -2505,7 +2507,7 @@ class ConsentManager:
             ]
         }
         self._save_consent()
-        print(f"[OK] Consent {'granted' if consented else 'denied'} for user {user_id}")
+        secure_log(f"[OK] Consent {'granted' if consented else 'denied'} for user", user_id=user_id)
 
     def revoke_consent(self, user_id):
         """Revoke user's consent"""
@@ -2513,7 +2515,7 @@ class ConsentManager:
             self.consent_data[user_id]['consented'] = False
             self.consent_data[user_id]['revoked_at'] = datetime.now(timezone.utc).isoformat()
             self._save_consent()
-            print(f"[OK] Consent revoked for user {user_id}")
+            secure_log("[OK] Consent revoked for user", user_id=user_id)
 
     def get_consent_info(self, user_id):
         """Get consent information for a user"""
@@ -4265,7 +4267,7 @@ class TimeTracker:
                 self.current_user = user_info
                 self.current_user_id = self.ensure_user_exists(user_info)
 
-                print(f"[OK] Authenticated user: {user_info.get('email', 'unknown')}")
+                secure_log("[OK] Authenticated user", email=user_info.get('email', 'unknown'))
 
                 # Reset reauth notification flag on successful login
                 self._reauth_notification_shown = False
@@ -4293,7 +4295,7 @@ class TimeTracker:
                 user_account_id = user_info.get('account_id')
                 if not self.consent_manager.has_valid_consent(user_account_id):
                     # Redirect to consent page first
-                    print(f"[INFO] User {user_info.get('email')} needs to provide consent")
+                    secure_log("[INFO] User needs to provide consent", email=user_info.get('email'))
                     return redirect('/consent')
 
                 # User has consent - start tracking if not already running
@@ -5014,7 +5016,7 @@ class TimeTracker:
         if result.data:
             user_id = result.data[0]['id']
             existing_org_id = result.data[0].get('organization_id')
-            print(f"[OK] Found existing user: {user_id}")
+            secure_log("[OK] Found existing user", user_id=user_id)
 
             # Check if we need to update user details
             existing_user = client.table('users').select('display_name, email').eq('id', user_id).execute()
@@ -5035,7 +5037,7 @@ class TimeTracker:
                     'email': email or existing_email
                 }
                 client.table('users').update(update_data).eq('id', user_id).execute()
-                print(f"[OK] Updated user details: org={self.organization_id}, name={name}")
+                secure_log("[OK] Updated user details", org_id=self.organization_id, name=name)
 
                 # Ensure organization membership exists
                 if self.organization_id:
@@ -5051,7 +5053,7 @@ class TimeTracker:
             create_result = client.table('users').insert(user_data).execute()
             if create_result.data:
                 user_id = create_result.data[0]['id']
-                print(f"[OK] Created new user: {user_id}")
+                secure_log("[OK] Created new user", user_id=user_id)
 
                 # Create organization membership
                 self._ensure_organization_membership(user_id)
@@ -5305,7 +5307,7 @@ class TimeTracker:
                     self.organization_name = selected_resource.get('name', 'Unknown Organization')
                     self.jira_instance_url = selected_resource.get('url', '')
 
-                    print(f"[OK] Using Jira Cloud ID: {self.jira_cloud_id}")
+                    secure_log("[OK] Using Jira Cloud ID", cloud_id=self.jira_cloud_id)
                     print(f"[OK] Organization: {self.organization_name}")
                     print(f"[OK] Jira URL: {self.jira_instance_url}")
 
@@ -5342,7 +5344,7 @@ class TimeTracker:
                 if result.data:
                     # Organization exists
                     self.organization_id = result.data[0]['id']
-                    print(f"[OK] Found existing organization: {self.organization_id}")
+                    secure_log("[OK] Found existing organization", org_id=self.organization_id)
 
                     # Update organization info if changed
                     client.table('organizations').update({
@@ -5362,7 +5364,7 @@ class TimeTracker:
 
                     if create_result.data:
                         self.organization_id = create_result.data[0]['id']
-                        print(f"[OK] Created new organization: {self.organization_id}")
+                        secure_log("[OK] Created new organization", org_id=self.organization_id)
 
                         # Create default organization settings
                         settings_data = {
@@ -6470,7 +6472,7 @@ class TimeTracker:
             # Single batch insert to Supabase using service role client
             print(f"[BATCH] Inserting {len(records)} activity records...")
             print(f"[BATCH] Using service client with key type: {'service_role' if service_key else 'unknown'}")
-            print(f"[BATCH] Target table: activity_records, user_id: {self.current_user_id}")
+            secure_log("[BATCH] Target table: activity_records", user_id=self.current_user_id)
             result = self.supabase_service.table('activity_records').insert(records).execute()
             print(f"[BATCH] Insert result: data_count={len(result.data) if result.data else 0}, count={getattr(result, 'count', 'N/A')}")
 
@@ -6479,7 +6481,7 @@ class TimeTracker:
                 analyzed_count = sum(1 for r in records if r['status'] == 'analyzed')
                 inserted_ids = [r.get('id', '?') for r in result.data]
                 print(f"[BATCH] Uploaded {len(records)} activity records ({productive_count} pending AI, {analyzed_count} pre-analyzed)")
-                print(f"[BATCH] Inserted IDs: {inserted_ids}")
+                secure_log("[BATCH] Inserted record IDs", ids=inserted_ids)
 
                 # Verify records actually exist in the database
                 try:
@@ -8752,7 +8754,7 @@ class TimeTracker:
             user_account_id = self.current_user.get('account_id')
             has_consent = self.consent_manager.has_valid_consent(user_account_id)
             if not has_consent:
-                print(f"[INFO] User {self.current_user.get('email')} has not provided consent for screenshot capture")
+                secure_log("[INFO] User has not provided consent for screenshot capture", email=self.current_user.get('email'))
         elif self.current_user_id and self.current_user_id.startswith('anonymous_'):
             # Anonymous users don't need consent yet (they'll provide it on login)
             has_consent = True
