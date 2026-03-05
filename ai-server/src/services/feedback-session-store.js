@@ -5,7 +5,7 @@
  * and invalidated after the feedback is submitted.
  */
 
-const crypto = require('crypto');
+const crypto = require('node:crypto');
 const logger = require('../utils/logger');
 
 // In-memory session store

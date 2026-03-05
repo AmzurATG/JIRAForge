@@ -11,11 +11,11 @@ const logger = require('../utils/logger');
 const { toUTCISOString } = require('../utils/datetime');
 
 // Configuration (can be overridden via environment variables)
-const CLEANUP_SCHEDULE_DAY = parseInt(process.env.CLEANUP_SCHEDULE_DAY || '1', 10); // 1st of month
-const CLEANUP_SCHEDULE_HOUR = parseInt(process.env.CLEANUP_SCHEDULE_HOUR || '3', 10); // 3 AM
-const CLEANUP_SCHEDULE_MINUTE = parseInt(process.env.CLEANUP_SCHEDULE_MINUTE || '0', 10); // 0 minutes
-const MONTHS_TO_KEEP = parseInt(process.env.CLEANUP_MONTHS_TO_KEEP || '2', 10); // Keep last 2 months
-const BATCH_SIZE = parseInt(process.env.CLEANUP_BATCH_SIZE || '50', 10); // Process 50 screenshots per batch
+const CLEANUP_SCHEDULE_DAY = Number.parseInt(process.env.CLEANUP_SCHEDULE_DAY || '1', 10); // 1st of month
+const CLEANUP_SCHEDULE_HOUR = Number.parseInt(process.env.CLEANUP_SCHEDULE_HOUR || '3', 10); // 3 AM
+const CLEANUP_SCHEDULE_MINUTE = Number.parseInt(process.env.CLEANUP_SCHEDULE_MINUTE || '0', 10); // 0 minutes
+const MONTHS_TO_KEEP = Number.parseInt(process.env.CLEANUP_MONTHS_TO_KEEP || '2', 10); // Keep last 2 months
+const BATCH_SIZE = Number.parseInt(process.env.CLEANUP_BATCH_SIZE || '50', 10); // Process 50 screenshots per batch
 
 let scheduledTimeoutId = null;
 let isRunning = false;
@@ -72,6 +72,15 @@ async function getScreenshotsForCleanup(limit = BATCH_SIZE, offset = 0) {
 }
 
 /**
+ * Transform filename from screenshot to thumbnail format
+ * @param {string} filename - Original filename
+ * @returns {string} Thumbnail filename
+ */
+function transformToThumbnailFilename(filename) {
+  return filename.replace('screenshot_', 'thumb_').replace('.png', '.jpg');
+}
+
+/**
  * Get the thumbnail path from storage_path
  * Converts screenshot_xxx.png to thumb_xxx.jpg
  * @param {string} storagePath - Original screenshot storage path
@@ -80,13 +89,30 @@ async function getScreenshotsForCleanup(limit = BATCH_SIZE, offset = 0) {
 function getThumbnailPath(storagePath) {
   if (!storagePath) return null;
 
-  if (storagePath.includes('/')) {
-    const dirPath = storagePath.substring(0, storagePath.lastIndexOf('/'));
-    const filename = storagePath.substring(storagePath.lastIndexOf('/') + 1);
-    const thumbFilename = filename.replace('screenshot_', 'thumb_').replace('.png', '.jpg');
-    return `${dirPath}/${thumbFilename}`;
-  } else {
-    return storagePath.replace('screenshot_', 'thumb_').replace('.png', '.jpg');
+  if (!storagePath.includes('/')) {
+    return transformToThumbnailFilename(storagePath);
+  }
+
+  const dirPath = storagePath.substring(0, storagePath.lastIndexOf('/'));
+  const filename = storagePath.substring(storagePath.lastIndexOf('/') + 1);
+  const thumbFilename = transformToThumbnailFilename(filename);
+  return `${dirPath}/${thumbFilename}`;
+}
+
+/**
+ * Delete a single file from storage
+ * @param {string} type - File type ('screenshot' or 'thumbnail')
+ * @param {string} path - Storage path
+ * @returns {Promise<boolean>} True if deleted successfully
+ */
+async function deleteSingleFile(type, path) {
+  try {
+    await deleteFile('screenshots', path);
+    logger.debug(`[Cleanup] Deleted ${type}: ${path}`);
+    return true;
+  } catch (error) {
+    logger.warn(`[Cleanup] Could not delete ${type} ${path}: ${error.message}`);
+    return false;
   }
 }
 
@@ -103,26 +129,12 @@ async function deleteScreenshotFiles(storagePath) {
   }
 
   // Delete the main screenshot
-  try {
-    await deleteFile('screenshots', storagePath);
-    result.screenshotDeleted = true;
-    logger.debug(`[Cleanup] Deleted screenshot: ${storagePath}`);
-  } catch (error) {
-    // File may already be deleted or not exist - log but don't fail
-    logger.warn(`[Cleanup] Could not delete screenshot ${storagePath}: ${error.message}`);
-  }
+  result.screenshotDeleted = await deleteSingleFile('screenshot', storagePath);
 
   // Delete the thumbnail
   const thumbPath = getThumbnailPath(storagePath);
   if (thumbPath) {
-    try {
-      await deleteFile('screenshots', thumbPath);
-      result.thumbnailDeleted = true;
-      logger.debug(`[Cleanup] Deleted thumbnail: ${thumbPath}`);
-    } catch (error) {
-      // Thumbnail may not exist - log but don't fail
-      logger.warn(`[Cleanup] Could not delete thumbnail ${thumbPath}: ${error.message}`);
-    }
+    result.thumbnailDeleted = await deleteSingleFile('thumbnail', thumbPath);
   }
 
   return result;
@@ -157,6 +169,88 @@ async function markFilesAsDeleted(screenshotId) {
 }
 
 /**
+ * Process a single screenshot for cleanup
+ * @param {Object} screenshot - Screenshot record
+ * @returns {Promise<boolean>} True if files were deleted
+ */
+async function processScreenshotForCleanup(screenshot) {
+  // Delete files from storage
+  const deleteResult = await deleteScreenshotFiles(screenshot.storage_path);
+
+  // Mark as deleted in database (even if file deletion failed - file may already be gone)
+  await markFilesAsDeleted(screenshot.id);
+
+  return deleteResult.screenshotDeleted || deleteResult.thumbnailDeleted;
+}
+
+/**
+ * Process a batch of screenshots
+ * @param {Array} screenshots - Screenshots to process
+ * @returns {Promise<{deleted: number, errors: number}>} Processing results
+ */
+async function processScreenshotBatch(screenshots) {
+  let deleted = 0;
+  let errors = 0;
+
+  for (const screenshot of screenshots) {
+    try {
+      const wasDeleted = await processScreenshotForCleanup(screenshot);
+      if (wasDeleted) {
+        deleted++;
+      }
+    } catch (error) {
+      errors++;
+      logger.error(`[Cleanup] Error processing screenshot ${screenshot.id}:`, error);
+    }
+  }
+
+  return { deleted, errors };
+}
+
+/**
+ * Check if we should continue processing more batches
+ * @param {Array} screenshots - Current batch of screenshots
+ * @returns {boolean} True if should continue
+ */
+function shouldContinueBatch(screenshots) {
+  return screenshots.length >= BATCH_SIZE;
+}
+
+/**
+ * Process all batches of screenshots
+ * @returns {Promise<{deleted: number, errors: number}>} Total results
+ */
+async function processAllBatches() {
+  let totalDeleted = 0;
+  let totalErrors = 0;
+  let offset = 0;
+  let hasMore = true;
+
+  while (hasMore) {
+    const screenshots = await getScreenshotsForCleanup(BATCH_SIZE, offset);
+
+    if (screenshots.length === 0) {
+      break;
+    }
+
+    logger.info(`[Cleanup] Processing batch of ${screenshots.length} screenshots (offset: ${offset})`);
+
+    const { deleted, errors } = await processScreenshotBatch(screenshots);
+    totalDeleted += deleted;
+    totalErrors += errors;
+
+    hasMore = shouldContinueBatch(screenshots);
+
+    // Small delay between batches to avoid rate limiting
+    if (hasMore) {
+      await new Promise(resolve => setTimeout(resolve, 500));
+    }
+  }
+
+  return { deleted: totalDeleted, errors: totalErrors };
+}
+
+/**
  * Main cleanup function - deletes old screenshot files from storage
  * @returns {Promise<{success: boolean, deleted: number, errors: number}>}
  */
@@ -168,65 +262,20 @@ async function runCleanup() {
 
   isRunning = true;
   const startTime = Date.now();
-  let totalDeleted = 0;
-  let totalErrors = 0;
 
   try {
     const cutoffDate = getCutoffDate();
     logger.info(`[Cleanup] Starting monthly cleanup job - deleting files older than ${cutoffDate.toLocaleDateString()}`);
 
-    let offset = 0;
-    let hasMore = true;
-
-    while (hasMore) {
-      const screenshots = await getScreenshotsForCleanup(BATCH_SIZE, offset);
-
-      if (screenshots.length === 0) {
-        hasMore = false;
-        break;
-      }
-
-      logger.info(`[Cleanup] Processing batch of ${screenshots.length} screenshots (offset: ${offset})`);
-
-      for (const screenshot of screenshots) {
-        try {
-          // Delete files from storage
-          const deleteResult = await deleteScreenshotFiles(screenshot.storage_path);
-
-          // Mark as deleted in database (even if file deletion failed - file may already be gone)
-          await markFilesAsDeleted(screenshot.id);
-
-          if (deleteResult.screenshotDeleted || deleteResult.thumbnailDeleted) {
-            totalDeleted++;
-          }
-        } catch (error) {
-          totalErrors++;
-          logger.error(`[Cleanup] Error processing screenshot ${screenshot.id}:`, error);
-          // Continue with next screenshot
-        }
-      }
-
-      // If we got fewer than batch size, we're done
-      if (screenshots.length < BATCH_SIZE) {
-        hasMore = false;
-      } else {
-        // Note: We don't increment offset because we're marking records as processed
-        // The next query will skip already-processed records via files_deleted filter
-      }
-
-      // Small delay between batches to avoid rate limiting
-      if (hasMore) {
-        await new Promise(resolve => setTimeout(resolve, 500));
-      }
-    }
+    const { deleted, errors } = await processAllBatches();
 
     const duration = ((Date.now() - startTime) / 1000).toFixed(2);
-    logger.info(`[Cleanup] Monthly cleanup completed in ${duration}s - ${totalDeleted} files deleted, ${totalErrors} errors`);
+    logger.info(`[Cleanup] Monthly cleanup completed in ${duration}s - ${deleted} files deleted, ${errors} errors`);
 
-    return { success: true, deleted: totalDeleted, errors: totalErrors };
+    return { success: true, deleted, errors };
   } catch (error) {
     logger.error('[Cleanup] Error in cleanup job:', error);
-    return { success: false, deleted: totalDeleted, errors: totalErrors };
+    return { success: false, deleted: 0, errors: 0 };
   } finally {
     isRunning = false;
   }
@@ -254,32 +303,60 @@ function getMillisecondsUntilScheduledTime() {
 }
 
 /**
+ * Check if timeout exceeds maximum safe value
+ * @param {number} ms - Milliseconds
+ * @returns {boolean} True if exceeds max timeout
+ */
+function exceedsMaxTimeout(ms) {
+  const MAX_TIMEOUT = 24 * 60 * 60 * 1000; // 24 hours in ms
+  return ms > MAX_TIMEOUT;
+}
+
+/**
+ * Schedule intermediate check (for timeouts > 24 hours)
+ */
+function scheduleIntermediateCheck() {
+  const MAX_TIMEOUT = 24 * 60 * 60 * 1000;
+  logger.info(`[Cleanup] Scheduling intermediate check in 24 hours (timeout too large for single setTimeout)`);
+  scheduledTimeoutId = setTimeout(() => {
+    scheduleNextRun(); // Re-check and schedule again
+  }, MAX_TIMEOUT);
+}
+
+/**
+ * Schedule direct cleanup run
+ * @param {number} msUntilNextRun - Milliseconds until next run
+ */
+function scheduleDirectRun(msUntilNextRun) {
+  scheduledTimeoutId = setTimeout(async () => {
+    await runCleanup();
+    scheduleNextRun(); // Schedule the next month's run
+  }, msUntilNextRun);
+}
+
+/**
+ * Log next scheduled run time
+ * @param {number} msUntilNextRun - Milliseconds until next run
+ */
+function logNextRunTime(msUntilNextRun) {
+  const daysUntilNextRun = (msUntilNextRun / (1000 * 60 * 60 * 24)).toFixed(2);
+  const nextRunTime = new Date(Date.now() + msUntilNextRun);
+  logger.info(`[Cleanup] Next scheduled run at ${nextRunTime.toLocaleString()} (in ${daysUntilNextRun} days)`);
+}
+
+/**
  * Schedule the next cleanup run
  * Uses chunked timeouts to avoid JavaScript's 32-bit signed integer overflow
  * (setTimeout max is ~24.8 days / 2,147,483,647 ms)
  */
 function scheduleNextRun() {
   const msUntilNextRun = getMillisecondsUntilScheduledTime();
-  const daysUntilNextRun = (msUntilNextRun / (1000 * 60 * 60 * 24)).toFixed(2);
+  logNextRunTime(msUntilNextRun);
 
-  const nextRunTime = new Date(Date.now() + msUntilNextRun);
-  logger.info(`[Cleanup] Next scheduled run at ${nextRunTime.toLocaleString()} (in ${daysUntilNextRun} days)`);
-
-  // Max safe timeout is ~24.8 days (2^31 - 1 ms). Use 24 hours as chunk size.
-  const MAX_TIMEOUT = 24 * 60 * 60 * 1000; // 24 hours in ms
-
-  if (msUntilNextRun > MAX_TIMEOUT) {
-    // Schedule a check in 24 hours, then re-evaluate
-    logger.info(`[Cleanup] Scheduling intermediate check in 24 hours (timeout too large for single setTimeout)`);
-    scheduledTimeoutId = setTimeout(() => {
-      scheduleNextRun(); // Re-check and schedule again
-    }, MAX_TIMEOUT);
+  if (exceedsMaxTimeout(msUntilNextRun)) {
+    scheduleIntermediateCheck();
   } else {
-    // Safe to schedule directly
-    scheduledTimeoutId = setTimeout(async () => {
-      await runCleanup();
-      scheduleNextRun(); // Schedule the next month's run
-    }, msUntilNextRun);
+    scheduleDirectRun(msUntilNextRun);
   }
 }
 

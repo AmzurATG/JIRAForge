@@ -15,7 +15,7 @@ const ATLASSIAN_ME_URL = 'https://api.atlassian.com/me';
  * Express middleware for Atlassian token authentication
  * Verifies the Bearer token is a valid Atlassian access token
  */
-module.exports = async (req, res, next) => {
+const atlassianAuth = async (req, res, next) => {
   try {
     const authHeader = req.headers.authorization;
 
@@ -66,3 +66,5 @@ module.exports = async (req, res, next) => {
     });
   }
 };
+
+module.exports = atlassianAuth;

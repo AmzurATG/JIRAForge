@@ -414,4 +414,365 @@ describe('NotificationPollingService', () => {
             pollingService.checkLoginReminders = originalCheckLogin;
         });
     });
+
+    describe('Helper Functions', () => {
+        describe('_queryUsersForLoginReminders', () => {
+            it('should query users eligible for login reminders', async () => {
+                const cutoffDate = new Date('2025-02-18T00:00:00Z');
+                const mockUsers = [
+                    { id: 'user1', organization_id: 'org1', email: 'user1@test.com' }
+                ];
+
+                mockSupabase.or.mockResolvedValue({ data: mockUsers, error: null });
+
+                const result = await pollingService._queryUsersForLoginReminders(mockSupabase, cutoffDate);
+
+                expect(result).toEqual(mockUsers);
+                expect(mockSupabase.eq).toHaveBeenCalledWith('is_active', true);
+                expect(mockSupabase.eq).toHaveBeenCalledWith('desktop_logged_in', false);
+            });
+
+            it('should handle database errors', async () => {
+                const cutoffDate = new Date();
+                mockSupabase.or.mockResolvedValue({ data: null, error: new Error('DB error') });
+
+                await expect(
+                    pollingService._queryUsersForLoginReminders(mockSupabase, cutoffDate)
+                ).rejects.toThrow('DB error');
+            });
+
+            it('should return empty array if no data', async () => {
+                const cutoffDate = new Date();
+                mockSupabase.or.mockResolvedValue({ data: null, error: null });
+
+                const result = await pollingService._queryUsersForLoginReminders(mockSupabase, cutoffDate);
+
+                expect(result).toEqual([]);
+            });
+        });
+
+        describe('_sendLoginReminderToUser', () => {
+            it('should send login reminder successfully', async () => {
+                const user = {
+                    id: 'user1',
+                    organization_id: 'org1',
+                    desktop_last_heartbeat: '2025-01-15T10:00:00Z'
+                };
+
+                notificationService.sendLoginReminder.mockResolvedValue({ success: true });
+
+                const result = await pollingService._sendLoginReminderToUser(user);
+
+                expect(result).toBe(true);
+                expect(notificationService.sendLoginReminder).toHaveBeenCalledWith(
+                    'user1',
+                    'org1',
+                    expect.objectContaining({
+                        lastLoginDate: expect.any(String)
+                    })
+                );
+            });
+
+            it('should handle null desktop_last_heartbeat', async () => {
+                const user = {
+                    id: 'user1',
+                    organization_id: 'org1',
+                    desktop_last_heartbeat: null
+                };
+
+                notificationService.sendLoginReminder.mockResolvedValue({ success: true });
+
+                const result = await pollingService._sendLoginReminderToUser(user);
+
+                expect(result).toBe(true);
+                expect(notificationService.sendLoginReminder).toHaveBeenCalledWith(
+                    'user1',
+                    'org1',
+                    expect.objectContaining({
+                        lastLoginDate: null
+                    })
+                );
+            });
+
+            it('should return false on send failure', async () => {
+                const user = { id: 'user1', organization_id: 'org1' };
+
+                notificationService.sendLoginReminder.mockRejectedValue(new Error('Send failed'));
+
+                const result = await pollingService._sendLoginReminderToUser(user);
+
+                expect(result).toBe(false);
+            });
+        });
+
+        describe('_queryUsersForDownloadReminders', () => {
+            it('should query users without desktop app', async () => {
+                const mockUsers = [
+                    { id: 'user1', organization_id: 'org1', desktop_app_version: null }
+                ];
+
+                mockSupabase.is.mockResolvedValue({ data: mockUsers, error: null });
+
+                const result = await pollingService._queryUsersForDownloadReminders(mockSupabase);
+
+                expect(result).toEqual(mockUsers);
+                expect(mockSupabase.is).toHaveBeenCalledWith('desktop_app_version', null);
+            });
+
+            it('should handle errors', async () => {
+                mockSupabase.is.mockResolvedValue({ data: null, error: new Error('Query failed') });
+
+                await expect(
+                    pollingService._queryUsersForDownloadReminders(mockSupabase)
+                ).rejects.toThrow('Query failed');
+            });
+        });
+
+        describe('_sendDownloadReminderToUser', () => {
+            it('should send download reminder successfully', async () => {
+                const user = { id: 'user1', organization_id: 'org1' };
+
+                notificationService.sendDownloadReminder.mockResolvedValue({ success: true });
+
+                const result = await pollingService._sendDownloadReminderToUser(user);
+
+                expect(result).toBe(true);
+                expect(notificationService.sendDownloadReminder).toHaveBeenCalledWith(
+                    'user1',
+                    'org1',
+                    'Windows'
+                );
+            });
+
+            it('should return false on failure', async () => {
+                const user = { id: 'user1', organization_id: 'org1' };
+
+                notificationService.sendDownloadReminder.mockRejectedValue(new Error('Failed'));
+
+                const result = await pollingService._sendDownloadReminderToUser(user);
+
+                expect(result).toBe(false);
+            });
+        });
+
+        describe('_groupUsersByOrganization', () => {
+            it('should group users by organization_id', () => {
+                const users = [
+                    { id: 'user1', organization_id: 'org1', email: 'u1@test.com' },
+                    { id: 'user2', organization_id: 'org2', email: 'u2@test.com' },
+                    { id: 'user3', organization_id: 'org1', email: 'u3@test.com' }
+                ];
+
+                const result = pollingService._groupUsersByOrganization(users);
+
+                expect(result).toEqual({
+                    org1: [users[0], users[2]],
+                    org2: [users[1]]
+                });
+            });
+
+            it('should handle empty array', () => {
+                const result = pollingService._groupUsersByOrganization([]);
+
+                expect(result).toEqual({});
+            });
+
+            it('should handle single organization', () => {
+                const users = [
+                    { id: 'user1', organization_id: 'org1' },
+                    { id: 'user2', organization_id: 'org1' }
+                ];
+
+                const result = pollingService._groupUsersByOrganization(users);
+
+                expect(result).toEqual({
+                    org1: users
+                });
+            });
+        });
+
+        describe('_getLatestAppRelease', () => {
+            it('should get latest app release', async () => {
+                const mockRelease = {
+                    version: '2.0.0',
+                    download_url: 'https://example.com/download',
+                    release_notes: 'New version',
+                    is_mandatory: false
+                };
+
+                mockSupabase.single.mockResolvedValue({ data: mockRelease, error: null });
+
+                const result = await pollingService._getLatestAppRelease(mockSupabase);
+
+                expect(result).toEqual(mockRelease);
+                expect(mockSupabase.eq).toHaveBeenCalledWith('platform', 'windows');
+                expect(mockSupabase.eq).toHaveBeenCalledWith('is_latest', true);
+                expect(mockSupabase.eq).toHaveBeenCalledWith('is_active', true);
+            });
+
+            it('should return null on error', async () => {
+                mockSupabase.single.mockResolvedValue({ data: null, error: new Error('Not found') });
+
+                const result = await pollingService._getLatestAppRelease(mockSupabase);
+
+                expect(result).toBeNull();
+            });
+        });
+
+        describe('_queryUsersWithOutdatedVersion', () => {
+            it('should query users with outdated versions', async () => {
+                const mockUsers = [
+                    { id: 'user1', desktop_app_version: '1.0.0' }
+                ];
+
+                mockSupabase.neq.mockResolvedValue({ data: mockUsers, error: null });
+
+                const result = await pollingService._queryUsersWithOutdatedVersion(mockSupabase, '2.0.0');
+
+                expect(result).toEqual(mockUsers);
+                expect(mockSupabase.neq).toHaveBeenCalledWith('desktop_app_version', '2.0.0');
+            });
+
+            it('should handle errors', async () => {
+                mockSupabase.neq.mockResolvedValue({ data: null, error: new Error('Query failed') });
+
+                await expect(
+                    pollingService._queryUsersWithOutdatedVersion(mockSupabase, '2.0.0')
+                ).rejects.toThrow('Query failed');
+            });
+        });
+
+        describe('_sendVersionNotificationToUser', () => {
+            it('should send notification for older version', async () => {
+                const user = {
+                    id: 'user1',
+                    organization_id: 'org1',
+                    desktop_app_version: '1.0.0'
+                };
+
+                const releaseInfo = {
+                    version: '2.0.0',
+                    download_url: 'https://example.com/download',
+                    release_notes: 'New features',
+                    is_mandatory: false
+                };
+
+                notificationService.sendNewVersionNotification.mockResolvedValue({ success: true });
+
+                const result = await pollingService._sendVersionNotificationToUser(user, releaseInfo);
+
+                expect(result).toBe(true);
+                expect(notificationService.sendNewVersionNotification).toHaveBeenCalled();
+            });
+
+            it('should not send notification if version is newer', async () => {
+                const user = {
+                    id: 'user1',
+                    organization_id: 'org1',
+                    desktop_app_version: '3.0.0'
+                };
+
+                const releaseInfo = {
+                    version: '2.0.0'
+                };
+
+                const result = await pollingService._sendVersionNotificationToUser(user, releaseInfo);
+
+                expect(result).toBe(false);
+                expect(notificationService.sendNewVersionNotification).not.toHaveBeenCalled();
+            });
+
+            it('should return false on send failure', async () => {
+                const user = {
+                    id: 'user1',
+                    organization_id: 'org1',
+                    desktop_app_version: '1.0.0'
+                };
+
+                const releaseInfo = {
+                    version: '2.0.0',
+                    download_url: 'https://example.com',
+                    release_notes: 'Notes',
+                    is_mandatory: false
+                };
+
+                notificationService.sendNewVersionNotification.mockRejectedValue(new Error('Failed'));
+
+                const result = await pollingService._sendVersionNotificationToUser(user, releaseInfo);
+
+                expect(result).toBe(false);
+            });
+        });
+
+        describe('_parseVersion', () => {
+            it('should parse version correctly', () => {
+                expect(pollingService._parseVersion('1.2.3')).toEqual([1, 2, 3]);
+                expect(pollingService._parseVersion('v2.0.1')).toEqual([2, 0, 1]);
+                expect(pollingService._parseVersion('10.5.0')).toEqual([10, 5, 0]);
+            });
+
+            it('should handle versions with different part counts', () => {
+                expect(pollingService._parseVersion('1.0')).toEqual([1, 0]);
+                expect(pollingService._parseVersion('5')).toEqual([5]);
+            });
+
+            it('should handle invalid versions', () => {
+                expect(pollingService._parseVersion(null)).toEqual([0]);
+                expect(pollingService._parseVersion(undefined)).toEqual([0]);
+                expect(pollingService._parseVersion('')).toEqual([0]);
+            });
+        });
+    });
+
+    describe('Statistics Tracking', () => {
+        it('should increment notification counters', async () => {
+            const mockUsers = [{ id: 'user1', organization_id: 'org1', email: 'test@test.com' }];
+            mockSupabase.or.mockResolvedValue({ data: mockUsers, error: null });
+            notificationService.sendLoginReminder.mockResolvedValue({ success: true });
+
+            await pollingService.checkLoginReminders();
+
+            expect(pollingService.stats.notificationsSent.login_reminder).toBe(1);
+        });
+
+        it('should track last errors', async () => {
+            pollingService.checkLoginReminders = jest.fn().mockRejectedValue(new Error('Test error'));
+            pollingService.checkDownloadReminders = jest.fn().mockResolvedValue();
+            pollingService.checkNewVersionNotifications = jest.fn().mockResolvedValue();
+            pollingService.checkInactivityAlerts = jest.fn().mockResolvedValue();
+
+            await pollingService.runAllChecks();
+
+            // Stats should still be updated despite errors
+            expect(pollingService.stats.runsCompleted).toBeGreaterThan(0);
+        });
+    });
+
+    describe('Edge Cases', () => {
+        it('should handle users with missing organization_id gracefully', async () => {
+            const usersWithMissingOrg = [
+                { id: 'user1', organization_id: null, email: 'test@test.com' }
+            ];
+
+            const grouped = pollingService._groupUsersByOrganization(usersWithMissingOrg);
+
+            expect(grouped).toHaveProperty('null');
+            expect(grouped.null).toEqual(usersWithMissingOrg);
+        });
+
+        it('should handle concurrent access to stats', async () => {
+            mockSupabase.or.mockResolvedValue({ data: [], error: null });
+            mockSupabase.is.mockResolvedValue({ data: [], error: null });
+            mockSupabase.single.mockResolvedValue({ data: null, error: null });
+            mockSupabase.lt.mockResolvedValue({ data: [], error: null });
+
+            // Run multiple checks concurrently
+            await Promise.all([
+                pollingService.runAllChecks(),
+                pollingService.runAllChecks()
+            ]);
+
+            expect(pollingService.stats.runsCompleted).toBeGreaterThanOrEqual(2);
+        });
+    });
 });

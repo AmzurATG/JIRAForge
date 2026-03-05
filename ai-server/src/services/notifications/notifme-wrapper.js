@@ -10,11 +10,14 @@
 const NotifmeSdk = require('notifme-sdk').default;
 const logger = require('../../utils/logger');
 
+
 class NotifMeWrapper {
+    sdk = null;
+    provider = null;
+    initialized = false;
+
     constructor() {
-        this.sdk = null;
-        this.provider = null;
-        this.initialized = false;
+        // Initialization handled by class fields
     }
 
     /**
@@ -74,7 +77,7 @@ class NotifMeWrapper {
                 providers: [{
                     type: 'smtp',
                     host: process.env.SMTP_HOST,
-                    port: parseInt(process.env.SMTP_PORT || '587', 10),
+                    port: Number.parseInt(process.env.SMTP_PORT || '587', 10),
                     secure: process.env.SMTP_SECURE === 'true',
                     auth: {
                         user: process.env.SMTP_USER,
@@ -213,7 +216,7 @@ class NotifMeWrapper {
      */
     _textToBasicHtml(text) {
         if (!text) return '';
-        return `<div style="font-family: sans-serif; white-space: pre-wrap;">${text.replace(/\n/g, '<br>')}</div>`;
+        return `<div style="font-family: sans-serif; white-space: pre-wrap;">${text.replaceAll('\n', '<br>')}</div>`;
     }
 
     /**
@@ -272,9 +275,11 @@ class NotifMeWrapper {
      * Reset the wrapper (useful for testing or reconfiguration)
      */
     reset() {
+        // Reset state and log the reset action
         this.sdk = null;
         this.provider = null;
         this.initialized = false;
+        logger.info('[NotifMe] Wrapper state has been reset');
     }
 }
 

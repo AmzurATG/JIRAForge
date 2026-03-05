@@ -10,7 +10,7 @@
  */
 
 const axios = require('axios');
-const path = require('path');
+const path = require('node:path');
 const logger = require('../utils/logger');
 const sessionStore = require('../services/feedback-session-store');
 const { createFeedback, getFeedbackById } = require('../services/db/feedback-db-service');
@@ -18,6 +18,136 @@ const { uploadFile } = require('../services/db/storage-service');
 const { processAndCreateJiraTicket } = require('../services/feedback-service');
 
 const ATLASSIAN_ME_URL = 'https://api.atlassian.com/me';
+const VALID_CATEGORIES = new Set(['bug', 'feature_request', 'improvement', 'question', 'other']);
+const ALLOWED_IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp']);
+const MAX_IMAGES = 3;
+const MAX_IMAGE_SIZE_BYTES = 5 * 1024 * 1024; // 5MB
+
+/**
+ * Verify Atlassian token and fetch user info
+ * @param {string} token - Atlassian bearer token
+ * @returns {Promise<Object>} User info from Atlassian
+ */
+async function verifyAtlassianToken(token) {
+  const userResponse = await axios.get(ATLASSIAN_ME_URL, {
+    headers: {
+      'Authorization': `Bearer ${token}`,
+      'Accept': 'application/json'
+    },
+    timeout: 10000
+  });
+  return userResponse.data;
+}
+
+/**
+ * Validate feedback submission input
+ * @param {Object} data - Submission data
+ * @returns {Object|null} Error object if validation fails, null if valid
+ */
+function validateFeedbackSubmission(data) {
+  const { session_id, category, description } = data;
+
+  if (!session_id) {
+    return { error: 'Session ID is required' };
+  }
+
+  if (!category) {
+    return { error: 'Category is required' };
+  }
+
+  if (!description?.trim()) {
+    return { error: 'Description is required' };
+  }
+
+  if (!VALID_CATEGORIES.has(category)) {
+    return { error: 'Invalid category' };
+  }
+
+  return null;
+}
+
+/**
+ * Check if image is valid
+ * @param {Object} img - Image object with data and type
+ * @param {Buffer} buffer - Decoded image buffer
+ * @returns {boolean} True if valid
+ */
+function isValidImage(img, buffer) {
+  if (!img.data || !img.type) {
+    return false;
+  }
+
+  if (buffer.length > MAX_IMAGE_SIZE_BYTES) {
+    logger.warn('[Feedback] Image exceeds 5MB limit (%d bytes), skipping', buffer.length);
+    return false;
+  }
+
+  if (!ALLOWED_IMAGE_TYPES.has(img.type)) {
+    logger.warn('[Feedback] Invalid image type %s, skipping', img.type);
+    return false;
+  }
+
+  return true;
+}
+
+/**
+ * Get file extension from MIME type
+ * @param {string} mimeType - Image MIME type
+ * @returns {string} File extension
+ */
+function getFileExtension(mimeType) {
+  const ext = mimeType.split('/')[1];
+  return ext === 'jpeg' ? 'jpg' : ext;
+}
+
+/**
+ * Upload single image to storage
+ * @param {Object} img - Image object
+ * @param {string} accountId - User account ID
+ * @param {number} index - Image index
+ * @returns {Promise<string|null>} Storage path or null if failed
+ */
+async function uploadSingleImage(img, accountId, index) {
+  try {
+    const buffer = Buffer.from(img.data, 'base64');
+
+    if (!isValidImage(img, buffer)) {
+      return null;
+    }
+
+    const ext = getFileExtension(img.type);
+    const storagePath = `${accountId}/${Date.now()}_${index}.${ext}`;
+
+    await uploadFile('feedback-images', storagePath, buffer, {
+      contentType: img.type,
+      upsert: false
+    });
+
+    return storagePath;
+  } catch (uploadError) {
+    logger.warn('[Feedback] Failed to upload image %d: %s', index, uploadError.message);
+    return null;
+  }
+}
+
+/**
+ * Upload multiple images to storage
+ * @param {Array} images - Array of image objects
+ * @param {string} accountId - User account ID
+ * @returns {Promise<Array<string>>} Array of storage paths
+ */
+async function uploadImages(images, accountId) {
+  if (!images || !Array.isArray(images)) {
+    return [];
+  }
+
+  const uploadPromises = images
+    .slice(0, MAX_IMAGES)
+    .map((img, index) => uploadSingleImage(img, accountId, index));
+
+  const results = await Promise.all(uploadPromises);
+  return results.filter(path => path !== null);
+}
 
 /**
  * Create a feedback session
@@ -31,6 +161,7 @@ exports.createSession = async (req, res) => {
   try {
     const { atlassian_token, cloud_id } = req.body;
 
+    // Early return for missing token
     if (!atlassian_token) {
       return res.status(400).json({
         success: false,
@@ -38,6 +169,7 @@ exports.createSession = async (req, res) => {
       });
     }
 
+    // Early return for missing cloud ID
     if (!cloud_id) {
       return res.status(400).json({
         success: false,
@@ -48,14 +180,7 @@ exports.createSession = async (req, res) => {
     // Verify the Atlassian token by fetching user info
     let atlassianUser;
     try {
-      const userResponse = await axios.get(ATLASSIAN_ME_URL, {
-        headers: {
-          'Authorization': `Bearer ${atlassian_token}`,
-          'Accept': 'application/json'
-        },
-        timeout: 10000
-      });
-      atlassianUser = userResponse.data;
+      atlassianUser = await verifyAtlassianToken(atlassian_token);
     } catch (error) {
       logger.warn('[Feedback] Invalid Atlassian token:', error.response?.status);
       return res.status(401).json({
@@ -130,22 +255,10 @@ exports.submitFeedback = async (req, res) => {
   try {
     const { session_id, category, title, description, images, app_version } = req.body;
 
-    if (!session_id) {
-      return res.status(400).json({ success: false, error: 'Session ID is required' });
-    }
-
-    if (!category) {
-      return res.status(400).json({ success: false, error: 'Category is required' });
-    }
-
-    if (!description || !description.trim()) {
-      return res.status(400).json({ success: false, error: 'Description is required' });
-    }
-
-    // Validate category
-    const validCategories = ['bug', 'feature_request', 'improvement', 'question', 'other'];
-    if (!validCategories.includes(category)) {
-      return res.status(400).json({ success: false, error: 'Invalid category' });
+    // Validate input
+    const validationError = validateFeedbackSubmission(req.body);
+    if (validationError) {
+      return res.status(400).json({ success: false, ...validationError });
     }
 
     // Consume session (one-time use)
@@ -158,46 +271,7 @@ exports.submitFeedback = async (req, res) => {
     }
 
     // Upload images to Supabase storage
-    const imagePaths = [];
-    if (images && Array.isArray(images)) {
-      const maxImages = 3;
-      const maxSizeBytes = 5 * 1024 * 1024; // 5MB
-
-      for (let i = 0; i < Math.min(images.length, maxImages); i++) {
-        const img = images[i];
-        if (!img.data || !img.type) continue;
-
-        // Decode base64
-        const buffer = Buffer.from(img.data, 'base64');
-
-        // Validate size
-        if (buffer.length > maxSizeBytes) {
-          logger.warn('[Feedback] Image %d exceeds 5MB limit (%d bytes), skipping', i, buffer.length);
-          continue;
-        }
-
-        // Validate MIME type
-        const allowedTypes = ['image/png', 'image/jpeg', 'image/gif', 'image/webp'];
-        if (!allowedTypes.includes(img.type)) {
-          logger.warn('[Feedback] Invalid image type %s, skipping', img.type);
-          continue;
-        }
-
-        // Generate storage path
-        const ext = img.type.split('/')[1] === 'jpeg' ? 'jpg' : img.type.split('/')[1];
-        const storagePath = `${session.userInfo.account_id}/${Date.now()}_${i}.${ext}`;
-
-        try {
-          await uploadFile('feedback-images', storagePath, buffer, {
-            contentType: img.type,
-            upsert: false
-          });
-          imagePaths.push(storagePath);
-        } catch (uploadError) {
-          logger.warn('[Feedback] Failed to upload image %d: %s', i, uploadError.message);
-        }
-      }
-    }
+    const imagePaths = await uploadImages(images, session.userInfo.account_id);
 
     // Save feedback to database
     const feedback = await createFeedback({
@@ -257,9 +331,9 @@ exports.getFeedbackStatus = async (req, res) => {
     res.json({
       success: true,
       status: feedback.jira_creation_status,
-      jira_issue_key: feedback.jira_issue_key || null,
-      jira_issue_url: feedback.jira_issue_url || null,
-      error: feedback.jira_creation_error || null
+      jira_issue_key: feedback.jira_issue_key ?? null,
+      jira_issue_url: feedback.jira_issue_url ?? null,
+      error: feedback.jira_creation_error ?? null
     });
 
   } catch (error) {
@@ -277,7 +351,11 @@ exports.getFeedbackStatus = async (req, res) => {
  * @returns {string} HTML error page
  */
 function escapeHtml(str) {
-  return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  return str
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;');
 }
 
 function getErrorPage(message) {

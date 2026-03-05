@@ -34,10 +34,12 @@ const NotifmeSdk = require('notifme-sdk').default;
 const logger = require('../../utils/logger');
 
 class NotifMeWrapperEnhanced {
+    sdk = null;
+    providers = [];
+    initialized = false;
+
     constructor() {
-        this.sdk = null;
-        this.providers = [];
-        this.initialized = false;
+        // Class fields initialized above
     }
 
     /**
@@ -119,9 +121,10 @@ class NotifMeWrapperEnhanced {
         });
 
         // Log the final priority order
-        const priorityInfo = providers.map(p => 
-            `${p.type}${p.priority ? `(${p.priority})` : ''}`
-        ).join(' → ');
+        const priorityInfo = providers.map(p => {
+            const priority = p.priority ? `(${p.priority})` : '';
+            return `${p.type}${priority}`;
+        }).join(' → ');
         logger.info(`[NotifMe] Provider priority order: ${priorityInfo}`);
 
         const strategy = process.env.EMAIL_MULTI_PROVIDER_STRATEGY || 'fallback';
@@ -141,69 +144,21 @@ class NotifMeWrapperEnhanced {
      * @returns {Object|null} Provider configuration or null if credentials missing
      */
     _getProviderConfig(provider) {
-        let config = null;
-        
-        switch (provider) {
-            case 'sendgrid':
-                if (process.env.SENDGRID_API_KEY) {
-                    config = {
-                        type: 'sendgrid',
-                        apiKey: process.env.SENDGRID_API_KEY
-                    };
-                }
-                break;
+        const configBuilders = {
+            sendgrid: this._buildSendGridConfig,
+            mailgun: this._buildMailgunConfig,
+            smtp: this._buildSmtpConfig,
+            ses: this._buildSesConfig,
+            sparkpost: this._buildSparkPostConfig
+        };
 
-            case 'mailgun':
-                if (process.env.MAILGUN_API_KEY && process.env.MAILGUN_DOMAIN) {
-                    config = {
-                        type: 'mailgun',
-                        apiKey: process.env.MAILGUN_API_KEY,
-                        domainName: process.env.MAILGUN_DOMAIN
-                    };
-                }
-                break;
-
-            case 'smtp':
-                if (process.env.SMTP_HOST && process.env.SMTP_PORT) {
-                    config = {
-                        type: 'smtp',
-                        host: process.env.SMTP_HOST,
-                        port: parseInt(process.env.SMTP_PORT || '587', 10),
-                        secure: process.env.SMTP_SECURE === 'true',
-                        auth: {
-                            user: process.env.SMTP_USER,
-                            pass: process.env.SMTP_PASSWORD
-                        }
-                    };
-                }
-                break;
-
-            case 'ses':
-                if (process.env.AWS_ACCESS_KEY_ID && process.env.AWS_SECRET_ACCESS_KEY) {
-                    config = {
-                        type: 'ses',
-                        region: process.env.AWS_SES_REGION || process.env.AWS_REGION || 'us-east-1',
-                        accessKeyId: process.env.AWS_ACCESS_KEY_ID,
-                        secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
-                        ...(process.env.AWS_SESSION_TOKEN && { sessionToken: process.env.AWS_SESSION_TOKEN })
-                    };
-                }
-                break;
-
-            case 'sparkpost':
-                if (process.env.SPARKPOST_API_KEY) {
-                    config = {
-                        type: 'sparkpost',
-                        apiKey: process.env.SPARKPOST_API_KEY
-                    };
-                }
-                break;
-
-            default:
-                logger.warn(`[NotifMe] Unknown email provider: ${provider}`);
-                return null;
+        const builder = configBuilders[provider];
+        if (!builder) {
+            logger.warn(`[NotifMe] Unknown email provider: ${provider}`);
+            return null;
         }
 
+        const config = builder.call(this);
         if (!config) {
             return null;
         }
@@ -212,10 +167,70 @@ class NotifMeWrapperEnhanced {
         // Environment variable format: SENDGRID_PRIORITY=1, SMTP_PRIORITY=99
         const priorityEnvVar = `${provider.toUpperCase()}_PRIORITY`;
         if (process.env[priorityEnvVar]) {
-            config.priority = parseInt(process.env[priorityEnvVar], 10);
+            config.priority = Number.parseInt(process.env[priorityEnvVar], 10);
         }
 
         return config;
+    }
+
+    _buildSendGridConfig() {
+        if (!process.env.SENDGRID_API_KEY) {
+            return null;
+        }
+        return {
+            type: 'sendgrid',
+            apiKey: process.env.SENDGRID_API_KEY
+        };
+    }
+
+    _buildMailgunConfig() {
+        if (!process.env.MAILGUN_API_KEY || !process.env.MAILGUN_DOMAIN) {
+            return null;
+        }
+        return {
+            type: 'mailgun',
+            apiKey: process.env.MAILGUN_API_KEY,
+            domainName: process.env.MAILGUN_DOMAIN
+        };
+    }
+
+    _buildSmtpConfig() {
+        if (!process.env.SMTP_HOST || !process.env.SMTP_PORT) {
+            return null;
+        }
+        return {
+            type: 'smtp',
+            host: process.env.SMTP_HOST,
+            port: Number.parseInt(process.env.SMTP_PORT || '587', 10),
+            secure: process.env.SMTP_SECURE === 'true',
+            auth: {
+                user: process.env.SMTP_USER,
+                pass: process.env.SMTP_PASSWORD
+            }
+        };
+    }
+
+    _buildSesConfig() {
+        if (!process.env.AWS_ACCESS_KEY_ID || !process.env.AWS_SECRET_ACCESS_KEY) {
+            return null;
+        }
+        return {
+            type: 'ses',
+            region: process.env.AWS_SES_REGION || process.env.AWS_REGION || 'us-east-1',
+            accessKeyId: process.env.AWS_ACCESS_KEY_ID,
+            secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
+            ...(process.env.AWS_SESSION_TOKEN && { sessionToken: process.env.AWS_SESSION_TOKEN })
+        };
+    }
+
+    _buildSparkPostConfig() {
+        if (!process.env.SPARKPOST_API_KEY) {
+            return null;
+        }
+        return {
+            type: 'sparkpost',
+            apiKey: process.env.SPARKPOST_API_KEY
+        };
     }
 
     /**
@@ -302,7 +317,7 @@ class NotifMeWrapperEnhanced {
         if (!text) return '';
         return text
             .split('\n\n')
-            .map(para => `<p>${para.replace(/\n/g, '<br>')}</p>`)
+            .map(para => `<p>${para.replaceAll('\n', '<br>')}</p>`)
             .join('');
     }
 

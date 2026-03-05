@@ -75,7 +75,10 @@ exports.parseRequirements = async (text, context = {}) => {
       const jsonString = jsonMatch ? jsonMatch[1] : content;
       parsedData = JSON.parse(jsonString);
     } catch (parseError) {
-      logger.error('Failed to parse BRD response as JSON:', content.substring(0, 200));
+      logger.error('Failed to parse BRD response as JSON:', {
+        contentPreview: content.substring(0, 200),
+        error: parseError
+      });
       throw new Error('Invalid JSON response from AI');
     }
 
@@ -174,7 +177,7 @@ exports.createJiraIssues = async ({ requirements, projectKey, userId }) => {
       storiesCount: requirements.stories?.length || 0
     });
 
-    const createdIssues = [];
+    
 
     // This would call the Forge app's API to create Jira issues
     // For now, log the action
@@ -194,27 +197,6 @@ exports.createJiraIssues = async ({ requirements, projectKey, userId }) => {
     // 3. For each Story, create linked Tasks
     // 4. Return the created issue keys
 
-    /*
-    // Create Epics
-    for (const epic of requirements.epics) {
-      const epicIssue = await createJiraEpic(epic, projectKey);
-      createdIssues.push(epicIssue);
-
-      // Create Stories for this Epic
-      const epicStories = requirements.stories.filter(s => s.epic_id === epic.title);
-      for (const story of epicStories) {
-        const storyIssue = await createJiraStory(story, projectKey, epicIssue.key);
-        createdIssues.push(storyIssue);
-
-        // Create Tasks for this Story
-        const storyTasks = requirements.tasks.filter(t => t.story_id === story.id);
-        for (const task of storyTasks) {
-          const taskIssue = await createJiraTask(task, projectKey, storyIssue.key);
-          createdIssues.push(taskIssue);
-        }
-      }
-    }
-    */
 
     // Placeholder response
     return [];

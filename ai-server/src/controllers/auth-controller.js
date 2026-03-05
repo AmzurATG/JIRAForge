@@ -290,7 +290,8 @@ exports.exchangeToken = async (req, res) => {
     logger.info('[Auth] User validated in system: %s (org: %s)', atlassianAccountId, dbUser.organization_id);
 
     // Extract Supabase reference from URL (e.g., jvijitdewbypqbatfboi from https://jvijitdewbypqbatfboi.supabase.co)
-    const supabaseRef = supabaseUrl ? supabaseUrl.match(/https:\/\/([^.]+)\.supabase\.co/)?.[1] : null;
+    const supabaseRefMatch = supabaseUrl ? /https:\/\/([^.]+)\.supabase\.co/.exec(supabaseUrl) : null;
+    const supabaseRef = supabaseRefMatch?.[1] || null;
 
     // Mint a custom Supabase JWT for this user
     // This JWT will be used for RLS (Row Level Security) in Supabase
@@ -502,8 +503,8 @@ exports.getOcrConfig = async (req, res) => {
       
       // Global preprocessing settings
       use_preprocessing: (process.env.OCR_USE_PREPROCESSING || 'true').toLowerCase() === 'true',
-      max_image_dimension: parseInt(process.env.OCR_MAX_IMAGE_DIMENSION || '4096', 10),
-      preprocessing_target_dpi: parseInt(process.env.OCR_PREPROCESSING_TARGET_DPI || '300', 10),
+      max_image_dimension: Number.parseInt(process.env.OCR_MAX_IMAGE_DIMENSION || '4096', 10),
+      preprocessing_target_dpi: Number.parseInt(process.env.OCR_PREPROCESSING_TARGET_DPI || '300', 10),
       
       // Engine-specific configurations (dynamically discovered from env)
       engines: {}
@@ -515,10 +516,11 @@ exports.getOcrConfig = async (req, res) => {
     ocrConfig.fallback_engines.forEach(e => discoveredEngines.add(e));
 
     // Scan environment for OCR_<ENGINE>_* patterns
+    const OCR_RESERVED_PARTS = new Set(['PRIMARY', 'FALLBACK', 'USE', 'MAX', 'PREPROCESSING']);
     Object.keys(process.env).forEach(key => {
       if (key.startsWith('OCR_') && key.includes('_', 4)) {
         const parts = key.split('_');
-        if (parts.length >= 3 && !['PRIMARY', 'FALLBACK', 'USE', 'MAX', 'PREPROCESSING'].includes(parts[1])) {
+        if (parts.length >= 3 && !OCR_RESERVED_PARTS.has(parts[1])) {
           discoveredEngines.add(parts[1].toLowerCase());
         }
       }
@@ -530,18 +532,18 @@ exports.getOcrConfig = async (req, res) => {
       const engineConfig = {
         name: engineName,
         enabled: (process.env[`${prefix}ENABLED`] || 'true').toLowerCase() === 'true',
-        min_confidence: parseFloat(process.env[`${prefix}MIN_CONFIDENCE`] || '0.5'),
+        min_confidence: Number.parseFloat(process.env[`${prefix}MIN_CONFIDENCE`] || '0.5'),
         use_gpu: (process.env[`${prefix}USE_GPU`] || 'false').toLowerCase() === 'true',
         language: process.env[`${prefix}LANGUAGE`] || 'en',
         extra_params: {}
       };
 
       // Capture any extra custom parameters
-      const standardKeys = ['ENABLED', 'MIN_CONFIDENCE', 'USE_GPU', 'LANGUAGE'];
+      const standardKeys = new Set(['ENABLED', 'MIN_CONFIDENCE', 'USE_GPU', 'LANGUAGE']);
       Object.keys(process.env).forEach(key => {
         if (key.startsWith(prefix)) {
           const paramName = key.substring(prefix.length).toLowerCase();
-          if (!standardKeys.includes(paramName.toUpperCase())) {
+          if (!standardKeys.has(paramName.toUpperCase())) {
             engineConfig.extra_params[paramName] = process.env[key];
           }
         }

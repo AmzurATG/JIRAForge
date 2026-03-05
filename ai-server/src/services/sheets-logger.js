@@ -18,7 +18,7 @@
 
 const { google } = require('googleapis');
 const logger = require('../utils/logger');
-const os = require('os');
+const os = require('node:os');
 
 // Singleton instance
 let sheetsLogger = null;
@@ -40,6 +40,7 @@ function getIpAddress() {
     }
     return os.hostname();
   } catch (error) {
+    logger.error('[SheetsLogger] Failed to get IP address:', error);
     return 'Unknown';
   }
 }
@@ -54,21 +55,21 @@ function calculateCost(provider, model, inputTokens, outputTokens) {
   // Pricing per 1M tokens
   const pricing = {
     fireworks: {
-      'qwen2p5-vl-32b': { input: 0.40, output: 0.40 },
-      'qwen2p5-vl-72b': { input: 0.90, output: 0.90 },
-      'llama-v3p2-11b-vision': { input: 0.20, output: 0.20 },
-      'default': { input: 0.50, output: 0.50 }
+      'qwen2p5-vl-32b': { input: 0.4, output: 0.4 },
+      'qwen2p5-vl-72b': { input: 0.9, output: 0.9 },
+      'llama-v3p2-11b-vision': { input: 0.2, output: 0.2 },
+      'default': { input: 0.5, output: 0.5 }
     },
     portkey: {
       // Gemini models (primary via google-key1 / google-key2)
-      'gemini-2.0-flash-lite': { input: 0.075, output: 0.30 },
-      'gemini-2.0-flash': { input: 0.10, output: 0.40 },
-      'gemini-1.5-flash': { input: 0.075, output: 0.30 },
-      'gemini-1.5-pro': { input: 1.25, output: 5.00 },
+      'gemini-2.0-flash-lite': { input: 0.075, output: 0.3 },
+      'gemini-2.0-flash': { input: 0.1, output: 0.4 },
+      'gemini-1.5-flash': { input: 0.075, output: 0.3 },
+      'gemini-1.5-pro': { input: 1.25, output: 5 },
       // OpenAI models (fallback via openai-key1 / openai-key2)
-      'gpt-4o': { input: 5.00, output: 15.00 },
-      'gpt-4o-mini': { input: 0.15, output: 0.60 },
-      'default': { input: 0.10, output: 0.40 }
+      'gpt-4o': { input: 5, output: 15 },
+      'gpt-4o-mini': { input: 0.15, output: 0.6 },
+      'default': { input: 0.1, output: 0.4 }
     }
   };
 
@@ -88,7 +89,7 @@ function calculateCost(provider, model, inputTokens, outputTokens) {
   const inputCost = (inputTokens / 1000000) * modelPricing.input;
   const outputCost = (outputTokens / 1000000) * modelPricing.output;
 
-  return parseFloat((inputCost + outputCost).toFixed(6));
+  return Number.parseFloat((inputCost + outputCost).toFixed(6));
 }
 
 /**
@@ -163,55 +164,54 @@ class SheetsLogger {
     employeeName = null,
     projectName = null
   }) {
-    if (!this.enabled) {
-      logger.debug('[SheetsLogger] Logging disabled, skipping');
-      return false;
-    }
+    if (this.enabled && this.sheetId) {
+      try {
+        const sheets = await this._getSheets();
 
-    if (!this.sheetId) {
-      logger.debug('[SheetsLogger] No sheet ID configured, skipping');
-      return false;
-    }
+        // Calculate cost if not provided
+        const calculatedCost = cost !== null ? cost : calculateCost(provider, model, inputTokens, outputTokens);
 
-    try {
-      const sheets = await this._getSheets();
+        // Prepare row data
+        const row = [
+          new Date().toISOString().replace('T', ' ').substring(0, 19),  // TimeStamp
+          employeeName || this.employeeName,                            // Employee Name
+          getIpAddress(),                                               // IP Address
+          projectName || this.projectName,                              // Project Name
+          apiCallName,                                                  // API call name
+          this.apiAccountEmail,                                         // API account email
+          provider,                                                     // Provider
+          model,                                                        // Model Used
+          inputTokens,                                                  // Input token size
+          outputTokens,                                                 // Output token size
+          calculatedCost                                                // Cost incurred
+        ];
 
-      // Calculate cost if not provided
-      const calculatedCost = cost !== null ? cost : calculateCost(provider, model, inputTokens, outputTokens);
+        // Append row to sheet
+        await sheets.spreadsheets.values.append({
+          spreadsheetId: this.sheetId,
+          range: `${this.sheetName}!A:K`,
+          valueInputOption: 'RAW',
+          insertDataOption: 'INSERT_ROWS',
+          resource: {
+            values: [row]
+          }
+        });
 
-      // Prepare row data
-      const row = [
-        new Date().toISOString().replace('T', ' ').substring(0, 19),  // TimeStamp
-        employeeName || this.employeeName,                            // Employee Name
-        getIpAddress(),                                               // IP Address
-        projectName || this.projectName,                              // Project Name
-        apiCallName,                                                  // API call name
-        this.apiAccountEmail,                                         // API account email
-        provider,                                                     // Provider
-        model,                                                        // Model Used
-        inputTokens,                                                  // Input token size
-        outputTokens,                                                 // Output token size
-        calculatedCost                                                // Cost incurred
-      ];
+        logger.debug('[SheetsLogger] Logged: %s | %s | %s | in:%d out:%d | $%s',
+          apiCallName, provider, model, inputTokens, outputTokens, calculatedCost);
 
-      // Append row to sheet
-      await sheets.spreadsheets.values.append({
-        spreadsheetId: this.sheetId,
-        range: `${this.sheetName}!A:K`,
-        valueInputOption: 'RAW',
-        insertDataOption: 'INSERT_ROWS',
-        resource: {
-          values: [row]
-        }
-      });
-
-      logger.debug('[SheetsLogger] Logged: %s | %s | %s | in:%d out:%d | $%s',
-        apiCallName, provider, model, inputTokens, outputTokens, calculatedCost);
-
-      return true;
-    } catch (error) {
-      // Don't fail the request if logging fails
-      logger.warn('[SheetsLogger] Failed to log request:', error.message);
+        return true;
+      } catch (error) {
+        // Don't fail the request if logging fails
+        logger.warn('[SheetsLogger] Failed to log request:', error.message);
+        return false;
+      }
+    } else {
+      if (!this.enabled) {
+        logger.debug('[SheetsLogger] Logging disabled, skipping');
+      } else if (!this.sheetId) {
+        logger.debug('[SheetsLogger] No sheet ID configured, skipping');
+      }
       return false;
     }
   }

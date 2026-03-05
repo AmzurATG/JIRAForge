@@ -69,10 +69,11 @@ router.get('/history/:userId', async (req, res) => {
         const { userId } = req.params;
         const { limit = 50, offset = 0, type } = req.query;
 
+
         const history = await notificationDb.getUserNotificationHistory(
             userId,
-            parseInt(limit, 10),
-            parseInt(offset, 10),
+            Number.parseInt(limit, 10),
+            Number.parseInt(offset, 10),
             type || null
         );
 
@@ -80,9 +81,9 @@ router.get('/history/:userId', async (req, res) => {
             success: true,
             data: history,
             pagination: {
-                limit: parseInt(limit, 10),
-                offset: parseInt(offset, 10),
-                hasMore: history.length === parseInt(limit, 10)
+                limit: Number.parseInt(limit, 10),
+                offset: Number.parseInt(offset, 10),
+                hasMore: history.length === Number.parseInt(limit, 10)
             }
         });
 

@@ -4,8 +4,7 @@
  * The AI server handles Supabase operations securely without exposing credentials
  */
 
-import { invokeRemote } from '@forge/api';
-import api, { route } from '@forge/api';
+import api, { invokeRemote, route } from '@forge/api';
 import { getFromCache, setInCache, TTL, CacheKeys } from './cache.js';
 
 // Remote key from manifest.yml - must match exactly
@@ -24,18 +23,21 @@ const inFlightRequests = new Map();
  * @param {Object} options - Request options
  * @returns {Promise<Object>} Response data
  */
+const MAX_RETRIES = 2;
+const BASE_DELAY_MS = 1000;
+
+async function performRetryDelay(attempt, endpoint) {
+  if (attempt === 0) return;
+  const delay = BASE_DELAY_MS * attempt;
+  console.log(`[Remote] Retry ${attempt}/${MAX_RETRIES} for ${endpoint} after ${delay}ms`);
+  await new Promise(resolve => setTimeout(resolve, delay));
+}
+
 async function remoteRequest(endpoint, options = {}) {
-  const MAX_RETRIES = 2;
-  const BASE_DELAY_MS = 1000;
-
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
-    try {
-      if (attempt > 0) {
-        const delay = BASE_DELAY_MS * attempt;
-        console.log(`[Remote] Retry ${attempt}/${MAX_RETRIES} for ${endpoint} after ${delay}ms`);
-        await new Promise(resolve => setTimeout(resolve, delay));
-      }
+    await performRetryDelay(attempt, endpoint);
 
+    try {
       console.log(`[Remote] invokeRemote to ${REMOTE_KEY}${endpoint}`);
 
       const response = await invokeRemote(REMOTE_KEY, {
@@ -52,9 +54,9 @@ async function remoteRequest(endpoint, options = {}) {
 
       if (!response.ok) {
         const errorText = await response.text();
-        const isRetryable = response.status === 401 || response.status >= 500;
+        const shouldRetry = (response.status === 401 || response.status >= 500) && attempt < MAX_RETRIES;
 
-        if (isRetryable && attempt < MAX_RETRIES) {
+        if (shouldRetry) {
           console.warn(`[Remote] Retryable error ${response.status} on ${endpoint} (attempt ${attempt + 1})`);
           continue;
         }
@@ -75,8 +77,9 @@ async function remoteRequest(endpoint, options = {}) {
         error.message?.includes('ETIMEDOUT') ||
         error.message?.includes('ECONNRESET') ||
         error.message?.includes('fetch failed');
+      const shouldRetry = isRetryable && attempt < MAX_RETRIES;
 
-      if (isRetryable && attempt < MAX_RETRIES) {
+      if (shouldRetry) {
         console.warn(`[Remote] Retryable error on ${endpoint} (attempt ${attempt + 1}):`, error.message);
         continue;
       }
@@ -103,6 +106,45 @@ export async function supabaseQuery(table, options = {}) {
       select: options.select
     }
   });
+}
+
+/**
+ * Fetch Jira site info (baseUrl and site name) from the Jira API.
+ * Returns empty object if the API call fails or returns a non-ok response.
+ * @returns {Promise<{baseUrl?: string, siteName?: string}>}
+ */
+async function fetchJiraSiteInfo() {
+  try {
+    console.log('[Remote] Fetching Jira server info for organization details');
+    const serverInfoResponse = await api.asApp().requestJira(
+      route`/rest/api/3/serverInfo`,
+      { method: 'GET' }
+    );
+
+    if (!serverInfoResponse.ok) return {};
+
+    const serverInfo = await serverInfoResponse.json();
+    let siteName = serverInfo.serverTitle;
+
+    // serverTitle often returns generic "Jira" - extract site name from URL instead
+    if (!siteName || siteName === 'Jira' || siteName === 'Jira Software') {
+      try {
+        const url = new URL(serverInfo.baseUrl);
+        const subdomain = url.hostname.split('.')[0];
+        // Only use subdomain if it's not a UUID (cloud IDs look like UUIDs)
+        if (subdomain && !/^[0-9a-f]{8}-[0-9a-f]{4}-/i.exec(subdomain)) {
+          siteName = subdomain;
+        }
+      } catch {
+        // URL parsing failed, keep serverTitle
+      }
+    }
+
+    return { baseUrl: serverInfo.baseUrl, siteName };
+  } catch (apiError) {
+    console.warn('[Remote] Could not fetch Jira server info:', apiError.message);
+    return {};
+  }
 }
 
 /**
@@ -133,39 +175,11 @@ export async function getOrCreateOrganization(cloudId, orgName = null, jiraUrl =
     try {
       // If orgName or jiraUrl not provided, fetch from Jira API
       if (!orgName || !jiraUrl) {
-        try {
-          console.log('[Remote] Fetching Jira server info for organization details');
-          const serverInfoResponse = await api.asApp().requestJira(
-            route`/rest/api/3/serverInfo`,
-            { method: 'GET' }
-          );
-
-          if (serverInfoResponse.ok) {
-            const serverInfo = await serverInfoResponse.json();
-            jiraUrl = jiraUrl || serverInfo.baseUrl;
-
-            // serverTitle often returns generic "Jira" - extract site name from URL instead
-            let siteName = serverInfo.serverTitle;
-            if (!siteName || siteName === 'Jira' || siteName === 'Jira Software') {
-              // Extract subdomain from URL (e.g., "saik" from "https://saik.atlassian.net")
-              try {
-                const url = new URL(jiraUrl);
-                const subdomain = url.hostname.split('.')[0];
-                // Only use subdomain if it's not a UUID (cloud IDs look like UUIDs)
-                if (subdomain && !subdomain.match(/^[0-9a-f]{8}-[0-9a-f]{4}-/i)) {
-                  siteName = subdomain;
-                }
-              } catch (e) {
-                // URL parsing failed, keep serverTitle
-              }
-            }
-
-            orgName = orgName || siteName || 'Unknown Organization';
-            console.log(`[Remote] Got Jira info - Name: ${orgName}, URL: ${jiraUrl}`);
-          }
-        } catch (apiError) {
-          console.warn('[Remote] Could not fetch Jira server info:', apiError.message);
-          // Continue with defaults if API call fails
+        const siteInfo = await fetchJiraSiteInfo();
+        if (siteInfo.baseUrl) {
+          jiraUrl = jiraUrl || siteInfo.baseUrl;
+          orgName = orgName || siteInfo.siteName || 'Unknown Organization';
+          console.log(`[Remote] Got Jira info - Name: ${orgName}, URL: ${jiraUrl}`);
         }
       }
 
@@ -203,7 +217,7 @@ export async function getOrCreateUser(accountId, organizationId = null, email = 
 
   // Check cache first
   const cached = getFromCache(cacheKey);
-  if (cached && cached.organizationId === organizationId) {
+  if (cached?.organizationId === organizationId) {
     return cached.userId;
   }
 
@@ -313,11 +327,12 @@ export async function fetchDashboardData(options = {}) {
   const projectKeys = options.projectKeys;
   const hasProjectFilters = Array.isArray(projectKeys) && projectKeys.length > 0;
   const hasExplicitEmptyProjects = Array.isArray(projectKeys) && projectKeys.length === 0;
-  const projectKeysSuffix = hasProjectFilters
-    ? `:${[...projectKeys].sort().join(',')}`
-    : hasExplicitEmptyProjects
-      ? ':none'
-      : ':all';
+  let projectKeysSuffix;
+  if (hasProjectFilters) {
+    projectKeysSuffix = `:${[...projectKeys].sort((a, b) => a.localeCompare(b)).join(',')}`;
+  } else {
+    projectKeysSuffix = hasExplicitEmptyProjects ? ':none' : ':all';
+  }
   const cacheKey = `dashboard:batch${projectKeysSuffix}`;
   
   // Short-lived cache (30 seconds) for dashboard data

@@ -3,6 +3,83 @@ const supabaseService = require('../services/supabase-service');
 const logger = require('../utils/logger');
 
 /**
+ * Validate required fields for BRD processing
+ */
+function validateBRDRequest(body) {
+  const { document_id, user_id, storage_url, file_type } = body;
+  
+  if (!document_id || !user_id || !storage_url || !file_type) {
+    return {
+      valid: false,
+      error: 'Missing required fields: document_id, user_id, storage_url, file_type'
+    };
+  }
+  
+  return { valid: true };
+}
+
+/**
+ * Extract text from document based on file type
+ */
+async function extractTextFromDocument(documentBuffer, fileType) {
+  if (fileType === 'pdf') {
+    return await brdService.extractTextFromPDF(documentBuffer);
+  }
+  
+  if (fileType === 'docx' || fileType === 'doc') {
+    return await brdService.extractTextFromDocx(documentBuffer);
+  }
+  
+  throw new Error(`Unsupported file type: ${fileType}`);
+}
+
+/**
+ * Attempt to create Jira issues automatically if configured
+ */
+async function tryCreateJiraIssues(parsedRequirements, projectKey, userId, documentId) {
+  if (process.env.AUTO_CREATE_JIRA_ISSUES !== 'true' || !projectKey) {
+    return null;
+  }
+  
+  try {
+    const createdIssues = await brdService.createJiraIssues({
+      requirements: parsedRequirements,
+      projectKey: projectKey,
+      userId: userId
+    });
+
+    await supabaseService.updateDocumentData(documentId, {
+      created_issues: createdIssues
+    });
+
+    logger.info('Jira issues created automatically', {
+      document_id: documentId,
+      issuesCreated: createdIssues.length
+    });
+    
+    return createdIssues;
+  } catch (jiraError) {
+    logger.error('Failed to create Jira issues', { error: jiraError, document_id: documentId });
+    return null;
+  }
+}
+
+/**
+ * Update document status on error
+ */
+async function handleProcessingError(documentId, error) {
+  if (!documentId) {
+    return;
+  }
+  
+  try {
+    await supabaseService.updateDocumentStatus(documentId, 'failed', error.message);
+  } catch (updateError) {
+    logger.error('Failed to update document status:', updateError);
+  }
+}
+
+/**
  * Process BRD document endpoint
  * Triggered by Supabase webhook when a new document is uploaded
  */
@@ -13,16 +90,16 @@ exports.processBRD = async (req, res) => {
       user_id,
       file_name,
       file_type,
-      storage_url,
       storage_path,
       project_key
     } = req.body;
 
     // Validate required fields
-    if (!document_id || !user_id || !storage_url || !file_type) {
+    const validation = validateBRDRequest(req.body);
+    if (!validation.valid) {
       return res.status(400).json({
         success: false,
-        error: 'Missing required fields: document_id, user_id, storage_url, file_type'
+        error: validation.error
       });
     }
 
@@ -40,14 +117,7 @@ exports.processBRD = async (req, res) => {
     const documentBuffer = await supabaseService.downloadFile('documents', storage_path);
 
     // Extract text from document
-    let extractedText;
-    if (file_type === 'pdf') {
-      extractedText = await brdService.extractTextFromPDF(documentBuffer);
-    } else if (file_type === 'docx' || file_type === 'doc') {
-      extractedText = await brdService.extractTextFromDocx(documentBuffer);
-    } else {
-      throw new Error(`Unsupported file type: ${file_type}`);
-    }
+    const extractedText = await extractTextFromDocument(documentBuffer, file_type);
 
     logger.info('Text extracted from document', {
       document_id,
@@ -78,28 +148,7 @@ exports.processBRD = async (req, res) => {
     });
 
     // Optionally create Jira issues immediately
-    // (Or wait for user confirmation via Forge app)
-    if (process.env.AUTO_CREATE_JIRA_ISSUES === 'true' && project_key) {
-      try {
-        const createdIssues = await brdService.createJiraIssues({
-          requirements: parsedRequirements,
-          projectKey: project_key,
-          userId: user_id
-        });
-
-        await supabaseService.updateDocumentData(document_id, {
-          created_issues: createdIssues
-        });
-
-        logger.info('Jira issues created automatically', {
-          document_id,
-          issuesCreated: createdIssues.length
-        });
-      } catch (jiraError) {
-        logger.error('Failed to create Jira issues', { error: jiraError, document_id });
-        // Don't fail the entire processing if Jira creation fails
-      }
-    }
+    await tryCreateJiraIssues(parsedRequirements, project_key, user_id, document_id);
 
     logger.info('BRD processing completed', { document_id });
 
@@ -118,17 +167,7 @@ exports.processBRD = async (req, res) => {
     logger.error('BRD processing error:', error);
 
     // Update document status to failed
-    if (req.body.document_id) {
-      try {
-        await supabaseService.updateDocumentStatus(
-          req.body.document_id,
-          'failed',
-          error.message
-        );
-      } catch (updateError) {
-        logger.error('Failed to update document status:', updateError);
-      }
-    }
+    await handleProcessingError(req.body.document_id, error);
 
     res.status(500).json({
       success: false,

@@ -18,78 +18,302 @@ const isValidUUID = (id) => {
 };
 
 /**
+ * Parse user assigned issues from webhook payload
+ * @param {*} userAssignedIssues - Can be string or array
+ * @returns {Array} Parsed array of issues
+ */
+function parseUserAssignedIssues(userAssignedIssues) {
+  if (!userAssignedIssues) return [];
+  
+  if (typeof userAssignedIssues === 'string') {
+    try {
+      return JSON.parse(userAssignedIssues);
+    } catch (error) {
+      logger.warn('Failed to parse user_assigned_issues string', { userAssignedIssues, error: error.message });
+      return [];
+    }
+  }
+  
+  return userAssignedIssues;
+}
+
+/**
+ * Extract and normalize webhook data
+ * @param {Object} reqBody - Request body from webhook
+ * @returns {Object} Normalized webhook data
+ */
+function extractWebhookData(reqBody) {
+  const webhookData = reqBody.record || reqBody;
+  const screenshot_id = webhookData.id || webhookData.screenshot_id;
+  
+  return {
+    ...webhookData,
+    screenshot_id,
+    user_assigned_issues: parseUserAssignedIssues(webhookData.user_assigned_issues)
+  };
+}
+
+/**
+ * Validate required webhook fields
+ * @param {Object} data - Webhook data
+ * @returns {Object|null} Error object if validation fails, null if valid
+ */
+function validateWebhookData(data) {
+  const { screenshot_id, user_id, storage_url } = data;
+
+  if (!screenshot_id || !user_id || !storage_url) {
+    return {
+      status: 400,
+      error: 'Missing required fields: screenshot_id (id), user_id, storage_url'
+    };
+  }
+
+  if (!isValidUUID(screenshot_id)) {
+    return {
+      status: 400,
+      error: 'Invalid screenshot_id format: must be a valid UUID'
+    };
+  }
+
+  if (!isValidUUID(user_id)) {
+    return {
+      status: 400,
+      error: 'Invalid user_id format: must be a valid UUID'
+    };
+  }
+
+  if (data.organization_id && !isValidUUID(data.organization_id)) {
+    return {
+      status: 400,
+      error: 'Invalid organization_id format: must be a valid UUID'
+    };
+  }
+
+  return null;
+}
+
+/**
+ * Resolve organization ID (from payload or screenshot record)
+ * @param {string} organizationId - Organization ID from webhook
+ * @param {string} screenshotId - Screenshot ID
+ * @returns {Promise<string|null>} Resolved organization ID
+ */
+async function resolveOrganizationId(organizationId, screenshotId) {
+  if (organizationId) {
+    return organizationId;
+  }
+
+  const screenshotRecord = await supabaseService.getScreenshotById(screenshotId);
+  if (!screenshotRecord) {
+    return null;
+  }
+
+  logger.info('Fetched organization_id from screenshot record', {
+    screenshot_id: screenshotId,
+    organization_id: screenshotRecord.organization_id
+  });
+
+  return screenshotRecord.organization_id;
+}
+
+/**
+ * Check if duration fields need updating
+ * @param {Object} data - Webhook data with duration fields
+ * @returns {boolean} True if update is needed
+ */
+function needsDurationUpdate(data) {
+  const { duration_seconds, start_time, end_time } = data;
+  return duration_seconds == null || !start_time || !end_time;
+}
+
+/**
+ * Calculate duration timestamps for legacy screenshots
+ * @param {number} durationSeconds - Duration in seconds
+ * @param {string} timestamp - Screenshot timestamp
+ * @returns {Object} Object with start_time and end_time
+ */
+function calculateDurationTimestamps(durationSeconds, timestamp) {
+  const calculatedEndTime = timestamp || getUTCISOString();
+  const calculatedStartTime = toUTCISOString(
+    new Date(new Date(calculatedEndTime).getTime() - (durationSeconds * 1000))
+  );
+
+  return {
+    start_time: calculatedStartTime,
+    end_time: calculatedEndTime
+  };
+}
+
+/**
+ * Delete screenshot files from storage
+ * @param {string} screenshotId - Screenshot ID
+ * @param {string} storagePath - Storage path of screenshot
+ * @returns {Promise<void>}
+ */
+async function deleteScreenshotFiles(screenshotId, storagePath) {
+  if (!DELETE_AFTER_ANALYSIS || !storagePath) {
+    return;
+  }
+
+  try {
+    // Delete the main screenshot
+    await supabaseService.deleteFile('screenshots', storagePath);
+    logger.info('Deleted screenshot from storage after analysis', {
+      screenshot_id: screenshotId,
+      storage_path: storagePath
+    });
+
+    // Delete the thumbnail (derive path from main screenshot path)
+    const thumbPath = storagePath.replace('screenshot_', 'thumb_').replace('.png', '.jpg');
+    try {
+      await supabaseService.deleteFile('screenshots', thumbPath);
+      logger.debug('Deleted thumbnail from storage', { thumbPath });
+    } catch (thumbError) {
+      // Thumbnail may not exist - this is not critical
+      logger.debug('Thumbnail not found or already deleted', { thumbPath, error: thumbError.message });
+    }
+
+    // Clear storage URLs in database to prevent broken image links
+    await supabaseService.clearStorageUrls(screenshotId);
+    logger.debug('Cleared storage URLs in database', { screenshot_id: screenshotId });
+  } catch (deleteError) {
+    // Log but don't fail the analysis if deletion fails
+    logger.warn('Failed to delete screenshot from storage (non-critical)', {
+      screenshot_id: screenshotId,
+      storage_path: storagePath,
+      error: deleteError.message
+    });
+  }
+}
+
+/**
+ * Create worklog in Jira if configured
+ * @param {Object} params - Worklog parameters
+ * @returns {Promise<void>}
+ */
+async function createWorklogIfEnabled(params) {
+  const { analysis, userId, screenshotId, timestamp } = params;
+
+  const shouldCreateWorklog = 
+    analysis.taskKey && 
+    analysis.workType === 'office' && 
+    process.env.AUTO_CREATE_WORKLOGS === 'true';
+
+  if (!shouldCreateWorklog) {
+    return;
+  }
+
+  try {
+    await screenshotService.createWorklog({
+      userId,
+      issueKey: analysis.taskKey,
+      timeSpentSeconds: analysis.timeSpentSeconds,
+      startedAt: timestamp
+    });
+
+    // Mark worklog as created
+    await supabaseService.markWorklogCreated(screenshotId, analysis.taskKey);
+  } catch (worklogError) {
+    logger.error('Failed to create worklog', { 
+      error: worklogError, 
+      screenshot_id: screenshotId 
+    });
+    // Don't fail the entire analysis if worklog creation fails
+  }
+}
+
+/**
+ * Update screenshot with duration data
+ * @param {string} screenshotId - Screenshot ID
+ * @param {Object} webhookData - Webhook data
+ * @param {number} actualDuration - Actual duration in seconds
+ * @returns {Promise<void>}
+ */
+async function updateScreenshotDurationIfNeeded(screenshotId, webhookData, actualDuration) {
+  if (!needsDurationUpdate(webhookData)) {
+    // Desktop app already set all duration fields - they're already accurate
+    return;
+  }
+
+  // Fallback: Calculate duration for legacy screenshots that don't have event-based data
+  const { start_time: calcStartTime, end_time: calcEndTime } = 
+    calculateDurationTimestamps(actualDuration, webhookData.timestamp);
+
+  await supabaseService.updateScreenshotDuration(screenshotId, {
+    duration_seconds: webhookData.duration_seconds ?? actualDuration,
+    start_time: webhookData.start_time || calcStartTime,
+    end_time: webhookData.end_time || calcEndTime
+  });
+}
+
+/**
+ * Handle analysis error and update screenshot status
+ * @param {Error} error - Error object
+ * @param {Object} webhookData - Webhook data
+ * @returns {Object} Error response object
+ */
+async function handleAnalysisError(error, webhookData) {
+  const failedScreenshotId = webhookData.screenshot_id;
+
+  logger.error('Screenshot analysis error', {
+    message: error.message,
+    screenshot_id: failedScreenshotId,
+    user_id: webhookData.user_id,
+    organization_id: webhookData.organization_id,
+    storage_path: webhookData.storage_path,
+    stack: error.stack
+  });
+
+  // Update screenshot status to failed
+  if (failedScreenshotId) {
+    try {
+      await supabaseService.updateScreenshotStatus(
+        failedScreenshotId,
+        'failed',
+        error.message
+      );
+    } catch (updateError) {
+      logger.error('Failed to update screenshot status:', updateError);
+    }
+  }
+
+  return {
+    success: false,
+    error: 'Failed to analyze screenshot',
+    details: process.env.NODE_ENV === 'development' ? error.message : undefined
+  };
+}
+
+/**
  * Analyze screenshot endpoint
  * Triggered by Supabase webhook when a new screenshot is uploaded
  */
 exports.analyzeScreenshot = async (req, res) => {
   try {
-    // Supabase webhooks send data in req.body.record
-    const webhookData = req.body.record || req.body;
+    // Extract and normalize webhook data
+    const webhookData = extractWebhookData(req.body);
+    
+    // Validate required fields and UUIDs
+    const validationError = validateWebhookData(webhookData);
+    if (validationError) {
+      logger.error('Webhook validation failed', { body: req.body });
+      return res.status(validationError.status).json({
+        success: false,
+        error: validationError.error
+      });
+    }
 
     const {
-      id,
-      screenshot_id: screenshotIdFromPayload,  // Backwards compatibility: legacy payloads may use 'screenshot_id'
+      screenshot_id,
       user_id,
-      organization_id,  // Multi-tenancy: Extract organization_id from webhook payload
-      storage_url,
+      organization_id,
       storage_path,
       window_title,
       application_name,
       timestamp,
-      duration_seconds,  // Event-based tracking: Duration set by desktop app
-      start_time,        // Event-based tracking: Start time set by desktop app
-      end_time,          // Event-based tracking: End time set by desktop app
-      user_assigned_issues // Optional: User's assigned Jira issues from Forge app
+      duration_seconds,
+      user_assigned_issues
     } = webhookData;
-
-    // Edge Function sends 'id' (spreads full record), fallback to 'screenshot_id' for backwards compatibility
-    const screenshot_id = id || screenshotIdFromPayload;
-
-    // Parse user_assigned_issues if it's a string (defensive coding)
-    let parsedAssignedIssues = user_assigned_issues;
-    if (typeof parsedAssignedIssues === 'string') {
-      try {
-        parsedAssignedIssues = JSON.parse(parsedAssignedIssues);
-      } catch (e) {
-        logger.warn('Failed to parse user_assigned_issues string', { user_assigned_issues });
-        parsedAssignedIssues = [];
-      }
-    }
-
-    // Validate required fields
-    if (!screenshot_id || !user_id || !storage_url) {
-      logger.error('Missing required fields in webhook payload', { body: req.body });
-      return res.status(400).json({
-        success: false,
-        error: 'Missing required fields: screenshot_id (id), user_id, storage_url'
-      });
-    }
-
-    // Validate UUID formats
-    if (!isValidUUID(screenshot_id)) {
-      logger.error('Invalid screenshot_id format', { screenshot_id, body: req.body });
-      return res.status(400).json({
-        success: false,
-        error: 'Invalid screenshot_id format: must be a valid UUID'
-      });
-    }
-
-    if (!isValidUUID(user_id)) {
-      logger.error('Invalid user_id format', { user_id, body: req.body });
-      return res.status(400).json({
-        success: false,
-        error: 'Invalid user_id format: must be a valid UUID'
-      });
-    }
-
-    // Validate organization_id if provided
-    if (organization_id && !isValidUUID(organization_id)) {
-      logger.error('Invalid organization_id format', { organization_id, body: req.body });
-      return res.status(400).json({
-        success: false,
-        error: 'Invalid organization_id format: must be a valid UUID'
-      });
-    }
 
     // Atomically claim the screenshot for processing (prevents webhook + polling race condition)
     const claimed = await supabaseService.claimScreenshotForProcessing(screenshot_id);
@@ -101,25 +325,15 @@ exports.analyzeScreenshot = async (req, res) => {
       });
     }
 
-    // If organization_id is missing (Edge Function doesn't send it), fetch from screenshot record
-    let resolvedOrganizationId = organization_id;
-    if (!resolvedOrganizationId) {
-      const screenshotRecord = await supabaseService.getScreenshotById(screenshot_id);
-      if (screenshotRecord) {
-        resolvedOrganizationId = screenshotRecord.organization_id;
-        logger.info('Fetched organization_id from screenshot record', {
-          screenshot_id,
-          organization_id: resolvedOrganizationId
-        });
-      }
-    }
+    // Resolve organization ID (from payload or screenshot record)
+    const resolvedOrganizationId = await resolveOrganizationId(organization_id, screenshot_id);
 
     logger.info('Starting screenshot analysis', {
       screenshot_id,
       user_id,
       organization_id: resolvedOrganizationId,
       application_name,
-      hasAssignedIssues: !!parsedAssignedIssues && parsedAssignedIssues.length > 0
+      hasAssignedIssues: user_assigned_issues?.length > 0
     });
 
     // Download screenshot from Supabase Storage
@@ -127,110 +341,52 @@ exports.analyzeScreenshot = async (req, res) => {
 
     // Analyze the screenshot using GPT-4 Vision
     // This will automatically fall back to OCR + AI if Vision fails
-    // Pass user's assigned issues if provided (from webhook payload)
     const analysis = await screenshotService.analyzeActivity({
-      imageBuffer, // Pass image buffer directly for Vision analysis
+      imageBuffer,
       windowTitle: window_title,
       applicationName: application_name,
       timestamp,
       userId: user_id,
-      userAssignedIssues: parsedAssignedIssues || [], // Pass assigned issues to analysis
-      organizationId: resolvedOrganizationId, // Pass organization ID for cost tracking
-      screenshotId: screenshot_id // Pass screenshot ID for cost tracking
+      userAssignedIssues: user_assigned_issues || [],
+      organizationId: resolvedOrganizationId,
+      screenshotId: screenshot_id
     });
 
     // Use actual duration from desktop app if available, otherwise use AI's calculated value
-    // Desktop app sets duration_seconds based on actual window tracking (event-based)
     // IMPORTANT: Use ?? (nullish coalescing) instead of || to handle duration_seconds: 0 correctly
-    // The || operator treats 0 as falsy, which would incorrectly fall back to 300
     const actualDuration = duration_seconds ?? analysis.timeSpentSeconds;
 
-    // Save analysis results to Supabase - include organization_id for multi-tenancy
+    // Save analysis results to Supabase
     await supabaseService.saveAnalysisResult({
       screenshot_id,
       user_id,
-      organization_id: resolvedOrganizationId,  // Multi-tenancy: Use resolved organization_id
+      organization_id: resolvedOrganizationId,
       time_spent_seconds: actualDuration,
       active_task_key: analysis.taskKey,
       active_project_key: analysis.projectKey,
       confidence_score: analysis.confidenceScore,
-      extracted_text: analysis.metadata?.extractedText || '', // OCR text if fallback was used
-      work_type: analysis.workType, // 'office' or 'non-office'
+      extracted_text: analysis.metadata?.extractedText || '',
+      work_type: analysis.workType,
       ai_model_version: analysis.modelVersion,
       analysis_metadata: analysis.metadata
     });
 
-    // Update screenshot with duration data for event-based tracking
-    // IMPORTANT: Only update if desktop app hasn't already set the values
-    // Desktop app's event-based tracking provides accurate duration based on actual window switches
-    // NOTE: Use "== null" to check for null/undefined, NOT "!" which treats 0 as falsy
-    // Duration of 0 is a valid value set by desktop app (will be updated later with actual duration)
-    if (duration_seconds == null || !start_time || !end_time) {
-      // Fallback: Calculate duration for legacy screenshots that don't have event-based data
-      const calculatedEndTime = timestamp || getUTCISOString();
-      const calculatedStartTime = toUTCISOString(new Date(new Date(calculatedEndTime).getTime() - (actualDuration * 1000)));
-
-      await supabaseService.updateScreenshotDuration(screenshot_id, {
-        duration_seconds: duration_seconds != null ? duration_seconds : actualDuration,
-        start_time: start_time || calculatedStartTime,  // Use desktop app's value if available
-        end_time: end_time || calculatedEndTime         // Use desktop app's value if available
-      });
-    }
-    // If desktop app already set all duration fields, no need to update - they're already accurate
+    // Update screenshot with duration data if needed (for legacy screenshots)
+    await updateScreenshotDurationIfNeeded(screenshot_id, webhookData, actualDuration);
 
     // Update screenshot status
     await supabaseService.updateScreenshotStatus(screenshot_id, 'analyzed');
 
     // Delete screenshot files from storage after successful analysis (privacy feature)
-    if (DELETE_AFTER_ANALYSIS && storage_path) {
-      try {
-        // Delete the main screenshot
-        await supabaseService.deleteFile('screenshots', storage_path);
-        logger.info('Deleted screenshot from storage after analysis', {
-          screenshot_id,
-          storage_path
-        });
-
-        // Delete the thumbnail (derive path from main screenshot path)
-        const thumbPath = storage_path.replace('screenshot_', 'thumb_').replace('.png', '.jpg');
-        try {
-          await supabaseService.deleteFile('screenshots', thumbPath);
-          logger.debug('Deleted thumbnail from storage', { thumbPath });
-        } catch (thumbError) {
-          // Thumbnail may not exist - this is not critical
-          logger.debug('Thumbnail not found or already deleted', { thumbPath });
-        }
-
-        // Clear storage URLs in database to prevent broken image links
-        await supabaseService.clearStorageUrls(screenshot_id);
-        logger.debug('Cleared storage URLs in database', { screenshot_id });
-      } catch (deleteError) {
-        // Log but don't fail the analysis if deletion fails
-        logger.warn('Failed to delete screenshot from storage (non-critical)', {
-          screenshot_id,
-          storage_path,
-          error: deleteError.message
-        });
-      }
-    }
+    await deleteScreenshotFiles(screenshot_id, storage_path);
 
     // If configured, create worklog in Jira (only for office work)
-    if (analysis.taskKey && analysis.workType === 'office' && process.env.AUTO_CREATE_WORKLOGS === 'true') {
-      try {
-        await screenshotService.createWorklog({
-          userId: user_id,
-          issueKey: analysis.taskKey,
-          timeSpentSeconds: analysis.timeSpentSeconds,
-          startedAt: timestamp
-        });
-
-        // Mark worklog as created
-        await supabaseService.markWorklogCreated(screenshot_id, analysis.taskKey);
-      } catch (worklogError) {
-        logger.error('Failed to create worklog', { error: worklogError, screenshot_id });
-        // Don't fail the entire analysis if worklog creation fails
-      }
-    }
+    await createWorklogIfEnabled({
+      analysis,
+      userId: user_id,
+      screenshotId: screenshot_id,
+      timestamp
+    });
 
     logger.info('Screenshot analysis completed', {
       screenshot_id,
@@ -245,41 +401,13 @@ exports.analyzeScreenshot = async (req, res) => {
         task_key: analysis.taskKey,
         project_key: analysis.projectKey,
         confidence_score: analysis.confidenceScore,
-        work_type: analysis.workType // 'office' or 'non-office'
+        work_type: analysis.workType
       }
     });
 
   } catch (error) {
-    // Extract webhook data for better error logging
-    const webhookData = req.body.record || req.body;
-    const failedScreenshotId = webhookData.id || webhookData.screenshot_id;
-
-    logger.error('Screenshot analysis error', {
-      message: error.message,
-      screenshot_id: failedScreenshotId,
-      user_id: webhookData.user_id,
-      organization_id: webhookData.organization_id,
-      storage_path: webhookData.storage_path,
-      stack: error.stack
-    });
-
-    // Update screenshot status to failed
-    if (failedScreenshotId) {
-      try {
-        await supabaseService.updateScreenshotStatus(
-          failedScreenshotId,
-          'failed',
-          error.message
-        );
-      } catch (updateError) {
-        logger.error('Failed to update screenshot status:', updateError);
-      }
-    }
-
-    res.status(500).json({
-      success: false,
-      error: 'Failed to analyze screenshot',
-      details: process.env.NODE_ENV === 'development' ? error.message : undefined
-    });
+    const webhookData = extractWebhookData(req.body);
+    const errorResponse = await handleAnalysisError(error, webhookData);
+    res.status(500).json(errorResponse);
   }
 };

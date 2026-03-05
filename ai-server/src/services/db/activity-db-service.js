@@ -16,15 +16,13 @@ async function getPendingActivityBatches(batchSize = 10) {
   const supabase = getClient();
   if (!supabase) throw new Error('Supabase client not initialized');
 
-  const { data, error } = await supabase
+  const { data } = await supabase
     .from('activity_records')
     .select('*')
     .eq('status', 'pending')
     .lt('retry_count', 3)
     .order('created_at', { ascending: true })
     .limit(batchSize);
-
-  if (error) throw error;
   return data || [];
 }
 
@@ -131,7 +129,7 @@ async function markBatchFailed(recordIds, errorMessage) {
         .update({
           status: newStatus,
           retry_count: retryCount,
-          metadata: { ...(record?.metadata || {}), error: errorMessage },
+          metadata: record?.metadata ? { ...record.metadata, error: errorMessage } : { error: errorMessage },
           updated_at: new Date().toISOString()
         })
         .eq('id', id);

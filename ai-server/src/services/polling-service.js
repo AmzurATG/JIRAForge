@@ -7,14 +7,14 @@ const { getUTCISOString, toUTCISOString } = require('../utils/datetime');
 const DELETE_AFTER_ANALYSIS = process.env.DELETE_SCREENSHOTS_AFTER_ANALYSIS !== 'false';
 
 class PollingService {
+  isRunning = false;
+  intervalId = null;
+  pollInterval = Number.parseInt(process.env.POLLING_INTERVAL_MS || '180000', 10);
+  batchSize = Number.parseInt(process.env.POLLING_BATCH_SIZE || '10', 10);
+  processing = false;
+
   constructor() {
-    this.isRunning = false;
-    this.intervalId = null;
-    // Poll every 3 minutes by default (configurable via env)
-    // With webhook handling real-time, polling is just a backup for missed screenshots
-    this.pollInterval = parseInt(process.env.POLLING_INTERVAL_MS || '180000', 10);
-    this.batchSize = parseInt(process.env.POLLING_BATCH_SIZE || '10', 10);
-    this.processing = false;
+    // Initialization handled by class fields
   }
 
   /**
@@ -92,7 +92,7 @@ class PollingService {
       let failureCount = 0;
 
       // Per-screenshot timeout (default: 90 seconds)
-      const screenshotTimeoutMs = parseInt(process.env.SCREENSHOT_PROCESSING_TIMEOUT_MS || '90000', 10);
+      const screenshotTimeoutMs = Number.parseInt(process.env.SCREENSHOT_PROCESSING_TIMEOUT_MS || '90000', 10);
 
       // Process each screenshot
       for (const screenshot of pendingScreenshots) {
@@ -171,7 +171,6 @@ class PollingService {
       id: screenshot_id,
       user_id,
       organization_id,  // Multi-tenancy: Get organization_id from screenshot
-      storage_url,
       storage_path,
       window_title,
       application_name,
@@ -195,27 +194,9 @@ class PollingService {
       return;
     }
 
-    // Parse user_assigned_issues if it's a string
-    let parsedAssignedIssues = user_assigned_issues;
-    if (typeof parsedAssignedIssues === 'string') {
-      try {
-        parsedAssignedIssues = JSON.parse(parsedAssignedIssues);
-      } catch (e) {
-        logger.warn('Failed to parse user_assigned_issues', { screenshot_id });
-        parsedAssignedIssues = [];
-      }
-    }
-
-    // If no assigned issues in screenshot metadata, fetch from cache
-    // Pass organization_id for multi-tenancy filtering
-    if (!parsedAssignedIssues || parsedAssignedIssues.length === 0) {
-      const cachedIssues = await supabaseService.getUserCachedIssues(user_id, organization_id);
-      parsedAssignedIssues = cachedIssues.map(issue => ({
-        key: issue.issue_key,
-        summary: issue.summary,
-        status: issue.status,
-        projectKey: issue.project_key
-      }));
+    let parsedAssignedIssues = this._parseAssignedIssues(user_assigned_issues, screenshot_id);
+    if (!Array.isArray(parsedAssignedIssues) || parsedAssignedIssues.length === 0) {
+      parsedAssignedIssues = await this._getCachedAssignedIssues(user_id, organization_id);
     }
 
     // Download screenshot from Supabase Storage
@@ -231,17 +212,12 @@ class PollingService {
       userAssignedIssues: parsedAssignedIssues || []
     });
 
-    // Use actual duration from desktop app if available, otherwise use AI's calculated value
-    // Desktop app sets duration_seconds based on actual window tracking (event-based)
-    // IMPORTANT: Use ?? (nullish coalescing) instead of || to handle duration_seconds: 0 correctly
-    // The || operator treats 0 as falsy, which would incorrectly fall back to 300
     const actualDuration = duration_seconds ?? analysis.timeSpentSeconds;
 
-    // Save analysis results to Supabase - include organization_id for multi-tenancy
     await supabaseService.saveAnalysisResult({
       screenshot_id,
       user_id,
-      organization_id,  // Multi-tenancy: Pass organization_id from screenshot
+      organization_id,
       time_spent_seconds: actualDuration,
       active_task_key: analysis.taskKey,
       active_project_key: analysis.projectKey,
@@ -252,54 +228,90 @@ class PollingService {
       analysis_metadata: analysis.metadata
     });
 
-    // Update screenshot with duration data for event-based tracking
-    // IMPORTANT: Only update if desktop app hasn't already set the values
-    // Desktop app's event-based tracking provides accurate duration based on actual window switches
-    // NOTE: Use "== null" to check for null/undefined, NOT "!" which treats 0 as falsy
-    // Duration of 0 is a valid value set by desktop app (will be updated later with actual duration)
-    if (duration_seconds == null || !start_time || !end_time) {
-      // Fallback: Calculate duration for legacy screenshots that don't have event-based data
-      const calculatedEndTime = timestamp || getUTCISOString();
-      const calculatedStartTime = toUTCISOString(new Date(new Date(calculatedEndTime).getTime() - (actualDuration * 1000)));
+    await this._updateScreenshotDurationIfNeeded({
+      screenshot_id,
+      duration_seconds,
+      actualDuration,
+      start_time,
+      end_time,
+      timestamp
+    });
 
-      await supabaseService.updateScreenshotDuration(screenshot_id, {
-        duration_seconds: duration_seconds != null ? duration_seconds : actualDuration,
-        start_time: start_time || calculatedStartTime,  // Use desktop app's value if available
-        end_time: end_time || calculatedEndTime         // Use desktop app's value if available
-      });
-    }
-    // If desktop app already set all duration fields, no need to update - they're already accurate
-
-    // Update screenshot status to analyzed
     await supabaseService.updateScreenshotStatus(screenshot_id, 'analyzed');
 
-    // Delete screenshot files from storage after successful analysis (privacy feature)
+    await this._deleteScreenshotFilesIfNeeded(screenshot_id, storage_path, user_id);
+
+    await this._createWorklogIfNeeded({
+      analysis,
+      user_id,
+      screenshot_id,
+      timestamp
+    });
+
+    logger.info('Screenshot analysis completed', {
+      screenshot_id,
+      taskKey: analysis.taskKey,
+      confidenceScore: analysis.confidenceScore,
+      workType: analysis.workType
+    });
+  }
+
+  _parseAssignedIssues(user_assigned_issues, screenshot_id) {
+    let parsed = user_assigned_issues;
+    if (typeof parsed === 'string') {
+      try {
+        parsed = JSON.parse(parsed);
+      } catch (err) {
+        logger.warn('Failed to parse user_assigned_issues', { screenshot_id, error: err });
+        parsed = [];
+      }
+    }
+    return parsed;
+  }
+
+  async _getCachedAssignedIssues(user_id, organization_id) {
+    const cachedIssues = await supabaseService.getUserCachedIssues(user_id, organization_id);
+    return cachedIssues.map(issue => ({
+      key: issue.issue_key,
+      summary: issue.summary,
+      status: issue.status,
+      projectKey: issue.project_key
+    }));
+  }
+
+  async _updateScreenshotDurationIfNeeded({ screenshot_id, duration_seconds, actualDuration, start_time, end_time, timestamp }) {
+    // Only update if desktop app hasn't already set the values
+    if (duration_seconds == null || start_time == null || end_time == null) {
+      const calculatedEndTime = timestamp || getUTCISOString();
+      const calculatedStartTime = toUTCISOString(new Date(new Date(calculatedEndTime).getTime() - (actualDuration * 1000)));
+      await supabaseService.updateScreenshotDuration(screenshot_id, {
+        duration_seconds: duration_seconds ?? actualDuration,
+        start_time: start_time ?? calculatedStartTime,
+        end_time: end_time ?? calculatedEndTime
+      });
+    }
+  }
+
+  async _deleteScreenshotFilesIfNeeded(screenshot_id, storage_path, user_id) {
     if (DELETE_AFTER_ANALYSIS && storage_path) {
       try {
-        // Delete the main screenshot
         await supabaseService.deleteFile('screenshots', storage_path);
         logger.info('Deleted screenshot from storage after analysis', {
           screenshot_id,
           storage_path
         });
 
-        // Delete the thumbnail (derive path from main screenshot path)
-        // Screenshot: {user_id}/screenshot_{timestamp}.png
-        // Thumbnail: {user_id}/thumb_{timestamp}.jpg
         const thumbPath = storage_path.replace('screenshot_', 'thumb_').replace('.png', '.jpg');
         try {
           await supabaseService.deleteFile('screenshots', thumbPath);
           logger.debug('Deleted thumbnail from storage', { thumbPath });
         } catch (thumbError) {
-          // Thumbnail may not exist - this is not critical
-          logger.debug('Thumbnail not found or already deleted', { thumbPath });
+          logger.debug('Thumbnail not found or already deleted', { thumbPath, error: thumbError });
         }
 
-        // Clear storage URLs in database to prevent broken image links
         await supabaseService.clearStorageUrls(screenshot_id);
         logger.debug('Cleared storage URLs in database', { screenshot_id });
       } catch (deleteError) {
-        // Log but don't fail the analysis if deletion fails
         logger.warn('Failed to delete screenshot from storage (non-critical)', {
           screenshot_id,
           storage_path,
@@ -307,8 +319,9 @@ class PollingService {
         });
       }
     }
+  }
 
-    // If configured, create worklog in Jira (only for office work)
+  async _createWorklogIfNeeded({ analysis, user_id, screenshot_id, timestamp }) {
     if (analysis.taskKey && analysis.workType === 'office' && process.env.AUTO_CREATE_WORKLOGS === 'true') {
       try {
         await screenshotService.createWorklog({
@@ -317,24 +330,14 @@ class PollingService {
           timeSpentSeconds: analysis.timeSpentSeconds,
           startedAt: timestamp
         });
-
-        // Mark worklog as created
         await supabaseService.markWorklogCreated(screenshot_id, analysis.taskKey);
       } catch (worklogError) {
         logger.error('Failed to create worklog', {
           error: worklogError.message,
           screenshot_id
         });
-        // Don't fail the entire analysis if worklog creation fails
       }
     }
-
-    logger.info('Screenshot analysis completed', {
-      screenshot_id,
-      taskKey: analysis.taskKey,
-      confidenceScore: analysis.confidenceScore,
-      workType: analysis.workType
-    });
   }
 }
 

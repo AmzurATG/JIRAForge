@@ -13,7 +13,7 @@ const { logLLMRequest } = require('../sheets-logger');
 const { logCostTracking } = require('../cost-tracker');
 
 // AI request timeout (default: 60 seconds)
-const AI_REQUEST_TIMEOUT_MS = parseInt(process.env.AI_REQUEST_TIMEOUT_MS || '60000', 10);
+const AI_REQUEST_TIMEOUT_MS = Number.parseInt(process.env.AI_REQUEST_TIMEOUT_MS || '60000', 10);
 
 // Client instances
 let fireworksClient = null;
@@ -35,8 +35,8 @@ const providerState = {
 };
 
 // Configuration (with defaults)
-const getFailureThreshold = () => parseInt(process.env.FAILURE_THRESHOLD) || 2;
-const getCooldownMinutes = () => parseInt(process.env.COOLDOWN_MINUTES) || 30;
+const getFailureThreshold = () => Number.parseInt(process.env.FAILURE_THRESHOLD) || 2;
+const getCooldownMinutes = () => Number.parseInt(process.env.COOLDOWN_MINUTES) || 30;
 
 /**
  * Check if Fireworks AI is enabled via environment variable
@@ -196,7 +196,7 @@ function getClient() {
   const order = getProviderOrder();
   for (const providerId of order) {
     const config = getProviderConfig(providerId);
-    if (config && config.client) {
+    if (config?.client) {
       return config.client;
     }
   }
@@ -376,7 +376,7 @@ function getShortModelName(model) {
   // Portkey @slug/model format — strip the virtual key slug
   if (model.startsWith('@')) {
     const slashIdx = model.indexOf('/', 1);
-    return slashIdx !== -1 ? model.slice(slashIdx + 1) : model;
+    return slashIdx === -1 ? model : model.slice(slashIdx + 1);
   }
   // Fireworks models
   if (model.includes('qwen2p5-vl-32b')) return 'Qwen2.5-VL-32B';
@@ -458,6 +458,37 @@ function getProviderConfig(providerId) {
 }
 
 /**
+ * Log provider order when there are demoted providers
+ * @param {Array} providerOrder - Current provider order
+ */
+function logDemotedProviders(providerOrder) {
+  const demotedCount = Object.keys(providerState.demoted).length;
+  if (demotedCount > 0) {
+    const demotedNames = Object.keys(providerState.demoted).map(getProviderDisplayName).join(', ');
+    logger.info('[AI] Provider order: %s (demoted: %s)',
+      providerOrder.map(getProviderDisplayName).join(' -> '),
+      demotedNames);
+  }
+}
+
+/**
+ * Log which provider we're attempting to use
+ * @param {string} requestType - 'vision' or 'text'
+ * @param {Object} config - Provider configuration
+ * @param {Array} errors - Previous errors array
+ */
+function logRequestAttempt(requestType, config, errors) {
+  const failedProviders = errors.map(e => getProviderDisplayName(e.provider)).join(', ');
+  if (errors.length > 0) {
+    logger.info('[AI] %s request via %s (%s failed) (%s)',
+      requestType, config.displayName, failedProviders, getShortModelName(config.model));
+  } else {
+    logger.info('[AI] %s request via %s (%s)',
+      requestType, config.displayName, getShortModelName(config.model));
+  }
+}
+
+/**
  * Execute a chat completion with dynamic fallback based on provider health.
  * Providers are tried in order, with unhealthy providers automatically demoted.
  *
@@ -481,17 +512,10 @@ async function chatCompletionWithFallback({ messages, temperature = 0.3, max_tok
   const providerOrder = getProviderOrder();
 
   // Log current provider order if any are demoted
-  const demotedCount = Object.keys(providerState.demoted).length;
-  if (demotedCount > 0) {
-    const demotedNames = Object.keys(providerState.demoted).map(getProviderDisplayName).join(', ');
-    logger.info('[AI] Provider order: %s (demoted: %s)',
-      providerOrder.map(getProviderDisplayName).join(' -> '),
-      demotedNames);
-  }
+  logDemotedProviders(providerOrder);
 
   // Try each provider in order
-  for (let i = 0; i < providerOrder.length; i++) {
-    const providerId = providerOrder[i];
+  for (const providerId of providerOrder) {
 
     // Skip demoted providers (they're in the order but shouldn't be tried)
     if (isProviderDemoted(providerId)) {
@@ -501,22 +525,13 @@ async function chatCompletionWithFallback({ messages, temperature = 0.3, max_tok
     const config = getProviderConfig(providerId);
 
     // Skip if provider not available
-    if (!config || !config.client) continue;
-
-    const previousFailed = errors.length > 0;
+    if (!config?.client) continue;
 
     try {
       const startTime = Date.now();
 
       // Log which provider we're trying
-      if (previousFailed) {
-        const failedProviders = errors.map(e => getProviderDisplayName(e.provider)).join(', ');
-        logger.info('[AI] %s request via %s (%s failed) (%s)',
-          requestType, config.displayName, failedProviders, getShortModelName(config.model));
-      } else {
-        logger.info('[AI] %s request via %s (%s)',
-          requestType, config.displayName, getShortModelName(config.model));
-      }
+      logRequestAttempt(requestType, config, errors);
 
       // Make the API call
       const requestParams = {

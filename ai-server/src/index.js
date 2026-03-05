@@ -2,7 +2,7 @@ const express = require('express');
 const cors = require('cors');
 const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
-const path = require('path');
+const path = require('node:path');
 require('dotenv').config();
 
 const screenshotController = require('./controllers/screenshot-controller');
@@ -485,10 +485,12 @@ async function startServer() {
 }
 
 // Initialize server
-startServer().catch((error) => {
+try {
+  await startServer();
+} catch (error) {
   logger.error('Failed to start server:', error);
   process.exit(1);
-});
+}
 
 // Graceful shutdown
 process.on('SIGTERM', () => {

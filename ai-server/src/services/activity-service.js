@@ -148,6 +148,72 @@ function salvageTruncatedJsonArray(truncatedJson) {
 // ============================================================================
 
 /**
+ * Parses the raw AI batch response into a JSON array.
+ * Handles direct JSON, markdown code blocks, and truncated responses.
+ */
+function parseAnalysisResponse(content) {
+  try {
+    return JSON.parse(content);
+  } catch (error) {
+    logger.debug('[ActivityService] Direct JSON parse failed, trying markdown extraction:', error.message);
+    const jsonMatch = content.match(/\[[\s\S]*\]/);
+    if (!jsonMatch) {
+      logger.error('[ActivityService] Failed to parse batch analysis response:', content.substring(0, 200));
+      throw new Error('Failed to parse AI response as JSON array');
+    }
+    try {
+      return JSON.parse(jsonMatch[0]);
+    } catch (error_) {
+      // JSON may be truncated by max_tokens — try to salvage complete entries
+      logger.debug('[ActivityService] Markdown JSON parse failed, salvaging truncated response:', error_.message);
+      return salvageTruncatedJsonArray(jsonMatch[0]);
+    }
+  }
+}
+
+/**
+ * Clears task keys hallucinated by the AI (not present in the user's assigned issues).
+ */
+function validateAnalysisKeys(analyses, userAssignedIssues) {
+  const validKeys = new Set(userAssignedIssues.map(i => i.key));
+  for (const analysis of analyses) {
+    if (analysis.taskKey && !validKeys.has(analysis.taskKey)) {
+      logger.warn(`[ActivityService] AI returned invalid task key: ${analysis.taskKey}`);
+      analysis.taskKey = null;
+      analysis.projectKey = null;
+      analysis.confidenceScore = Math.min(analysis.confidenceScore || 0, 0.3);
+    }
+  }
+}
+
+/**
+ * Persists each analysis result back to the database.
+ * Logs individual update failures without stopping the rest of the batch.
+ */
+async function persistAnalysisResults(analyses, records, provider, model) {
+  for (const analysis of analyses) {
+    const recordIndex = analysis.recordIndex;
+    if (recordIndex >= 0 && recordIndex < records.length && records[recordIndex].id) {
+      try {
+        await activityDbService.updateActivityRecordAnalysis(records[recordIndex].id, {
+          taskKey: analysis.taskKey,
+          projectKey: analysis.projectKey,
+          metadata: {
+            workType: analysis.workType || 'office',
+            confidenceScore: analysis.confidenceScore,
+            reasoning: analysis.reasoning,
+            aiProvider: provider,
+            aiModel: model
+          }
+        });
+      } catch (updateErr) {
+        logger.error(`[ActivityService] Failed to update record ${records[recordIndex].id}:`, updateErr);
+      }
+    }
+  }
+}
+
+/**
  * Analyze a batch of productive activity records using text-only LLM.
  * Sends a single API call with all records for efficiency.
  *
@@ -162,12 +228,8 @@ async function analyzeBatch(records, userAssignedIssues, userId, organizationId)
     throw new Error('AI client not initialized - check API keys');
   }
 
-  // Format assigned issues for the prompt
   const assignedIssuesText = formatAssignedIssues(userAssignedIssues);
-
-  // Build the batch prompt
   const userPrompt = buildBatchAnalysisPrompt(records, assignedIssuesText);
-
   const messages = [
     { role: 'system', content: BATCH_ANALYSIS_SYSTEM_PROMPT },
     { role: 'user', content: userPrompt }
@@ -175,8 +237,7 @@ async function analyzeBatch(records, userAssignedIssues, userId, organizationId)
 
   try {
     // Each record needs ~150 tokens for JSON output; add buffer for array structure
-    const estimatedTokensPerRecord = 150;
-    const maxTokens = Math.max(1500, records.length * estimatedTokensPerRecord + 200);
+    const maxTokens = Math.max(1500, records.length * 150 + 200);
 
     const { response, provider, model } = await chatCompletionWithFallback({
       messages,
@@ -192,71 +253,15 @@ async function analyzeBatch(records, userAssignedIssues, userId, organizationId)
     const content = response.choices[0].message.content.trim();
     logger.info(`[ActivityService] Batch analysis done | ${provider} (${model}) | ${records.length} records`);
 
-    // Parse JSON array from response
-    let analyses;
-    try {
-      // Try direct parse first
-      analyses = JSON.parse(content);
-    } catch (e) {
-      // Try extracting JSON from markdown code block
-      const jsonMatch = content.match(/\[[\s\S]*\]/);
-      if (jsonMatch) {
-        try {
-          analyses = JSON.parse(jsonMatch[0]);
-        } catch (e2) {
-          // JSON may be truncated by max_tokens — try to salvage complete entries
-          analyses = salvageTruncatedJsonArray(jsonMatch[0]);
-        }
-      } else {
-        logger.error('[ActivityService] Failed to parse batch analysis response:', content.substring(0, 200));
-        throw new Error('Failed to parse AI response as JSON array');
-      }
-    }
-
+    const analyses = parseAnalysisResponse(content);
     if (!Array.isArray(analyses)) {
-      throw new Error('AI response is not a JSON array');
+      throw new TypeError('AI response is not a JSON array');
     }
 
-    // Validate task keys against assigned issues
-    const validKeys = new Set(userAssignedIssues.map(i => i.key));
-    for (const analysis of analyses) {
-      if (analysis.taskKey && !validKeys.has(analysis.taskKey)) {
-        // AI hallucinated a key — clear it
-        logger.warn(`[ActivityService] AI returned invalid task key: ${analysis.taskKey}`);
-        analysis.taskKey = null;
-        analysis.projectKey = null;
-        analysis.confidenceScore = Math.min(analysis.confidenceScore || 0, 0.3);
-      }
-    }
+    validateAnalysisKeys(analyses, userAssignedIssues);
+    await persistAnalysisResults(analyses, records, provider, model);
 
-    // Update records in database
-    for (const analysis of analyses) {
-      const recordIndex = analysis.recordIndex;
-      if (recordIndex >= 0 && recordIndex < records.length && records[recordIndex].id) {
-        try {
-          await activityDbService.updateActivityRecordAnalysis(records[recordIndex].id, {
-            taskKey: analysis.taskKey,
-            projectKey: analysis.projectKey,
-            metadata: {
-              workType: analysis.workType || 'office',
-              confidenceScore: analysis.confidenceScore,
-              reasoning: analysis.reasoning,
-              aiProvider: provider,
-              aiModel: model
-            }
-          });
-        } catch (updateErr) {
-          logger.error(`[ActivityService] Failed to update record ${records[recordIndex].id}:`, updateErr);
-        }
-      }
-    }
-
-    return {
-      analyses,
-      recordsProcessed: records.length,
-      provider,
-      model
-    };
+    return { analyses, recordsProcessed: records.length, provider, model };
 
   } catch (error) {
     logger.error('[ActivityService] Batch analysis failed:', error.message);
@@ -305,7 +310,8 @@ async function classifyUnknownApp(appName, windowTitle, ocrText, userId = null, 
     let result;
     try {
       result = JSON.parse(content);
-    } catch (e) {
+    } catch (error) {
+      logger.debug('[ActivityService] Direct JSON parse failed, trying regex extraction:', error.message);
       const jsonMatch = content.match(/\{[\s\S]*\}/);
       if (jsonMatch) {
         result = JSON.parse(jsonMatch[0]);
@@ -336,7 +342,7 @@ async function classifyUnknownApp(appName, windowTitle, ocrText, userId = null, 
     // Default to productive on failure (safest — will trigger OCR + AI analysis)
     return {
       classification: 'productive',
-      confidence: 0.0,
+      confidence: 0,
       reasoning: 'Classification failed, defaulting to productive',
       suggestedDisplayName: appName,
       error: error.message
@@ -397,8 +403,8 @@ async function identifyAppByName(searchTerm) {
     try {
       result = JSON.parse(content);
       logger.info('[ActivityService] Parsed JSON result:', JSON.stringify(result));
-    } catch (e) {
-      logger.warn('[ActivityService] Direct JSON parse failed, trying regex extraction');
+    } catch (error) {
+      logger.warn('[ActivityService] Direct JSON parse failed, trying regex extraction:', error.message);
       const jsonMatch = content.match(/\{[\s\S]*\}/);
       if (jsonMatch) {
         result = JSON.parse(jsonMatch[0]);

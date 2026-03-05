@@ -268,7 +268,7 @@
         <div id="form-card" class="card">
             <form id="feedback-form">
                 <div class="form-group">
-                    <label>Category <span class="required">*</span></label>
+                    <label for="category">Category <span class="required">*</span></label>
                     <select id="category" required>
                         <option value="">Select a category...</option>
                         <option value="bug">Bug Report</option>
@@ -280,17 +280,17 @@
                 </div>
 
                 <div class="form-group">
-                    <label>Title <span class="optional">(optional - AI will generate if empty)</span></label>
+                    <label for="title">Title <span class="optional">(optional - AI will generate if empty)</span></label>
                     <input type="text" id="title" placeholder="Brief summary of your feedback" maxlength="200">
                 </div>
 
                 <div class="form-group">
-                    <label>Description <span class="required">*</span></label>
+                    <label for="description">Description <span class="required">*</span></label>
                     <textarea id="description" placeholder="Please describe your feedback in detail..." required></textarea>
                 </div>
 
                 <div class="form-group">
-                    <label>Screenshots <span class="optional">(optional, max 3 images, 5MB each)</span></label>
+                    <label for="file-input">Screenshots <span class="optional">(optional, max 3 images, 5MB each)</span></label>
                     <div class="upload-area" id="upload-area">
                         <span class="upload-icon">&#128247;</span>
                         <div class="upload-text">

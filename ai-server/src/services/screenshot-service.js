@@ -123,7 +123,7 @@ exports.analyzeActivity = async ({ imageBuffer, windowTitle, applicationName, ti
     const taskKey = visionAnalysis?.taskKey || null;
     const projectKey = visionAnalysis?.projectKey || (taskKey ? taskKey.split('-')[0] : null);
     const workType = visionAnalysis?.workType || 'office';
-    const confidenceScore = visionAnalysis?.confidenceScore || 0.0;
+    const confidenceScore = visionAnalysis?.confidenceScore || 0;
 
     return {
       taskKey,

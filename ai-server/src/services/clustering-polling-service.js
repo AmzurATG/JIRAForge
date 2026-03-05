@@ -9,8 +9,8 @@ const clusteringService = require('./clustering-service');
 const logger = require('../utils/logger');
 
 // Configuration (can be overridden via environment variables)
-const CLUSTERING_SCHEDULE_HOUR = parseInt(process.env.CLUSTERING_SCHEDULE_HOUR || '2', 10); // 2 AM
-const CLUSTERING_SCHEDULE_MINUTE = parseInt(process.env.CLUSTERING_SCHEDULE_MINUTE || '0', 10); // 0 minutes
+const CLUSTERING_SCHEDULE_HOUR = Number.parseInt(process.env.CLUSTERING_SCHEDULE_HOUR || '2', 10); // 2 AM
+const CLUSTERING_SCHEDULE_MINUTE = Number.parseInt(process.env.CLUSTERING_SCHEDULE_MINUTE || '0', 10); // 0 minutes
 const MIN_SESSIONS_FOR_CLUSTERING = 2; // Need at least 2 sessions to cluster
 
 let scheduledTimeoutId = null;
@@ -94,7 +94,7 @@ async function processUserUnassignedWork(userId, organizationId) {
   // 3. Cluster sessions using GPT-4
   const clusteringResult = await clusteringService.clusterUnassignedWork(sessions, userIssues);
 
-  if (!clusteringResult || !clusteringResult.groups || clusteringResult.groups.length === 0) {
+  if (!clusteringResult?.groups?.length) {
     logger.warn(`[Clustering] No groups created for user ${userId}`);
     return;
   }
@@ -161,7 +161,7 @@ function deduplicateSessionsAcrossGroups(groups) {
 }
 
 // Valid values for recommended_action (must match database check constraint)
-const VALID_RECOMMENDED_ACTIONS = ['assign_to_existing', 'create_new_issue'];
+const VALID_RECOMMENDED_ACTIONS = new Set(['assign_to_existing', 'create_new_issue']);
 
 /**
  * Validate and normalize the recommended_action value
@@ -177,7 +177,7 @@ function normalizeRecommendedAction(action) {
   const normalizedAction = action.toLowerCase().trim();
 
   // If it's a valid action, use it
-  if (VALID_RECOMMENDED_ACTIONS.includes(normalizedAction)) {
+  if (VALID_RECOMMENDED_ACTIONS.has(normalizedAction)) {
     return normalizedAction;
   }
 
