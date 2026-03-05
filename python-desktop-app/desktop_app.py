@@ -44,8 +44,135 @@ import fnmatch
 # OCR for text extraction
 from ocr import extract_text_from_image
 
-# Secure logging (PII sanitization)
-from secure_logger import secure_log, sanitize_value
+# ============================================================================
+# SECURE LOGGING (PII SANITIZATION) - Embedded for single-file bundling
+# ============================================================================
+
+# Secure logging configuration from environment
+_SECURE_LOG_ENABLED = os.environ.get('SECURE_LOG_ENABLED', 'true').lower() == 'true'
+_SECURE_LOG_LEVEL = os.environ.get('SECURE_LOG_LEVEL', 'standard')  # minimal, standard, strict
+
+# Sanitization patterns (matching ai-server patterns)
+_SANITIZATION_PATTERNS = [
+    # Email addresses (HIGH PRIORITY - always sanitize)
+    {
+        'pattern': re.compile(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', re.IGNORECASE),
+        'replacement': '[EMAIL]',
+        'type': 'EMAIL',
+        'levels': ['minimal', 'standard', 'strict']
+    },
+    # Credit card numbers
+    {
+        'pattern': re.compile(r'\b(?:4[0-9]{12}(?:[0-9]{3})?|5[1-5][0-9]{14}|3[47][0-9]{13}|6(?:011|5[0-9]{2})[0-9]{12})\b'),
+        'replacement': '[CREDIT_CARD]',
+        'type': 'CREDIT_CARD',
+        'levels': ['minimal', 'standard', 'strict']
+    },
+    # Phone numbers
+    {
+        'pattern': re.compile(r'\b(?:\+?1[-.\s]?)?(?:\(?[0-9]{3}\)?[-.\s]?)?[0-9]{3}[-.\s]?[0-9]{4}\b'),
+        'replacement': '[PHONE]',
+        'type': 'PHONE',
+        'levels': ['minimal', 'standard', 'strict']
+    },
+    # JWT Tokens
+    {
+        'pattern': re.compile(r'eyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+'),
+        'replacement': '[JWT]',
+        'type': 'JWT',
+        'levels': ['minimal', 'standard', 'strict']
+    },
+    # Atlassian Account IDs (format: 712020:uuid) - Must come before UUID
+    {
+        'pattern': re.compile(r'\d{6}:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}', re.IGNORECASE),
+        'replacement': '[ATLASSIAN_ACCOUNT]',
+        'type': 'ATLASSIAN_ACCOUNT',
+        'levels': ['standard', 'strict']
+    },
+    # UUIDs (user IDs, organization IDs, cloud IDs)
+    {
+        'pattern': re.compile(r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}', re.IGNORECASE),
+        'replacement': '[UUID]',
+        'type': 'UUID',
+        'levels': ['standard', 'strict']
+    },
+    # IP Addresses
+    {
+        'pattern': re.compile(r'\b(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\b'),
+        'replacement': '[IP]',
+        'type': 'IP_ADDRESS',
+        'levels': ['standard', 'strict']
+    },
+    # API Keys with labels
+    {
+        'pattern': re.compile(r'(?:api[_-]?key|secret[_-]?key|access[_-]?token|client[_-]?secret)[\s]*[=:]+[\s]*["\']?([A-Za-z0-9_-]{16,})["\']?', re.IGNORECASE),
+        'replacement': '[API_KEY]',
+        'type': 'API_KEY',
+        'levels': ['minimal', 'standard', 'strict']
+    },
+    # AWS Keys
+    {
+        'pattern': re.compile(r'\b(AKIA[0-9A-Z]{16})\b'),
+        'replacement': '[AWS_KEY]',
+        'type': 'AWS_KEY',
+        'levels': ['minimal', 'standard', 'strict']
+    },
+    # GitHub tokens
+    {
+        'pattern': re.compile(r'\b(gh[ps]_[A-Za-z0-9]{36}|github_pat_[A-Za-z0-9_]+)\b'),
+        'replacement': '[GITHUB_TOKEN]',
+        'type': 'GITHUB_TOKEN',
+        'levels': ['minimal', 'standard', 'strict']
+    },
+]
+
+def _should_apply_pattern(pattern_config: dict, level: str) -> bool:
+    """Check if pattern should be applied at current level"""
+    return level in pattern_config.get('levels', [])
+
+def sanitize_value(value, level: str = None) -> str:
+    """Sanitize a single value by redacting PII patterns."""
+    if level is None:
+        level = _SECURE_LOG_LEVEL
+    if not _SECURE_LOG_ENABLED:
+        return str(value)
+    text = str(value)
+    for config in _SANITIZATION_PATTERNS:
+        if not _should_apply_pattern(config, level):
+            continue
+        text = config['pattern'].sub(config['replacement'], text)
+    return text
+
+def _sanitize_dict(data: dict, level: str = None) -> dict:
+    """Sanitize all values in a dictionary."""
+    if level is None:
+        level = _SECURE_LOG_LEVEL
+    result = {}
+    for key, value in data.items():
+        if isinstance(value, dict):
+            result[key] = _sanitize_dict(value, level)
+        elif isinstance(value, list):
+            result[key] = [sanitize_value(v, level) for v in value]
+        else:
+            result[key] = sanitize_value(value, level)
+    return result
+
+def secure_log(message: str, level: str = "INFO", **kwargs) -> None:
+    """Print a sanitized log message with optional key=value pairs."""
+    sanitized_message = sanitize_value(message)
+    if kwargs:
+        sanitized_kwargs = _sanitize_dict(kwargs)
+        kwargs_str = " | ".join(f"{k}={v}" for k, v in sanitized_kwargs.items())
+        log_line = f"{sanitized_message} | {kwargs_str}"
+    else:
+        log_line = sanitized_message
+    if os.environ.get('LOG_TIMESTAMPS', 'false').lower() == 'true':
+        timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        print(f"[{timestamp}] [{level}] {log_line}")
+    else:
+        print(log_line)
+
+# ============================================================================
 
 # Secure credential storage
 try:

@@ -295,32 +295,3 @@ def secure_print(*args, **kwargs):
     message = ' '.join(str(arg) for arg in args)
     sanitized = sanitize_value(message)
     print(sanitized, **kwargs)
-
-
-if __name__ == '__main__':
-    # Test the logger
-    print("Testing SecureLogger...")
-    print()
-    
-    # Test various patterns
-    test_cases = [
-        ("Email test", {"email": "user@example.com"}),
-        ("UUID test", {"user_id": "fa23333e-9e8f-4b13-bda9-833ca4f7c3cc"}),
-        ("Atlassian account", {"account": "712020:2e67c2ea-92ca-451d-9686-bb830a8da0af"}),
-        ("IP address", {"ip": "192.168.1.100"}),
-        ("JWT token", {"token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.Gfx6FrV_QzVpwpLw8pHmUkHRlNh9VVp8xkJ0Z_0YtYI"}),
-        ("Mixed message", {"msg": "User user@test.com logged in from 10.0.0.1 with id 39b6eab6-88fd-45b6-8bbc-dad801bac3bd"}),
-    ]
-    
-    for desc, data in test_cases:
-        print(f"Test: {desc}")
-        secure_log(f"[TEST] {desc}", **data)
-        print()
-    
-    # Test secure_print
-    print("Testing secure_print():")
-    secure_print(f"[OK] User fa23333e-9e8f-4b13-bda9-833ca4f7c3cc authenticated from 192.168.1.1")
-    
-    # Show stats
-    print()
-    print(f"Redaction stats: {get_redaction_stats()}")

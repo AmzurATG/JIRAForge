@@ -66,17 +66,17 @@ class TestCustomPatternDetector(unittest.TestCase):
     
     def test_detect_password_in_url(self):
         """Test detecting password in URL"""
-        text = "Connect to https://admin:SuperSecret123@database.example.com/db"
+        text = "Connect to https://admin:TestPass000@database.example.com/db"
         detections = self.detector.detect(text)
         
         self.assertTrue(len(detections) > 0)
         password_detections = [d for d in detections if d.entity_type == 'PASSWORD']
         self.assertTrue(len(password_detections) > 0)
-        self.assertIn('SuperSecret123', [d.text for d in password_detections])
+        self.assertIn('TestPass000', [d.text for d in password_detections])
     
     def test_detect_password_key_value(self):
         """Test detecting password in key=value format"""
-        text = 'DB_PASSWORD=MySecretPass123!'
+        text = 'DB_PASSWORD=TestPass000!'
         detections = self.detector.detect(text)
         
         password_detections = [d for d in detections if d.entity_type == 'PASSWORD']
@@ -84,7 +84,7 @@ class TestCustomPatternDetector(unittest.TestCase):
     
     def test_detect_aws_key(self):
         """Test detecting AWS access key"""
-        text = 'AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE'
+        text = 'AWS_ACCESS_KEY_ID=AKIATESTTESTTESTTEST'
         detections = self.detector.detect(text)
         
         api_key_detections = [d for d in detections if d.entity_type == 'API_KEY']
@@ -93,7 +93,7 @@ class TestCustomPatternDetector(unittest.TestCase):
     def test_detect_github_token(self):
         """Test detecting GitHub token"""
         # ghp_ tokens must be exactly 36 chars after prefix
-        text = 'GITHUB_TOKEN=ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890'
+        text = 'GITHUB_TOKEN=ghp_000000000000000000000000000000000000'
         detections = self.detector.detect(text)
         
         api_key_detections = [d for d in detections if d.entity_type == 'API_KEY']
@@ -101,7 +101,7 @@ class TestCustomPatternDetector(unittest.TestCase):
     
     def test_detect_jwt_token(self):
         """Test detecting JWT token"""
-        text = 'Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U'
+        text = 'Authorization: Bearer eyJhbGciOiJ0ZXN0In0.eyJ0ZXN0IjoidGVzdCJ9.dGVzdHNpZ25hdHVyZQ'
         detections = self.detector.detect(text)
         
         token_detections = [d for d in detections if d.entity_type == 'BEARER_TOKEN']
@@ -171,19 +171,19 @@ class TestPrivacyFilter(unittest.TestCase):
     
     def test_redact_password(self):
         """Test redacting password from text"""
-        text = 'Database password=MySecret123!'
+        text = 'Database password=TestPass000!'
         result = self.filter.redact(text)
         
-        self.assertNotIn('MySecret123', result['text'])
+        self.assertNotIn('TestPass000', result['text'])
         self.assertIn('********', result['text'])
         self.assertTrue(result['redactions_count'] > 0)
     
     def test_redact_api_key(self):
         """Test redacting API key from text"""
-        text = 'api_key=test_key_FAKE1234567890abcdef'
+        text = 'api_key=FAKE_TEST_KEY_00000000'
         result = self.filter.redact(text)
         
-        self.assertNotIn('test_key_FAKE1234567890', result['text'])
+        self.assertNotIn('FAKE_TEST_KEY_00000000', result['text'])
         self.assertTrue(result['redactions_count'] > 0)
     
     def test_filter_disabled(self):
@@ -251,10 +251,10 @@ class TestIntegration(unittest.TestCase):
         Host: db.example.com
         Port: 5432
         Username: admin
-        Password: Sup3rS3cr3t!
+        Password: TestPass000!
         
         API Settings:
-        API_KEY=test_FAKE_key_abcdefghijklmnop
+        API_KEY=FAKE_TEST_KEY_00000000
         
         Status: Connected
         """
@@ -262,8 +262,8 @@ class TestIntegration(unittest.TestCase):
         result = filter.redact(ocr_text)
         
         # Sensitive data should be redacted
-        self.assertNotIn('Sup3rS3cr3t', result['text'])
-        self.assertNotIn('test_FAKE_key_abcdefgh', result['text'])
+        self.assertNotIn('TestPass000', result['text'])
+        self.assertNotIn('FAKE_TEST_KEY_00000000', result['text'])
         
         # Non-sensitive data should remain
         self.assertIn('JIRAForge', result['text'])
@@ -278,9 +278,9 @@ class TestIntegration(unittest.TestCase):
         filter = PrivacyFilter(config)
         
         text = """
-        password=secret1
-        api_key=AKIAIOSFODNN7EXAMPLE
-        token=ghp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+        password=testpass000
+        api_key=AKIATESTTESTTESTTEST
+        token=ghp_000000000000000000000000000000000000
         """
         
         result = filter.redact(text)
