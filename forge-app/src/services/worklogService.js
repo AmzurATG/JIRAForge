@@ -23,7 +23,8 @@ export async function createWorklog(issueKey, timeSpentSeconds, startedAt) {
 }
 
 /**
- * Aggregate tracked time for a user from analysis_results
+ * Aggregate tracked time for a user from activity_records.
+ * Uses the new interval-based tracking table instead of screenshot-based analysis_results.
  * @param {Object} supabaseConfig - Supabase configuration
  * @param {string} organizationId - Organization ID
  * @param {string} userId - User ID
@@ -37,22 +38,24 @@ async function aggregateUserTrackedTime(supabaseConfig, organizationId, userId) 
   let totalFetched = 0;
 
   while (true) {
+    // Query activity_records (interval-based tracking) instead of analysis_results (screenshot-based)
     // eslint-disable-next-line deprecation/deprecation
     const page = await supabaseRequest(
       supabaseConfig,
-      `analysis_results?organization_id=eq.${organizationId}&user_id=eq.${userId}&work_type=eq.office&active_task_key=not.is.null&select=active_task_key,screenshots(duration_seconds,timestamp)&order=created_at.desc&limit=${PAGE_SIZE}&offset=${offset}`
+      `activity_records?organization_id=eq.${organizationId}&user_id=eq.${userId}&status=in.(pending,processing,analyzed)&classification=in.(productive,unknown)&user_assigned_issue_key=not.is.null&select=user_assigned_issue_key,duration_seconds,total_time_seconds,end_time&order=created_at.desc&limit=${PAGE_SIZE}&offset=${offset}`
     );
 
     if (!page || !Array.isArray(page) || page.length === 0) break;
 
     page.forEach(entry => {
-      const key = entry.active_task_key;
+      const key = entry.user_assigned_issue_key;
       if (!timeByIssue[key]) {
         timeByIssue[key] = 0;
         lastWorkedByIssue[key] = null;
       }
-      timeByIssue[key] += entry.screenshots?.duration_seconds || 0;
-      const ts = entry.screenshots?.timestamp;
+      // Use duration_seconds or total_time_seconds (whichever is available)
+      timeByIssue[key] += entry.duration_seconds || entry.total_time_seconds || 0;
+      const ts = entry.end_time;
       if (ts && (!lastWorkedByIssue[key] || ts > lastWorkedByIssue[key])) {
         lastWorkedByIssue[key] = ts;
       }

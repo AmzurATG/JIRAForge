@@ -81,7 +81,8 @@ export async function runScheduledWorklogSync() {
 }
 
 /**
- * Aggregate time tracked per user/issue from analysis_results.
+ * Aggregate time tracked per user/issue from activity_records.
+ * Uses the new interval-based tracking table instead of screenshot-based analysis_results.
  * @param {Object} supabaseConfig - Supabase configuration
  * @param {string} organizationId - Organization ID
  * @returns {Promise<Object>} Object with timeByUserIssue and lastWorkedByUserIssue maps
@@ -94,10 +95,11 @@ async function aggregateTrackedTime(supabaseConfig, organizationId) {
   let totalFetched = 0;
 
   while (true) {
+    // Query activity_records (interval-based tracking) instead of analysis_results (screenshot-based)
     // eslint-disable-next-line deprecation/deprecation
     const page = await supabaseRequest(
       supabaseConfig,
-      `analysis_results?organization_id=eq.${organizationId}&work_type=eq.office&active_task_key=not.is.null&select=user_id,active_task_key,screenshots(duration_seconds,timestamp)&order=created_at.desc&limit=${PAGE_SIZE}&offset=${offset}`
+      `activity_records?organization_id=eq.${organizationId}&status=in.(pending,processing,analyzed)&classification=in.(productive,unknown)&user_assigned_issue_key=not.is.null&select=user_id,user_assigned_issue_key,duration_seconds,total_time_seconds,end_time&order=created_at.desc&limit=${PAGE_SIZE}&offset=${offset}`
     );
 
     if (!page || !Array.isArray(page) || page.length === 0) {
@@ -105,13 +107,15 @@ async function aggregateTrackedTime(supabaseConfig, organizationId) {
     }
 
     page.forEach(entry => {
-      const key = `${entry.user_id}::${entry.active_task_key}`;
+      const issueKey = entry.user_assigned_issue_key;
+      const key = `${entry.user_id}::${issueKey}`;
       if (!timeByUserIssue[key]) {
         timeByUserIssue[key] = 0;
         lastWorkedByUserIssue[key] = null;
       }
-      timeByUserIssue[key] += entry.screenshots?.duration_seconds || 0;
-      const ts = entry.screenshots?.timestamp;
+      // Use duration_seconds or total_time_seconds (whichever is available)
+      timeByUserIssue[key] += entry.duration_seconds || entry.total_time_seconds || 0;
+      const ts = entry.end_time;
       if (ts && (!lastWorkedByUserIssue[key] || ts > lastWorkedByUserIssue[key])) {
         lastWorkedByUserIssue[key] = ts;
       }
@@ -145,7 +149,7 @@ async function aggregateTrackedTime(supabaseConfig, organizationId) {
  * Sync all users' worklogs for a single organization.
  */
 async function syncOrganization(supabaseConfig, organizationId) {
-  // Fetch ALL analysis_results for this org using pagination (no date filter — match dashboard totals)
+  // Fetch ALL activity_records for this org using pagination (no date filter — match dashboard totals)
   const { timeByUserIssue, lastWorkedByUserIssue } = await aggregateTrackedTime(supabaseConfig, organizationId);
 
   // Build list of {userId, issueKey, timeTracked, lastWorkedOn}
