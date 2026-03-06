@@ -82,7 +82,13 @@ const limiter = rateLimit({
   }
 });
 
-app.use('/api/', limiter);
+// Apply general rate limiter to all /api/ routes EXCEPT /api/forge/*
+// Forge routes have their own forgeLimiter. All Forge calls come from Atlassian's
+// shared infrastructure IPs so a shared IP-based bucket would block all tenants.
+app.use('/api/', (req, res, next) => {
+  if (req.path.startsWith('/forge/')) return next();
+  return limiter(req, res, next);
+});
 
 // Root endpoint
 app.get('/', (req, res) => {
@@ -263,14 +269,19 @@ app.use('/api/notifications', authMiddleware, notificationController);
 // =============================================================================
 
 // Rate limiter for Forge routes
+// NOTE: All Forge app calls arrive from Atlassian's shared infrastructure IPs,
+// not individual user IPs. The keyGenerator tries to use cloudId (per-tenant)
+// but forgeContext is set by forgeAuthMiddleware which runs AFTER this limiter,
+// so it always falls back to IP. Set a high limit to accommodate all tenants.
 const forgeLimiter = rateLimit({
   windowMs: 1 * 60 * 1000, // 1 minute
-  max: 200, // 200 requests per minute per IP
+  max: 2000, // High limit - all tenants share the same Atlassian egress IP(s)
   message: 'Too many requests from this IP, please try again later.',
   standardHeaders: true,
   legacyHeaders: false,
   keyGenerator: (req) => {
-    // Use cloudId from FIT token if available for rate limiting per tenant
+    // forgeContext is not yet set here (set by forgeAuthMiddleware downstream)
+    // so this always falls back to IP — which is Atlassian's shared IP
     return req.forgeContext?.cloudId || req.ip || 'unknown';
   }
 });

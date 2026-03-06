@@ -25,16 +25,17 @@ const inFlightRequests = new Map();
  */
 const MAX_RETRIES = 2;
 const BASE_DELAY_MS = 1000;
+const RATE_LIMIT_DELAY_MS = 3000; // Longer wait on 429 before retrying
 
-async function performRetryDelay(attempt, endpoint) {
+async function performRetryDelay(attempt, endpoint, isRateLimit = false) {
   if (attempt === 0) return;
-  const delay = BASE_DELAY_MS * attempt;
-  console.log(`[Remote] Retry ${attempt}/${MAX_RETRIES} for ${endpoint} after ${delay}ms`);
+  const delay = isRateLimit ? RATE_LIMIT_DELAY_MS * attempt : BASE_DELAY_MS * attempt;
+  console.log(`[Remote] Retry ${attempt}/${MAX_RETRIES} for ${endpoint} after ${delay}ms${isRateLimit ? ' (rate limited)' : ''}`);
   await new Promise(resolve => setTimeout(resolve, delay));
 }
 
 function isRetryableStatus(status) {
-  return status === 401 || status >= 500;
+  return status === 401 || status === 429 || status >= 500;
 }
 
 function isRetryableNetworkError(error) {
@@ -78,7 +79,7 @@ async function handleFailedResponse(response, attempt, endpoint) {
 
   if (isRetryableStatus(response.status) && canRetry(attempt)) {
     console.warn(`[Remote] Retryable error ${response.status} on ${endpoint} (attempt ${attempt + 1})`);
-    return { shouldRetry: true };
+    return { shouldRetry: true, isRateLimit: response.status === 429 };
   }
 
   console.error(`[Remote] Request failed: ${response.status}`, errorText);
@@ -110,13 +111,15 @@ async function attemptRemoteRequest(endpoint, options, attempt) {
 }
 
 async function remoteRequest(endpoint, options = {}) {
+  let lastWasRateLimit = false;
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
-    await performRetryDelay(attempt, endpoint);
+    await performRetryDelay(attempt, endpoint, lastWasRateLimit);
 
     const result = await attemptRemoteRequest(endpoint, options, attempt);
     if (!result.shouldRetry) {
       return result.data;
     }
+    lastWasRateLimit = result.isRateLimit || false;
   }
 }
 
