@@ -4196,17 +4196,70 @@ class TimeTracker:
             if project_clauses:
                 # Combine all project clauses with OR
                 status_filter = ' OR '.join(project_clauses)
-                jql = f'assignee = currentUser() AND Sprint in openSprints() AND ({status_filter})'
+                jql = f'assignee = currentUser() AND ({status_filter})'
                 print(f"[INFO] Using project-level tracked statuses JQL")
                 return jql
         
         # Fallback: Use statusCategory if no project settings
         print("[INFO] No project settings, using statusCategory = 'In Progress'")
-        return 'assignee = currentUser() AND Sprint in openSprints() AND statusCategory = "In Progress"'
+        return 'assignee = currentUser() AND statusCategory = "In Progress"'
+
+    def fetch_issues_from_cache(self):
+        """Read user's issues from user_jira_issues_cache in Supabase.
+        Returns a formatted issue list on success, or None if cache is unavailable/empty.
+        """
+        if not self.supabase_service or not self.current_user_id or not self.organization_id:
+            return None
+        try:
+            result = self.supabase_service.table('user_jira_issues_cache') \
+                .select('issue_key, issue_summary, project_key, status, description, labels') \
+                .eq('user_id', self.current_user_id) \
+                .eq('organization_id', self.organization_id) \
+                .limit(50) \
+                .execute()
+
+            rows = result.data if result.data else []
+            if not rows:
+                print("[INFO] user_jira_issues_cache: empty for this user")
+                return None
+
+            formatted = []
+            for row in rows:
+                labels = row.get('labels') or []
+                if isinstance(labels, str):
+                    try:
+                        labels = json.loads(labels)
+                    except Exception:
+                        labels = []
+                formatted.append({
+                    'key': row.get('issue_key', ''),
+                    'summary': row.get('issue_summary', ''),
+                    'status': row.get('status', ''),
+                    'project': row.get('project_key', ''),
+                    'description': row.get('description', ''),
+                    'labels': labels
+                })
+
+            print(f"[INFO] user_jira_issues_cache: loaded {len(formatted)} issues from Supabase")
+            return formatted
+        except Exception as e:
+            print(f"[WARN] user_jira_issues_cache read failed: {e}")
+            return None
 
     def fetch_jira_issues(self):
-        """Fetch user's In Progress Jira issues with automatic token refresh on 401"""
+        """Fetch user's In Progress Jira issues.
+        Primary path: reads from user_jira_issues_cache in Supabase (kept fresh by
+        the Forge avi:jira:updated:issue trigger — no Jira API call needed).
+        Fallback: calls Jira REST API directly if the cache is unavailable or empty.
+        """
         print("[INFO] Attempting to fetch Jira issues...")
+
+        # Primary: Supabase cache (no OAuth token required)
+        cached = self.fetch_issues_from_cache()
+        if cached is not None:
+            return cached
+
+        print("[INFO] Cache miss — falling back to direct Jira API call")
         cloud_id = self.get_jira_cloud_id()
         if not cloud_id:
             print("[WARN] Cannot fetch issues: No Cloud ID")
@@ -4271,7 +4324,7 @@ class TimeTracker:
 
                 # If project-level JQL returned 0 issues, try broader fallback so user_assigned_issues is populated
                 if not issues:
-                    fallback_jql = 'assignee = currentUser() AND Sprint in openSprints() AND statusCategory = "In Progress"'
+                    fallback_jql = 'assignee = currentUser() AND statusCategory = "In Progress"'
                     print(f"[INFO] Retrying with broader JQL for assigned issues")
                     fallback_resp = requests.post(
                         f'https://api.atlassian.com/ex/jira/{cloud_id}/rest/api/3/search/jql',
