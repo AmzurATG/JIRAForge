@@ -153,6 +153,28 @@ async function updateSessionsAndAnalysis({ validSessionIds, issueKey, userId, or
       { method: 'PATCH', body: updateBody }
     );
   }
+
+  // Also update activity_records for hybrid OCR approach data
+  // Extract project key from issue key (e.g., SCRUM-5 -> SCRUM)
+  const projectKey = issueKey.split('-')[0];
+  try {
+    // Update any activity_records that are in the unassigned_activity sessions
+    // by matching on user_id + organization_id + unassigned issue key
+    await supabaseRequest(
+      supabaseConfig,
+      `activity_records?user_id=eq.${userId}&organization_id=eq.${organizationId}&user_assigned_issue_key=is.null`,
+      {
+        method: 'PATCH',
+        body: {
+          user_assigned_issue_key: issueKey,
+          project_key: projectKey
+        }
+      }
+    );
+    console.log(`[updateSessions] Updated activity_records with issue_key ${issueKey}`);
+  } catch (error) {
+    console.error(`[updateSessions] Error updating activity_records:`, error);
+  }
   
   return analysisResultIds.length;
 }
@@ -490,29 +512,36 @@ export async function previewBulkReassign(req) {
 
     console.log(`[previewBulkReassign] Previewing activities from ${startDateTime} to ${endDateTime}`);
 
-    // Query analysis_results within the time range (includes both assigned and unassigned)
+    // Query activity_records within the time range (hybrid OCR approach)
+    const activityRecords = await supabaseRequest(
+      supabaseConfig,
+      `activity_records?user_id=eq.${userId}&organization_id=eq.${organization.id}&status=in.(pending,processing,analyzed)&classification=in.(productive,unknown)&start_time=gte.${startDateTime}&end_time=lte.${endDateTime}&select=id,user_assigned_issue_key,window_title,application_name,start_time,duration_seconds,total_time_seconds&order=start_time.asc`
+    );
+
+    // Also query legacy analysis_results for backwards compatibility
     // Use screenshots.timestamp for accurate time-based filtering
-    // IMPORTANT: Use screenshots.duration_seconds (source of truth) instead of analysis_results.time_spent_seconds (stale)
     const analysisResults = await supabaseRequest(
       supabaseConfig,
       `analysis_results?select=id,active_task_key,confidence_score,work_type,manually_assigned,screenshots(id,timestamp,window_title,application_name,thumbnail_url,duration_seconds)&user_id=eq.${userId}&organization_id=eq.${organization.id}&work_type=eq.office&order=created_at.asc`
     );
 
-    // Filter by screenshot timestamp within the time range
-    const activitiesInRange = filterActivitiesByTimeRange(analysisResults, startDateTime, endDateTime);
+    // Filter legacy results by screenshot timestamp within the time range
+    const legacyActivitiesInRange = filterActivitiesByTimeRange(analysisResults, startDateTime, endDateTime);
 
-    // Separate into currently assigned (wrongly tracked) and unassigned
-    const wronglyTracked = activitiesInRange.filter(a => a.active_task_key !== null);
-    const unassigned = activitiesInRange.filter(a => a.active_task_key === null);
+    // Map activity_records to common format
+    const activityRecordsFormatted = (activityRecords || []).map(a => ({
+      id: a.id,
+      timestamp: a.start_time,
+      window_title: a.window_title,
+      application_name: a.application_name,
+      current_issue_key: a.user_assigned_issue_key,
+      time_spent_seconds: a.duration_seconds || a.total_time_seconds || 0,
+      is_unassigned: a.user_assigned_issue_key === null,
+      source: 'activity_records'
+    }));
 
-    // Calculate totals using screenshots.duration_seconds (source of truth)
-    const totalSeconds = activitiesInRange.reduce((sum, a) => sum + (a.screenshots?.duration_seconds || 0), 0);
-
-    // Get unique issue keys that are currently assigned
-    const currentlyAssignedIssues = [...new Set(wronglyTracked.map(a => a.active_task_key).filter(Boolean))];
-
-    // Format activities for display - use screenshots.duration_seconds
-    const formattedActivities = activitiesInRange.map(a => ({
+    // Map legacy results to common format
+    const legacyActivitiesFormatted = legacyActivitiesInRange.map(a => ({
       id: a.id,
       screenshot_id: a.screenshots?.id,
       timestamp: a.screenshots?.timestamp,
@@ -521,19 +550,33 @@ export async function previewBulkReassign(req) {
       thumbnail_url: a.screenshots?.thumbnail_url,
       current_issue_key: a.active_task_key,
       time_spent_seconds: a.screenshots?.duration_seconds || 0,
-      is_unassigned: a.active_task_key === null
+      is_unassigned: a.active_task_key === null,
+      source: 'analysis_results'
     }));
+
+    // Combine all activities
+    const allActivities = [...activityRecordsFormatted, ...legacyActivitiesFormatted];
+
+    // Separate into currently assigned (wrongly tracked) and unassigned
+    const wronglyTracked = allActivities.filter(a => a.current_issue_key !== null);
+    const unassigned = allActivities.filter(a => a.current_issue_key === null);
+
+    // Calculate totals
+    const totalSeconds = allActivities.reduce((sum, a) => sum + (a.time_spent_seconds || 0), 0);
+
+    // Get unique issue keys that are currently assigned
+    const currentlyAssignedIssues = [...new Set(wronglyTracked.map(a => a.current_issue_key).filter(Boolean))];
 
     return {
       success: true,
       preview: {
-        total_activities: activitiesInRange.length,
+        total_activities: allActivities.length,
         wrongly_tracked_count: wronglyTracked.length,
         unassigned_count: unassigned.length,
         total_seconds: totalSeconds,
         total_time_formatted: formatDuration(totalSeconds),
         currently_assigned_issues: currentlyAssignedIssues,
-        activities: formattedActivities,
+        activities: allActivities,
         time_range: {
           start: startDateTime,
           end: endDateTime,
@@ -582,96 +625,129 @@ export async function bulkReassignByTimeInterval(req) {
 
     console.log(`[bulkReassignByTimeInterval] Reassigning activities from ${startDateTime} to ${endDateTime} to ${targetIssueKey}`);
 
-    // First, get all analysis_results in the time range
-    // IMPORTANT: Use screenshots.duration_seconds (source of truth) instead of analysis_results.time_spent_seconds (stale)
+    // Extract project key from target issue key (e.g., SCRUM-5 -> SCRUM)
+    const targetProjectKey = targetIssueKey.split('-')[0];
+
+    // Query activity_records in the time range (hybrid OCR approach)
+    const activityRecords = await supabaseRequest(
+      supabaseConfig,
+      `activity_records?user_id=eq.${userId}&organization_id=eq.${organization.id}&status=in.(pending,processing,analyzed)&classification=in.(productive,unknown)&start_time=gte.${startDateTime}&end_time=lte.${endDateTime}&select=id,user_assigned_issue_key,duration_seconds,total_time_seconds`
+    );
+
+    // Also query legacy analysis_results in the time range
     const analysisResults = await supabaseRequest(
       supabaseConfig,
       `analysis_results?select=id,active_task_key,screenshot_id,screenshots(id,timestamp,duration_seconds)&user_id=eq.${userId}&organization_id=eq.${organization.id}&work_type=eq.office`
     );
 
-    // Filter by screenshot timestamp
-    const activitiesInRange = filterActivitiesByTimeRange(analysisResults, startDateTime, endDateTime);
+    // Filter legacy by screenshot timestamp
+    const legacyActivitiesInRange = filterActivitiesByTimeRange(analysisResults, startDateTime, endDateTime);
 
-    if (activitiesInRange.length === 0) {
+    // Calculate totals from both sources
+    const activityRecordsArray = activityRecords || [];
+    const activityRecordsSeconds = activityRecordsArray.reduce((sum, a) => sum + (a.duration_seconds || a.total_time_seconds || 0), 0);
+    const legacySeconds = legacyActivitiesInRange.reduce((sum, a) => sum + (a.screenshots?.duration_seconds || 0), 0);
+    const totalSeconds = activityRecordsSeconds + legacySeconds;
+
+    const totalActivities = activityRecordsArray.length + legacyActivitiesInRange.length;
+
+    if (totalActivities === 0) {
       return { success: false, error: 'No activities found in the specified time range' };
     }
 
-    const analysisResultIds = sanitizeUUIDArray(activitiesInRange.map(a => a.id));
-    // Use screenshots.duration_seconds (source of truth) instead of time_spent_seconds (stale)
-    const totalSeconds = activitiesInRange.reduce((sum, a) => sum + (a.screenshots?.duration_seconds || 0), 0);
-    const previouslyAssignedCount = activitiesInRange.filter(a => a.active_task_key !== null).length;
-    const previouslyUnassignedCount = activitiesInRange.filter(a => a.active_task_key === null).length;
+    const previouslyAssignedCount = 
+      activityRecordsArray.filter(a => a.user_assigned_issue_key !== null).length +
+      legacyActivitiesInRange.filter(a => a.active_task_key !== null).length;
+    const previouslyUnassignedCount = totalActivities - previouslyAssignedCount;
 
-    console.log(`[bulkReassignByTimeInterval] Found ${activitiesInRange.length} activities (${previouslyAssignedCount} tracked, ${previouslyUnassignedCount} unassigned)`);
+    console.log(`[bulkReassignByTimeInterval] Found ${totalActivities} activities (${activityRecordsArray.length} activity_records + ${legacyActivitiesInRange.length} legacy)`);
 
-    // Update all analysis_results to point to the target issue
-    const analysisIdsParam = analysisResultIds.join(',');
-    await supabaseRequest(
-      supabaseConfig,
-      `analysis_results?id=in.(${analysisIdsParam})`,
-      {
-        method: 'PATCH',
-        body: {
-          active_task_key: targetIssueKey,
-          manually_assigned: true,
-          assignment_group_id: null // Clear any previous group assignment
-        }
-      }
-    );
-
-    // Also update unassigned_activity table for any activities that exist there
-    // First, find matching unassigned_activity records
-    const unassignedActivities = await supabaseRequest(
-      supabaseConfig,
-      `unassigned_activity?analysis_result_id=in.(${analysisIdsParam})&select=id`
-    );
-
-    const unassignedArray = ensureArray(unassignedActivities);
-
-    if (unassignedArray.length > 0) {
-      const unassignedIds = sanitizeUUIDArray(unassignedArray.map(u => u.id)).join(',');
+    // Update activity_records to point to the target issue
+    if (activityRecordsArray.length > 0) {
+      const activityIds = sanitizeUUIDArray(activityRecordsArray.map(a => a.id)).join(',');
       await supabaseRequest(
         supabaseConfig,
-        `unassigned_activity?id=in.(${unassignedIds})`,
+        `activity_records?id=in.(${activityIds})`,
         {
           method: 'PATCH',
           body: {
-            manually_assigned: true,
-            assigned_task_key: targetIssueKey,
-            assigned_by: userId,
-            assigned_at: new Date().toISOString()
+            user_assigned_issue_key: targetIssueKey,
+            project_key: targetProjectKey
           }
         }
       );
-      console.log(`[bulkReassignByTimeInterval] Updated ${unassignedArray.length} unassigned_activity records`);
+      console.log(`[bulkReassignByTimeInterval] Updated ${activityRecordsArray.length} activity_records`);
     }
 
-    // Mark any unassigned_work_groups that contained these activities as assigned
-    // First get group IDs from group_members table
-    const groupMembers = await supabaseRequest(
-      supabaseConfig,
-      `unassigned_group_members?unassigned_activity_id=in.(${sanitizeUUIDArray(unassignedArray.map(u => u.id)).join(',') || 'null'})&select=group_id`
-    );
-
-    const groupMembersArray = ensureArray(groupMembers);
-    const uniqueGroupIds = sanitizeUUIDArray([...new Set(groupMembersArray.map(m => m.group_id).filter(Boolean))]);
-
-    if (uniqueGroupIds.length > 0) {
-      const groupIdsParam = uniqueGroupIds.join(',');
+    // Update legacy analysis_results to point to the target issue
+    if (legacyActivitiesInRange.length > 0) {
+      const analysisResultIds = sanitizeUUIDArray(legacyActivitiesInRange.map(a => a.id));
+      const analysisIdsParam = analysisResultIds.join(',');
       await supabaseRequest(
         supabaseConfig,
-        `unassigned_work_groups?id=in.(${groupIdsParam})`,
+        `analysis_results?id=in.(${analysisIdsParam})`,
         {
           method: 'PATCH',
           body: {
-            is_assigned: true,
-            assigned_to_issue_key: targetIssueKey,
-            assigned_at: new Date().toISOString(),
-            assigned_by: userId
+            active_task_key: targetIssueKey,
+            manually_assigned: true,
+            assignment_group_id: null // Clear any previous group assignment
           }
         }
       );
-      console.log(`[bulkReassignByTimeInterval] Marked ${uniqueGroupIds.length} groups as assigned`);
+
+      // Also update unassigned_activity table for any activities that exist there
+      const unassignedActivities = await supabaseRequest(
+        supabaseConfig,
+        `unassigned_activity?analysis_result_id=in.(${analysisIdsParam})&select=id`
+      );
+
+      const unassignedArray = ensureArray(unassignedActivities);
+
+      if (unassignedArray.length > 0) {
+        const unassignedIds = sanitizeUUIDArray(unassignedArray.map(u => u.id)).join(',');
+        await supabaseRequest(
+          supabaseConfig,
+          `unassigned_activity?id=in.(${unassignedIds})`,
+          {
+            method: 'PATCH',
+            body: {
+              manually_assigned: true,
+              assigned_task_key: targetIssueKey,
+              assigned_by: userId,
+              assigned_at: new Date().toISOString()
+            }
+          }
+        );
+        console.log(`[bulkReassignByTimeInterval] Updated ${unassignedArray.length} unassigned_activity records`);
+      }
+
+      // Mark any unassigned_work_groups that contained these activities as assigned
+      const groupMembers = await supabaseRequest(
+        supabaseConfig,
+        `unassigned_group_members?unassigned_activity_id=in.(${sanitizeUUIDArray(unassignedArray.map(u => u.id)).join(',') || 'null'})&select=group_id`
+      );
+
+      const groupMembersArray = ensureArray(groupMembers);
+      const uniqueGroupIds = sanitizeUUIDArray([...new Set(groupMembersArray.map(m => m.group_id).filter(Boolean))]);
+
+      if (uniqueGroupIds.length > 0) {
+        const groupIdsParam = uniqueGroupIds.join(',');
+        await supabaseRequest(
+          supabaseConfig,
+          `unassigned_work_groups?id=in.(${groupIdsParam})`,
+          {
+            method: 'PATCH',
+            body: {
+              is_assigned: true,
+              assigned_to_issue_key: targetIssueKey,
+              assigned_at: new Date().toISOString(),
+              assigned_by: userId
+            }
+          }
+        );
+        console.log(`[bulkReassignByTimeInterval] Marked ${uniqueGroupIds.length} groups as assigned`);
+      }
     }
 
     // Create worklog using helper (respects auto-sync and minimum time threshold)
@@ -679,11 +755,11 @@ export async function bulkReassignByTimeInterval(req) {
     
     let worklogResult = { worklog: null, worklogSkipped: false, worklogSkippedReason: null };
     if (createWorklog) {
-      const customComment = `Bulk time correction: ${activitiesInRange.length} activities (${formatDuration(totalSeconds)}) from ${startTime} to ${endTime} on ${selectedDate} reassigned to this issue.`;
+      const customComment = `Bulk time correction: ${totalActivities} activities (${formatDuration(totalSeconds)}) from ${startTime} to ${endTime} on ${selectedDate} reassigned to this issue.`;
       worklogResult = await createWorklogIfNeeded({
         issueKey: targetIssueKey,
         timeToLog: totalSeconds,
-        sessionCount: activitiesInRange.length,
+        sessionCount: totalActivities,
         autoSyncEnabled,
         customComment
       });
@@ -692,7 +768,7 @@ export async function bulkReassignByTimeInterval(req) {
     return {
       success: true,
       result: {
-        total_reassigned: activitiesInRange.length,
+        total_reassigned: totalActivities,
         previously_tracked: previouslyAssignedCount,
         previously_unassigned: previouslyUnassignedCount,
         total_seconds: totalSeconds,

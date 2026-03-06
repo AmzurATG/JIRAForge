@@ -928,26 +928,29 @@ exports.getDashboardData = async (req, res) => {
       projectQuery.in('project_key', projectKeys);
     }
 
-    const analysisQuery = applyVisibilityFilter(
-      supabase.from('analysis_results')
-        .select('active_task_key, active_project_key, work_type, screenshots(duration_seconds)')
+    // Query activity_records for time by issue (hybrid OCR approach)
+    const activityQuery = applyVisibilityFilter(
+      supabase.from('activity_records')
+        .select('user_assigned_issue_key, project_key, duration_seconds, total_time_seconds')
         .eq('organization_id', organization.id)
-        .not('active_task_key', 'is', null)
+        .in('status', ['pending', 'processing', 'analyzed'])
+        .in('classification', ['productive', 'unknown'])
+        .not('user_assigned_issue_key', 'is', null)
         .order('created_at', { ascending: false }),
-      'user_id', 'active_project_key', filterCtx
+      'user_id', 'project_key', filterCtx
     );
 
     // 5. Execute all queries in parallel
-    const [dailyResult, weeklyResult, projectResult, analysisResult, allUsersResult] = await Promise.all([
+    const [dailyResult, weeklyResult, projectResult, activityResult, allUsersResult] = await Promise.all([
       dailyQuery,
       weeklyQuery,
       projectQuery,
-      analysisQuery,
+      activityQuery,
       buildUsersQuery(supabase, { canViewTeamData, shouldFilterByProjects, userId, user, organization, projectKeys, maxDailySummaryDays })
     ]);
 
-    // Process analysis results to aggregate time by issue
-    const timeByIssue = aggregateTimeByIssue(analysisResult.data || [], maxIssuesInAnalytics);
+    // Process activity records to aggregate time by issue
+    const timeByIssue = aggregateTimeByIssue(activityResult.data || [], maxIssuesInAnalytics);
 
     logger.info('[ForgeProxy] Dashboard batch complete', {
       cloudId,
@@ -1082,7 +1085,7 @@ function isNewerVersion(v1, v2) {
 
 /**
  * Helper function to aggregate time by issue
- * @param {Array} results - Analysis results with screenshots
+ * @param {Array} results - Activity records from activity_records table
  * @param {number} limit - Maximum issues to return
  * @returns {Array} Aggregated time by issue
  */
@@ -1090,17 +1093,19 @@ function aggregateTimeByIssue(results, limit) {
   const issueAggregation = {};
   
   results.forEach(result => {
-    const key = result.active_task_key;
+    // Support both activity_records (user_assigned_issue_key) and legacy analysis_results (active_task_key)
+    const key = result.user_assigned_issue_key || result.active_task_key;
     if (!key) return;
     
     if (!issueAggregation[key]) {
       issueAggregation[key] = {
         issueKey: key,
-        projectKey: result.active_project_key,
+        projectKey: result.project_key || result.active_project_key,
         totalSeconds: 0
       };
     }
-    issueAggregation[key].totalSeconds += result.screenshots?.duration_seconds || 0;
+    // Support both activity_records (duration_seconds/total_time_seconds) and legacy (screenshots.duration_seconds)
+    issueAggregation[key].totalSeconds += result.duration_seconds || result.total_time_seconds || result.screenshots?.duration_seconds || 0;
   });
 
   return Object.values(issueAggregation)

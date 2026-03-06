@@ -127,25 +127,25 @@ export async function fetchTimeAnalytics(accountId, cloudId) {
     `project_time_summary?organization_id=eq.${organization.id}&order=total_seconds.desc`
   );
 
-  // Fetch time by issue (from analysis_results with screenshots)
+  // Fetch time by issue (from activity_records - hybrid OCR approach)
   const timeByIssueQuery = canViewAllUsers
-    ? `analysis_results?organization_id=eq.${organization.id}&active_task_key=not.is.null&select=active_task_key,active_project_key,work_type,screenshots(duration_seconds)&order=created_at.desc`
-    : `analysis_results?user_id=eq.${userId}&organization_id=eq.${organization.id}&active_task_key=not.is.null&select=active_task_key,active_project_key,work_type,screenshots(duration_seconds)&order=created_at.desc`;
+    ? `activity_records?organization_id=eq.${organization.id}&status=in.(pending,processing,analyzed)&classification=in.(productive,unknown)&user_assigned_issue_key=not.is.null&select=user_assigned_issue_key,project_key,duration_seconds,total_time_seconds&order=created_at.desc`
+    : `activity_records?user_id=eq.${userId}&organization_id=eq.${organization.id}&status=in.(pending,processing,analyzed)&classification=in.(productive,unknown)&user_assigned_issue_key=not.is.null&select=user_assigned_issue_key,project_key,duration_seconds,total_time_seconds&order=created_at.desc`;
 
   const timeByIssue = await supabaseRequest(supabaseConfig, timeByIssueQuery);
 
   // Aggregate time by issue
   const issueAggregation = {};
   timeByIssue.forEach(result => {
-    const key = result.active_task_key;
+    const key = result.user_assigned_issue_key;
     if (!issueAggregation[key]) {
       issueAggregation[key] = {
         issueKey: key,
-        projectKey: result.active_project_key,
+        projectKey: result.project_key,
         totalSeconds: 0
       };
     }
-    issueAggregation[key].totalSeconds += result.screenshots?.duration_seconds || 0;
+    issueAggregation[key].totalSeconds += result.duration_seconds || result.total_time_seconds || 0;
   });
 
   const timeByIssueArray = Object.values(issueAggregation)

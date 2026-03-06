@@ -125,10 +125,10 @@ export async function fetchProjectAnalytics(accountId, cloudId, projectKey) {
     `project_time_summary?organization_id=eq.${organization.id}&project_key=eq.${projectKey}&order=total_seconds.desc`
   );
 
-  // Fetch issues for this project
+  // Fetch issues for this project from activity_records
   const timeByIssue = await supabaseRequest(
     supabaseConfig,
-    `analysis_results?organization_id=eq.${organization.id}&active_project_key=eq.${projectKey}&work_type=eq.office&select=active_task_key,user_id,screenshots(duration_seconds)&order=created_at.desc&limit=100`
+    `activity_records?organization_id=eq.${organization.id}&project_key=eq.${projectKey}&status=in.(pending,processing,analyzed)&classification=in.(productive,unknown)&select=user_assigned_issue_key,user_id,duration_seconds,total_time_seconds&order=created_at.desc&limit=100`
   );
 
   return {

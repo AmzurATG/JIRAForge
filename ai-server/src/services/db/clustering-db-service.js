@@ -117,7 +117,7 @@ async function getUnassignedActivities(userId, organizationId) {
     const ungroupedData = data.filter(activity => !groupedIdSet.has(activity.id));
 
     // Fetch analysis_metadata for each ungrouped activity to get AI reasoning
-    // Also map screenshots.duration_seconds to time_spent_seconds for compatibility
+    // Support both screenshots.duration_seconds (legacy) and direct duration fields (hybrid OCR)
     const enrichedData = await Promise.all(
       ungroupedData.map(async (activity) => {
         const { data: analysisData } = await supabase
@@ -128,8 +128,8 @@ async function getUnassignedActivities(userId, organizationId) {
 
         return {
           ...activity,
-          // Use screenshots.duration_seconds (source of truth) as time_spent_seconds
-          time_spent_seconds: activity.screenshots?.duration_seconds || 0,
+          // Use screenshots.duration_seconds (legacy) or direct duration fields (hybrid OCR)
+          time_spent_seconds: activity.screenshots?.duration_seconds || activity.duration_seconds || activity.total_time_seconds || 0,
           reasoning: analysisData?.analysis_metadata?.reasoning || 'No description available'
         };
       })

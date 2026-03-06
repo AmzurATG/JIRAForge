@@ -87,6 +87,7 @@ async function fetchActivitiesBySessionIds(supabaseConfig, validSessionIds, user
 
 /**
  * Get unassigned work sessions for current user
+ * Queries both activity_records (hybrid OCR) and analysis_results (legacy screenshots)
  */
 export async function getUnassignedWork(req) {
   try {
@@ -102,30 +103,54 @@ export async function getUnassignedWork(req) {
 
     const { config: supabaseConfig, organization, userId } = ctx;
 
-    // Build query string - filter by organization_id for multi-tenancy
-    let query = `analysis_results?select=*,screenshots(id,window_title,application_name,timestamp,thumbnail_url,storage_path)&user_id=eq.${userId}&organization_id=eq.${organization.id}&active_task_key=is.null&order=created_at.desc`;
+    // Query activity_records for unassigned work (hybrid OCR approach)
+    let activityQuery = `activity_records?user_id=eq.${userId}&organization_id=eq.${organization.id}&user_assigned_issue_key=is.null&status=in.(pending,processing,analyzed)&classification=in.(productive,unknown)&select=id,window_title,application_name,start_time,end_time,duration_seconds,total_time_seconds,created_at&order=created_at.desc`;
+    activityQuery += `&limit=${limit}&offset=${offset}`;
+    if (dateFrom && isValidDate(dateFrom)) activityQuery += `&created_at=gte.${dateFrom}`;
+    if (dateTo && isValidDate(dateTo)) activityQuery += `&created_at=lte.${dateTo}`;
 
-    query += `&limit=${limit}&offset=${offset}`;
-    if (dateFrom && isValidDate(dateFrom)) query += `&created_at=gte.${dateFrom}`;
-    if (dateTo && isValidDate(dateTo)) query += `&created_at=lte.${dateTo}`;
+    // Also query legacy analysis_results for backwards compatibility
+    let legacyQuery = `analysis_results?select=*,screenshots(id,window_title,application_name,timestamp,thumbnail_url,storage_path)&user_id=eq.${userId}&organization_id=eq.${organization.id}&active_task_key=is.null&order=created_at.desc`;
+    legacyQuery += `&limit=${limit}&offset=${offset}`;
+    if (dateFrom && isValidDate(dateFrom)) legacyQuery += `&created_at=gte.${dateFrom}`;
+    if (dateTo && isValidDate(dateTo)) legacyQuery += `&created_at=lte.${dateTo}`;
 
-    const results = await supabaseRequest(supabaseConfig, query);
+    const [activityResults, legacyResults] = await Promise.all([
+      supabaseRequest(supabaseConfig, activityQuery),
+      supabaseRequest(supabaseConfig, legacyQuery)
+    ]);
 
-    // Flatten data structure
-    const sessions = (results || []).map(result => ({
+    // Map activity_records to session format
+    const activitySessions = (activityResults || []).map(record => ({
+      id: record.id,
+      window_title: record.window_title,
+      application_name: record.application_name,
+      timestamp: record.start_time || record.created_at,
+      duration_seconds: record.duration_seconds || record.total_time_seconds || 0,
+      source: 'activity_records'
+    }));
+
+    // Map legacy results to session format
+    const legacySessions = (legacyResults || []).map(result => ({
       ...result,
       screenshot_id: result.screenshots?.id || result.screenshot_id,
       window_title: result.screenshots?.window_title,
       application_name: result.screenshots?.application_name,
       timestamp: result.screenshots?.timestamp || result.created_at,
       thumbnail_url: result.screenshots?.thumbnail_url,
-      storage_path: result.screenshots?.storage_path
+      storage_path: result.screenshots?.storage_path,
+      source: 'analysis_results'
     }));
+
+    // Combine and sort by timestamp
+    const allSessions = [...activitySessions, ...legacySessions]
+      .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))
+      .slice(0, limit);
 
     return {
       success: true,
-      sessions,
-      total: sessions.length
+      sessions: allSessions,
+      total: allSessions.length
     };
 
   } catch (error) {
