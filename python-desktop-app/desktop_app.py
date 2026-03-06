@@ -7933,11 +7933,11 @@ class TimeTracker:
                 # IMPORTANT: Always update the previous window record when switching, regardless of interval
                 # The interval check only applies to creating NEW screenshots, not updating existing ones
                 if window_switched:
-                    # Process window event for event-based activity tracking (OCR capture and session management)
-                    tracking_mode = self.tracking_settings.get('tracking_mode', 'interval')
-                    event_enabled = self.tracking_settings.get('event_tracking_enabled', False)
-                    if event_enabled or tracking_mode == 'event':
-                        self.process_window_event(window_info)
+                    # ALWAYS process window events for activity tracking (creates sessions in active_sessions table)
+                    # Activity records (session-based tracking) should work regardless of screenshot capture mode
+                    # The tracking_mode/event_tracking_enabled settings control SCREENSHOT capture timing,
+                    # not activity record creation. Activity records are batched and uploaded every 5 minutes.
+                    self.process_window_event(window_info)
                     
                     # Update existing record of previous window with actual time spent
                     # This ensures we update the screenshot record with the actual duration

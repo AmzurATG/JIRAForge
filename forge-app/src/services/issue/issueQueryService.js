@@ -96,6 +96,36 @@ export async function getActiveIssuesWithTime(accountId, cloudId) {
 
   console.log(`[getActiveIssuesWithTime] Fetched ${allTimeTrackingData.length} time tracking records for user ${userId}`);
 
+  // Also fetch from activity_records (event-based tracking)
+  // This captures time from the desktop app's interval-only mode
+  const allActivityRecords = [];
+  let activityOffset = 0;
+
+  while (true) {
+    const page = await supabaseRequest(
+      supabaseConfig,
+      `activity_records?user_id=eq.${userId}&organization_id=eq.${organization.id}&status=eq.analyzed&user_assigned_issue_key=not.is.null&select=id,user_assigned_issue_key,total_time_seconds,duration_seconds,start_time,end_time,work_date,window_title,application_name,classification,created_at&order=created_at.desc&limit=${PAGE_SIZE}&offset=${activityOffset}`
+    );
+
+    if (!page || !Array.isArray(page) || page.length === 0) {
+      break;
+    }
+
+    allActivityRecords.push(...page);
+    activityOffset += page.length;
+
+    if (page.length < PAGE_SIZE) {
+      break;
+    }
+
+    if (allActivityRecords.length > 50000) {
+      console.warn(`[getActiveIssuesWithTime] Activity records safety limit reached for user ${userId}`);
+      break;
+    }
+  }
+
+  console.log(`[getActiveIssuesWithTime] Fetched ${allActivityRecords.length} activity records for user ${userId}`);
+
   // Aggregate time by issue key and build work sessions
   const timeByIssue = {};
   const lastWorkedByIssue = {};
@@ -191,6 +221,77 @@ export async function getActiveIssuesWithTime(accountId, cloudId) {
             applicationName: entry.screenshots.application_name
           });
         }
+        sessions.push(newSession);
+      }
+    });
+  }
+
+  // Process activity records (event-based tracking from interval-only mode)
+  if (allActivityRecords.length > 0) {
+    // Sort by start_time ascending to build sessions chronologically
+    const sortedActivityData = allActivityRecords.sort((a, b) => {
+      const timeA = a.start_time || a.created_at;
+      const timeB = b.start_time || b.created_at;
+      return new Date(timeA) - new Date(timeB);
+    });
+
+    sortedActivityData.forEach(entry => {
+      const issueKey = entry.user_assigned_issue_key;
+      if (!issueKey) return;
+
+      // Initialize issue data if not already set by screenshot-based tracking
+      if (!timeByIssue[issueKey]) {
+        timeByIssue[issueKey] = 0;
+        lastWorkedByIssue[issueKey] = entry.created_at;
+        sessionsByIssue[issueKey] = [];
+      }
+
+      // Add to total time (prefer total_time_seconds, fallback to duration_seconds)
+      const timeSpent = entry.total_time_seconds || entry.duration_seconds || 0;
+      timeByIssue[issueKey] += timeSpent;
+
+      // Update last worked timestamp
+      if (entry.created_at > lastWorkedByIssue[issueKey]) {
+        lastWorkedByIssue[issueKey] = entry.created_at;
+      }
+
+      // Build sessions from activity records
+      const startTime = entry.start_time ? new Date(entry.start_time) : new Date(entry.created_at);
+      const endTime = entry.end_time ? new Date(entry.end_time) : new Date(startTime.getTime() + (timeSpent * 1000));
+
+      // Check if this entry belongs to an existing session (within 10 minutes gap)
+      const sessions = sessionsByIssue[issueKey];
+      let addedToSession = false;
+
+      if (sessions.length > 0) {
+        const lastSession = sessions[sessions.length - 1];
+        const timeSinceLastSession = startTime - new Date(lastSession.endTime);
+
+        // If within 10 minutes, extend the session
+        if (timeSinceLastSession <= 10 * 60 * 1000) {
+          lastSession.endTime = endTime.toISOString();
+          lastSession.duration += timeSpent;
+          if (!lastSession.activityRecordIds) {
+            lastSession.activityRecordIds = [];
+          }
+          lastSession.activityRecordIds.push(entry.id);
+          addedToSession = true;
+        }
+      }
+
+      // If not added to existing session, create new session
+      if (!addedToSession) {
+        const newSession = {
+          startTime: startTime.toISOString(),
+          endTime: endTime.toISOString(),
+          duration: timeSpent,
+          date: entry.work_date || startTime.toISOString().split('T')[0],
+          activityRecordIds: [entry.id],
+          screenshots: [],
+          // Include app info for session display
+          windowTitle: entry.window_title,
+          applicationName: entry.application_name
+        };
         sessions.push(newSession);
       }
     });
