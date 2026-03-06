@@ -12,6 +12,54 @@ import { isValidIssueKey } from '../utils/validators.js';
 const MIN_SYNC_SECONDS = 60;
 
 /**
+ * Build a map of project-level sync settings for an organization.
+ * @param {Array} settings - Array of tracking_settings records
+ * @returns {Object} { orgEnabled: boolean, projects: { projectKey: boolean } }
+ */
+function buildOrgSyncConfig(settings) {
+  const config = { orgEnabled: false, projects: {} };
+  
+  for (const setting of settings) {
+    if (setting.project_key) {
+      // Project-level setting
+      config.projects[setting.project_key] = setting.jira_worklog_sync_enabled === true;
+    } else {
+      // Org-level setting (project_key is NULL)
+      config.orgEnabled = setting.jira_worklog_sync_enabled === true;
+    }
+  }
+  
+  return config;
+}
+
+/**
+ * Check if worklog sync is enabled for a specific project.
+ * Uses the priority: project setting > org setting
+ * @param {Object} syncConfig - Sync configuration from buildOrgSyncConfig
+ * @param {string} projectKey - Project key extracted from issue key
+ * @returns {boolean} Whether sync is enabled for this project
+ */
+function isProjectSyncEnabled(syncConfig, projectKey) {
+  // Check if project has an explicit setting
+  if (projectKey && syncConfig.projects.hasOwnProperty(projectKey)) {
+    return syncConfig.projects[projectKey];
+  }
+  // Fall back to org-level setting
+  return syncConfig.orgEnabled;
+}
+
+/**
+ * Extract project key from issue key (e.g., "PROJ-123" -> "PROJ")
+ * @param {string} issueKey - Full issue key
+ * @returns {string|null} Project key or null if invalid
+ */
+function extractProjectKey(issueKey) {
+  if (!issueKey || typeof issueKey !== 'string') return null;
+  const parts = issueKey.split('-');
+  return parts.length >= 2 ? parts[0] : null;
+}
+
+/**
  * Create a worklog entry in Jira (interactive user context).
  * @param {string} issueKey - Jira issue key (e.g., PROJ-123)
  * @param {number} timeSpentSeconds - Time spent in seconds
@@ -126,6 +174,7 @@ async function cleanupOrphanedUserWorklogs(supabaseConfig, organizationId, userI
  * so Jira records the worklog author as the actual user — not the app.
  *
  * Key behaviour:
+ *  - Supports project-level sync enable/disable settings
  *  - If an existing worklog was created by the app (created_as_user = FALSE),
  *    it is deleted and recreated under the user's real name.
  *  - If time hasn't changed since the last sync, the entry is skipped.
@@ -145,19 +194,26 @@ export async function syncCurrentUserWorklogs(accountId, cloudId) {
     return { success: false, error: 'Supabase not configured' };
   }
 
-  // Check if worklog sync is enabled for this org
+  // Get organization
   const organization = await getOrCreateOrganization(cloudId, supabaseConfig);
   if (!organization) {
     return { success: false, error: 'Organization not found' };
   }
   const organizationId = organization.id;
 
+  // Fetch ALL tracking settings for this org (org + project level)
   // eslint-disable-next-line deprecation/deprecation
-  const syncSettings = await supabaseRequest(
+  const allSettings = await supabaseRequest(
     supabaseConfig,
-    `tracking_settings?organization_id=eq.${organizationId}&jira_worklog_sync_enabled=eq.true&select=id&limit=1`
+    `tracking_settings?organization_id=eq.${organizationId}&select=project_key,jira_worklog_sync_enabled`
   );
-  if (!syncSettings || syncSettings.length === 0) {
+
+  // Build sync configuration
+  const syncConfig = buildOrgSyncConfig(allSettings || []);
+
+  // Check if ANY sync is enabled (org or any project)
+  const hasAnySyncEnabled = syncConfig.orgEnabled || Object.values(syncConfig.projects).some(v => v === true);
+  if (!hasAnySyncEnabled) {
     return { success: true, synced: 0, errors: 0, message: 'Worklog sync not enabled' };
   }
 
@@ -167,7 +223,17 @@ export async function syncCurrentUserWorklogs(accountId, cloudId) {
   }
 
   // Aggregate tracked time for this user across all issues
-  const entries = await aggregateUserTrackedTime(supabaseConfig, organizationId, userId);
+  const allEntries = await aggregateUserTrackedTime(supabaseConfig, organizationId, userId);
+
+  // Filter entries by project-level sync settings
+  const entries = allEntries.filter(entry => {
+    const projectKey = extractProjectKey(entry.issueKey);
+    return isProjectSyncEnabled(syncConfig, projectKey);
+  });
+
+  if (entries.length < allEntries.length) {
+    console.log(`[UserSync] Filtered ${allEntries.length - entries.length} entries due to project-level settings`);
+  }
 
   // Fetch existing worklog_sync mappings for this user
   let existingMappings = [];

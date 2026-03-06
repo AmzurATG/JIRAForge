@@ -33,8 +33,73 @@ function formatStartedForJira(timestamp) {
 }
 
 /**
+ * Build a map of project-level sync settings per organization.
+ * @param {Array} allSettings - All tracking_settings records
+ * @returns {Object} Map: { orgId: { orgEnabled: boolean, projects: { projectKey: boolean } } }
+ */
+function buildProjectSyncMap(allSettings) {
+  const syncMap = {};
+
+  for (const setting of allSettings) {
+    const orgId = setting.organization_id;
+    if (!orgId) continue;
+
+    if (!syncMap[orgId]) {
+      syncMap[orgId] = { orgEnabled: false, projects: {} };
+    }
+
+    if (setting.project_key) {
+      // Project-level setting
+      syncMap[orgId].projects[setting.project_key] = setting.jira_worklog_sync_enabled === true;
+    } else {
+      // Org-level setting (project_key is NULL)
+      syncMap[orgId].orgEnabled = setting.jira_worklog_sync_enabled === true;
+    }
+  }
+
+  return syncMap;
+}
+
+/**
+ * Get list of projects to exclude from sync for an organization.
+ * A project is excluded if:
+ * - Org sync is enabled but project explicitly disabled
+ * @param {Object} orgSyncConfig - The org's sync configuration from buildProjectSyncMap
+ * @returns {Array<string>} Array of project keys to exclude
+ */
+function getExcludedProjects(orgSyncConfig) {
+  if (!orgSyncConfig || !orgSyncConfig.orgEnabled) return [];
+  
+  const excluded = [];
+  for (const [projectKey, enabled] of Object.entries(orgSyncConfig.projects)) {
+    if (!enabled) {
+      excluded.push(projectKey);
+    }
+  }
+  return excluded;
+}
+
+/**
+ * Get list of projects explicitly enabled for sync when org-level is disabled.
+ * @param {Object} orgSyncConfig - The org's sync configuration from buildProjectSyncMap
+ * @returns {Array<string>} Array of project keys to include (when org disabled)
+ */
+function getExplicitlyEnabledProjects(orgSyncConfig) {
+  if (!orgSyncConfig || orgSyncConfig.orgEnabled) return [];
+  
+  const enabled = [];
+  for (const [projectKey, isEnabled] of Object.entries(orgSyncConfig.projects)) {
+    if (isEnabled) {
+      enabled.push(projectKey);
+    }
+  }
+  return enabled;
+}
+
+/**
  * Main entry point for the scheduled trigger.
  * Iterates over all organizations and users, syncing worklogs for each.
+ * Supports project-level sync configuration.
  */
 export async function runScheduledWorklogSync() {
   console.log('[ScheduledSync] Starting scheduled worklog sync');
@@ -43,27 +108,49 @@ export async function runScheduledWorklogSync() {
     // eslint-disable-next-line deprecation/deprecation
     const supabaseConfig = await getSupabaseConfig();
 
-    // Check if any organization has sync enabled
+    // Fetch ALL tracking settings (org-level and project-level)
     // eslint-disable-next-line deprecation/deprecation
-    const orgsWithSync = await supabaseRequest(
+    const allSettings = await supabaseRequest(
       supabaseConfig,
-      'tracking_settings?jira_worklog_sync_enabled=eq.true&select=organization_id'
+      'tracking_settings?select=organization_id,project_key,jira_worklog_sync_enabled'
     );
 
-    if (!orgsWithSync || orgsWithSync.length === 0) {
+    if (!allSettings || allSettings.length === 0) {
+      console.log('[ScheduledSync] No tracking settings found, skipping');
+      return { success: true, message: 'No tracking settings configured' };
+    }
+
+    // Build project sync map for all organizations
+    const projectSyncMap = buildProjectSyncMap(allSettings);
+
+    // Find organizations that need sync (either org-enabled or have project-level enables)
+    const orgsToSync = [];
+    for (const [orgId, config] of Object.entries(projectSyncMap)) {
+      if (config.orgEnabled) {
+        orgsToSync.push(orgId);
+      } else {
+        // Check if any project is explicitly enabled
+        const explicitlyEnabled = getExplicitlyEnabledProjects(config);
+        if (explicitlyEnabled.length > 0) {
+          orgsToSync.push(orgId);
+        }
+      }
+    }
+
+    if (orgsToSync.length === 0) {
       console.log('[ScheduledSync] No organizations have worklog sync enabled, skipping');
       return { success: true, message: 'Sync not enabled for any organization' };
     }
 
-    const enabledOrgIds = orgsWithSync.map(o => o.organization_id).filter(Boolean);
-    console.log(`[ScheduledSync] Found ${enabledOrgIds.length} organizations with sync enabled`);
+    console.log(`[ScheduledSync] Found ${orgsToSync.length} organizations with sync enabled`);
 
     let totalSynced = 0;
     let totalErrors = 0;
 
-    for (const orgId of enabledOrgIds) {
+    for (const orgId of orgsToSync) {
       try {
-        const result = await syncOrganization(supabaseConfig, orgId);
+        const orgConfig = projectSyncMap[orgId];
+        const result = await syncOrganization(supabaseConfig, orgId, orgConfig);
         totalSynced += result.synced;
         totalErrors += result.errors;
       } catch (orgError) {
@@ -83,23 +170,39 @@ export async function runScheduledWorklogSync() {
 /**
  * Aggregate time tracked per user/issue from activity_records.
  * Uses the new interval-based tracking table instead of screenshot-based analysis_results.
+ * Supports project-level filtering for sync settings.
  * @param {Object} supabaseConfig - Supabase configuration
  * @param {string} organizationId - Organization ID
+ * @param {Object} projectFilter - Optional project filter { excludedProjects: [], onlyProjects: [] }
  * @returns {Promise<Object>} Object with timeByUserIssue and lastWorkedByUserIssue maps
  */
-async function aggregateTrackedTime(supabaseConfig, organizationId) {
+async function aggregateTrackedTime(supabaseConfig, organizationId, projectFilter = {}) {
   const PAGE_SIZE = 1000;
   const timeByUserIssue = {};
   const lastWorkedByUserIssue = {};
   let offset = 0;
   let totalFetched = 0;
 
+  // Build project filter clause for the query
+  let projectClause = '';
+  if (projectFilter.excludedProjects && projectFilter.excludedProjects.length > 0) {
+    // Exclude specific projects (org enabled, but these projects disabled)
+    const excluded = projectFilter.excludedProjects.join(',');
+    projectClause = `&project_key=not.in.(${excluded})`;
+    console.log(`[ScheduledSync] Excluding projects: ${excluded}`);
+  } else if (projectFilter.onlyProjects && projectFilter.onlyProjects.length > 0) {
+    // Only include specific projects (org disabled, but these projects enabled)
+    const only = projectFilter.onlyProjects.join(',');
+    projectClause = `&project_key=in.(${only})`;
+    console.log(`[ScheduledSync] Only syncing projects: ${only}`);
+  }
+
   while (true) {
     // Query activity_records (interval-based tracking) instead of analysis_results (screenshot-based)
     // eslint-disable-next-line deprecation/deprecation
     const page = await supabaseRequest(
       supabaseConfig,
-      `activity_records?organization_id=eq.${organizationId}&status=in.(pending,processing,analyzed)&classification=in.(productive,unknown)&user_assigned_issue_key=not.is.null&select=user_id,user_assigned_issue_key,duration_seconds,total_time_seconds,end_time&order=created_at.desc&limit=${PAGE_SIZE}&offset=${offset}`
+      `activity_records?organization_id=eq.${organizationId}&status=in.(pending,processing,analyzed)&classification=in.(productive,unknown)&user_assigned_issue_key=not.is.null${projectClause}&select=user_id,user_assigned_issue_key,project_key,duration_seconds,total_time_seconds,end_time&order=created_at.desc&limit=${PAGE_SIZE}&offset=${offset}`
     );
 
     if (!page || !Array.isArray(page) || page.length === 0) {
@@ -147,10 +250,35 @@ async function aggregateTrackedTime(supabaseConfig, organizationId) {
 
 /**
  * Sync all users' worklogs for a single organization.
+ * Supports project-level sync configuration.
+ * @param {Object} supabaseConfig - Supabase configuration
+ * @param {string} organizationId - Organization ID
+ * @param {Object} orgConfig - Project sync configuration { orgEnabled: boolean, projects: {} }
  */
-async function syncOrganization(supabaseConfig, organizationId) {
-  // Fetch ALL activity_records for this org using pagination (no date filter — match dashboard totals)
-  const { timeByUserIssue, lastWorkedByUserIssue } = await aggregateTrackedTime(supabaseConfig, organizationId);
+async function syncOrganization(supabaseConfig, organizationId, orgConfig = { orgEnabled: true, projects: {} }) {
+  // Determine project filter based on org and project-level settings
+  let projectFilter = {};
+  
+  if (orgConfig.orgEnabled) {
+    // Org sync is enabled - exclude any explicitly disabled projects
+    const excludedProjects = getExcludedProjects(orgConfig);
+    if (excludedProjects.length > 0) {
+      projectFilter = { excludedProjects };
+      console.log(`[ScheduledSync] Org ${organizationId}: sync enabled, excluding ${excludedProjects.length} projects`);
+    }
+  } else {
+    // Org sync is disabled - only sync explicitly enabled projects
+    const onlyProjects = getExplicitlyEnabledProjects(orgConfig);
+    if (onlyProjects.length === 0) {
+      console.log(`[ScheduledSync] Org ${organizationId}: sync disabled and no projects enabled, skipping`);
+      return { synced: 0, errors: 0 };
+    }
+    projectFilter = { onlyProjects };
+    console.log(`[ScheduledSync] Org ${organizationId}: sync disabled, only syncing ${onlyProjects.length} projects`);
+  }
+
+  // Fetch activity_records for this org with project filtering
+  const { timeByUserIssue, lastWorkedByUserIssue } = await aggregateTrackedTime(supabaseConfig, organizationId, projectFilter);
 
   // Build list of {userId, issueKey, timeTracked, lastWorkedOn}
   const entries = Object.entries(timeByUserIssue)
