@@ -17,6 +17,7 @@ import { registerDiagnosticResolvers } from './resolvers/diagnosticResolvers.js'
 import { registerFeedbackResolvers } from './resolvers/feedbackResolvers.js';
 import { registerClassificationResolvers } from './resolvers/classificationResolvers.js';
 import { runScheduledWorklogSync } from './services/scheduledWorklogSync.js';
+import { handleIssueUpdateEvent } from './services/issueCacheService.js';
 
 // Create resolver instance
 const resolver = new Resolver();
@@ -41,4 +42,9 @@ export const handler = resolver.getDefinitions();
 // Export scheduled trigger handler for worklog sync
 export const scheduledWorklogSyncHandler = async () => {
   return await runScheduledWorklogSync();
+};
+
+// Export issue cache trigger handler — fires on avi:jira:updated:issue
+export const issueCacheSyncHandler = async (event, context) => {
+  return await handleIssueUpdateEvent(event, context);
 };

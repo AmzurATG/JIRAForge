@@ -310,6 +310,9 @@ app.post('/api/forge/app-version/latest', forgeLimiter, forgeAuthMiddleware, for
 // Feedback session (opens feedback form in browser)
 app.post('/api/forge/feedback/session', forgeLimiter, forgeAuthMiddleware, forgeProxyController.createFeedbackSession);
 
+// Issue cache — called by the avi:jira:updated:issue trigger to keep user_jira_issues_cache fresh
+app.post('/api/forge/issues/cache', forgeLimiter, forgeAuthMiddleware, forgeProxyController.cacheUserIssues);
+
 // =============================================================================
 // PROTECTED ROUTES (require authMiddleware)
 // =============================================================================

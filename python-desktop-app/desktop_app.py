@@ -5666,9 +5666,65 @@ class TimeTracker:
         print("[INFO] No project settings, using statusCategory = 'In Progress'")
         return 'assignee = currentUser() AND statusCategory = "In Progress"'
 
+    def fetch_issues_from_cache(self):
+        """Read user's issues from user_jira_issues_cache in Supabase.
+        Returns a formatted issue list on success, or None if cache is unavailable/empty.
+        The desktop app writes issues as user_assigned_issues in activity_records using
+        the same format that fetch_jira_issues() produces, so both paths are compatible.
+        """
+        if not self.supabase_service or not self.current_user_id or not self.organization_id:
+            return None
+        try:
+            result = self.supabase_service.table('user_jira_issues_cache') \
+                .select('issue_key, issue_summary, project_key, status, description, labels') \
+                .eq('user_id', self.current_user_id) \
+                .eq('organization_id', self.organization_id) \
+                .limit(50) \
+                .execute()
+
+            rows = result.data if result.data else []
+            if not rows:
+                print("[INFO] user_jira_issues_cache: empty for this user")
+                return None
+
+            formatted = []
+            for row in rows:
+                labels = row.get('labels') or []
+                if isinstance(labels, str):
+                    try:
+                        labels = json.loads(labels)
+                    except Exception:
+                        labels = []
+                formatted.append({
+                    'key': row.get('issue_key', ''),
+                    'summary': row.get('issue_summary', ''),
+                    'status': row.get('status', ''),
+                    'project': row.get('project_key', ''),
+                    'description': row.get('description', ''),
+                    'labels': labels
+                })
+
+            print(f"[INFO] user_jira_issues_cache: loaded {len(formatted)} issues from Supabase")
+            return formatted
+        except Exception as e:
+            print(f"[WARN] user_jira_issues_cache read failed: {e}")
+            return None
+
     def fetch_jira_issues(self):
-        """Fetch user's In Progress Jira issues with automatic token refresh on 401"""
+        """Fetch user's In Progress Jira issues.
+        Primary path: reads from user_jira_issues_cache in Supabase (kept fresh by
+        the Forge avi:jira:updated:issue trigger — no Jira API call needed).
+        Fallback: calls Jira REST API directly if the cache is unavailable or empty.
+        """
         print("[INFO] Attempting to fetch Jira issues...")
+
+        # Primary: Supabase cache (no OAuth token required)
+        cached = self.fetch_issues_from_cache()
+        if cached is not None:
+            return cached
+
+        print("[INFO] Cache miss — falling back to direct Jira API call")
+
         cloud_id = self.get_jira_cloud_id()
         if not cloud_id:
             print("[WARN] Cannot fetch issues: No Cloud ID")
@@ -5755,13 +5811,13 @@ class TimeTracker:
                     issues = []
                     if fallback_resp_open.status_code == 200:
                         fallback_data_open = fallback_resp_open.json()
-                        open_issues = fallback_data_open.get('issues', [])
-                        issues.extend(open_issues)
-                        print(f"!!!DEBUG!!! Fallback JQL (open sprints) issues: {[i['key'] for i in open_issues]}")
-                        if open_issues:
-                            print(f"[OK] Fallback JQL (open sprints) returned {len(open_issues)} issues")
+                        fallback_issues = fallback_data_open.get('issues', [])
+                        issues.extend(fallback_issues)
+                        print(f"!!!DEBUG!!! Fallback JQL issues: {[i['key'] for i in fallback_issues]}")
+                        if fallback_issues:
+                            print(f"[OK] Fallback JQL returned {len(fallback_issues)} issues")
                     else:
-                        print("!!!DEBUG!!! Fallback JQL (open sprints) query failed or returned no issues.")
+                        print("!!!DEBUG!!! Fallback JQL query failed or returned no issues.")
 
                     # No-sprint fallback removed: backlog issues (Sprint is EMPTY)
                     # were polluting user_assigned_issues with items the user isn't

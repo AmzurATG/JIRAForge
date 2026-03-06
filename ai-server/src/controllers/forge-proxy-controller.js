@@ -1185,3 +1185,138 @@ exports.createFeedbackSession = async (req, res) => {
   }
 };
 
+/**
+ * Cache a user's Jira issues in user_jira_issues_cache.
+ * Called by the Forge issue event trigger whenever an issue is updated.
+ * Receives the target user's accountId and their current full issue list from Jira,
+ * then upserts each issue row so the desktop app can read from Supabase instead
+ * of polling Jira directly.
+ *
+ * POST /api/forge/issues/cache
+ * Body: { accountId: string, issues: JiraIssue[] }
+ */
+exports.cacheUserIssues = async (req, res) => {
+  try {
+    const { cloudId } = req.forgeContext;
+    const { accountId, issues } = req.body;
+
+    if (!accountId) {
+      return res.status(400).json({ success: false, error: 'accountId is required' });
+    }
+    if (!Array.isArray(issues)) {
+      return res.status(400).json({ success: false, error: 'issues must be an array' });
+    }
+
+    const supabase = getClient();
+    if (!supabase) {
+      return res.status(500).json({ success: false, error: 'Database not configured' });
+    }
+
+    // Resolve the internal user UUID and organization UUID from Atlassian IDs
+    const { data: users, error: userErr } = await supabase
+      .from('users')
+      .select('id')
+      .eq('atlassian_account_id', accountId)
+      .limit(1);
+
+    if (userErr || !users?.length) {
+      logger.warn('[ForgeProxy] cacheUserIssues: user not found for accountId', { accountId });
+      return res.status(404).json({ success: false, error: 'User not found' });
+    }
+    const userId = users[0].id;
+
+    const { data: orgs, error: orgErr } = await supabase
+      .from('organizations')
+      .select('id')
+      .eq('jira_cloud_id', cloudId)
+      .limit(1);
+
+    if (orgErr || !orgs?.length) {
+      logger.warn('[ForgeProxy] cacheUserIssues: org not found for cloudId', { cloudId });
+      return res.status(404).json({ success: false, error: 'Organization not found' });
+    }
+    const organizationId = orgs[0].id;
+
+    if (issues.length === 0) {
+      // User has no active issues — clear their cache rows
+      const { error: deleteErr } = await supabase
+        .from('user_jira_issues_cache')
+        .delete()
+        .eq('user_id', userId)
+        .eq('organization_id', organizationId);
+
+      if (deleteErr) throw deleteErr;
+
+      logger.info('[ForgeProxy] cacheUserIssues: cleared cache (0 issues)', { accountId });
+      return res.json({ success: true, upserted: 0, cleared: true });
+    }
+
+    // Build upsert rows — one row per issue
+    const rows = issues.map(issue => {
+      const fields = issue.fields || {};
+      const description = extractDescriptionText(fields.description);
+      return {
+        user_id: userId,
+        organization_id: organizationId,
+        issue_key: issue.key,
+        issue_summary: fields.summary || '',
+        project_key: fields.project?.key || null,
+        project_name: fields.project?.name || null,
+        issue_type: fields.issuetype?.name || null,
+        status: fields.status?.name || null,
+        priority: fields.priority?.name || null,
+        description: description || null,
+        labels: fields.labels || [],
+        updated_at: getUTCISOString()
+      };
+    });
+
+    const { error: upsertErr } = await supabase
+      .from('user_jira_issues_cache')
+      .upsert(rows, { onConflict: 'user_id,issue_key' });
+
+    if (upsertErr) throw upsertErr;
+
+    // Remove stale rows — issues the user is no longer assigned to
+    const currentKeys = issues.map(i => i.key);
+    const { error: staleErr } = await supabase
+      .from('user_jira_issues_cache')
+      .delete()
+      .eq('user_id', userId)
+      .eq('organization_id', organizationId)
+      .not('issue_key', 'in', `(${currentKeys.join(',')})`);
+
+    if (staleErr) {
+      logger.warn('[ForgeProxy] cacheUserIssues: failed to remove stale rows', { error: staleErr.message });
+    }
+
+    logger.info('[ForgeProxy] cacheUserIssues: upserted issues', { accountId, count: rows.length });
+    res.json({ success: true, upserted: rows.length });
+
+  } catch (error) {
+    logger.error('[ForgeProxy] cacheUserIssues error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+};
+
+/**
+ * Extract plain text from a Jira ADF (Atlassian Document Format) description.
+ * Returns null if no description is present.
+ * @param {Object|string|null} description
+ */
+function extractDescriptionText(description) {
+  if (!description) return null;
+  if (typeof description === 'string') return description;
+  // ADF format: { type: 'doc', content: [{ type: 'paragraph', content: [{ type: 'text', text: '...' }] }] }
+  if (description.content) {
+    const parts = [];
+    for (const block of description.content) {
+      for (const node of (block.content || [])) {
+        if (node.type === 'text' && node.text) parts.push(node.text);
+      }
+    }
+    return parts.join(' ').trim() || null;
+  }
+  return null;
+}
+
