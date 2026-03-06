@@ -5658,13 +5658,13 @@ class TimeTracker:
             if project_clauses:
                 # Combine all project clauses with OR
                 status_filter = ' OR '.join(project_clauses)
-                jql = f'assignee = currentUser() AND Sprint in openSprints() AND ({status_filter})'
+                jql = f'assignee = currentUser() AND ({status_filter})'
                 print(f"[INFO] Using project-level tracked statuses JQL")
                 return jql
-        
+
         # Fallback: Use statusCategory if no project settings
         print("[INFO] No project settings, using statusCategory = 'In Progress'")
-        return 'assignee = currentUser() AND Sprint in openSprints() AND statusCategory = "In Progress"'
+        return 'assignee = currentUser() AND statusCategory = "In Progress"'
 
     def fetch_jira_issues(self):
         """Fetch user's In Progress Jira issues with automatic token refresh on 401"""
@@ -5736,9 +5736,9 @@ class TimeTracker:
                 # If project-level JQL returned 0 issues, try broader fallback so user_assigned_issues is populated
                 if not issues:
                     print("!!!DEBUG!!! Entering fallback JQL block for assigned issues.")
-                    # Option 1: Issues in open sprints
-                    fallback_jql_open = 'assignee = currentUser() AND Sprint in openSprints() AND statusCategory = "In Progress"'
-                    print(f"[INFO] Retrying with fallback JQL for open sprints")
+                    # Fallback: broad status-based query covering all project types (software, service desk, business)
+                    fallback_jql_open = 'assignee = currentUser() AND statusCategory = "In Progress"'
+                    print(f"[INFO] Retrying with fallback JQL (status-based, all project types)")
                     fallback_resp_open = requests.post(
                         f'https://api.atlassian.com/ex/jira/{cloud_id}/rest/api/3/search/jql',
                         json={
