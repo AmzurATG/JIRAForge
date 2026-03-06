@@ -7,7 +7,7 @@
 module.exports = {
     type: 'login_reminder',
     
-    subject: 'We miss you! Come back to TimeTracker 😊',
+    subject: 'Your TimeTracker Account Awaits Your Return',
     
     /**
      * Generate plain text email body

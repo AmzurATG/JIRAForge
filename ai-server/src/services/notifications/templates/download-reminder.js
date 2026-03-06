@@ -193,7 +193,7 @@ You can update your notification preferences anytime in your settings.
                 </ol>
             </div>
             
-            <p>Need a hand getting started? We're here to help! Check out our <a href="${downloadUrl}/guide">friendly setup guide</a> or reach out to our support team.</p>
+            <p>Need a hand getting started? We're here to help! Reach out to our support team.</p>
             
             <p>Warm regards,<br><strong>The TimeTracker Team</strong></p>
             

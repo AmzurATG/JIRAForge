@@ -184,10 +184,14 @@ function DashboardTab({ onOpenScreenshotPreview, onOpenReassignModal }) {
                                               // Not timestamp span which includes idle gaps
                                               const sessionDuration = session.duration || 0;
 
-                                              // Get unique apps from screenshots
-                                              const uniqueApps = session.screenshots
-                                                ? [...new Set(session.screenshots.map(s => s.applicationName).filter(Boolean))]
-                                                : [];
+                                              // Get unique apps from screenshots or activity records
+                                              let uniqueApps = [];
+                                              if (session.screenshots && session.screenshots.length > 0) {
+                                                uniqueApps = [...new Set(session.screenshots.map(s => s.applicationName).filter(Boolean))];
+                                              } else if (session.applicationName) {
+                                                // For activity-record-based sessions without screenshots
+                                                uniqueApps = [session.applicationName];
+                                              }
                                               const visibleApps = uniqueApps.slice(0, 3);
                                               const remainingApps = uniqueApps.slice(3);
 
