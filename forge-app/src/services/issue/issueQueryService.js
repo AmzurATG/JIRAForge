@@ -58,53 +58,112 @@ export async function getActiveIssuesWithTime(accountId, cloudId) {
 
   // Get or create user record
   const userId = await getOrCreateUser(accountId, supabaseConfig, organization.id);
+  console.log(`[getActiveIssuesWithTime] RESOLVED IDs: accountId=${accountId}, userId=${userId}, organizationId=${organization.id}`);
   if (!userId) {
+    console.log(`[getActiveIssuesWithTime] WARNING: No userId resolved for accountId=${accountId}`);
     return {
       issues: formatIssuesWithoutTime(issues),
       total: issues.length
     };
   }
 
-  // Fetch time tracking data for all issues using pagination
+  // Fetch time tracking data from activity_records (hybrid OCR / event-based tracking)
+  // This is the primary source for desktop app interval-only mode
   const PAGE_SIZE = 1000;
-  const allTimeTrackingData = [];
-  let queryOffset = 0;
-
-  while (true) {
-    const page = await supabaseRequest(
-      supabaseConfig,
-      `analysis_results?user_id=eq.${userId}&organization_id=eq.${organization.id}&work_type=eq.office&active_task_key=not.is.null&select=id,screenshot_id,active_task_key,created_at,screenshots(id,timestamp,duration_seconds,storage_path,window_title,application_name,work_date)&order=created_at.desc&limit=${PAGE_SIZE}&offset=${queryOffset}`
-    );
-
-    if (!page || !Array.isArray(page) || page.length === 0) {
-      break;
-    }
-
-    allTimeTrackingData.push(...page);
-    queryOffset += page.length;
-
-    if (page.length < PAGE_SIZE) {
-      break;
-    }
-
-    // Safety limit to prevent infinite loops
-    if (allTimeTrackingData.length > 50000) {
-      console.warn(`[getActiveIssuesWithTime] Safety limit reached (50000 records) for user ${userId}`);
-      break;
-    }
-  }
-
-  console.log(`[getActiveIssuesWithTime] Fetched ${allTimeTrackingData.length} time tracking records for user ${userId}`);
-
-  // Also fetch from activity_records (event-based tracking)
-  // This captures time from the desktop app's interval-only mode
   const allActivityRecords = [];
   let activityOffset = 0;
 
+  // Check if this user has activity records
+  const allRecordsDebug = await supabaseRequest(
+    supabaseConfig,
+    `activity_records?user_id=eq.${userId}&select=id,status,classification,total_time_seconds&limit=10`
+  );
+  console.log(`[getActiveIssuesWithTime] Records for userId=${userId}: count=${allRecordsDebug?.length || 0}`);
+
+  // Build list of user IDs to query - start with the resolved userId
+  let userIdsToQuery = [userId];
+
+  // If no records found for this user, check for other users in the same organization
+  // This handles cases where Desktop App and Forge App created separate user records
+  if (!allRecordsDebug || allRecordsDebug.length === 0) {
+    console.log(`[getActiveIssuesWithTime] No records for userId=${userId}, checking for other users in organization...`);
+    
+    // Find all users in this organization that have activity records
+    const orgUsersWithRecords = await supabaseRequest(
+      supabaseConfig,
+      `activity_records?organization_id=eq.${organization.id}&select=user_id&limit=100`
+    );
+    
+    if (orgUsersWithRecords && Array.isArray(orgUsersWithRecords)) {
+      // Get unique user IDs that have activity records in this org
+      const uniqueUserIds = [...new Set(orgUsersWithRecords.map(r => r.user_id))];
+      console.log(`[getActiveIssuesWithTime] Found ${uniqueUserIds.length} users with activity in organization`);
+      
+      // Check if any of these users might be the same person (duplicate user records)
+      // by looking up their atlassian_account_id
+      for (const otherUserId of uniqueUserIds) {
+        if (otherUserId === userId) continue;
+        
+        // Get the other user's email to compare
+        const otherUser = await supabaseRequest(
+          supabaseConfig,
+          `users?id=eq.${otherUserId}&select=id,email,atlassian_account_id&limit=1`
+        );
+        
+        // Get current user's email
+        const currentUser = await supabaseRequest(
+          supabaseConfig,
+          `users?id=eq.${userId}&select=id,email,atlassian_account_id&limit=1`
+        );
+        
+        if (otherUser?.[0] && currentUser?.[0]) {
+          const otherEmail = otherUser[0].email;
+          const currentEmail = currentUser[0].email;
+          const otherAtlassianId = otherUser[0].atlassian_account_id;
+          const currentAtlassianId = currentUser[0].atlassian_account_id;
+          
+          // Check if this is likely the same person (same email or related atlassian IDs)
+          const sameEmail = otherEmail && currentEmail && otherEmail.toLowerCase() === currentEmail.toLowerCase();
+          const relatedAtlassianId = otherAtlassianId && currentAtlassianId && 
+            (otherAtlassianId.includes(currentAtlassianId) || currentAtlassianId.includes(otherAtlassianId));
+          
+          if (sameEmail || relatedAtlassianId) {
+            console.log(`[getActiveIssuesWithTime] Found duplicate user: ${otherUserId} (email match: ${sameEmail}, atlassianId match: ${relatedAtlassianId})`);
+            userIdsToQuery.push(otherUserId);
+          }
+        }
+      }
+    }
+  }
+
+  console.log(`[getActiveIssuesWithTime] Querying activity records for ${userIdsToQuery.length} user ID(s): ${userIdsToQuery.join(', ')}`);
+
+  // Build the user filter - single user or multiple users
+  const userFilter = userIdsToQuery.length === 1 
+    ? `user_id=eq.${userIdsToQuery[0]}` 
+    : `user_id=in.(${userIdsToQuery.join(',')})`;
+
+  // Debug: log activity records status distribution
+  const activityDebug = await supabaseRequest(
+    supabaseConfig,
+    `activity_records?${userFilter}&organization_id=eq.${organization.id}&select=id,status,user_assigned_issue_key,project_key&limit=100`
+  );
+  if (activityDebug && Array.isArray(activityDebug)) {
+    const statusCounts = activityDebug.reduce((acc, r) => {
+      acc[r.status] = (acc[r.status] || 0) + 1;
+      return acc;
+    }, {});
+    const withIssueKey = activityDebug.filter(r => r.user_assigned_issue_key).length;
+    const withProjectKey = activityDebug.filter(r => r.project_key).length;
+    console.log(`[getActiveIssuesWithTime] Activity records: total=${activityDebug.length}, statusCounts=${JSON.stringify(statusCounts)}, withIssueKey=${withIssueKey}, withProjectKey=${withProjectKey}`);
+  }
+
   while (true) {
+    // Fetch ALL activity records for productive work (pending, processing, or analyzed)
+    // We include pending records so time shows up before AI processing completes
     const page = await supabaseRequest(
       supabaseConfig,
-      `activity_records?user_id=eq.${userId}&organization_id=eq.${organization.id}&status=eq.analyzed&user_assigned_issue_key=not.is.null&select=id,user_assigned_issue_key,total_time_seconds,duration_seconds,start_time,end_time,work_date,window_title,application_name,classification,created_at&order=created_at.desc&limit=${PAGE_SIZE}&offset=${activityOffset}`
+      `activity_records?${userFilter}&organization_id=eq.${organization.id}&status=in.(pending,processing,analyzed)&classification=in.(productive,unknown)&select=id,user_assigned_issue_key,total_time_seconds,duration_seconds,start_time,end_time,work_date,window_title,application_name,classification,project_key,created_at&order=created_at.desc&limit=${PAGE_SIZE}&offset=${activityOffset}`
     );
 
     if (!page || !Array.isArray(page) || page.length === 0) {
@@ -119,115 +178,31 @@ export async function getActiveIssuesWithTime(accountId, cloudId) {
     }
 
     if (allActivityRecords.length > 50000) {
-      console.warn(`[getActiveIssuesWithTime] Activity records safety limit reached for user ${userId}`);
+      console.warn(`[getActiveIssuesWithTime] Activity records safety limit reached`);
       break;
     }
   }
 
-  console.log(`[getActiveIssuesWithTime] Fetched ${allActivityRecords.length} activity records for user ${userId}`);
+  console.log(`[getActiveIssuesWithTime] Fetched ${allActivityRecords.length} activity records`);
 
   // Aggregate time by issue key and build work sessions
   const timeByIssue = {};
   const lastWorkedByIssue = {};
   const sessionsByIssue = {};
 
-  // Extend an existing session with a new entry (mutates lastSession in place)
-  function extendExistingSession(lastSession, endTime, timeSpent, entry) {
-    lastSession.endTime = endTime.toISOString();
-    lastSession.duration += timeSpent;
-    if (!lastSession.analysisResultIds) {
-      lastSession.analysisResultIds = [];
-    }
-    lastSession.analysisResultIds.push(entry.id);
-    if (!lastSession.screenshots) {
-      lastSession.screenshots = [];
-    }
-    if (entry.screenshots) {
-      lastSession.screenshots.push({
-        id: entry.screenshots.id,
-        timestamp: entry.screenshots.timestamp,
-        storagePath: entry.screenshots.storage_path,
-        windowTitle: entry.screenshots.window_title,
-        applicationName: entry.screenshots.application_name
-      });
-    }
-  }
-
-  if (allTimeTrackingData.length > 0) {
-    // Sort by screenshot timestamp ascending to build sessions chronologically
-    const sortedData = allTimeTrackingData.sort((a, b) => {
-      const timeA = a.screenshots?.timestamp || a.created_at;
-      const timeB = b.screenshots?.timestamp || b.created_at;
-      return new Date(timeA) - new Date(timeB);
-    });
-
-    sortedData.forEach(entry => {
-      const issueKey = entry.active_task_key;
-
-      // Initialize issue data
-      if (!timeByIssue[issueKey]) {
-        timeByIssue[issueKey] = 0;
-        lastWorkedByIssue[issueKey] = entry.created_at;
-        sessionsByIssue[issueKey] = [];
-      }
-
-      // Add to total time
-      timeByIssue[issueKey] += entry.screenshots?.duration_seconds || 0;
-
-      // Update last worked timestamp
-      if (entry.created_at > lastWorkedByIssue[issueKey]) {
-        lastWorkedByIssue[issueKey] = entry.created_at;
-      }
-
-      // Build sessions - group consecutive work periods
-      const screenshotTimestamp = entry.screenshots?.timestamp || entry.created_at;
-      const workTime = new Date(screenshotTimestamp);
-      const timeSpent = entry.screenshots?.duration_seconds || 0;
-
-      const endTime = workTime;
-      const startTime = new Date(workTime.getTime() - (timeSpent * 1000));
-
-      // Check if this entry belongs to an existing session (within 10 minutes gap)
-      const sessions = sessionsByIssue[issueKey];
-      let addedToSession = false;
-
-      if (sessions.length > 0) {
-        const lastSession = sessions[sessions.length - 1];
-        const timeSinceLastSession = startTime - new Date(lastSession.endTime);
-
-        // If within 10 minutes, extend the session
-        if (timeSinceLastSession <= 10 * 60 * 1000) {
-          extendExistingSession(lastSession, endTime, timeSpent, entry);
-          addedToSession = true;
-        }
-      }
-
-      // If not added to existing session, create new session
-      if (!addedToSession) {
-        const newSession = {
-          startTime: startTime.toISOString(),
-          endTime: endTime.toISOString(),
-          duration: timeSpent,
-          date: entry.screenshots?.work_date || startTime.toISOString().split('T')[0],
-          analysisResultIds: [entry.id],
-          screenshots: []
-        };
-        if (entry.screenshots) {
-          newSession.screenshots.push({
-            id: entry.screenshots.id,
-            timestamp: entry.screenshots.timestamp,
-            storagePath: entry.screenshots.storage_path,
-            windowTitle: entry.screenshots.window_title,
-            applicationName: entry.screenshots.application_name
-          });
-        }
-        sessions.push(newSession);
-      }
-    });
-  }
-
-  // Process activity records (event-based tracking from interval-only mode)
+  // Process activity records
   if (allActivityRecords.length > 0) {
+    // Build a map of project_key -> first in-progress issue for fallback matching
+    const inProgressIssuesByProject = {};
+    issues.forEach(issue => {
+      const projectKey = issue.fields?.project?.key;
+      const statusCategory = issue.fields?.status?.statusCategory?.key;
+      if (projectKey && statusCategory === 'indeterminate' && !inProgressIssuesByProject[projectKey]) {
+        inProgressIssuesByProject[projectKey] = issue.key;
+      }
+    });
+    console.log(`[getActiveIssuesWithTime] In-progress issues by project: ${JSON.stringify(inProgressIssuesByProject)}`);
+
     // Sort by start_time ascending to build sessions chronologically
     const sortedActivityData = allActivityRecords.sort((a, b) => {
       const timeA = a.start_time || a.created_at;
@@ -236,10 +211,20 @@ export async function getActiveIssuesWithTime(accountId, cloudId) {
     });
 
     sortedActivityData.forEach(entry => {
-      const issueKey = entry.user_assigned_issue_key;
-      if (!issueKey) return;
+      // Use assigned issue key if available, otherwise try to match by project
+      let issueKey = entry.user_assigned_issue_key;
+      
+      if (!issueKey && entry.project_key) {
+        // Fallback: assign to first in-progress issue in the same project
+        issueKey = inProgressIssuesByProject[entry.project_key];
+      }
+      
+      if (!issueKey) {
+        // Still no match - skip this record (will show as unassigned work)
+        return;
+      }
 
-      // Initialize issue data if not already set by screenshot-based tracking
+      // Initialize issue data
       if (!timeByIssue[issueKey]) {
         timeByIssue[issueKey] = 0;
         lastWorkedByIssue[issueKey] = entry.created_at;
@@ -288,7 +273,6 @@ export async function getActiveIssuesWithTime(accountId, cloudId) {
           date: entry.work_date || startTime.toISOString().split('T')[0],
           activityRecordIds: [entry.id],
           screenshots: [],
-          // Include app info for session display
           windowTitle: entry.window_title,
           applicationName: entry.application_name
         };
@@ -296,6 +280,10 @@ export async function getActiveIssuesWithTime(accountId, cloudId) {
       }
     });
   }
+
+  // Log time distribution for debugging
+  const issueKeysWithTime = Object.keys(timeByIssue);
+  console.log(`[getActiveIssuesWithTime] Time tracked for ${issueKeysWithTime.length} issues: ${JSON.stringify(timeByIssue)}`);
 
   // Enrich issues with time tracking data and sessions
   const enrichedIssues = issues.map(issue => ({
