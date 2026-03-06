@@ -8,13 +8,14 @@ const sanitizeLevel = getLevel();
 const logger = winston.createLogger({
   level: process.env.LOG_LEVEL || 'info',
   format: winston.format.combine(
-    // Apply sanitization first to redact PII before any formatting
-    createSanitizeFormat(),
     winston.format.timestamp({
       format: 'YYYY-MM-DD HH:mm:ss'
     }),
     winston.format.errors({ stack: true }),
     winston.format.splat(),
+    // Apply sanitization AFTER splat() to catch all merged properties
+    // splat() merges extra log arguments (e.g., logger.info('msg', {userId: '...'}))
+    createSanitizeFormat(),
     winston.format.json()
   ),
   defaultMeta: { service: 'ai-analysis-server' },

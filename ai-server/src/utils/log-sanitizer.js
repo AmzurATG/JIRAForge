@@ -268,9 +268,28 @@ function sanitizeObject(obj, level, seen = new Set()) {
     };
   }
   
+  // Handle Date objects - preserve them as-is
+  if (obj instanceof Date) {
+    return { sanitized: obj, redactions: {} };
+  }
+  
+  // Handle other built-in objects that shouldn't be deeply sanitized
+  if (obj instanceof RegExp || obj instanceof Map || obj instanceof Set ||
+      obj instanceof WeakMap || obj instanceof WeakSet || obj instanceof Promise ||
+      typeof obj === 'function') {
+    return { sanitized: obj, redactions: {} };
+  }
+  
   // Handle plain objects
   const allRedactions = {};
   const sanitizedObj = {};
+  
+  // Copy Symbol properties first (required for Winston's internal symbols like Symbol.for('level'))
+  // These are used by Winston transports to determine log level routing
+  const symbolProps = Object.getOwnPropertySymbols(obj);
+  for (const sym of symbolProps) {
+    sanitizedObj[sym] = obj[sym];
+  }
   
   for (const [key, value] of Object.entries(obj)) {
     // Also sanitize object keys (rare but possible)
