@@ -3704,7 +3704,7 @@ class LocalOCRProcessor:
 
     def __init__(self):
         self._last_ocr_time = 0
-        self._min_interval = 3  # seconds between OCR calls
+        self._min_interval = 10  # seconds between OCR calls (matches min_screenshot_interval in tracking_loop)
         print("[OCR] LocalOCRProcessor initialized - using dynamic engine selection")
 
         # Log which OCR engines are configured
@@ -3724,14 +3724,20 @@ class LocalOCRProcessor:
 
     def _ocr_worker(self):
         """Background worker thread that runs OCR inference at below-normal priority."""
-        # Lower thread priority on Windows to reduce UI lag during OCR
+        # Lower thread priority on Windows to reduce UI lag during OCR.
+        # THREAD_MODE_BACKGROUND_BEGIN tells the OS to deprioritize this thread's
+        # CPU, memory, AND I/O scheduling — more aggressive than BELOW_NORMAL alone.
         if sys.platform == 'win32':
             try:
                 import ctypes
                 handle = ctypes.windll.kernel32.GetCurrentThread()
                 THREAD_PRIORITY_BELOW_NORMAL = -1
+                THREAD_MODE_BACKGROUND_BEGIN = 0x00010000
+                # Set background mode first (deprioritizes CPU + I/O + memory)
+                ctypes.windll.kernel32.SetThreadPriority(handle, THREAD_MODE_BACKGROUND_BEGIN)
+                # Then also set BELOW_NORMAL as a belt-and-suspenders CPU priority hint
                 ctypes.windll.kernel32.SetThreadPriority(handle, THREAD_PRIORITY_BELOW_NORMAL)
-                print("[OCR] Worker thread priority set to BELOW_NORMAL")
+                print("[OCR] Worker thread set to BACKGROUND mode + BELOW_NORMAL priority")
             except Exception as e:
                 print(f"[OCR] Could not lower worker thread priority: {e}")
 
@@ -6555,8 +6561,16 @@ class TimeTracker:
             # Backfill OCR for any sessions that were throttled during rapid window switches.
             # Uses the ORIGINAL screenshot captured at throttle time, not a new one,
             # so the OCR text matches the window the user was actually viewing.
+            # Capped at 3 per batch to prevent CPU lag when many windows were rapidly switched
+            # (e.g. switching between chat conversations every 2 seconds generates 10+ backfill jobs,
+            # each taking 8-15s of PaddleOCR — that blocks the main thread for 60-120 seconds).
+            MAX_BACKFILL_PER_BATCH = 3
             pending_entries = self.session_manager.get_pending_ocr_entries()
+            backfill_count = 0
             for (pk_title, pk_app), saved_screenshot in pending_entries.items():
+                if backfill_count >= MAX_BACKFILL_PER_BATCH:
+                    print(f"[BATCH] Backfill OCR cap reached ({MAX_BACKFILL_PER_BATCH}) — skipping remaining {len(pending_entries) - backfill_count} entries")
+                    break
                 if saved_screenshot is not None:
                     ocr_result = self.ocr_processor.ocr_from_image(saved_screenshot)
                     del saved_screenshot
@@ -6566,6 +6580,7 @@ class TimeTracker:
                     ocr_result = self.ocr_processor.capture_and_ocr()
                 if ocr_result and not ocr_result.get('throttled'):
                     self.session_manager.backfill_ocr(pk_title, pk_app, ocr_result)
+                backfill_count += 1
 
             # Stop current timer so accumulated time is accurate
             self.session_manager.stop_current_timer()
