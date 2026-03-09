@@ -222,14 +222,16 @@ class NotificationPollingService {
     /**
      * Send download reminder to a single user
      * @param {Object} user - User object
+     * @param {string|null} downloadUrl - Actual download URL from app_releases table
      * @returns {Promise<boolean>} True if sent successfully
      */
-    async _sendDownloadReminderToUser(user) {
+    async _sendDownloadReminderToUser(user, downloadUrl = null) {
         try {
             const result = await notificationService.sendDownloadReminder(
                 user.id,
                 user.organization_id,
-                'Windows'
+                'Windows',
+                downloadUrl
             );
             return result.success;
         } catch (err) {
@@ -258,9 +260,10 @@ class NotificationPollingService {
      * Send admin download digest for a single organization
      * @param {string} orgId - Organization ID
      * @param {Array} orgUsers - Users in the organization
+     * @param {string|null} downloadUrl - Actual download URL from app_releases table
      * @returns {Promise<number>} Number of digests sent
      */
-    async _sendAdminDownloadDigestForOrg(orgId, orgUsers) {
+    async _sendAdminDownloadDigestForOrg(orgId, orgUsers, downloadUrl = null) {
         const [admins, orgName] = await Promise.all([
             this._getOrgAdmins(orgId),
             this._getOrgName(orgId)
@@ -275,7 +278,7 @@ class NotificationPollingService {
         for (const admin of admins) {
             try {
                 const result = await notificationService.sendAdminDownloadDigest(
-                    admin.id, orgId, { orgName, users: digestUsers }
+                    admin.id, orgId, { orgName, users: digestUsers, downloadUrl }
                 );
                 if (result.success) sentCount++;
             } catch (err) {
@@ -299,9 +302,19 @@ class NotificationPollingService {
 
             const users = await this._queryUsersForDownloadReminders(supabase);
 
+            // Fetch the actual download URL from app_releases so the email button
+            // points to the real installer, not the generic fallback URL.
+            const latestRelease = await this._getLatestAppRelease(supabase);
+            const downloadUrl = latestRelease?.download_url || null;
+            if (downloadUrl) {
+                logger.debug(`[NotificationPolling] Download reminder URL: ${downloadUrl}`);
+            } else {
+                logger.warn('[NotificationPolling] No active app release found — download reminder will use fallback URL');
+            }
+
             let sentCount = 0;
             for (const user of users) {
-                const sent = await this._sendDownloadReminderToUser(user);
+                const sent = await this._sendDownloadReminderToUser(user, downloadUrl);
                 if (sent) sentCount++;
             }
 
@@ -313,7 +326,7 @@ class NotificationPollingService {
 
             let adminSentCount = 0;
             for (const [orgId, orgUsers] of Object.entries(byOrg)) {
-                const sent = await this._sendAdminDownloadDigestForOrg(orgId, orgUsers);
+                const sent = await this._sendAdminDownloadDigestForOrg(orgId, orgUsers, downloadUrl);
                 adminSentCount += sent;
             }
 

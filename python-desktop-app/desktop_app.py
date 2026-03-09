@@ -317,7 +317,7 @@ load_dotenv()
 
 # Application version - IMPORTANT: Update this when releasing new versions
 # This is used for update checking and notifications
-APP_VERSION = "1.0.0"
+APP_VERSION = "1.0.1"
 
 # Hard-disable screenshot monitoring/storage in desktop app.
 # OCR text extraction for activity records still runs via event-based flow.
@@ -625,6 +625,36 @@ def show_update_notification(update_info, callback=None):
         
     except Exception as e:
         print(f"[WARN] Could not show update notification: {e}")
+
+def _utc_ts_to_local_date(utc_str):
+    """Convert a UTC timestamp string to the local calendar date (YYYY-MM-DD).
+
+    first_seen/last_seen are stored as UTC strings (e.g. '2026-03-08 21:30:27+00').
+    Taking [:10] gives the UTC date which is wrong for users ahead of UTC (e.g.
+    UTC+5:30 — 21:30 UTC on March 8 is 03:00 AM IST on March 9).
+    We convert to local time first so work_date matches the user's calendar day.
+    """
+    if not utc_str:
+        return datetime.now().date().isoformat()
+    try:
+        import tzlocal
+        local_tz = tzlocal.get_localzone()
+        # Handle both '+00' and '+00:00' offset suffixes
+        ts = utc_str.strip()
+        if ts.endswith('+00') or ts.endswith(' UTC'):
+            ts = ts.replace(' UTC', '+00:00').replace('+00', '+00:00')
+        if '.' in ts:
+            # Strip microseconds for fromisoformat compatibility
+            ts = ts.split('.')[0] + '+00:00'
+        from datetime import timezone
+        dt_utc = datetime.fromisoformat(ts)
+        if dt_utc.tzinfo is None:
+            dt_utc = dt_utc.replace(tzinfo=timezone.utc)
+        return dt_utc.astimezone(local_tz).date().isoformat()
+    except Exception:
+        # Fallback: use current local date
+        return datetime.now().date().isoformat()
+
 
 def get_local_timezone_name():
     """
@@ -1342,6 +1372,12 @@ class AtlassianAuthManager:
         self.ai_server_url = get_env_var('AI_SERVER_URL', 'https://forgesync.amzur.com')
         self.store_path = store_path or os.path.join(get_app_data_dir(), 'time_tracker_auth.json')
 
+        # Prevents concurrent token refreshes from burning the same refresh_token twice.
+        # Atlassian uses token rotation: each refresh invalidates the old refresh_token.
+        # Without a lock, two threads racing on an expired token will both send the same
+        # refresh_token — the second call arrives after rotation and gets "token invalid".
+        self._refresh_lock = threading.Lock()
+
         # Migrate from plain-text to keyring if needed
         self._migrate_to_keyring()
 
@@ -1547,6 +1583,7 @@ class AtlassianAuthManager:
             'expires_at': time.time() + result.get('expires_in', 3600)
         })
         self._save_tokens()
+        self._refresh_token_invalid = False  # Clear any prior permanent-failure flag
 
         print("[OK] OAuth tokens received via AI Server")
         return result
@@ -1599,55 +1636,89 @@ class AtlassianAuthManager:
             return None
     
     def refresh_access_token(self):
-        """Refresh access token using refresh token via AI Server"""
-        refresh_token = self.tokens.get('refresh_token')
-        if not refresh_token:
+        """Refresh access token using refresh token via AI Server.
+
+        Thread-safe: uses a lock to prevent concurrent refreshes burning the same
+        refresh_token. Atlassian rotates refresh tokens on each use — if two threads
+        both send the same refresh_token simultaneously, the second call will fail
+        with 'refresh_token is invalid' because the first call already consumed it.
+
+        The double-check inside the lock compares the refresh_token value: if it changed
+        while waiting for the lock, another thread already did the refresh successfully,
+        so we skip the network call and return True.
+        """
+        # Fast-path: if the refresh token is permanently invalid (revoked/expired),
+        # don't even acquire the lock. This guards both the sync-loop path (via
+        # is_authenticated) and direct callers (401 handlers in API wrappers).
+        if getattr(self, '_refresh_token_invalid', False):
+            print("[WARN] Refresh token is permanently invalid — re-authentication required")
+            return False
+
+        refresh_token_before = self.tokens.get('refresh_token')
+        if not refresh_token_before:
             print("[ERROR] No refresh token available")
             return False
 
-        print("[INFO] Refreshing access token via AI Server...")
-        try:
-            response = requests.post(
-                f"{self.ai_server_url}/api/auth/refresh-token",
-                json={
-                    'refresh_token': refresh_token
-                },
-                headers={'Content-Type': 'application/json'},
-                timeout=(10, 60)
-            )
+        with self._refresh_lock:
+            # Double-check: if the refresh_token in self.tokens changed while we were
+            # waiting for the lock, another thread already refreshed successfully.
+            # The new access_token is in self.tokens — caller will pick it up.
+            refresh_token_now = self.tokens.get('refresh_token')
+            if refresh_token_now and refresh_token_now != refresh_token_before:
+                print("[INFO] Token already refreshed by another thread, skipping")
+                return True
 
-            if response.status_code != 200:
-                error_data = response.json() if response.headers.get('content-type', '').startswith('application/json') else {}
-                error = error_data.get('error', response.text)
-                print(f"[ERROR] Token refresh failed: {error}")
-                # Check if re-authentication is required
-                if error_data.get('requiresReauth') or 'invalid' in str(error).lower():
-                    print("[WARN] Refresh token expired - user must re-authenticate")
-                    self._show_reauth_notification()
+            refresh_token = refresh_token_now or refresh_token_before
+            if not refresh_token:
                 return False
 
-            result = response.json()
-            if not result.get('success'):
-                print(f"[ERROR] Token refresh failed: {result.get('error', 'Unknown error')}")
+            print("[INFO] Refreshing access token via AI Server...")
+            try:
+                response = requests.post(
+                    f"{self.ai_server_url}/api/auth/refresh-token",
+                    json={
+                        'refresh_token': refresh_token
+                    },
+                    headers={'Content-Type': 'application/json'},
+                    timeout=(10, 60)
+                )
+
+                if response.status_code != 200:
+                    error_data = response.json() if response.headers.get('content-type', '').startswith('application/json') else {}
+                    error = error_data.get('error', response.text)
+                    print(f"[ERROR] Token refresh failed: {error}")
+                    # Check if re-authentication is required (permanent failure — stop retrying)
+                    if error_data.get('requiresReauth') or 'invalid' in str(error).lower():
+                        print("[WARN] Refresh token expired - user must re-authenticate")
+                        self._refresh_token_invalid = True  # Prevents endless 30-second retry loop
+                    return False
+
+                result = response.json()
+                if not result.get('success'):
+                    print(f"[ERROR] Token refresh failed: {result.get('error', 'Unknown error')}")
+                    return False
+
+                self.tokens.update({
+                    'access_token': result.get('access_token'),
+                    'refresh_token': result.get('refresh_token', refresh_token),
+                    'expires_at': time.time() + result.get('expires_in', 3600)
+                })
+                self._save_tokens()
+
+                self._refresh_token_invalid = False  # Clear permanent-failure flag
+                print("[OK] Access token refreshed successfully via AI Server")
+                return True
+            except Exception as e:
+                print(f"[ERROR] Failed to refresh access token: {e}")
                 return False
-
-            self.tokens.update({
-                'access_token': result.get('access_token'),
-                'refresh_token': result.get('refresh_token', refresh_token),
-                'expires_at': time.time() + result.get('expires_in', 3600)
-            })
-            self._save_tokens()
-
-            self._reauth_notification_shown = False  # Reset on successful refresh
-            print("[OK] Access token refreshed successfully via AI Server")
-            return True
-        except Exception as e:
-            print(f"[ERROR] Failed to refresh access token: {e}")
-            return False
 
     def is_authenticated(self):
         """Check if user is authenticated (has a valid or refreshable access token)"""
         if not self.tokens.get('access_token'):
+            return False
+        # If refresh token is known-invalid, don't hammer the server every 30 seconds.
+        # The user must re-authenticate; no point retrying until they do.
+        if getattr(self, '_refresh_token_invalid', False):
             return False
         # If we have expiry info and the token is expired, try to refresh it now
         expires_at = self.tokens.get('expires_at', 0)
@@ -6655,7 +6726,7 @@ class TimeTracker:
                     'batch_timestamp': batch_timestamp,
                     'batch_start': batch_start.isoformat(),
                     'batch_end': batch_end.isoformat(),
-                    'work_date': s.get('first_seen', '')[:10] if s.get('first_seen') else datetime.now().date().isoformat(),
+                    'work_date': _utc_ts_to_local_date(s.get('first_seen')),
                     'user_timezone': get_local_timezone_name(),
                     'project_key': project_key,
                     'user_assigned_issues': json.dumps(self.user_issues) if self.user_issues else None,
@@ -7757,6 +7828,9 @@ class TimeTracker:
                                     print("[OK] Proactive token refresh successful")
                                 else:
                                     print("[WARN] Proactive token refresh failed — will retry on next cycle")
+                    elif getattr(self.auth_manager, '_refresh_token_invalid', False):
+                        # Refresh token is permanently invalid — show reauth notification once
+                        self._show_reauth_notification()
 
                 except Exception as e:
                     print(f"[ERROR] Sync thread error: {e}")
