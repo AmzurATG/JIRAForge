@@ -170,11 +170,11 @@ class NotificationService {
      * @param {string} [platform='Windows'] - Platform name
      * @returns {Promise<Object>} Send result
      */
-    async sendDownloadReminder(userId, organizationId, platform = 'Windows') {
-        const downloadUrl = process.env.DOWNLOAD_URL || 'https://jiraforge.io/download';
-        return this.sendNotification(userId, organizationId, 'download_reminder', { 
-            downloadUrl, 
-            platform 
+    async sendDownloadReminder(userId, organizationId, platform = 'Windows', downloadUrl = null) {
+        const resolvedUrl = downloadUrl || process.env.DOWNLOAD_URL || 'https://jiraforge.io/download';
+        return this.sendNotification(userId, organizationId, 'download_reminder', {
+            downloadUrl: resolvedUrl,
+            platform
         });
     }
 
@@ -245,12 +245,12 @@ class NotificationService {
      * @param {Array} payload.users - [{name, email}]
      * @returns {Promise<Object>} Send result
      */
-    async sendAdminDownloadDigest(adminUserId, organizationId, { orgName, users }) {
-        const downloadUrl = process.env.DOWNLOAD_URL || 'https://jiraforge.io/download';
+    async sendAdminDownloadDigest(adminUserId, organizationId, { orgName, users, downloadUrl = null }) {
+        const resolvedUrl = downloadUrl || process.env.DOWNLOAD_URL || 'https://jiraforge.io/download';
         return this.sendNotification(adminUserId, organizationId, 'admin_download_digest', {
             orgName,
             users,
-            downloadUrl
+            downloadUrl: resolvedUrl
         });
     }
 
