@@ -56,6 +56,7 @@ runtime_datas = []
 runtime_datas += collect_data_files('certifi')
 runtime_datas += collect_data_files('tzdata')
 
+
 a = Analysis(
     ['desktop_app.py'],
     pathex=[],

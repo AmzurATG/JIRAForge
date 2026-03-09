@@ -18,7 +18,6 @@ modules:
       timeoutSeconds: 900
     - key: issueCacheSync
       handler: index.issueCacheSyncHandler
-      timeoutSeconds: 25
 
   jira:projectPage:
     - key: brd-time-tracker-project-page
