@@ -23,9 +23,10 @@ module.exports = {
      * @param {string} data.releaseNotes - Release notes/changelog
      * @param {string} data.downloadUrl - URL to download the update
      * @param {boolean} [data.isMandatory] - Whether update is mandatory
+     * @param {string} [data.settingsUrl] - URL to notification settings
      * @returns {string} Plain text email body
      */
-    text: ({ displayName, version, currentVersion, releaseNotes, downloadUrl, isMandatory }) => `
+    text: ({ displayName, version, currentVersion, releaseNotes, downloadUrl, isMandatory, settingsUrl }) => `
 Hello ${displayName},
 
 We're excited to share that a new version of the TimeTracker Desktop App is ready for you! 🎉
@@ -46,7 +47,7 @@ The JIRAForge Team
 
 ---
 You're receiving this because you have the JIRAForge Desktop App installed.
-You can manage your notification preferences anytime in your settings.
+${settingsUrl ? `Manage your notification preferences: ${settingsUrl}` : 'You can manage your notification preferences in the app settings.'}
     `.trim(),
     
     /**
@@ -54,7 +55,7 @@ You can manage your notification preferences anytime in your settings.
      * @param {Object} data - Template data
      * @returns {string} HTML email body
      */
-    html: ({ displayName, version, currentVersion, releaseNotes, downloadUrl, isMandatory }) => `
+    html: ({ displayName, version, currentVersion, releaseNotes, downloadUrl, isMandatory, settingsUrl }) => `
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -207,7 +208,7 @@ You can manage your notification preferences anytime in your settings.
             
             <div class="footer">
                 <p>You're receiving this email because you have the JIRAForge Desktop App installed.</p>
-                <p>You can manage your notification preferences anytime in your settings.</p>
+                ${settingsUrl ? `<p><a href="${settingsUrl}">Manage your notification preferences</a></p>` : '<p>You can manage your notification preferences in the app settings.</p>'}
             </div>
         </div>
     </div>
