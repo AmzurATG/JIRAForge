@@ -396,9 +396,21 @@ async function syncSingleEntry(supabaseConfig, organizationId, userId, accountId
     }
 
     // Try to update existing worklog (as user when possible, else as app)
-    const updateResponse = accountId
-      ? await updateJiraWorklogAsUser(accountId, issueKey, existingMapping.jira_worklog_id, timeTracked)
-      : await updateJiraWorklogAsApp(issueKey, existingMapping.jira_worklog_id, timeTracked);
+    let updateResponse;
+    if (accountId) {
+      try {
+        updateResponse = await updateJiraWorklogAsUser(accountId, issueKey, existingMapping.jira_worklog_id, timeTracked);
+      } catch (impersonationErr) {
+        if (impersonationErr.message?.includes('AUTH_TYPE_UNAVAILABLE')) {
+          console.warn(`[ScheduledSync] asUser unavailable for ${issueKey}, falling back to asApp`);
+          updateResponse = await updateJiraWorklogAsApp(issueKey, existingMapping.jira_worklog_id, timeTracked);
+        } else {
+          throw impersonationErr;
+        }
+      }
+    } else {
+      updateResponse = await updateJiraWorklogAsApp(issueKey, existingMapping.jira_worklog_id, timeTracked);
+    }
 
     if (updateResponse.status === 200) {
       // eslint-disable-next-line deprecation/deprecation
@@ -428,9 +440,21 @@ async function syncSingleEntry(supabaseConfig, organizationId, userId, accountId
   // Create new worklog — format date for Jira (requires yyyy-MM-dd'T'HH:mm:ss.SSS+0000)
   // Uses formatStartedForJira to format the UTC timestamp from the DB into Jira's expected format
   const startedAt = formatStartedForJira(lastWorkedOn);
-  const worklogResult = accountId
-    ? await createJiraWorklogAsUser(accountId, issueKey, timeTracked, startedAt, displayName)
-    : await createJiraWorklogAsApp(issueKey, timeTracked, startedAt, displayName);
+  let worklogResult;
+  if (accountId) {
+    try {
+      worklogResult = await createJiraWorklogAsUser(accountId, issueKey, timeTracked, startedAt, displayName);
+    } catch (impersonationErr) {
+      if (impersonationErr.message?.includes('AUTH_TYPE_UNAVAILABLE')) {
+        console.warn(`[ScheduledSync] asUser unavailable for ${issueKey}, falling back to asApp`);
+        worklogResult = await createJiraWorklogAsApp(issueKey, timeTracked, startedAt, displayName);
+      } else {
+        throw impersonationErr;
+      }
+    }
+  } else {
+    worklogResult = await createJiraWorklogAsApp(issueKey, timeTracked, startedAt, displayName);
+  }
 
   if (worklogResult?.id) {
     const now = new Date().toISOString();
@@ -511,9 +535,21 @@ async function cleanupOrphanedWorklogs(supabaseConfig, organizationId, activeEnt
   for (const mapping of orphaned) {
     try {
       const accountId = accountIdByUserId[mapping.user_id];
-      const deleteResponse = accountId
-        ? await deleteJiraWorklogAsUser(accountId, mapping.issue_key, mapping.jira_worklog_id)
-        : await deleteJiraWorklogAsApp(mapping.issue_key, mapping.jira_worklog_id);
+      let deleteResponse;
+      if (accountId) {
+        try {
+          deleteResponse = await deleteJiraWorklogAsUser(accountId, mapping.issue_key, mapping.jira_worklog_id);
+        } catch (impersonationErr) {
+          if (impersonationErr.message?.includes('AUTH_TYPE_UNAVAILABLE')) {
+            console.warn(`[ScheduledSync] asUser unavailable for cleanup ${mapping.issue_key}, falling back to asApp`);
+            deleteResponse = await deleteJiraWorklogAsApp(mapping.issue_key, mapping.jira_worklog_id);
+          } else {
+            throw impersonationErr;
+          }
+        }
+      } else {
+        deleteResponse = await deleteJiraWorklogAsApp(mapping.issue_key, mapping.jira_worklog_id);
+      }
       if (deleteResponse.status !== 204 && deleteResponse.status !== 404) {
         console.warn(`[ScheduledSync] Failed to delete Jira worklog ${mapping.jira_worklog_id} for ${mapping.issue_key}: HTTP ${deleteResponse.status}`);
       }

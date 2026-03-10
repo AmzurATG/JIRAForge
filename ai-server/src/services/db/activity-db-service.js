@@ -113,29 +113,35 @@ async function markBatchFailed(recordIds, errorMessage) {
   const supabase = getClient();
   if (!supabase) throw new Error('Supabase client not initialized');
 
-  for (const id of recordIds) {
-    try {
-      const { data: record } = await supabase
-        .from('activity_records')
-        .select('retry_count, metadata')
-        .eq('id', id)
-        .single();
+  try {
+    // Fetch all records in one query instead of N individual queries
+    const { data: records } = await supabase
+      .from('activity_records')
+      .select('id, retry_count, metadata')
+      .in('id', recordIds);
 
-      const retryCount = (record?.retry_count || 0) + 1;
+    if (!records || records.length === 0) return;
+
+    // Update all records in parallel
+    await Promise.all(records.map(record => {
+      const retryCount = (record.retry_count || 0) + 1;
       const newStatus = retryCount >= 3 ? 'failed' : 'pending';
+      const newMetadata = record.metadata
+        ? { ...record.metadata, error: errorMessage }
+        : { error: errorMessage };
 
-      await supabase
+      return supabase
         .from('activity_records')
         .update({
           status: newStatus,
           retry_count: retryCount,
-          metadata: record?.metadata ? { ...record.metadata, error: errorMessage } : { error: errorMessage },
+          metadata: newMetadata,
           updated_at: new Date().toISOString()
         })
-        .eq('id', id);
-    } catch (err) {
-      logger.error(`[ActivityDB] Failed to mark record ${id} as failed:`, err);
-    }
+        .eq('id', record.id);
+    }));
+  } catch (err) {
+    logger.error('[ActivityDB] Failed to mark batch as failed:', err);
   }
 }
 

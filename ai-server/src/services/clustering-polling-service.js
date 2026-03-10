@@ -45,15 +45,22 @@ async function runClustering() {
     let successCount = 0;
     let errorCount = 0;
 
-    // 2. Process each user separately
-    for (const user of usersWithUnassigned) {
-      try {
-        await processUserUnassignedWork(user.id, user.organization_id);
-        successCount++;
-      } catch (error) {
-        errorCount++;
-        logger.error(`[Clustering] Error processing user ${user.id}:`, error);
-        // Continue with next user even if one fails
+    // 2. Process users concurrently (up to CLUSTERING_CONCURRENCY at a time)
+    const concurrencyLimit = Number.parseInt(process.env.CLUSTERING_CONCURRENCY || '5', 10);
+
+    for (let i = 0; i < usersWithUnassigned.length; i += concurrencyLimit) {
+      const chunk = usersWithUnassigned.slice(i, i + concurrencyLimit);
+      const results = await Promise.allSettled(
+        chunk.map(user => processUserUnassignedWork(user.id, user.organization_id))
+      );
+
+      for (let j = 0; j < results.length; j++) {
+        if (results[j].status === 'fulfilled') {
+          successCount++;
+        } else {
+          errorCount++;
+          logger.error(`[Clustering] Error processing user ${chunk[j].id}:`, results[j].reason);
+        }
       }
     }
 
@@ -219,21 +226,35 @@ async function saveGroupToDatabase(userId, organizationId, group) {
       }
     });
 
-    // 2. Add each session as a group member
+    // 2. Add each session as a group member, routing to the correct FK column by source
+    // IMPORTANT: Use session_ids (the deduplicated list from deduplicateSessionsAcrossGroups)
+    // as the authoritative set. group.sessions may be longer than session_ids if deduplication
+    // removed cross-group duplicates — filter to only sessions that survived deduplication.
     const sessionIds = group.session_ids || [];
-    for (const sessionId of sessionIds) {
+    const deduplicatedIdSet = new Set(sessionIds);
+    const groupSessions = group.sessions || [];
+    const members = groupSessions.length > 0
+      ? groupSessions
+          .filter(s => deduplicatedIdSet.has(s.id))
+          .map(s => ({ id: s.id, source: s.source || 'unassigned_activity' }))
+      : sessionIds.map(id => ({ id, source: 'unassigned_activity' }));
+
+    for (const member of members) {
       try {
-        await supabaseService.addGroupMember({
-          group_id: groupRecord.id,
-          unassigned_activity_id: sessionId
-        });
+        const memberData = { group_id: groupRecord.id };
+        if (member.source === 'activity_records') {
+          memberData.activity_record_id = member.id;
+        } else {
+          memberData.unassigned_activity_id = member.id;
+        }
+        await supabaseService.addGroupMember(memberData);
       } catch (error) {
-        logger.error(`[Clustering] Error adding session ${sessionId} to group ${groupRecord.id}:`, error);
+        logger.error(`[Clustering] Error adding session ${member.id} to group ${groupRecord.id}:`, error);
         // Continue with other sessions even if one fails
       }
     }
 
-    logger.info(`[Clustering] Successfully saved group ${groupRecord.id} with ${sessionIds.length} members`);
+    logger.info(`[Clustering] Successfully saved group ${groupRecord.id} with ${members.length} members`);
     return groupRecord;
   } catch (error) {
     logger.error(`[Clustering] Error saving group to database:`, error);

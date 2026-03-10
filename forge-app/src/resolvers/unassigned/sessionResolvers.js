@@ -245,6 +245,7 @@ export async function getUnassignedGroups(req) {
 /**
  * Get detailed data for a specific group (session_ids, recalculated totals)
  * LAZY LOADING: Called when user expands a group to see details
+ * Supports both legacy unassigned_activity members and new activity_records members.
  */
 export async function getGroupDetails(req) {
   try {
@@ -262,33 +263,50 @@ export async function getGroupDetails(req) {
 
     console.log(`[getGroupDetails] Loading details for group: ${groupId}`);
 
-    // Fetch group members with activity data in a single query
-    // IMPORTANT: Use screenshots.duration_seconds (source of truth) instead of unassigned_activity.time_spent_seconds (stale)
+    // Fetch group members — select both FK columns to support both pipelines
+    // IMPORTANT: Use screenshots.duration_seconds (source of truth) for legacy records
     const members = await supabaseRequest(
       supabaseConfig,
-      `unassigned_group_members?group_id=eq.${groupId}&select=id,unassigned_activity_id,unassigned_activity(id,window_title,application_name,timestamp,screenshot_id,screenshots(duration_seconds))`
+      `unassigned_group_members?group_id=eq.${groupId}&select=id,unassigned_activity_id,activity_record_id,unassigned_activity(id,window_title,application_name,timestamp,screenshot_id,screenshots(duration_seconds))`
     );
 
     const membersArray = ensureArray(members);
 
-    // Calculate accurate total_seconds from screenshots.duration_seconds (source of truth)
+    const isValidUUIDStr = id =>
+      id && typeof id === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id.trim());
+
+    // Separate legacy vs new-pipeline members
+    const legacySessionIds = membersArray
+      .map(m => m?.unassigned_activity_id)
+      .filter(isValidUUIDStr);
+
+    const arSessionIds = membersArray
+      .map(m => m?.activity_record_id)
+      .filter(isValidUUIDStr);
+
+    // Calculate duration from legacy members via screenshots.duration_seconds
     let totalSeconds = 0;
     membersArray.forEach(member => {
       const durationSeconds = member?.unassigned_activity?.screenshots?.duration_seconds;
-      if (durationSeconds) {
-        totalSeconds += durationSeconds;
-      }
+      if (durationSeconds) totalSeconds += durationSeconds;
     });
 
-    // Extract valid session IDs
-    const sessionIds = membersArray
-      .map(m => m?.unassigned_activity_id)
-      .filter(id => {
-        if (!id || typeof id !== 'string' || id.trim() === '') return false;
-        return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id.trim());
+    // Fetch durations for new-pipeline members from activity_records
+    if (arSessionIds.length > 0) {
+      const arDurations = await supabaseRequest(
+        supabaseConfig,
+        `activity_records?id=in.(${arSessionIds.join(',')})&select=id,duration_seconds,total_time_seconds`
+      );
+      ensureArray(arDurations).forEach(r => {
+        totalSeconds += r.duration_seconds || r.total_time_seconds || 0;
       });
+    }
 
-    console.log(`[getGroupDetails] Group ${groupId}: ${sessionIds.length} sessions, ${totalSeconds}s total`);
+    // Combined session_ids includes both pipelines
+    // getGroupWorkSessions and getGroupScreenshots will query both tables using these IDs
+    const sessionIds = [...legacySessionIds, ...arSessionIds];
+
+    console.log(`[getGroupDetails] Group ${groupId}: ${legacySessionIds.length} legacy + ${arSessionIds.length} AR sessions = ${sessionIds.length} total, ${totalSeconds}s`);
 
     return {
       success: true,
@@ -414,6 +432,9 @@ export async function getGroupScreenshots(req) {
 
 /**
  * Get work sessions for unassigned work group (grouped by date like Dashboard)
+ * Supports both legacy unassigned_activity sessions and new activity_records sessions.
+ * The sessionIds array may contain IDs from either table; each table is queried
+ * independently and only matching records are returned.
  */
 export async function getGroupWorkSessions(req) {
   try {
@@ -432,105 +453,126 @@ export async function getGroupWorkSessions(req) {
 
     const { config: supabaseConfig, userId } = ctx;
 
-    // Get unassigned_activity records with screenshot timing data
     const sessionIdsParam = validSessionIds.join(',');
-    const activities = await supabaseRequest(
-      supabaseConfig,
-      `unassigned_activity?id=in.(${sessionIdsParam})&user_id=eq.${userId}&select=id,analysis_result_id,window_title,application_name,timestamp,screenshot_id,screenshots(id,timestamp,start_time,end_time,duration_seconds,storage_path,work_date)&order=timestamp.asc`
-    );
 
-    if (!activities || activities.length === 0) {
+    // Query both tables in parallel — IDs from the wrong table simply return no rows
+    const [legacyActivities, arRecords] = await Promise.all([
+      supabaseRequest(
+        supabaseConfig,
+        `unassigned_activity?id=in.(${sessionIdsParam})&user_id=eq.${userId}&select=id,window_title,application_name,timestamp,screenshots(id,timestamp,start_time,end_time,duration_seconds,storage_path,work_date)&order=timestamp.asc`
+      ),
+      supabaseRequest(
+        supabaseConfig,
+        `activity_records?id=in.(${sessionIdsParam})&user_id=eq.${userId}&select=id,window_title,application_name,start_time,end_time,duration_seconds,total_time_seconds,work_date&order=start_time.asc`
+      )
+    ]);
+
+    // Normalise legacy records to a common shape
+    const legacyNormalised = ensureArray(legacyActivities)
+      .filter(a => a.screenshots)
+      .map(activity => {
+        const screenshot = activity.screenshots;
+        const durationSeconds = screenshot.duration_seconds || 0;
+        const endTime = new Date(screenshot.timestamp || activity.timestamp);
+        const startTime = new Date(endTime.getTime() - durationSeconds * 1000);
+        return {
+          id: activity.id,
+          window_title: activity.window_title,
+          application_name: activity.application_name,
+          startTime: startTime.toISOString(),
+          endTime: endTime.toISOString(),
+          date: screenshot.work_date || startTime.toISOString().split('T')[0],
+          durationSeconds,
+          source: 'unassigned_activity'
+        };
+      });
+
+    // Normalise activity_records to the same shape
+    const arNormalised = ensureArray(arRecords).map(record => {
+      const durationSeconds = record.duration_seconds || record.total_time_seconds || 0;
+      const startTime = record.start_time
+        ? new Date(record.start_time)
+        : new Date(Date.now() - durationSeconds * 1000);
+      const endTime = record.end_time
+        ? new Date(record.end_time)
+        : new Date(startTime.getTime() + durationSeconds * 1000);
+      return {
+        id: record.id,
+        window_title: record.window_title,
+        application_name: record.application_name,
+        startTime: startTime.toISOString(),
+        endTime: endTime.toISOString(),
+        date: record.work_date || startTime.toISOString().split('T')[0],
+        durationSeconds,
+        source: 'activity_records'
+      };
+    });
+
+    // Merge and sort all records by startTime
+    const allItems = [...legacyNormalised, ...arNormalised]
+      .sort((a, b) => new Date(a.startTime) - new Date(b.startTime));
+
+    if (allItems.length === 0) {
       return { success: true, workSessions: [], sessionsByDate: {} };
     }
 
-    const activitiesArray = ensureArray(activities);
-
-    // Build work sessions similar to Dashboard logic
+    // Build work sessions with gap-merging logic
     const workSessions = [];
-    const SESSION_GAP_THRESHOLD = 10 * 60 * 1000; // 10 minutes in milliseconds
+    const SESSION_GAP_THRESHOLD = 10 * 60 * 1000; // 10 minutes
 
-    // Sort by timestamp
-    const sortedActivities = [...activitiesArray].sort((a, b) => {
-      const timeA = a.screenshots?.timestamp || a.timestamp;
-      const timeB = b.screenshots?.timestamp || b.timestamp;
-      return new Date(timeA) - new Date(timeB);
-    });
-
-    for (const activity of sortedActivities) {
-      const screenshot = activity.screenshots;
-      if (!screenshot) continue;
-
-      const screenshotTimestamp = screenshot.timestamp || activity.timestamp;
-      const durationSeconds = screenshot.duration_seconds || 0;
-
-      // Calculate start and end time
-      // IMPORTANT: Always calculate startTime from endTime - durationSeconds for accurate display
-      const endTime = new Date(screenshotTimestamp);
-      const startTime = new Date(endTime.getTime() - (durationSeconds * 1000));
-
-      // Check if this can be merged with the last session
+    for (const item of allItems) {
       if (workSessions.length > 0) {
         const lastSession = workSessions[workSessions.length - 1];
-        const timeSinceLastSession = startTime - new Date(lastSession.endTime);
+        const timeSinceLastSession = new Date(item.startTime) - new Date(lastSession.endTime);
 
         if (timeSinceLastSession <= SESSION_GAP_THRESHOLD) {
-          // Extend existing session - update end time and accumulate actual duration
-          lastSession.endTime = endTime.toISOString();
-          lastSession.activityIds.push(activity.id);
-          lastSession.screenshotIds.push(screenshot.id);
-          lastSession.durationSeconds = (lastSession.durationSeconds || 0) + durationSeconds;
+          lastSession.endTime = item.endTime;
+          lastSession.activityIds.push(item.id);
+          lastSession.durationSeconds = (lastSession.durationSeconds || 0) + item.durationSeconds;
           continue;
         }
       }
 
-      // Create new session with actual duration tracking
       workSessions.push({
-        startTime: startTime.toISOString(),
-        endTime: endTime.toISOString(),
-        date: screenshot.work_date || startTime.toISOString().split('T')[0],
-        activityIds: [activity.id],
-        screenshotIds: [screenshot.id],
-        durationSeconds: durationSeconds
+        startTime: item.startTime,
+        endTime: item.endTime,
+        date: item.date,
+        activityIds: [item.id],
+        screenshotIds: [],
+        durationSeconds: item.durationSeconds
       });
     }
 
-    // Recalculate startTime for merged sessions so displayed time range matches duration
+    // Recalculate startTime so displayed time range matches actual duration
     workSessions.forEach(session => {
       const end = new Date(session.endTime);
-      session.startTime = new Date(end.getTime() - (session.durationSeconds * 1000)).toISOString();
+      session.startTime = new Date(end.getTime() - session.durationSeconds * 1000).toISOString();
     });
 
     // Group sessions by date
     const sessionsByDate = {};
     workSessions.forEach(session => {
-      const dateKey = session.date;
-      if (!sessionsByDate[dateKey]) {
-        sessionsByDate[dateKey] = [];
-      }
-      sessionsByDate[dateKey].push(session);
+      if (!sessionsByDate[session.date]) sessionsByDate[session.date] = [];
+      sessionsByDate[session.date].push(session);
     });
 
-    // Calculate totals for each date using actual duration (not time span)
     const dateGroups = Object.keys(sessionsByDate)
-      .sort((a, b) => new Date(b) - new Date(a)) // Most recent first
+      .sort((a, b) => new Date(b) - new Date(a))
       .map(dateKey => {
         const sessions = sessionsByDate[dateKey];
-        const totalSeconds = sessions.reduce((sum, s) => {
-          return sum + (s.durationSeconds || 0);
-        }, 0);
-
+        const totalSeconds = sessions.reduce((sum, s) => sum + (s.durationSeconds || 0), 0);
         return {
           date: dateKey,
-          sessions: sessions,
-          totalSeconds: totalSeconds,
+          sessions,
+          totalSeconds,
           totalFormatted: formatDuration(totalSeconds)
         };
       });
 
     return {
       success: true,
-      workSessions: workSessions,
-      dateGroups: dateGroups
+      workSessions,
+      dateGroups
     };
 
   } catch (error) {
