@@ -29,7 +29,7 @@ export function isValidDate(value) {
     return false;
   }
   const date = new Date(value + 'T00:00:00Z');
-  return !isNaN(date.getTime());
+  return !Number.isNaN(date.getTime());
 }
 
 /**

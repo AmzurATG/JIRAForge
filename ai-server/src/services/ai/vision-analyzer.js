@@ -106,6 +106,7 @@ async function analyzeWithVision({ imageBuffer, windowTitle, applicationName, us
 /**
  * Extract a candidate JSON string from raw content using multiple strategies.
  * Handles full/truncated markdown code blocks and bare JSON.
+ * Uses string methods instead of regex to avoid ReDoS vulnerabilities.
  * @param {string} content - Raw AI response content
  * @returns {string[]} List of candidate strings to try parsing
  */
@@ -113,16 +114,30 @@ function extractJsonCandidates(content) {
   const trimmed = content.trim();
   const candidates = [];
 
-  // 1) Markdown code blocks (prefer ```json then plain ```) - full block
-  const codeBlockJson = trimmed.match(/```json\s*([\s\S]*?)\s*```/);
-  if (codeBlockJson) candidates.push(codeBlockJson[1].trim());
+  // 1) Markdown code blocks - use indexOf to avoid ReDoS from overlapping quantifiers
+  // Extract ```json ... ``` block (full block with closing fence)
+  const jsonFenceStart = trimmed.indexOf('```json');
+  if (jsonFenceStart !== -1) {
+    const contentStart = jsonFenceStart + 7; // length of '```json'
+    const closingFence = trimmed.indexOf('```', contentStart);
+    if (closingFence !== -1) {
+      candidates.push(trimmed.slice(contentStart, closingFence).trim());
+    }
+  }
 
-  const codeBlockAny = trimmed.match(/```\s*([\s\S]*?)\s*```/);
-  if (codeBlockAny) candidates.push(codeBlockAny[1].trim());
+  // Extract plain ``` ... ``` block (full block with closing fence)
+  const plainFenceStart = trimmed.indexOf('```');
+  if (plainFenceStart !== -1) {
+    const contentStart = plainFenceStart + 3; // length of '```'
+    const closingFence = trimmed.indexOf('```', contentStart);
+    if (closingFence !== -1) {
+      candidates.push(trimmed.slice(contentStart, closingFence).trim());
+    }
+  }
 
   // 2) Truncated ```json (no closing ```) - Gemini often truncates; take from first { to end
-  if (/```json\s*[\s\S]*\{/.test(trimmed)) {
-    const afterFence = trimmed.replace(/^[^]*?```json\s*/i, '').trim();
+  if (jsonFenceStart !== -1) {
+    const afterFence = trimmed.slice(jsonFenceStart + 7).trim();
     const firstBrace = afterFence.indexOf('{');
     if (firstBrace !== -1) {
       const fromBrace = afterFence.slice(firstBrace);

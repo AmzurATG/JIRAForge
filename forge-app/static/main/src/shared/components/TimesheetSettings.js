@@ -391,9 +391,23 @@ function TimesheetSettings() {
             This sync runs automatically every hour via a scheduled job. One worklog per issue per user is maintained — it will be created on first sync
             and updated on subsequent runs if time has changed.
           </p>
-          <p className="field-hint">
-            Worklogs will appear in each issue's "Work Log" tab and the "Time Spent" field in the Details panel.
-          </p>
+          {selectedProject ? (
+            <p className="field-hint" style={{ color: '#0052CC', fontWeight: '500' }}>
+              📌 Project-level setting: Worklog sync will only apply to issues in <strong>{selectedProject}</strong>.
+              {!settings.jiraWorklogSyncEnabled && settingsSource === 'organization' && (
+                <span style={{ display: 'block', marginTop: '4px', color: '#FF991F' }}>
+                  ⚠ Organization default is enabled. Disabling here will exclude this project from sync.
+                </span>
+              )}
+            </p>
+          ) : (
+            <p className="field-hint">
+              Worklogs will appear in each issue's "Work Log" tab and the "Time Spent" field in the Details panel.
+              <span style={{ display: 'block', marginTop: '4px', color: '#6B778C' }}>
+                💡 Tip: Select a specific project above to enable/disable sync for individual projects.
+              </span>
+            </p>
+          )}
           {settings.jiraWorklogSyncEnabled && (
             <button
               className="save-btn"

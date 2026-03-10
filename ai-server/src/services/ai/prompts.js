@@ -221,11 +221,17 @@ Think about what application the user is likely referring to. Consider:
 - Web services (e.g., "figma" → Figma, "chatgpt" → ChatGPT)
 
 For the identifier field:
-- Desktop apps: Use the executable name (e.g., "code.exe", "slack.exe", "notion.exe")
-- Web-based apps: Use the lowercase domain/service name (e.g., "figma", "notion", "lovable", "chatgpt")
-- Browser access: If the app is browser-based, the identifier is the service name (e.g., "figma" not "chrome.exe")
+- Desktop apps (Windows): Use the executable name WITH .exe extension (e.g., "code.exe", "slack.exe", "notion.exe")
+- Browser applications: Chrome, Firefox, Edge, Brave, etc. are desktop apps - use "chrome.exe", "firefox.exe", "msedge.exe", "brave.exe"
+- Web-based SaaS apps: Apps accessed via browser (Figma, ChatGPT, Lovable) use lowercase service name without .exe (e.g., "figma", "chatgpt", "lovable")
+
+IMPORTANT: When identifying a browser like Chrome, Firefox, or Edge, always return the executable name with .exe extension.
 
 Examples:
+- "chrome" → {"identified": true, "identifier": "chrome.exe", "display_name": "Google Chrome", "confidence": 0.95}
+- "firefox" → {"identified": true, "identifier": "firefox.exe", "display_name": "Mozilla Firefox", "confidence": 0.95}
+- "edge" → {"identified": true, "identifier": "msedge.exe", "display_name": "Microsoft Edge", "confidence": 0.95}
+- "brave" → {"identified": true, "identifier": "brave.exe", "display_name": "Brave Browser", "confidence": 0.95}
 - "slack" → {"identified": true, "identifier": "slack.exe", "display_name": "Slack", "confidence": 0.95}
 - "vscode" → {"identified": true, "identifier": "code.exe", "display_name": "Visual Studio Code", "confidence": 0.95}
 - "figma" → {"identified": true, "identifier": "figma", "display_name": "Figma", "confidence": 0.95}

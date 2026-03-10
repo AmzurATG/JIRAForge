@@ -9,46 +9,64 @@ const { toUTCISOString } = require('../../utils/datetime');
 
 /**
  * Get all users who have UNGROUPED unassigned activities (grouped by user and organization)
- * Only returns users with activities that haven't been clustered into groups yet
+ * Checks both legacy unassigned_activity table and new activity_records table.
  * @returns {Promise<Array>} Array of user objects with ungrouped unassigned work and their organization
  */
 async function getUsersWithUnassignedWork() {
   try {
     const supabase = getClient();
 
-    // Step 1: Get all activity IDs that are already in groups
-    const { data: groupedActivities, error: groupedError } = await supabase
+    // Step 1: Get all IDs already in groups (both legacy and new pipeline)
+    const { data: groupedMembers, error: groupedError } = await supabase
       .from('unassigned_group_members')
-      .select('unassigned_activity_id');
+      .select('unassigned_activity_id, activity_record_id');
 
     if (groupedError) {
       throw groupedError;
     }
 
-    const groupedIdSet = new Set((groupedActivities || []).map(g => g.unassigned_activity_id));
+    const groupedLegacyIdSet = new Set(
+      (groupedMembers || []).map(g => g.unassigned_activity_id).filter(Boolean)
+    );
+    const groupedActivityRecordIdSet = new Set(
+      (groupedMembers || []).map(g => g.activity_record_id).filter(Boolean)
+    );
 
-    // Step 2: Get all unassigned activities
-    const { data, error } = await supabase
+    // Step 2a: Get ungrouped legacy unassigned_activity records
+    const { data: legacyData, error: legacyError } = await supabase
       .from('unassigned_activity')
       .select('id, user_id, organization_id')
       .eq('manually_assigned', false)
       .order('timestamp', { ascending: false });
 
-    if (error) {
-      throw error;
+    if (legacyError) {
+      throw legacyError;
     }
 
-    // Step 3: Filter out activities that are already grouped
-    const ungroupedData = data.filter(activity => !groupedIdSet.has(activity.id));
+    const ungroupedLegacy = (legacyData || []).filter(a => !groupedLegacyIdSet.has(a.id));
 
-    // Get unique user_id + organization_id combinations from ungrouped activities only
+    // Step 2b: Get ungrouped new-pipeline activity_records
+    const { data: arData, error: arError } = await supabase
+      .from('activity_records')
+      .select('id, user_id, organization_id')
+      .is('user_assigned_issue_key', null)
+      .in('status', ['pending', 'processing', 'analyzed'])
+      .in('classification', ['productive', 'unknown']);
+
+    if (arError) {
+      logger.warn('Error fetching activity_records for clustering:', arError);
+    }
+
+    const ungroupedActivityRecords = (arData || []).filter(r => !groupedActivityRecordIdSet.has(r.id));
+
+    // Step 3: Merge both sources into unique user+org combinations
     const uniqueCombos = new Map();
-    ungroupedData.forEach(item => {
+    for (const item of [...ungroupedLegacy, ...ungroupedActivityRecords]) {
       const key = `${item.user_id}_${item.organization_id}`;
       if (!uniqueCombos.has(key)) {
         uniqueCombos.set(key, { id: item.user_id, organization_id: item.organization_id });
       }
-    });
+    }
 
     return Array.from(uniqueCombos.values());
   } catch (error) {
@@ -59,7 +77,8 @@ async function getUsersWithUnassignedWork() {
 
 /**
  * Get UNGROUPED unassigned activities for a specific user within an organization
- * Only returns activities that haven't been clustered into groups yet
+ * Only returns activities that haven't been clustered into groups yet.
+ * Returns sessions from BOTH legacy unassigned_activity and new activity_records tables.
  * @param {string} userId - User ID
  * @param {string} organizationId - Organization ID for multi-tenancy filtering
  * @returns {Promise<Array>} Array of ungrouped unassigned activity sessions
@@ -68,21 +87,26 @@ async function getUnassignedActivities(userId, organizationId) {
   try {
     const supabase = getClient();
 
-    // Step 1: Get all activity IDs that are already in groups
+    // Step 1: Get all activity IDs that are already in groups (both pipelines)
     const { data: groupedActivities, error: groupedError } = await supabase
       .from('unassigned_group_members')
-      .select('unassigned_activity_id');
+      .select('unassigned_activity_id, activity_record_id');
 
     if (groupedError) {
       throw groupedError;
     }
 
-    const groupedIdSet = new Set((groupedActivities || []).map(g => g.unassigned_activity_id));
+    const groupedLegacyIdSet = new Set(
+      (groupedActivities || []).map(g => g.unassigned_activity_id).filter(Boolean)
+    );
+    const groupedActivityRecordIdSet = new Set(
+      (groupedActivities || []).map(g => g.activity_record_id).filter(Boolean)
+    );
 
-    // Step 2: Get unassigned activities with screenshot data
+    // Step 2a: Get legacy unassigned_activity records with screenshot data
     // IMPORTANT: JOIN with screenshots to get duration_seconds (source of truth)
     // instead of using unassigned_activity.time_spent_seconds (stale)
-    let query = supabase
+    let legacyQuery = supabase
       .from('unassigned_activity')
       .select(`
         id,
@@ -102,24 +126,22 @@ async function getUnassignedActivities(userId, organizationId) {
       .eq('manually_assigned', false)
       .order('timestamp', { ascending: false });
 
-    // Filter by organization if provided
     if (organizationId) {
-      query = query.eq('organization_id', organizationId);
+      legacyQuery = legacyQuery.eq('organization_id', organizationId);
     }
 
-    const { data, error } = await query;
+    const { data: legacyData, error: legacyError } = await legacyQuery;
 
-    if (error) {
-      throw error;
+    if (legacyError) {
+      throw legacyError;
     }
 
-    // Step 3: Filter out activities that are already grouped
-    const ungroupedData = data.filter(activity => !groupedIdSet.has(activity.id));
+    // Filter out activities that are already grouped
+    const ungroupedLegacy = (legacyData || []).filter(a => !groupedLegacyIdSet.has(a.id));
 
-    // Fetch analysis_metadata for each ungrouped activity to get AI reasoning
-    // Also map screenshots.duration_seconds to time_spent_seconds for compatibility
-    const enrichedData = await Promise.all(
-      ungroupedData.map(async (activity) => {
+    // Fetch analysis_metadata for each ungrouped legacy activity to get AI reasoning
+    const enrichedLegacy = await Promise.all(
+      ungroupedLegacy.map(async (activity) => {
         const { data: analysisData } = await supabase
           .from('analysis_results')
           .select('analysis_metadata')
@@ -128,14 +150,50 @@ async function getUnassignedActivities(userId, organizationId) {
 
         return {
           ...activity,
-          // Use screenshots.duration_seconds (source of truth) as time_spent_seconds
-          time_spent_seconds: activity.screenshots?.duration_seconds || 0,
-          reasoning: analysisData?.analysis_metadata?.reasoning || 'No description available'
+          // Use screenshots.duration_seconds (legacy) or direct duration fields (hybrid OCR)
+          time_spent_seconds: activity.screenshots?.duration_seconds || activity.duration_seconds || activity.total_time_seconds || 0,
+          reasoning: analysisData?.analysis_metadata?.reasoning || 'No description available',
+          source: 'unassigned_activity'
         };
       })
     );
 
-    return enrichedData;
+    // Step 2b: Get new-pipeline activity_records that have no assigned issue
+    let arQuery = supabase
+      .from('activity_records')
+      .select('id, window_title, application_name, ocr_text, duration_seconds, total_time_seconds, organization_id, start_time')
+      .eq('user_id', userId)
+      .is('user_assigned_issue_key', null)
+      .in('status', ['pending', 'processing', 'analyzed'])
+      .in('classification', ['productive', 'unknown'])
+      .order('start_time', { ascending: false });
+
+    if (organizationId) {
+      arQuery = arQuery.eq('organization_id', organizationId);
+    }
+
+    const { data: arData, error: arError } = await arQuery;
+
+    if (arError) {
+      logger.warn('Error fetching activity_records for clustering:', arError);
+    }
+
+    const ungroupedAR = (arData || []).filter(r => !groupedActivityRecordIdSet.has(r.id));
+
+    // Map activity_records to the same session format used by clustering-service.js
+    const mappedAR = ungroupedAR.map(record => ({
+      id: record.id,
+      timestamp: record.start_time,
+      window_title: record.window_title || '',
+      application_name: record.application_name || '',
+      extracted_text: record.ocr_text || '',
+      time_spent_seconds: record.duration_seconds || record.total_time_seconds || 0,
+      reasoning: record.window_title || 'Activity record',
+      organization_id: record.organization_id,
+      source: 'activity_records'
+    }));
+
+    return [...enrichedLegacy, ...mappedAR];
   } catch (error) {
     logger.error('Error fetching unassigned activities:', error);
     throw new Error(`Failed to fetch unassigned activities: ${error.message}`);
@@ -218,25 +276,35 @@ async function createUnassignedGroup(groupData) {
 
 /**
  * Add a member to an unassigned work group
+ * Supports both legacy unassigned_activity_id and new activity_record_id
  * @param {Object} memberData - Member data
+ * @param {string} memberData.group_id - Group ID
+ * @param {string} [memberData.unassigned_activity_id] - Legacy activity ID (mutually exclusive with activity_record_id)
+ * @param {string} [memberData.activity_record_id] - New pipeline activity record ID (mutually exclusive with unassigned_activity_id)
  * @returns {Promise<Object|null>} Created member record or null if duplicate
  */
 async function addGroupMember(memberData) {
   try {
     const supabase = getClient();
+
+    const insertRow = { group_id: memberData.group_id };
+    if (memberData.activity_record_id) {
+      insertRow.activity_record_id = memberData.activity_record_id;
+    } else {
+      insertRow.unassigned_activity_id = memberData.unassigned_activity_id;
+    }
+
     const { data, error } = await supabase
       .from('unassigned_group_members')
-      .insert({
-        group_id: memberData.group_id,
-        unassigned_activity_id: memberData.unassigned_activity_id
-      })
+      .insert(insertRow)
       .select()
       .single();
 
     if (error) {
       // Handle duplicate key errors gracefully - activity may already be in a group
       if (error.code === '23505') { // PostgreSQL unique violation code
-        logger.warn(`Activity ${memberData.unassigned_activity_id} already assigned to a group, skipping`);
+        const id = memberData.activity_record_id || memberData.unassigned_activity_id;
+        logger.warn(`Activity ${id} already assigned to a group, skipping`);
         return null;
       }
       throw error;
@@ -304,37 +372,56 @@ async function hasClusteringRunRecently(hours = 24) {
 
 /**
  * Get count of unassigned activities that haven't been grouped yet
+ * Counts from both legacy unassigned_activity and new activity_records tables.
  * @returns {Promise<number>} Count of ungrouped unassigned activities
  */
 async function getUngroupedActivityCount() {
   try {
     const supabase = getClient();
 
-    // Step 1: Get all activity IDs that are already in groups
+    // Step 1: Get all IDs already in groups (both pipelines)
     const { data: groupedActivities, error: groupedError } = await supabase
       .from('unassigned_group_members')
-      .select('unassigned_activity_id');
+      .select('unassigned_activity_id, activity_record_id');
 
     if (groupedError) {
       throw groupedError;
     }
 
-    const groupedIdSet = new Set((groupedActivities || []).map(g => g.unassigned_activity_id));
+    const groupedLegacyIdSet = new Set(
+      (groupedActivities || []).map(g => g.unassigned_activity_id).filter(Boolean)
+    );
+    const groupedActivityRecordIdSet = new Set(
+      (groupedActivities || []).map(g => g.activity_record_id).filter(Boolean)
+    );
 
-    // Step 2: Get all unassigned activities that are not manually assigned
-    const { data, error } = await supabase
+    // Step 2a: Count ungrouped legacy unassigned_activity records
+    const { data: legacyData, error: legacyError } = await supabase
       .from('unassigned_activity')
       .select('id')
       .eq('manually_assigned', false);
 
-    if (error) {
-      throw error;
+    if (legacyError) {
+      throw legacyError;
     }
 
-    // Step 3: Count only those NOT in groups
-    const ungroupedCount = (data || []).filter(activity => !groupedIdSet.has(activity.id)).length;
+    const ungroupedLegacyCount = (legacyData || []).filter(a => !groupedLegacyIdSet.has(a.id)).length;
 
-    return ungroupedCount;
+    // Step 2b: Count ungrouped new-pipeline activity_records
+    const { data: arData, error: arError } = await supabase
+      .from('activity_records')
+      .select('id')
+      .is('user_assigned_issue_key', null)
+      .in('status', ['pending', 'processing', 'analyzed'])
+      .in('classification', ['productive', 'unknown']);
+
+    if (arError) {
+      logger.warn('Error counting activity_records for ungrouped count:', arError);
+    }
+
+    const ungroupedARCount = (arData || []).filter(r => !groupedActivityRecordIdSet.has(r.id)).length;
+
+    return ungroupedLegacyCount + ungroupedARCount;
   } catch (error) {
     logger.error('Error getting ungrouped activity count:', error);
     return 0;
@@ -356,7 +443,8 @@ async function getUnassignedWorkGroups(userId, organizationId = null) {
         *,
         unassigned_group_members (
           id,
-          unassigned_activity_id
+          unassigned_activity_id,
+          activity_record_id
         )
       `)
       .eq('user_id', userId)

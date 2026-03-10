@@ -53,12 +53,18 @@ def _apply_platform_safe_runtime_defaults():
         default_use_gpu = 'true' if _detect_paddle_gpu_support() else 'false'
         os.environ.setdefault('OCR_PADDLE_USE_GPU', default_use_gpu)
         os.environ.setdefault('FLAGS_use_mkldnn', '0')
-        # Use multiple threads for reasonable performance (was 1, too slow)
+        # Limit both OpenMP and MKL thread pools to prevent CPU saturation during inference.
+        # MKL_NUM_THREADS is needed separately because Intel MKL has its own thread pool
+        # that does not always honour OMP_NUM_THREADS on Windows.
         os.environ.setdefault('OMP_NUM_THREADS', default_threads)
+        os.environ.setdefault('MKL_NUM_THREADS', default_threads)
+        # OpenBLAS thread pool — needed if PaddlePaddle was built against OpenBLAS
+        # instead of MKL (build-dependent; safe to set both).
+        os.environ.setdefault('OPENBLAS_NUM_THREADS', default_threads)
         logger.info(
             f"Applied Windows Paddle defaults "
             f"(OCR_PADDLE_USE_GPU={os.environ.get('OCR_PADDLE_USE_GPU')}, "
-            f"FLAGS_use_mkldnn=0, OMP_NUM_THREADS={default_threads})"
+            f"FLAGS_use_mkldnn=0, OMP/MKL/OPENBLAS_NUM_THREADS={default_threads})"
         )
     elif sys.platform == 'darwin':
         # Keep compatible threading on macOS.
@@ -146,7 +152,7 @@ class PaddleOCREngine(BaseOCREngine):
                 if major_version >= 3:
                     # PaddleOCR 3.x: uses use_textline_orientation
                     # For screenshots, text is horizontal. Disabling saves memory/time.
-                    init_kwargs['use_textline_orientation'] = False 
+                    init_kwargs['use_textline_orientation'] = False
                 else:
                     # PaddleOCR 2.x: uses use_angle_cls
                     init_kwargs['use_angle_cls'] = False
@@ -155,6 +161,15 @@ class PaddleOCREngine(BaseOCREngine):
                 # Stability fix: disable MKLDNN on Windows to prevent "primitive" errors
                 if sys.platform == 'win32':
                     init_kwargs['enable_mkldnn'] = False
+
+                # Limit Paddle's internal inference thread pool to prevent CPU saturation.
+                # OMP_NUM_THREADS controls OpenMP; cpu_threads controls Paddle's own pool.
+                # Without this, PaddleOCR claims all CPU cores even on a low-priority thread,
+                # causing system-wide keyboard/UI lag during inference.
+                cpu_count = os.cpu_count() or 4
+                paddle_threads = min(2, max(1, cpu_count // 4))
+                init_kwargs['cpu_threads'] = paddle_threads
+                logger.info(f"PaddleOCR will use {paddle_threads} CPU inference thread(s)")
 
                 # Respect configuration: GPU can significantly reduce inference time.
                 # Some PaddleOCR versions may not accept use_gpu, so retry safely.

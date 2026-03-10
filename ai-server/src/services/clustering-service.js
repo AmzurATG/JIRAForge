@@ -246,10 +246,15 @@ CRITICAL - DESCRIPTIONS MUST BE SPECIFIC:
       .trim();
 
     // Try to extract JSON if response contains extra text
-    // Look for the JSON object pattern
-    const jsonMatch = cleanedResponse.match(/\{[\s\S]*"groups"[\s\S]*\}/);
-    if (jsonMatch) {
-      cleanedResponse = jsonMatch[0];
+    // Use string operations instead of vulnerable regex to avoid ReDoS
+    const firstBrace = cleanedResponse.indexOf('{');
+    const lastBrace = cleanedResponse.lastIndexOf('}');
+    if (firstBrace !== -1 && lastBrace > firstBrace) {
+      const potentialJson = cleanedResponse.slice(firstBrace, lastBrace + 1);
+      // Verify it contains "groups" before using it
+      if (potentialJson.includes('"groups"')) {
+        cleanedResponse = potentialJson;
+      }
     }
 
     // Try to parse JSON, with fallback for truncated responses

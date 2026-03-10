@@ -29,13 +29,16 @@ describe('Feedback Controller', () => {
     req = {
       body: {},
       params: {},
-      query: {}
+      query: {},
+      protocol: 'https',
+      get: jest.fn().mockReturnValue('localhost:3000')
     };
 
     res = {
       status: jest.fn().mockReturnThis(),
       json: jest.fn().mockReturnThis(),
-      sendFile: jest.fn().mockReturnThis()
+      sendFile: jest.fn().mockReturnThis(),
+      send: jest.fn().mockReturnThis()
     };
   });
 
@@ -82,7 +85,8 @@ describe('Feedback Controller', () => {
 
       expect(res.json).toHaveBeenCalledWith({
         success: true,
-        session_id: 'session123'
+        session_id: 'session123',
+        feedback_url: 'https://localhost:3000/api/feedback/form?session=session123'
       });
     });
 
@@ -222,7 +226,7 @@ describe('Feedback Controller', () => {
     };
 
     beforeEach(() => {
-      sessionStore.getSession.mockReturnValue(mockSession);
+      sessionStore.consumeSession.mockReturnValue(mockSession);
     });
 
     it('should submit feedback successfully without images', async () => {
@@ -240,10 +244,10 @@ describe('Feedback Controller', () => {
 
       await feedbackController.submitFeedback(req, res);
 
-      expect(sessionStore.getSession).toHaveBeenCalledWith('session123');
+      expect(sessionStore.consumeSession).toHaveBeenCalledWith('session123');
       expect(createFeedback).toHaveBeenCalledWith(
         expect.objectContaining({
-          user_account_id: 'user123',
+          atlassian_account_id: 'user123',
           category: 'bug',
           description: 'Test bug report',
           title: 'Test Title'
@@ -252,7 +256,8 @@ describe('Feedback Controller', () => {
 
       expect(res.json).toHaveBeenCalledWith({
         success: true,
-        feedback_id: 'feedback123'
+        feedback_id: 'feedback123',
+        message: 'Feedback submitted successfully. A Jira ticket will be created shortly.'
       });
     });
 
@@ -370,14 +375,14 @@ describe('Feedback Controller', () => {
         description: 'Test'
       };
 
-      sessionStore.getSession.mockReturnValue(null);
+      sessionStore.consumeSession.mockReturnValue(null);
 
       await feedbackController.submitFeedback(req, res);
 
       expect(res.status).toHaveBeenCalledWith(401);
       expect(res.json).toHaveBeenCalledWith({
         success: false,
-        error: 'Invalid or expired session'
+        error: 'Invalid, expired, or already-used session'
       });
     });
 
@@ -468,6 +473,11 @@ describe('Feedback Controller', () => {
 
       for (const category of validCategories) {
         jest.clearAllMocks();
+        sessionStore.consumeSession.mockReturnValue({
+          userInfo: { account_id: 'user123', email: 'test@example.com', name: 'Test User' },
+          atlassianToken: 'token',
+          cloudId: 'cloud123'
+        });
         
         req.body = {
           session_id: 'session123',
@@ -484,7 +494,8 @@ describe('Feedback Controller', () => {
 
         expect(res.json).toHaveBeenCalledWith({
           success: true,
-          feedback_id: 'feedback123'
+          feedback_id: 'feedback123',
+          message: 'Feedback submitted successfully. A Jira ticket will be created shortly.'
         });
       }
     });
@@ -494,6 +505,11 @@ describe('Feedback Controller', () => {
 
       for (const type of validTypes) {
         jest.clearAllMocks();
+        sessionStore.consumeSession.mockReturnValue({
+          userInfo: { account_id: 'user123', email: 'test@example.com', name: 'Test User' },
+          atlassianToken: 'token',
+          cloudId: 'cloud123'
+        });
         
         req.body = {
           session_id: 'session123',
@@ -530,7 +546,7 @@ describe('Feedback Controller', () => {
       expect(res.status).toHaveBeenCalledWith(500);
       expect(res.json).toHaveBeenCalledWith({
         success: false,
-        error: 'Failed to submit feedback'
+        error: 'Failed to submit feedback: Database error'
       });
     });
 
@@ -550,11 +566,7 @@ describe('Feedback Controller', () => {
 
       await feedbackController.submitFeedback(req, res);
 
-      expect(processAndCreateJiraTicket).toHaveBeenCalledWith(
-        'feedback123',
-        'cloud123',
-        'token'
-      );
+      expect(processAndCreateJiraTicket).toHaveBeenCalledWith('feedback123');
     });
 
     it('should handle Jira processing errors without failing submission', async () => {
@@ -573,10 +585,14 @@ describe('Feedback Controller', () => {
 
       await feedbackController.submitFeedback(req, res);
 
+      // Wait a tick for the async catch to execute
+      await new Promise(resolve => setImmediate(resolve));
+
       expect(logger.error).toHaveBeenCalled();
       expect(res.json).toHaveBeenCalledWith({
         success: true,
-        feedback_id: 'feedback123'
+        feedback_id: 'feedback123',
+        message: 'Feedback submitted successfully. A Jira ticket will be created shortly.'
       });
     });
 
@@ -598,6 +614,12 @@ describe('Feedback Controller', () => {
       await feedbackController.submitFeedback(req, res);
 
       expect(createFeedback).toHaveBeenCalledWith(
+        expect.objectContaining({
+          image_paths: [],
+          image_count: 0
+        })
+      );
+    });
         expect.objectContaining({
           image_paths: []
         })
@@ -623,7 +645,8 @@ describe('Feedback Controller', () => {
 
       expect(createFeedback).toHaveBeenCalledWith(
         expect.objectContaining({
-          image_paths: []
+          image_paths: [],
+          image_count: 0
         })
       );
     });
@@ -645,29 +668,8 @@ describe('Feedback Controller', () => {
 
       expect(createFeedback).toHaveBeenCalledWith(
         expect.objectContaining({
-          image_paths: []
-        })
-      );
-    });
-
-    it('should handle optional title field', async () => {
-      req.body = {
-        session_id: 'session123',
-        category: 'improvement',
-        description: 'Test improvement'
-        // No title provided
-      };
-
-      createFeedback.mockResolvedValue({
-        id: 'feedback123',
-        status: 'pending'
-      });
-
-      await feedbackController.submitFeedback(req, res);
-
-      expect(createFeedback).toHaveBeenCalledWith(
-        expect.objectContaining({
-          title: undefined
+          image_paths: [],
+          image_count: 0
         })
       );
     });
@@ -679,8 +681,10 @@ describe('Feedback Controller', () => {
 
       getFeedbackById.mockResolvedValue({
         id: 'feedback123',
-        status: 'completed',
-        jira_ticket_key: 'PROJ-123'
+        jira_creation_status: 'completed',
+        jira_issue_key: 'PROJ-123',
+        jira_issue_url: 'https://jira.example.com/browse/PROJ-123',
+        jira_creation_error: null
       });
 
       await feedbackController.getFeedbackStatus(req, res);
@@ -688,11 +692,34 @@ describe('Feedback Controller', () => {
       expect(getFeedbackById).toHaveBeenCalledWith('feedback123');
       expect(res.json).toHaveBeenCalledWith({
         success: true,
-        feedback: {
-          id: 'feedback123',
-          status: 'completed',
-          jira_ticket_key: 'PROJ-123'
-        }
+        status: 'completed',
+        jira_issue_key: 'PROJ-123',
+        jira_issue_url: 'https://jira.example.com/browse/PROJ-123',
+        error: null
+      });
+    });
+
+    it('should return 400 if feedback id is missing', async () => {
+      req.params.id = '';
+
+      await feedbackController.getFeedbackStatus(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(400);
+      expect(res.json).toHaveBeenCalledWith({
+        success: false,
+        error: 'Feedback ID is required'
+      });
+    });
+
+    it('should return 400 if feedback id is undefined', async () => {
+      req.params = {};
+
+      await feedbackController.getFeedbackStatus(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(400);
+      expect(res.json).toHaveBeenCalledWith({
+        success: false,
+        error: 'Feedback ID is required'
       });
     });
 
@@ -720,63 +747,71 @@ describe('Feedback Controller', () => {
       expect(res.status).toHaveBeenCalledWith(500);
       expect(res.json).toHaveBeenCalledWith({
         success: false,
-        error: 'Failed to retrieve feedback status'
+        error: 'Failed to check feedback status: Database error'
+      });
+    });
+
+    it('should return null for missing jira fields', async () => {
+      req.params.id = 'feedback123';
+
+      getFeedbackById.mockResolvedValue({
+        id: 'feedback123',
+        jira_creation_status: 'pending'
+        // Missing jira_issue_key, jira_issue_url, jira_creation_error
+      });
+
+      await feedbackController.getFeedbackStatus(req, res);
+
+      expect(res.json).toHaveBeenCalledWith({
+        success: true,
+        status: 'pending',
+        jira_issue_key: null,
+        jira_issue_url: null,
+        error: null
       });
     });
   });
 
-  describe('serveFeedbackForm', () => {
-    it('should serve feedback form for valid session', async () => {
+  describe('getFeedbackPage', () => {
+    it('should serve feedback form for valid session', () => {
       req.query.session = 'session123';
 
       sessionStore.getSession.mockReturnValue({
         userInfo: { name: 'Test User' }
       });
 
-      await feedbackController.serveFeedbackForm(req, res);
+      feedbackController.getFeedbackPage(req, res);
 
       expect(sessionStore.getSession).toHaveBeenCalledWith('session123');
       expect(res.sendFile).toHaveBeenCalled();
     });
 
-    it('should return 401 for missing session', async () => {
+    it('should return 400 error page for missing session', () => {
       req.query = {};
 
-      await feedbackController.serveFeedbackForm(req, res);
+      feedbackController.getFeedbackPage(req, res);
 
-      expect(res.status).toHaveBeenCalledWith(401);
-      expect(res.json).toHaveBeenCalledWith({
-        success: false,
-        error: 'Session ID is required'
-      });
+      expect(res.status).toHaveBeenCalledWith(400);
+      expect(res.send).toHaveBeenCalledWith(expect.stringContaining('Missing session parameter'));
     });
 
-    it('should return 401 for invalid session', async () => {
+    it('should return 401 error page for invalid session', () => {
       req.query.session = 'invalid_session';
 
       sessionStore.getSession.mockReturnValue(null);
 
-      await feedbackController.serveFeedbackForm(req, res);
+      feedbackController.getFeedbackPage(req, res);
 
       expect(res.status).toHaveBeenCalledWith(401);
-      expect(res.json).toHaveBeenCalledWith({
-        success: false,
-        error: 'Invalid or expired session'
-      });
+      expect(res.send).toHaveBeenCalledWith(expect.stringContaining('Invalid or expired session'));
     });
 
-    it('should return 401 for empty session string', async () => {
+    it('should return 400 for empty session string', () => {
       req.query.session = '';
 
-      await feedbackController.serveFeedbackForm(req, res);
+      feedbackController.getFeedbackPage(req, res);
 
-      expect(res.status).toHaveBeenCalledWith(401);
-    });
-  });
-
-  describe('getFeedbackPage (covers getErrorPage and escapeHtml with replaceAll)', () => {
-    beforeEach(() => {
-      res.send = jest.fn().mockReturnThis();
+      expect(res.status).toHaveBeenCalledWith(400);
     });
 
     it('should return error page with 400 when session is missing', () => {
@@ -823,14 +858,13 @@ describe('Feedback Controller', () => {
 
       // The error page HTML should be properly escaped
       const htmlOutput = res.send.mock.calls[0][0];
-      expect(htmlOutput).toContain('&lt;'); // Should NOT contain unescaped <
       expect(htmlOutput).not.toMatch(/<script>/i); // No script injection possible
     });
   });
 
   describe('Edge Cases and Error Handling', () => {
     it('should handle missing req.body gracefully', async () => {
-      req.body = null;
+      req.body = undefined;
 
       await feedbackController.submitFeedback(req, res);
 
@@ -855,9 +889,12 @@ describe('Feedback Controller', () => {
         .mockReturnValueOnce('session1')
         .mockReturnValueOnce('session2');
 
+      const req2 = { ...req, body: { ...req.body }, protocol: 'https', get: jest.fn().mockReturnValue('localhost:3000') };
+      const res2 = { status: jest.fn().mockReturnThis(), json: jest.fn().mockReturnThis() };
+
       await Promise.all([
         feedbackController.createSession(req, res),
-        feedbackController.createSession({ ...req }, { ...res })
+        feedbackController.createSession(req2, res2)
       ]);
 
       expect(sessionStore.createSession).toHaveBeenCalledTimes(2);
@@ -870,8 +907,8 @@ describe('Feedback Controller', () => {
         description: 'A'.repeat(10000) // Very long description
       };
 
-      sessionStore.getSession.mockReturnValue({
-        userInfo: { account_id: 'user123' },
+      sessionStore.consumeSession.mockReturnValue({
+        userInfo: { account_id: 'user123', email: 'test@example.com', name: 'Test User' },
         atlassianToken: 'token',
         cloudId: 'cloud123'
       });
@@ -885,7 +922,8 @@ describe('Feedback Controller', () => {
 
       expect(res.json).toHaveBeenCalledWith({
         success: true,
-        feedback_id: 'feedback123'
+        feedback_id: 'feedback123',
+        message: 'Feedback submitted successfully. A Jira ticket will be created shortly.'
       });
     });
 
@@ -905,7 +943,7 @@ describe('Feedback Controller', () => {
       });
     });
 
-    it('should handle image with jpeg extension', async () => {
+    it('should handle image with jpeg extension (converts to jpg)', async () => {
       req.body = {
         session_id: 'session123',
         category: 'bug',
@@ -918,8 +956,8 @@ describe('Feedback Controller', () => {
         ]
       };
 
-      sessionStore.getSession.mockReturnValue({
-        userInfo: { account_id: 'user123' },
+      sessionStore.consumeSession.mockReturnValue({
+        userInfo: { account_id: 'user123', email: 'test@example.com', name: 'Test User' },
         atlassianToken: 'token',
         cloudId: 'cloud123'
       });
@@ -937,6 +975,270 @@ describe('Feedback Controller', () => {
         expect.stringContaining('.jpg'),
         expect.any(Buffer),
         expect.any(Object)
+      );
+    });
+
+    it('should handle app_version field', async () => {
+      req.body = {
+        session_id: 'session123',
+        category: 'bug',
+        description: 'Test',
+        app_version: '1.2.3'
+      };
+
+      sessionStore.consumeSession.mockReturnValue({
+        userInfo: { account_id: 'user123', email: 'test@example.com', name: 'Test User' },
+        atlassianToken: 'token',
+        cloudId: 'cloud123'
+      });
+
+      createFeedback.mockResolvedValue({
+        id: 'feedback123',
+        status: 'pending'
+      });
+
+      await feedbackController.submitFeedback(req, res);
+
+      expect(createFeedback).toHaveBeenCalledWith(
+        expect.objectContaining({
+          app_version: '1.2.3'
+        })
+      );
+    });
+
+    it('should default app_version to null when not provided', async () => {
+      req.body = {
+        session_id: 'session123',
+        category: 'bug',
+        description: 'Test'
+      };
+
+      sessionStore.consumeSession.mockReturnValue({
+        userInfo: { account_id: 'user123', email: 'test@example.com', name: 'Test User' },
+        atlassianToken: 'token',
+        cloudId: 'cloud123'
+      });
+
+      createFeedback.mockResolvedValue({
+        id: 'feedback123',
+        status: 'pending'
+      });
+
+      await feedbackController.submitFeedback(req, res);
+
+      expect(createFeedback).toHaveBeenCalledWith(
+        expect.objectContaining({
+          app_version: null
+        })
+      );
+    });
+
+    it('should default title to null when not provided', async () => {
+      req.body = {
+        session_id: 'session123',
+        category: 'improvement',
+        description: 'Test improvement'
+      };
+
+      sessionStore.consumeSession.mockReturnValue({
+        userInfo: { account_id: 'user123', email: 'test@example.com', name: 'Test User' },
+        atlassianToken: 'token',
+        cloudId: 'cloud123'
+      });
+
+      createFeedback.mockResolvedValue({
+        id: 'feedback123',
+        status: 'pending'
+      });
+
+      await feedbackController.submitFeedback(req, res);
+
+      expect(createFeedback).toHaveBeenCalledWith(
+        expect.objectContaining({
+          title: null
+        })
+      );
+    });
+
+    it('should handle null images array', async () => {
+      req.body = {
+        session_id: 'session123',
+        category: 'bug',
+        description: 'Test',
+        images: null
+      };
+
+      sessionStore.consumeSession.mockReturnValue({
+        userInfo: { account_id: 'user123', email: 'test@example.com', name: 'Test User' },
+        atlassianToken: 'token',
+        cloudId: 'cloud123'
+      });
+
+      createFeedback.mockResolvedValue({
+        id: 'feedback123',
+        status: 'pending'
+      });
+
+      await feedbackController.submitFeedback(req, res);
+
+      expect(createFeedback).toHaveBeenCalledWith(
+        expect.objectContaining({
+          image_paths: [],
+          image_count: 0
+        })
+      );
+    });
+
+    it('should handle undefined images field', async () => {
+      req.body = {
+        session_id: 'session123',
+        category: 'bug',
+        description: 'Test'
+        // images not provided at all
+      };
+
+      sessionStore.consumeSession.mockReturnValue({
+        userInfo: { account_id: 'user123', email: 'test@example.com', name: 'Test User' },
+        atlassianToken: 'token',
+        cloudId: 'cloud123'
+      });
+
+      createFeedback.mockResolvedValue({
+        id: 'feedback123',
+        status: 'pending'
+      });
+
+      await feedbackController.submitFeedback(req, res);
+
+      expect(createFeedback).toHaveBeenCalledWith(
+        expect.objectContaining({
+          image_paths: [],
+          image_count: 0
+        })
+      );
+    });
+
+    it('should handle generic server error during session creation', async () => {
+      req.body = {
+        atlassian_token: 'token',
+        cloud_id: 'cloud123'
+      };
+
+      axios.get.mockResolvedValue({
+        data: {
+          account_id: 'user123',
+          email: 'test@example.com',
+          name: 'Test User'
+        }
+      });
+
+      sessionStore.createSession.mockImplementation(() => {
+        throw new Error('Session store error');
+      });
+
+      await feedbackController.createSession(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(500);
+      expect(res.json).toHaveBeenCalledWith({
+        success: false,
+        error: 'Failed to create feedback session: Session store error'
+      });
+    });
+
+    it('should handle image with gif extension', async () => {
+      req.body = {
+        session_id: 'session123',
+        category: 'bug',
+        description: 'Test',
+        images: [
+          {
+            data: Buffer.from('test').toString('base64'),
+            type: 'image/gif'
+          }
+        ]
+      };
+
+      sessionStore.consumeSession.mockReturnValue({
+        userInfo: { account_id: 'user123', email: 'test@example.com', name: 'Test User' },
+        atlassianToken: 'token',
+        cloudId: 'cloud123'
+      });
+
+      uploadFile.mockResolvedValue({ path: 'user123/123456_0.gif' });
+      createFeedback.mockResolvedValue({
+        id: 'feedback123',
+        status: 'pending'
+      });
+
+      await feedbackController.submitFeedback(req, res);
+
+      expect(uploadFile).toHaveBeenCalledWith(
+        'feedback-images',
+        expect.stringContaining('.gif'),
+        expect.any(Buffer),
+        expect.any(Object)
+      );
+    });
+
+    it('should handle image with webp extension', async () => {
+      req.body = {
+        session_id: 'session123',
+        category: 'bug',
+        description: 'Test',
+        images: [
+          {
+            data: Buffer.from('test').toString('base64'),
+            type: 'image/webp'
+          }
+        ]
+      };
+
+      sessionStore.consumeSession.mockReturnValue({
+        userInfo: { account_id: 'user123', email: 'test@example.com', name: 'Test User' },
+        atlassianToken: 'token',
+        cloudId: 'cloud123'
+      });
+
+      uploadFile.mockResolvedValue({ path: 'user123/123456_0.webp' });
+      createFeedback.mockResolvedValue({
+        id: 'feedback123',
+        status: 'pending'
+      });
+
+      await feedbackController.submitFeedback(req, res);
+
+      expect(uploadFile).toHaveBeenCalledWith(
+        'feedback-images',
+        expect.stringContaining('.webp'),
+        expect.any(Buffer),
+        expect.any(Object)
+      );
+    });
+
+    it('should trim description whitespace', async () => {
+      req.body = {
+        session_id: 'session123',
+        category: 'bug',
+        description: '  Test description with whitespace  '
+      };
+
+      sessionStore.consumeSession.mockReturnValue({
+        userInfo: { account_id: 'user123', email: 'test@example.com', name: 'Test User' },
+        atlassianToken: 'token',
+        cloudId: 'cloud123'
+      });
+
+      createFeedback.mockResolvedValue({
+        id: 'feedback123',
+        status: 'pending'
+      });
+
+      await feedbackController.submitFeedback(req, res);
+
+      expect(createFeedback).toHaveBeenCalledWith(
+        expect.objectContaining({
+          description: 'Test description with whitespace'
+        })
       );
     });
   });

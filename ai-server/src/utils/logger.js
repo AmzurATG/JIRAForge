@@ -1,4 +1,9 @@
 const winston = require('winston');
+const { createSanitizeFormat, isEnabled, getLevel } = require('./log-sanitizer');
+
+// Log sanitization status on startup
+const sanitizeEnabled = isEnabled();
+const sanitizeLevel = getLevel();
 
 const logger = winston.createLogger({
   level: process.env.LOG_LEVEL || 'info',
@@ -8,6 +13,9 @@ const logger = winston.createLogger({
     }),
     winston.format.errors({ stack: true }),
     winston.format.splat(),
+    // Apply sanitization AFTER splat() to catch all merged properties
+    // splat() merges extra log arguments (e.g., logger.info('msg', {userId: '...'}))
+    createSanitizeFormat(),
     winston.format.json()
   ),
   defaultMeta: { service: 'ai-analysis-server' },
@@ -18,6 +26,11 @@ const logger = winston.createLogger({
     new winston.transports.File({ filename: 'logs/combined.log' })
   ]
 });
+
+// Log sanitization configuration (this log itself will be sanitized)
+if (process.env.NODE_ENV !== 'test') {
+  console.log(`[Logger] PII Sanitization: ${sanitizeEnabled ? 'ENABLED' : 'DISABLED'} | Level: ${sanitizeLevel}`);
+}
 
 // If we're not in production, log to the console as well
 if (process.env.NODE_ENV !== 'production') {

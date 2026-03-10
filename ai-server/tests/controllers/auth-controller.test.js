@@ -298,6 +298,35 @@ describe('Auth Controller', () => {
         })
       );
     });
+
+    it('should return 500 if Atlassian credentials not configured', async () => {
+      delete process.env.ATLASSIAN_CLIENT_ID;
+      req.body = { refresh_token: 'refresh-123' };
+
+      await authController.refreshToken(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(500);
+      expect(res.json).toHaveBeenCalledWith({
+        success: false,
+        error: 'Server configuration error'
+      });
+    });
+
+    it('should return 500 for non-400/401 Atlassian errors', async () => {
+      req.body = { refresh_token: 'refresh-123' };
+
+      axios.post.mockRejectedValue({
+        response: { status: 503, data: { error: 'service_unavailable' } }
+      });
+
+      await authController.refreshToken(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(503);
+      expect(res.json).toHaveBeenCalledWith({
+        success: false,
+        error: expect.stringContaining('Token refresh failed')
+      });
+    });
   });
 
   describe('exchangeToken', () => {
@@ -606,6 +635,67 @@ describe('Auth Controller', () => {
         error: expect.stringContaining('Supabase credentials not configured')
       });
     });
+
+    it('should return 500 if Supabase client not available', async () => {
+      req.body = { atlassian_token: 'atlassian-123' };
+
+      axios.get.mockResolvedValue({
+        data: { account_id: 'acc-123', email: 'test@example.com' }
+      });
+
+      getClient.mockReturnValue(null);
+
+      await authController.getSupabaseConfig(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(500);
+      expect(res.json).toHaveBeenCalledWith({
+        success: false,
+        error: expect.stringContaining('database not available')
+      });
+    });
+
+    it('should return 403 if user not found in system', async () => {
+      req.body = { atlassian_token: 'atlassian-123' };
+
+      axios.get.mockResolvedValue({
+        data: { account_id: 'acc-123', email: 'test@example.com' }
+      });
+
+      const mockSupabase = {
+        from: jest.fn().mockReturnThis(),
+        select: jest.fn().mockReturnThis(),
+        eq: jest.fn().mockReturnThis(),
+        single: jest.fn().mockResolvedValue({ data: null, error: new Error('Not found') })
+      };
+      getClient.mockReturnValue(mockSupabase);
+
+      await authController.getSupabaseConfig(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(403);
+    });
+
+    it('should return 403 if user has no organization', async () => {
+      req.body = { atlassian_token: 'atlassian-123' };
+
+      axios.get.mockResolvedValue({
+        data: { account_id: 'acc-123', email: 'test@example.com' }
+      });
+
+      const mockSupabase = {
+        from: jest.fn().mockReturnThis(),
+        select: jest.fn().mockReturnThis(),
+        eq: jest.fn().mockReturnThis(),
+        single: jest.fn().mockResolvedValue({
+          data: { id: 'user-uuid', organization_id: null },
+          error: null
+        })
+      };
+      getClient.mockReturnValue(mockSupabase);
+
+      await authController.getSupabaseConfig(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(403);
+    });
   });
 
   describe('getOcrConfig', () => {
@@ -823,26 +913,21 @@ describe('Auth Controller', () => {
         }
       });
 
-      // Mock Object.keys to throw an error
-      const originalKeys = Object.keys;
-      let callCount = 0;
-      Object.keys = jest.fn().mockImplementation((obj) => {
-        callCount++;
-        if (callCount > 1) {
-          throw new Error('Internal error');
-        }
-        return originalKeys(obj);
+      // Safely trigger the catch block by making Number.parseFloat throw
+      // (used when building engine min_confidence from env vars)
+      const spy = jest.spyOn(Number, 'parseFloat').mockImplementationOnce(() => {
+        throw new Error('Internal error');
       });
 
       await authController.getOcrConfig(req, res);
+
+      spy.mockRestore();
 
       expect(res.status).toHaveBeenCalledWith(500);
       expect(res.json).toHaveBeenCalledWith({
         success: false,
         error: expect.stringContaining('Internal error')
       });
-
-      Object.keys = originalKeys;
     });
   });
 

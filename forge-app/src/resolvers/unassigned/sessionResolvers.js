@@ -6,61 +6,155 @@
 import { getSupabaseConfig, getOrCreateUser, getOrCreateOrganization, supabaseRequest, generateSignedUrl } from '../../utils/supabase.js';
 import { formatDuration } from '../../utils/formatters.js';
 import { isValidUUID, isValidDate, sanitizeUUIDArray, toSafeInteger } from '../../utils/validators.js';
+import { initializeRequestContext, handleResolverError, ensureArray } from './helpers.js';
+
+// ============================================================================
+// Helper Functions
+// ============================================================================
+
+/**
+ * Validate and sanitize session IDs from request payload
+ * @param {Array} sessionIds - Raw session IDs from payload
+ * @param {string} functionName - Name of calling function for logging
+ * @returns {{valid: boolean, validSessionIds?: string[], error?: string}}
+ */
+function validateSessionIds(sessionIds, functionName) {
+  const validSessionIds = sanitizeUUIDArray(sessionIds);
+  console.log(`[${functionName}] Received ${sessionIds?.length || 0} session IDs, ${validSessionIds.length} valid`);
+
+  if (validSessionIds.length === 0) {
+    return { valid: false, error: 'No valid session IDs provided' };
+  }
+
+  return { valid: true, validSessionIds };
+}
+
+/**
+ * Generate signed URLs for a screenshot
+ * @param {Object} supabaseConfig - Supabase configuration
+ * @param {Object} screenshot - Screenshot object with storage_path
+ * @returns {Promise<{signed_url: string|null, signed_thumbnail_url: string|null}>}
+ */
+async function generateScreenshotUrls(supabaseConfig, screenshot) {
+  let signed_thumbnail_url = screenshot.thumbnail_url;
+  let signed_url = null;
+
+  if (screenshot.storage_path) {
+    try {
+      // Generate signed URL for full-size image
+      signed_url = await generateSignedUrl(supabaseConfig, 'screenshots', screenshot.storage_path, 3600);
+
+      // Generate signed URL for thumbnail
+      let thumbPath;
+      if (screenshot.storage_path.includes('/')) {
+        const dirPath = screenshot.storage_path.substring(0, screenshot.storage_path.lastIndexOf('/'));
+        const filename = screenshot.storage_path.substring(screenshot.storage_path.lastIndexOf('/') + 1);
+        const thumbFilename = filename.replace('screenshot_', 'thumb_').replace('.png', '.jpg');
+        thumbPath = `${dirPath}/${thumbFilename}`;
+      } else {
+        thumbPath = screenshot.storage_path.replace('screenshot_', 'thumb_').replace('.png', '.jpg');
+      }
+
+      signed_thumbnail_url = await generateSignedUrl(supabaseConfig, 'screenshots', thumbPath, 3600);
+    } catch (err) {
+      console.error('Error generating signed URL:', err);
+    }
+  }
+
+  return { signed_url, signed_thumbnail_url };
+}
+
+/**
+ * Fetch unassigned activities by session IDs
+ * @param {Object} supabaseConfig - Supabase configuration
+ * @param {string[]} validSessionIds - Array of valid session UUIDs
+ * @param {string} userId - User ID for filtering
+ * @param {string} selectFields - Fields to select in query
+ * @returns {Promise<Array>}
+ */
+async function fetchActivitiesBySessionIds(supabaseConfig, validSessionIds, userId, selectFields) {
+  const sessionIdsParam = validSessionIds.join(',');
+  const activities = await supabaseRequest(
+    supabaseConfig,
+    `unassigned_activity?id=in.(${sessionIdsParam})&user_id=eq.${userId}&select=${selectFields}`
+  );
+  return ensureArray(activities);
+}
+
+// ============================================================================
+// Resolver Functions
+// ============================================================================
 
 /**
  * Get unassigned work sessions for current user
+ * Queries both activity_records (hybrid OCR) and analysis_results (legacy screenshots)
  */
 export async function getUnassignedWork(req) {
   try {
-    const { accountId, cloudId } = req.context;
     const { limit: rawLimit, offset: rawOffset, dateFrom, dateTo } = req.payload || {};
 
     // Validate pagination parameters
     const limit = toSafeInteger(rawLimit, 50, 1, 500);
     const offset = toSafeInteger(rawOffset, 0, 0, 100000);
 
-    const supabaseConfig = await getSupabaseConfig(accountId);
-    if (!supabaseConfig) {
-      return { success: false, error: 'Supabase not configured' };
-    }
+    // Initialize context (Supabase config, organization, user)
+    const ctx = await initializeRequestContext(req);
+    if (!ctx.success) return ctx;
 
-    // Get or create organization first (multi-tenancy)
-    const organization = await getOrCreateOrganization(cloudId, supabaseConfig);
-    if (!organization) {
-      return { success: false, error: 'Unable to get organization information' };
-    }
+    const { config: supabaseConfig, organization, userId } = ctx;
 
-    const userId = await getOrCreateUser(accountId, supabaseConfig, organization.id);
+    // Query activity_records for unassigned work (hybrid OCR approach)
+    let activityQuery = `activity_records?user_id=eq.${userId}&organization_id=eq.${organization.id}&user_assigned_issue_key=is.null&status=in.(pending,processing,analyzed)&classification=in.(productive,unknown)&select=id,window_title,application_name,start_time,end_time,duration_seconds,total_time_seconds,created_at&order=created_at.desc`;
+    activityQuery += `&limit=${limit}&offset=${offset}`;
+    if (dateFrom && isValidDate(dateFrom)) activityQuery += `&created_at=gte.${dateFrom}`;
+    if (dateTo && isValidDate(dateTo)) activityQuery += `&created_at=lte.${dateTo}`;
 
-    // Build query string - filter by organization_id for multi-tenancy
-    let query = `analysis_results?select=*,screenshots(id,window_title,application_name,timestamp,thumbnail_url,storage_path)&user_id=eq.${userId}&organization_id=eq.${organization.id}&active_task_key=is.null&order=created_at.desc`;
+    // Also query legacy analysis_results for backwards compatibility
+    let legacyQuery = `analysis_results?select=*,screenshots(id,window_title,application_name,timestamp,thumbnail_url,storage_path)&user_id=eq.${userId}&organization_id=eq.${organization.id}&active_task_key=is.null&order=created_at.desc`;
+    legacyQuery += `&limit=${limit}&offset=${offset}`;
+    if (dateFrom && isValidDate(dateFrom)) legacyQuery += `&created_at=gte.${dateFrom}`;
+    if (dateTo && isValidDate(dateTo)) legacyQuery += `&created_at=lte.${dateTo}`;
 
-    query += `&limit=${limit}&offset=${offset}`;
-    if (dateFrom && isValidDate(dateFrom)) query += `&created_at=gte.${dateFrom}`;
-    if (dateTo && isValidDate(dateTo)) query += `&created_at=lte.${dateTo}`;
+    const [activityResults, legacyResults] = await Promise.all([
+      supabaseRequest(supabaseConfig, activityQuery),
+      supabaseRequest(supabaseConfig, legacyQuery)
+    ]);
 
-    const results = await supabaseRequest(supabaseConfig, query);
+    // Map activity_records to session format
+    const activitySessions = (activityResults || []).map(record => ({
+      id: record.id,
+      window_title: record.window_title,
+      application_name: record.application_name,
+      timestamp: record.start_time || record.created_at,
+      duration_seconds: record.duration_seconds || record.total_time_seconds || 0,
+      source: 'activity_records'
+    }));
 
-    // Flatten data structure
-    const sessions = (results || []).map(result => ({
+    // Map legacy results to session format
+    const legacySessions = (legacyResults || []).map(result => ({
       ...result,
       screenshot_id: result.screenshots?.id || result.screenshot_id,
       window_title: result.screenshots?.window_title,
       application_name: result.screenshots?.application_name,
       timestamp: result.screenshots?.timestamp || result.created_at,
       thumbnail_url: result.screenshots?.thumbnail_url,
-      storage_path: result.screenshots?.storage_path
+      storage_path: result.screenshots?.storage_path,
+      source: 'analysis_results'
     }));
+
+    // Combine and sort by timestamp
+    const allSessions = [...activitySessions, ...legacySessions]
+      .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))
+      .slice(0, limit);
 
     return {
       success: true,
-      sessions,
-      total: sessions.length
+      sessions: allSessions,
+      total: allSessions.length
     };
 
   } catch (error) {
-    console.error('Error getting unassigned work:', error);
-    return { success: false, error: error.message };
+    return handleResolverError(error, 'getting unassigned work');
   }
 }
 
@@ -71,25 +165,17 @@ export async function getUnassignedWork(req) {
  */
 export async function getUnassignedGroups(req) {
   try {
-    const { accountId, cloudId } = req.context;
     const { limit: rawLimit = 10, offset: rawOffset = 0 } = req.payload || {};
 
     // Validate pagination parameters
     const limit = toSafeInteger(rawLimit, 10, 1, 100);
     const offset = toSafeInteger(rawOffset, 0, 0, 100000);
 
-    const supabaseConfig = await getSupabaseConfig(accountId);
-    if (!supabaseConfig) {
-      return { success: false, error: 'Supabase not configured' };
-    }
+    // Initialize context (Supabase config, organization, user)
+    const ctx = await initializeRequestContext(req);
+    if (!ctx.success) return ctx;
 
-    // Get or create organization first (multi-tenancy) - these are cached
-    const organization = await getOrCreateOrganization(cloudId, supabaseConfig);
-    if (!organization) {
-      return { success: false, error: 'Unable to get organization information' };
-    }
-
-    const userId = await getOrCreateUser(accountId, supabaseConfig, organization.id);
+    const { config: supabaseConfig, organization, userId } = ctx;
 
     // First, get total count for pagination info
     const countResult = await supabaseRequest(
@@ -97,7 +183,7 @@ export async function getUnassignedGroups(req) {
       `unassigned_work_groups?user_id=eq.${userId}&organization_id=eq.${organization.id}&is_assigned=eq.false&select=id`,
       { headers: { 'Prefer': 'count=exact' } }
     );
-    const totalCount = Array.isArray(countResult) ? countResult.length : 0;
+    const totalCount = ensureArray(countResult).length;
 
     // LAZY LOADING: Fetch only summary data (no members/activities) with pagination
     // Session details loaded on-demand via getGroupDetails
@@ -152,66 +238,75 @@ export async function getUnassignedGroups(req) {
     };
 
   } catch (error) {
-    console.error('Error getting unassigned groups:', error);
-    return { success: false, error: error.message };
+    return handleResolverError(error, 'getting unassigned groups');
   }
 }
 
 /**
  * Get detailed data for a specific group (session_ids, recalculated totals)
  * LAZY LOADING: Called when user expands a group to see details
+ * Supports both legacy unassigned_activity members and new activity_records members.
  */
 export async function getGroupDetails(req) {
   try {
-    const { accountId, cloudId } = req.context;
     const { groupId } = req.payload;
 
     if (!groupId || !isValidUUID(groupId)) {
       return { success: false, error: 'Valid Group ID required' };
     }
 
-    const supabaseConfig = await getSupabaseConfig(accountId);
-    if (!supabaseConfig) {
-      return { success: false, error: 'Supabase not configured' };
-    }
+    // Initialize context (Supabase config, organization, user)
+    const ctx = await initializeRequestContext(req);
+    if (!ctx.success) return ctx;
 
-    // Get or create organization first (multi-tenancy) - cached
-    const organization = await getOrCreateOrganization(cloudId, supabaseConfig);
-    if (!organization) {
-      return { success: false, error: 'Unable to get organization information' };
-    }
-
-    const userId = await getOrCreateUser(accountId, supabaseConfig, organization.id);
+    const { config: supabaseConfig } = ctx;
 
     console.log(`[getGroupDetails] Loading details for group: ${groupId}`);
 
-    // Fetch group members with activity data in a single query
-    // IMPORTANT: Use screenshots.duration_seconds (source of truth) instead of unassigned_activity.time_spent_seconds (stale)
+    // Fetch group members — select both FK columns to support both pipelines
+    // IMPORTANT: Use screenshots.duration_seconds (source of truth) for legacy records
     const members = await supabaseRequest(
       supabaseConfig,
-      `unassigned_group_members?group_id=eq.${groupId}&select=id,unassigned_activity_id,unassigned_activity(id,window_title,application_name,timestamp,screenshot_id,screenshots(duration_seconds))`
+      `unassigned_group_members?group_id=eq.${groupId}&select=id,unassigned_activity_id,activity_record_id,unassigned_activity(id,window_title,application_name,timestamp,screenshot_id,screenshots(duration_seconds))`
     );
 
-    const membersArray = Array.isArray(members) ? members : (members ? [members] : []);
+    const membersArray = ensureArray(members);
 
-    // Calculate accurate total_seconds from screenshots.duration_seconds (source of truth)
+    const isValidUUIDStr = id =>
+      id && typeof id === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id.trim());
+
+    // Separate legacy vs new-pipeline members
+    const legacySessionIds = membersArray
+      .map(m => m?.unassigned_activity_id)
+      .filter(isValidUUIDStr);
+
+    const arSessionIds = membersArray
+      .map(m => m?.activity_record_id)
+      .filter(isValidUUIDStr);
+
+    // Calculate duration from legacy members via screenshots.duration_seconds
     let totalSeconds = 0;
     membersArray.forEach(member => {
       const durationSeconds = member?.unassigned_activity?.screenshots?.duration_seconds;
-      if (durationSeconds) {
-        totalSeconds += durationSeconds;
-      }
+      if (durationSeconds) totalSeconds += durationSeconds;
     });
 
-    // Extract valid session IDs
-    const sessionIds = membersArray
-      .map(m => m?.unassigned_activity_id)
-      .filter(id => {
-        if (!id || typeof id !== 'string' || id.trim() === '') return false;
-        return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id.trim());
+    // Fetch durations for new-pipeline members from activity_records
+    if (arSessionIds.length > 0) {
+      const arDurations = await supabaseRequest(
+        supabaseConfig,
+        `activity_records?id=in.(${arSessionIds.join(',')})&select=id,duration_seconds,total_time_seconds`
+      );
+      ensureArray(arDurations).forEach(r => {
+        totalSeconds += r.duration_seconds || r.total_time_seconds || 0;
       });
+    }
 
-    console.log(`[getGroupDetails] Group ${groupId}: ${sessionIds.length} sessions, ${totalSeconds}s total`);
+    // Combined session_ids includes both pipelines
+    // getGroupWorkSessions and getGroupScreenshots will query both tables using these IDs
+    const sessionIds = [...legacySessionIds, ...arSessionIds];
+
+    console.log(`[getGroupDetails] Group ${groupId}: ${legacySessionIds.length} legacy + ${arSessionIds.length} AR sessions = ${sessionIds.length} total, ${totalSeconds}s`);
 
     return {
       success: true,
@@ -224,8 +319,7 @@ export async function getGroupDetails(req) {
     };
 
   } catch (error) {
-    console.error('Error getting group details:', error);
-    return { success: false, error: error.message };
+    return handleResolverError(error, 'getting group details');
   }
 }
 
@@ -234,48 +328,38 @@ export async function getGroupDetails(req) {
  */
 export async function getGroupScreenshots(req) {
   try {
-    const { accountId, cloudId } = req.context;
     const { sessionIds } = req.payload;
 
     // Validate sessionIds as UUID array
-    const validSessionIds = sanitizeUUIDArray(sessionIds);
-    console.log(`[getGroupScreenshots] Received ${sessionIds?.length || 0} session IDs, ${validSessionIds.length} valid`);
-
-    if (validSessionIds.length === 0) {
-      return { success: false, error: 'No valid session IDs provided' };
+    const validation = validateSessionIds(sessionIds, 'getGroupScreenshots');
+    if (!validation.valid) {
+      return { success: false, error: validation.error };
     }
+    const { validSessionIds } = validation;
 
-    const supabaseConfig = await getSupabaseConfig(accountId);
-    if (!supabaseConfig) {
-      return { success: false, error: 'Supabase not configured' };
-    }
+    // Initialize context (Supabase config, organization, user)
+    const ctx = await initializeRequestContext(req);
+    if (!ctx.success) return ctx;
 
-    // Get or create organization first (multi-tenancy)
-    const organization = await getOrCreateOrganization(cloudId, supabaseConfig);
-    if (!organization) {
-      return { success: false, error: 'Unable to get organization information' };
-    }
-
-    const userId = await getOrCreateUser(accountId, supabaseConfig, organization.id);
+    const { config: supabaseConfig, userId } = ctx;
 
     // Get unassigned_activity records with their screenshot information
-    // IMPORTANT: Use screenshots.duration_seconds (source of truth) instead of time_spent_seconds (stale)
-    const sessionIdsParam = validSessionIds.join(',');
     console.log(`[getGroupScreenshots] Querying unassigned_activity with ${validSessionIds.length} IDs`);
-    const activities = await supabaseRequest(
+    const activitiesArray = await fetchActivitiesBySessionIds(
       supabaseConfig,
-      `unassigned_activity?id=in.(${sessionIdsParam})&user_id=eq.${userId}&select=id,analysis_result_id,window_title,application_name,timestamp,screenshot_id,screenshots(duration_seconds)`
+      validSessionIds,
+      userId,
+      'id,analysis_result_id,window_title,application_name,timestamp,screenshot_id,screenshots(duration_seconds)'
     );
 
-    console.log(`[getGroupScreenshots] Found ${activities?.length || 0} unassigned_activity records`);
+    console.log(`[getGroupScreenshots] Found ${activitiesArray.length} unassigned_activity records`);
 
-    if (!activities || activities.length === 0) {
+    if (activitiesArray.length === 0) {
       console.log('[getGroupScreenshots] No activities found');
       return { success: true, screenshots: [] };
     }
 
     // Get analysis_result_ids to fetch screenshot details
-    const activitiesArray = Array.isArray(activities) ? activities : [activities];
     const analysisResultIds = sanitizeUUIDArray(activitiesArray.map(a => a.analysis_result_id));
 
     console.log(`[getGroupScreenshots] Found ${analysisResultIds.length} analysis_result_ids`);
@@ -286,7 +370,6 @@ export async function getGroupScreenshots(req) {
     }
 
     // Fetch analysis_results with screenshot data
-    // Include duration_seconds from screenshots (source of truth)
     const analysisIdsParam = analysisResultIds.join(',');
     console.log(`[getGroupScreenshots] Querying analysis_results with ${analysisResultIds.length} IDs`);
     const analysisResults = await supabaseRequest(
@@ -294,11 +377,11 @@ export async function getGroupScreenshots(req) {
       `analysis_results?id=in.(${analysisIdsParam})&select=id,screenshot_id,screenshots(id,timestamp,storage_path,thumbnail_url,window_title,application_name,duration_seconds)`
     );
 
-    const resultsArray = Array.isArray(analysisResults) ? analysisResults : (analysisResults ? [analysisResults] : []);
+    const resultsArray = ensureArray(analysisResults);
     console.log(`[getGroupScreenshots] Found ${resultsArray.length} analysis_results with screenshots`);
 
     // Generate signed URLs for screenshots in batches to avoid rate limiting
-    const BATCH_SIZE = 10; // Process 10 at a time to avoid rate limits
+    const BATCH_SIZE = 10;
     const screenshotsWithUrls = [];
 
     for (let i = 0; i < resultsArray.length; i += BATCH_SIZE) {
@@ -308,31 +391,7 @@ export async function getGroupScreenshots(req) {
           const screenshot = result.screenshots;
           if (!screenshot) return null;
 
-          // Generate signed URL for thumbnail
-          let signed_thumbnail_url = screenshot.thumbnail_url;
-          let signed_url = null;
-
-          if (screenshot.storage_path) {
-            try {
-              // Generate signed URL for full-size image
-              signed_url = await generateSignedUrl(supabaseConfig, 'screenshots', screenshot.storage_path, 3600);
-
-              // Generate signed URL for thumbnail
-              let thumbPath;
-              if (screenshot.storage_path.includes('/')) {
-                const dirPath = screenshot.storage_path.substring(0, screenshot.storage_path.lastIndexOf('/'));
-                const filename = screenshot.storage_path.substring(screenshot.storage_path.lastIndexOf('/') + 1);
-                const thumbFilename = filename.replace('screenshot_', 'thumb_').replace('.png', '.jpg');
-                thumbPath = `${dirPath}/${thumbFilename}`;
-              } else {
-                thumbPath = screenshot.storage_path.replace('screenshot_', 'thumb_').replace('.png', '.jpg');
-              }
-
-              signed_thumbnail_url = await generateSignedUrl(supabaseConfig, 'screenshots', thumbPath, 3600);
-            } catch (err) {
-              console.error('Error generating signed URL:', err);
-            }
-          }
+          const { signed_url, signed_thumbnail_url } = await generateScreenshotUrls(supabaseConfig, screenshot);
 
           return {
             id: screenshot.id,
@@ -367,150 +426,157 @@ export async function getGroupScreenshots(req) {
     };
 
   } catch (error) {
-    console.error('Error getting group screenshots:', error);
-    return { success: false, error: error.message };
+    return handleResolverError(error, 'getting group screenshots');
   }
 }
 
 /**
  * Get work sessions for unassigned work group (grouped by date like Dashboard)
+ * Supports both legacy unassigned_activity sessions and new activity_records sessions.
+ * The sessionIds array may contain IDs from either table; each table is queried
+ * independently and only matching records are returned.
  */
 export async function getGroupWorkSessions(req) {
   try {
-    const { accountId, cloudId } = req.context;
     const { sessionIds } = req.payload;
 
     // Validate sessionIds as UUID array
-    const validSessionIds = sanitizeUUIDArray(sessionIds);
-    console.log(`[getGroupWorkSessions] Received ${sessionIds?.length || 0} session IDs, ${validSessionIds.length} valid`);
-
-    if (validSessionIds.length === 0) {
-      return { success: false, error: 'No valid session IDs provided' };
+    const validation = validateSessionIds(sessionIds, 'getGroupWorkSessions');
+    if (!validation.valid) {
+      return { success: false, error: validation.error };
     }
+    const { validSessionIds } = validation;
 
-    const supabaseConfig = await getSupabaseConfig(accountId);
-    if (!supabaseConfig) {
-      return { success: false, error: 'Supabase not configured' };
-    }
+    // Initialize context (Supabase config, organization, user)
+    const ctx = await initializeRequestContext(req);
+    if (!ctx.success) return ctx;
 
-    // Get or create organization first (multi-tenancy)
-    const organization = await getOrCreateOrganization(cloudId, supabaseConfig);
-    if (!organization) {
-      return { success: false, error: 'Unable to get organization information' };
-    }
+    const { config: supabaseConfig, userId } = ctx;
 
-    const userId = await getOrCreateUser(accountId, supabaseConfig, organization.id);
-
-    // Get unassigned_activity records with screenshot timing data
     const sessionIdsParam = validSessionIds.join(',');
-    const activities = await supabaseRequest(
-      supabaseConfig,
-      `unassigned_activity?id=in.(${sessionIdsParam})&user_id=eq.${userId}&select=id,analysis_result_id,window_title,application_name,timestamp,screenshot_id,screenshots(id,timestamp,start_time,end_time,duration_seconds,storage_path,work_date)&order=timestamp.asc`
-    );
 
-    if (!activities || activities.length === 0) {
+    // Query both tables in parallel — IDs from the wrong table simply return no rows
+    const [legacyActivities, arRecords] = await Promise.all([
+      supabaseRequest(
+        supabaseConfig,
+        `unassigned_activity?id=in.(${sessionIdsParam})&user_id=eq.${userId}&select=id,window_title,application_name,timestamp,screenshots(id,timestamp,start_time,end_time,duration_seconds,storage_path,work_date)&order=timestamp.asc`
+      ),
+      supabaseRequest(
+        supabaseConfig,
+        `activity_records?id=in.(${sessionIdsParam})&user_id=eq.${userId}&select=id,window_title,application_name,start_time,end_time,duration_seconds,total_time_seconds,work_date&order=start_time.asc`
+      )
+    ]);
+
+    // Normalise legacy records to a common shape
+    const legacyNormalised = ensureArray(legacyActivities)
+      .filter(a => a.screenshots)
+      .map(activity => {
+        const screenshot = activity.screenshots;
+        const durationSeconds = screenshot.duration_seconds || 0;
+        const endTime = new Date(screenshot.timestamp || activity.timestamp);
+        const startTime = new Date(endTime.getTime() - durationSeconds * 1000);
+        return {
+          id: activity.id,
+          window_title: activity.window_title,
+          application_name: activity.application_name,
+          startTime: startTime.toISOString(),
+          endTime: endTime.toISOString(),
+          date: screenshot.work_date || startTime.toISOString().split('T')[0],
+          durationSeconds,
+          source: 'unassigned_activity'
+        };
+      });
+
+    // Normalise activity_records to the same shape
+    const arNormalised = ensureArray(arRecords).map(record => {
+      const durationSeconds = record.duration_seconds || record.total_time_seconds || 0;
+      const startTime = record.start_time
+        ? new Date(record.start_time)
+        : new Date(Date.now() - durationSeconds * 1000);
+      const endTime = record.end_time
+        ? new Date(record.end_time)
+        : new Date(startTime.getTime() + durationSeconds * 1000);
+      return {
+        id: record.id,
+        window_title: record.window_title,
+        application_name: record.application_name,
+        startTime: startTime.toISOString(),
+        endTime: endTime.toISOString(),
+        date: record.work_date || startTime.toISOString().split('T')[0],
+        durationSeconds,
+        source: 'activity_records'
+      };
+    });
+
+    // Merge and sort all records by startTime
+    const allItems = [...legacyNormalised, ...arNormalised]
+      .sort((a, b) => new Date(a.startTime) - new Date(b.startTime));
+
+    if (allItems.length === 0) {
       return { success: true, workSessions: [], sessionsByDate: {} };
     }
 
-    const activitiesArray = Array.isArray(activities) ? activities : [activities];
-
-    // Build work sessions similar to Dashboard logic
+    // Build work sessions with gap-merging logic
     const workSessions = [];
-    const SESSION_GAP_THRESHOLD = 10 * 60 * 1000; // 10 minutes in milliseconds
+    const SESSION_GAP_THRESHOLD = 10 * 60 * 1000; // 10 minutes
 
-    // Sort by timestamp
-    const sortedActivities = [...activitiesArray].sort((a, b) => {
-      const timeA = a.screenshots?.timestamp || a.timestamp;
-      const timeB = b.screenshots?.timestamp || b.timestamp;
-      return new Date(timeA) - new Date(timeB);
-    });
-
-    for (const activity of sortedActivities) {
-      const screenshot = activity.screenshots;
-      if (!screenshot) continue;
-
-      const screenshotTimestamp = screenshot.timestamp || activity.timestamp;
-      const durationSeconds = screenshot.duration_seconds || 0;
-
-      // Calculate start and end time
-      // IMPORTANT: Always calculate startTime from endTime - durationSeconds for accurate display
-      // Don't rely on screenshot.start_time as it may equal timestamp (causing same start/end display)
-      const endTime = new Date(screenshotTimestamp);
-      const startTime = new Date(endTime.getTime() - (durationSeconds * 1000));
-
-      // Check if this can be merged with the last session
+    for (const item of allItems) {
       if (workSessions.length > 0) {
         const lastSession = workSessions[workSessions.length - 1];
-        const timeSinceLastSession = startTime - new Date(lastSession.endTime);
+        const timeSinceLastSession = new Date(item.startTime) - new Date(lastSession.endTime);
 
         if (timeSinceLastSession <= SESSION_GAP_THRESHOLD) {
-          // Extend existing session - update end time and accumulate actual duration
-          lastSession.endTime = endTime.toISOString();
-          lastSession.activityIds.push(activity.id);
-          lastSession.screenshotIds.push(screenshot.id);
-          // Track actual duration (sum of screenshot durations, not time span)
-          lastSession.durationSeconds = (lastSession.durationSeconds || 0) + durationSeconds;
+          lastSession.endTime = item.endTime;
+          lastSession.activityIds.push(item.id);
+          lastSession.durationSeconds = (lastSession.durationSeconds || 0) + item.durationSeconds;
           continue;
         }
       }
 
-      // Create new session with actual duration tracking
       workSessions.push({
-        startTime: startTime.toISOString(),
-        endTime: endTime.toISOString(),
-        date: screenshot.work_date || startTime.toISOString().split('T')[0],
-        activityIds: [activity.id],
-        screenshotIds: [screenshot.id],
-        // Track actual duration from screenshot (not time span)
-        durationSeconds: durationSeconds
+        startTime: item.startTime,
+        endTime: item.endTime,
+        date: item.date,
+        activityIds: [item.id],
+        screenshotIds: [],
+        durationSeconds: item.durationSeconds
       });
     }
 
-    // Recalculate startTime for merged sessions so displayed time range matches duration
-    // Without this, merged sessions show a wide wall-clock span (e.g., 20 min)
-    // but a shorter actual duration (e.g., 5m 32s), which looks like a bug
+    // Recalculate startTime so displayed time range matches actual duration
     workSessions.forEach(session => {
       const end = new Date(session.endTime);
-      session.startTime = new Date(end.getTime() - (session.durationSeconds * 1000)).toISOString();
+      session.startTime = new Date(end.getTime() - session.durationSeconds * 1000).toISOString();
     });
 
     // Group sessions by date
     const sessionsByDate = {};
     workSessions.forEach(session => {
-      const dateKey = session.date;
-      if (!sessionsByDate[dateKey]) {
-        sessionsByDate[dateKey] = [];
-      }
-      sessionsByDate[dateKey].push(session);
+      if (!sessionsByDate[session.date]) sessionsByDate[session.date] = [];
+      sessionsByDate[session.date].push(session);
     });
 
-    // Calculate totals for each date using actual duration (not time span)
     const dateGroups = Object.keys(sessionsByDate)
-      .sort((a, b) => new Date(b) - new Date(a)) // Most recent first
+      .sort((a, b) => new Date(b) - new Date(a))
       .map(dateKey => {
         const sessions = sessionsByDate[dateKey];
-        // Use actual tracked durationSeconds (sum of screenshot durations)
-        const totalSeconds = sessions.reduce((sum, s) => {
-          return sum + (s.durationSeconds || 0);
-        }, 0);
-
+        const totalSeconds = sessions.reduce((sum, s) => sum + (s.durationSeconds || 0), 0);
         return {
           date: dateKey,
-          sessions: sessions,
-          totalSeconds: totalSeconds,
+          sessions,
+          totalSeconds,
           totalFormatted: formatDuration(totalSeconds)
         };
       });
 
     return {
       success: true,
-      workSessions: workSessions,
-      dateGroups: dateGroups
+      workSessions,
+      dateGroups
     };
 
   } catch (error) {
-    console.error('Error getting group work sessions:', error);
-    return { success: false, error: error.message };
+    return handleResolverError(error, 'getting group work sessions');
   }
 }
 

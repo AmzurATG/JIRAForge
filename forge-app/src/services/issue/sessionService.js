@@ -54,7 +54,7 @@ export async function reassignSession(accountId, cloudId, analysisResultIds, fro
   // Extract project key from toIssueKey (e.g., SCRUM-5 -> SCRUM)
   const toProjectKey = toIssueKey.split('-')[0];
 
-  // Update each analysis result to the new issue
+  // Update each analysis result to the new issue (legacy data)
   let successCount = 0;
   let errorCount = 0;
 
@@ -75,9 +75,28 @@ export async function reassignSession(accountId, cloudId, analysisResultIds, fro
       );
       successCount++;
     } catch (error) {
-      console.error(`[Reassign] Error updating result ${resultId}:`, error);
+      console.error(`[Reassign] Error updating analysis_result ${resultId}:`, error);
       errorCount++;
     }
+  }
+
+  // Also update activity_records if they have the old issue key assigned
+  // This handles the new hybrid OCR approach data
+  try {
+    await supabaseRequest(
+      supabaseConfig,
+      `activity_records?user_id=eq.${userId}&organization_id=eq.${organization.id}&user_assigned_issue_key=eq.${fromIssueKey}`,
+      {
+        method: 'PATCH',
+        body: {
+          user_assigned_issue_key: toIssueKey,
+          project_key: toProjectKey
+        }
+      }
+    );
+    console.log(`[Reassign] Updated activity_records from ${fromIssueKey} to ${toIssueKey}`);
+  } catch (error) {
+    console.error(`[Reassign] Error updating activity_records:`, error);
   }
 
   console.log(`[Reassign] Completed: ${successCount} success, ${errorCount} errors`);

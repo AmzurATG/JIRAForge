@@ -44,6 +44,135 @@ import fnmatch
 # OCR for text extraction
 from ocr import extract_text_from_image
 
+# ============================================================================
+# SECURE LOGGING (PII SANITIZATION) - Embedded for single-file bundling
+# ============================================================================
+
+# Secure logging configuration from environment
+_SECURE_LOG_ENABLED = os.environ.get('SECURE_LOG_ENABLED', 'true').lower() == 'true'
+_SECURE_LOG_LEVEL = os.environ.get('SECURE_LOG_LEVEL', 'standard')  # minimal, standard, strict
+
+# Sanitization patterns (matching ai-server patterns)
+_SANITIZATION_PATTERNS = [
+    # Email addresses (HIGH PRIORITY - always sanitize)
+    {
+        'pattern': re.compile(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', re.IGNORECASE),
+        'replacement': '[EMAIL]',
+        'type': 'EMAIL',
+        'levels': ['minimal', 'standard', 'strict']
+    },
+    # Credit card numbers
+    {
+        'pattern': re.compile(r'\b(?:4[0-9]{12}(?:[0-9]{3})?|5[1-5][0-9]{14}|3[47][0-9]{13}|6(?:011|5[0-9]{2})[0-9]{12})\b'),
+        'replacement': '[CREDIT_CARD]',
+        'type': 'CREDIT_CARD',
+        'levels': ['minimal', 'standard', 'strict']
+    },
+    # Phone numbers
+    {
+        'pattern': re.compile(r'\b(?:\+?1[-.\s]?)?(?:\(?[0-9]{3}\)?[-.\s]?)?[0-9]{3}[-.\s]?[0-9]{4}\b'),
+        'replacement': '[PHONE]',
+        'type': 'PHONE',
+        'levels': ['minimal', 'standard', 'strict']
+    },
+    # JWT Tokens
+    {
+        'pattern': re.compile(r'eyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+'),
+        'replacement': '[JWT]',
+        'type': 'JWT',
+        'levels': ['minimal', 'standard', 'strict']
+    },
+    # Atlassian Account IDs (format: 712020:uuid) - Must come before UUID
+    {
+        'pattern': re.compile(r'\d{6}:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}', re.IGNORECASE),
+        'replacement': '[ATLASSIAN_ACCOUNT]',
+        'type': 'ATLASSIAN_ACCOUNT',
+        'levels': ['standard', 'strict']
+    },
+    # UUIDs (user IDs, organization IDs, cloud IDs)
+    {
+        'pattern': re.compile(r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}', re.IGNORECASE),
+        'replacement': '[UUID]',
+        'type': 'UUID',
+        'levels': ['standard', 'strict']
+    },
+    # IP Addresses
+    {
+        'pattern': re.compile(r'\b(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\b'),
+        'replacement': '[IP]',
+        'type': 'IP_ADDRESS',
+        'levels': ['standard', 'strict']
+    },
+    # API Keys with labels
+    {
+        'pattern': re.compile(r'(?:api[_-]?key|secret[_-]?key|access[_-]?token|client[_-]?secret)[\s]*[=:]+[\s]*["\']?([A-Za-z0-9_-]{16,})["\']?', re.IGNORECASE),
+        'replacement': '[API_KEY]',
+        'type': 'API_KEY',
+        'levels': ['minimal', 'standard', 'strict']
+    },
+    # AWS Keys
+    {
+        'pattern': re.compile(r'\b(AKIA[0-9A-Z]{16})\b'),
+        'replacement': '[AWS_KEY]',
+        'type': 'AWS_KEY',
+        'levels': ['minimal', 'standard', 'strict']
+    },
+    # GitHub tokens
+    {
+        'pattern': re.compile(r'\b(gh[ps]_[A-Za-z0-9]{36}|github_pat_[A-Za-z0-9_]+)\b'),
+        'replacement': '[GITHUB_TOKEN]',
+        'type': 'GITHUB_TOKEN',
+        'levels': ['minimal', 'standard', 'strict']
+    },
+]
+
+def _should_apply_pattern(pattern_config: dict, level: str) -> bool:
+    """Check if pattern should be applied at current level"""
+    return level in pattern_config.get('levels', [])
+
+def sanitize_value(value, level: str = None) -> str:
+    """Sanitize a single value by redacting PII patterns."""
+    if level is None:
+        level = _SECURE_LOG_LEVEL
+    if not _SECURE_LOG_ENABLED:
+        return str(value)
+    text = str(value)
+    for config in _SANITIZATION_PATTERNS:
+        if not _should_apply_pattern(config, level):
+            continue
+        text = config['pattern'].sub(config['replacement'], text)
+    return text
+
+def _sanitize_dict(data: dict, level: str = None) -> dict:
+    """Sanitize all values in a dictionary."""
+    if level is None:
+        level = _SECURE_LOG_LEVEL
+    result = {}
+    for key, value in data.items():
+        if isinstance(value, dict):
+            result[key] = _sanitize_dict(value, level)
+        elif isinstance(value, list):
+            result[key] = [sanitize_value(v, level) for v in value]
+        else:
+            result[key] = sanitize_value(value, level)
+    return result
+
+def secure_log(message: str, level: str = "INFO", **kwargs) -> None:
+    """Print a sanitized log message with optional key=value pairs."""
+    sanitized_message = sanitize_value(message)
+    if kwargs:
+        sanitized_kwargs = _sanitize_dict(kwargs)
+        kwargs_str = " | ".join(f"{k}={v}" for k, v in sanitized_kwargs.items())
+        log_line = f"{sanitized_message} | {kwargs_str}"
+    else:
+        log_line = sanitized_message
+    if os.environ.get('LOG_TIMESTAMPS', 'false').lower() == 'true':
+        timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        print(f"[{timestamp}] [{level}] {log_line}")
+    else:
+        print(log_line)
+
+# ============================================================================
 
 # Secure credential storage
 try:
@@ -188,7 +317,7 @@ load_dotenv()
 
 # Application version - IMPORTANT: Update this when releasing new versions
 # This is used for update checking and notifications
-APP_VERSION = "1.0.0"
+APP_VERSION = "1.0.1"
 
 # Hard-disable screenshot monitoring/storage in desktop app.
 # OCR text extraction for activity records still runs via event-based flow.
@@ -496,6 +625,36 @@ def show_update_notification(update_info, callback=None):
         
     except Exception as e:
         print(f"[WARN] Could not show update notification: {e}")
+
+def _utc_ts_to_local_date(utc_str):
+    """Convert a UTC timestamp string to the local calendar date (YYYY-MM-DD).
+
+    first_seen/last_seen are stored as UTC strings (e.g. '2026-03-08 21:30:27+00').
+    Taking [:10] gives the UTC date which is wrong for users ahead of UTC (e.g.
+    UTC+5:30 — 21:30 UTC on March 8 is 03:00 AM IST on March 9).
+    We convert to local time first so work_date matches the user's calendar day.
+    """
+    if not utc_str:
+        return datetime.now().date().isoformat()
+    try:
+        import tzlocal
+        local_tz = tzlocal.get_localzone()
+        # Handle both '+00' and '+00:00' offset suffixes
+        ts = utc_str.strip()
+        if ts.endswith('+00') or ts.endswith(' UTC'):
+            ts = ts.replace(' UTC', '+00:00').replace('+00', '+00:00')
+        if '.' in ts:
+            # Strip microseconds for fromisoformat compatibility
+            ts = ts.split('.')[0] + '+00:00'
+        from datetime import timezone
+        dt_utc = datetime.fromisoformat(ts)
+        if dt_utc.tzinfo is None:
+            dt_utc = dt_utc.replace(tzinfo=timezone.utc)
+        return dt_utc.astimezone(local_tz).date().isoformat()
+    except Exception:
+        # Fallback: use current local date
+        return datetime.now().date().isoformat()
+
 
 def get_local_timezone_name():
     """
@@ -1213,6 +1372,12 @@ class AtlassianAuthManager:
         self.ai_server_url = get_env_var('AI_SERVER_URL', 'https://forgesync.amzur.com')
         self.store_path = store_path or os.path.join(get_app_data_dir(), 'time_tracker_auth.json')
 
+        # Prevents concurrent token refreshes from burning the same refresh_token twice.
+        # Atlassian uses token rotation: each refresh invalidates the old refresh_token.
+        # Without a lock, two threads racing on an expired token will both send the same
+        # refresh_token — the second call arrives after rotation and gets "token invalid".
+        self._refresh_lock = threading.Lock()
+
         # Migrate from plain-text to keyring if needed
         self._migrate_to_keyring()
 
@@ -1418,6 +1583,7 @@ class AtlassianAuthManager:
             'expires_at': time.time() + result.get('expires_in', 3600)
         })
         self._save_tokens()
+        self._refresh_token_invalid = False  # Clear any prior permanent-failure flag
 
         print("[OK] OAuth tokens received via AI Server")
         return result
@@ -1470,55 +1636,89 @@ class AtlassianAuthManager:
             return None
     
     def refresh_access_token(self):
-        """Refresh access token using refresh token via AI Server"""
-        refresh_token = self.tokens.get('refresh_token')
-        if not refresh_token:
+        """Refresh access token using refresh token via AI Server.
+
+        Thread-safe: uses a lock to prevent concurrent refreshes burning the same
+        refresh_token. Atlassian rotates refresh tokens on each use — if two threads
+        both send the same refresh_token simultaneously, the second call will fail
+        with 'refresh_token is invalid' because the first call already consumed it.
+
+        The double-check inside the lock compares the refresh_token value: if it changed
+        while waiting for the lock, another thread already did the refresh successfully,
+        so we skip the network call and return True.
+        """
+        # Fast-path: if the refresh token is permanently invalid (revoked/expired),
+        # don't even acquire the lock. This guards both the sync-loop path (via
+        # is_authenticated) and direct callers (401 handlers in API wrappers).
+        if getattr(self, '_refresh_token_invalid', False):
+            print("[WARN] Refresh token is permanently invalid — re-authentication required")
+            return False
+
+        refresh_token_before = self.tokens.get('refresh_token')
+        if not refresh_token_before:
             print("[ERROR] No refresh token available")
             return False
 
-        print("[INFO] Refreshing access token via AI Server...")
-        try:
-            response = requests.post(
-                f"{self.ai_server_url}/api/auth/refresh-token",
-                json={
-                    'refresh_token': refresh_token
-                },
-                headers={'Content-Type': 'application/json'},
-                timeout=(10, 60)
-            )
+        with self._refresh_lock:
+            # Double-check: if the refresh_token in self.tokens changed while we were
+            # waiting for the lock, another thread already refreshed successfully.
+            # The new access_token is in self.tokens — caller will pick it up.
+            refresh_token_now = self.tokens.get('refresh_token')
+            if refresh_token_now and refresh_token_now != refresh_token_before:
+                print("[INFO] Token already refreshed by another thread, skipping")
+                return True
 
-            if response.status_code != 200:
-                error_data = response.json() if response.headers.get('content-type', '').startswith('application/json') else {}
-                error = error_data.get('error', response.text)
-                print(f"[ERROR] Token refresh failed: {error}")
-                # Check if re-authentication is required
-                if error_data.get('requiresReauth') or 'invalid' in str(error).lower():
-                    print("[WARN] Refresh token expired - user must re-authenticate")
-                    self._show_reauth_notification()
+            refresh_token = refresh_token_now or refresh_token_before
+            if not refresh_token:
                 return False
 
-            result = response.json()
-            if not result.get('success'):
-                print(f"[ERROR] Token refresh failed: {result.get('error', 'Unknown error')}")
+            print("[INFO] Refreshing access token via AI Server...")
+            try:
+                response = requests.post(
+                    f"{self.ai_server_url}/api/auth/refresh-token",
+                    json={
+                        'refresh_token': refresh_token
+                    },
+                    headers={'Content-Type': 'application/json'},
+                    timeout=(10, 60)
+                )
+
+                if response.status_code != 200:
+                    error_data = response.json() if response.headers.get('content-type', '').startswith('application/json') else {}
+                    error = error_data.get('error', response.text)
+                    print(f"[ERROR] Token refresh failed: {error}")
+                    # Check if re-authentication is required (permanent failure — stop retrying)
+                    if error_data.get('requiresReauth') or 'invalid' in str(error).lower():
+                        print("[WARN] Refresh token expired - user must re-authenticate")
+                        self._refresh_token_invalid = True  # Prevents endless 30-second retry loop
+                    return False
+
+                result = response.json()
+                if not result.get('success'):
+                    print(f"[ERROR] Token refresh failed: {result.get('error', 'Unknown error')}")
+                    return False
+
+                self.tokens.update({
+                    'access_token': result.get('access_token'),
+                    'refresh_token': result.get('refresh_token', refresh_token),
+                    'expires_at': time.time() + result.get('expires_in', 3600)
+                })
+                self._save_tokens()
+
+                self._refresh_token_invalid = False  # Clear permanent-failure flag
+                print("[OK] Access token refreshed successfully via AI Server")
+                return True
+            except Exception as e:
+                print(f"[ERROR] Failed to refresh access token: {e}")
                 return False
-
-            self.tokens.update({
-                'access_token': result.get('access_token'),
-                'refresh_token': result.get('refresh_token', refresh_token),
-                'expires_at': time.time() + result.get('expires_in', 3600)
-            })
-            self._save_tokens()
-
-            self._reauth_notification_shown = False  # Reset on successful refresh
-            print("[OK] Access token refreshed successfully via AI Server")
-            return True
-        except Exception as e:
-            print(f"[ERROR] Failed to refresh access token: {e}")
-            return False
 
     def is_authenticated(self):
         """Check if user is authenticated (has a valid or refreshable access token)"""
         if not self.tokens.get('access_token'):
+            return False
+        # If refresh token is known-invalid, don't hammer the server every 30 seconds.
+        # The user must re-authenticate; no point retrying until they do.
+        if getattr(self, '_refresh_token_invalid', False):
             return False
         # If we have expiry info and the token is expired, try to refresh it now
         expires_at = self.tokens.get('expires_at', 0)
@@ -2110,7 +2310,7 @@ class OfflineManager:
             conn.close()
             
             if updated > 0:
-                print(f"[OK] Associated {updated} anonymous screenshots with user {user_id}")
+                secure_log(f"[OK] Associated {updated} anonymous screenshots with user", user_id=user_id)
             
             return updated
             
@@ -2505,7 +2705,7 @@ class ConsentManager:
             ]
         }
         self._save_consent()
-        print(f"[OK] Consent {'granted' if consented else 'denied'} for user {user_id}")
+        secure_log(f"[OK] Consent {'granted' if consented else 'denied'} for user", user_id=user_id)
 
     def revoke_consent(self, user_id):
         """Revoke user's consent"""
@@ -2513,7 +2713,7 @@ class ConsentManager:
             self.consent_data[user_id]['consented'] = False
             self.consent_data[user_id]['revoked_at'] = datetime.now(timezone.utc).isoformat()
             self._save_consent()
-            print(f"[OK] Consent revoked for user {user_id}")
+            secure_log("[OK] Consent revoked for user", user_id=user_id)
 
     def get_consent_info(self, user_id):
         """Get consent information for a user"""
@@ -3575,7 +3775,7 @@ class LocalOCRProcessor:
 
     def __init__(self):
         self._last_ocr_time = 0
-        self._min_interval = 3  # seconds between OCR calls
+        self._min_interval = 10  # seconds between OCR calls (matches min_screenshot_interval in tracking_loop)
         print("[OCR] LocalOCRProcessor initialized - using dynamic engine selection")
 
         # Log which OCR engines are configured
@@ -3595,14 +3795,20 @@ class LocalOCRProcessor:
 
     def _ocr_worker(self):
         """Background worker thread that runs OCR inference at below-normal priority."""
-        # Lower thread priority on Windows to reduce UI lag during OCR
+        # Lower thread priority on Windows to reduce UI lag during OCR.
+        # THREAD_MODE_BACKGROUND_BEGIN tells the OS to deprioritize this thread's
+        # CPU, memory, AND I/O scheduling — more aggressive than BELOW_NORMAL alone.
         if sys.platform == 'win32':
             try:
                 import ctypes
                 handle = ctypes.windll.kernel32.GetCurrentThread()
                 THREAD_PRIORITY_BELOW_NORMAL = -1
+                THREAD_MODE_BACKGROUND_BEGIN = 0x00010000
+                # Set background mode first (deprioritizes CPU + I/O + memory)
+                ctypes.windll.kernel32.SetThreadPriority(handle, THREAD_MODE_BACKGROUND_BEGIN)
+                # Then also set BELOW_NORMAL as a belt-and-suspenders CPU priority hint
                 ctypes.windll.kernel32.SetThreadPriority(handle, THREAD_PRIORITY_BELOW_NORMAL)
-                print("[OCR] Worker thread priority set to BELOW_NORMAL")
+                print("[OCR] Worker thread set to BACKGROUND mode + BELOW_NORMAL priority")
             except Exception as e:
                 print(f"[OCR] Could not lower worker thread priority: {e}")
 
@@ -4265,7 +4471,7 @@ class TimeTracker:
                 self.current_user = user_info
                 self.current_user_id = self.ensure_user_exists(user_info)
 
-                print(f"[OK] Authenticated user: {user_info.get('email', 'unknown')}")
+                secure_log("[OK] Authenticated user", email=user_info.get('email', 'unknown'))
 
                 # Reset reauth notification flag on successful login
                 self._reauth_notification_shown = False
@@ -4293,7 +4499,7 @@ class TimeTracker:
                 user_account_id = user_info.get('account_id')
                 if not self.consent_manager.has_valid_consent(user_account_id):
                     # Redirect to consent page first
-                    print(f"[INFO] User {user_info.get('email')} needs to provide consent")
+                    secure_log("[INFO] User needs to provide consent", email=user_info.get('email'))
                     return redirect('/consent')
 
                 # User has consent - start tracking if not already running
@@ -5014,7 +5220,7 @@ class TimeTracker:
         if result.data:
             user_id = result.data[0]['id']
             existing_org_id = result.data[0].get('organization_id')
-            print(f"[OK] Found existing user: {user_id}")
+            secure_log("[OK] Found existing user", user_id=user_id)
 
             # Check if we need to update user details
             existing_user = client.table('users').select('display_name, email').eq('id', user_id).execute()
@@ -5035,7 +5241,7 @@ class TimeTracker:
                     'email': email or existing_email
                 }
                 client.table('users').update(update_data).eq('id', user_id).execute()
-                print(f"[OK] Updated user details: org={self.organization_id}, name={name}")
+                secure_log("[OK] Updated user details", org_id=self.organization_id, name=name)
 
                 # Ensure organization membership exists
                 if self.organization_id:
@@ -5051,7 +5257,7 @@ class TimeTracker:
             create_result = client.table('users').insert(user_data).execute()
             if create_result.data:
                 user_id = create_result.data[0]['id']
-                print(f"[OK] Created new user: {user_id}")
+                secure_log("[OK] Created new user", user_id=user_id)
 
                 # Create organization membership
                 self._ensure_organization_membership(user_id)
@@ -5305,7 +5511,7 @@ class TimeTracker:
                     self.organization_name = selected_resource.get('name', 'Unknown Organization')
                     self.jira_instance_url = selected_resource.get('url', '')
 
-                    print(f"[OK] Using Jira Cloud ID: {self.jira_cloud_id}")
+                    secure_log("[OK] Using Jira Cloud ID", cloud_id=self.jira_cloud_id)
                     print(f"[OK] Organization: {self.organization_name}")
                     print(f"[OK] Jira URL: {self.jira_instance_url}")
 
@@ -5342,7 +5548,7 @@ class TimeTracker:
                 if result.data:
                     # Organization exists
                     self.organization_id = result.data[0]['id']
-                    print(f"[OK] Found existing organization: {self.organization_id}")
+                    secure_log("[OK] Found existing organization", org_id=self.organization_id)
 
                     # Update organization info if changed
                     client.table('organizations').update({
@@ -5362,7 +5568,7 @@ class TimeTracker:
 
                     if create_result.data:
                         self.organization_id = create_result.data[0]['id']
-                        print(f"[OK] Created new organization: {self.organization_id}")
+                        secure_log("[OK] Created new organization", org_id=self.organization_id)
 
                         # Create default organization settings
                         settings_data = {
@@ -5529,17 +5735,73 @@ class TimeTracker:
             if project_clauses:
                 # Combine all project clauses with OR
                 status_filter = ' OR '.join(project_clauses)
-                jql = f'assignee = currentUser() AND Sprint in openSprints() AND ({status_filter})'
+                jql = f'assignee = currentUser() AND ({status_filter})'
                 print(f"[INFO] Using project-level tracked statuses JQL")
                 return jql
-        
+
         # Fallback: Use statusCategory if no project settings
         print("[INFO] No project settings, using statusCategory = 'In Progress'")
-        return 'assignee = currentUser() AND Sprint in openSprints() AND statusCategory = "In Progress"'
+        return 'assignee = currentUser() AND statusCategory = "In Progress"'
+
+    def fetch_issues_from_cache(self):
+        """Read user's issues from user_jira_issues_cache in Supabase.
+        Returns a formatted issue list on success, or None if cache is unavailable/empty.
+        The desktop app writes issues as user_assigned_issues in activity_records using
+        the same format that fetch_jira_issues() produces, so both paths are compatible.
+        """
+        if not self.supabase_service or not self.current_user_id or not self.organization_id:
+            return None
+        try:
+            result = self.supabase_service.table('user_jira_issues_cache') \
+                .select('issue_key, issue_summary, project_key, status, description, labels') \
+                .eq('user_id', self.current_user_id) \
+                .eq('organization_id', self.organization_id) \
+                .limit(50) \
+                .execute()
+
+            rows = result.data if result.data else []
+            if not rows:
+                print("[INFO] user_jira_issues_cache: empty for this user")
+                return None
+
+            formatted = []
+            for row in rows:
+                labels = row.get('labels') or []
+                if isinstance(labels, str):
+                    try:
+                        labels = json.loads(labels)
+                    except Exception:
+                        labels = []
+                formatted.append({
+                    'key': row.get('issue_key', ''),
+                    'summary': row.get('issue_summary', ''),
+                    'status': row.get('status', ''),
+                    'project': row.get('project_key', ''),
+                    'description': row.get('description', ''),
+                    'labels': labels
+                })
+
+            print(f"[INFO] user_jira_issues_cache: loaded {len(formatted)} issues from Supabase")
+            return formatted
+        except Exception as e:
+            print(f"[WARN] user_jira_issues_cache read failed: {e}")
+            return None
 
     def fetch_jira_issues(self):
-        """Fetch user's In Progress Jira issues with automatic token refresh on 401"""
+        """Fetch user's In Progress Jira issues.
+        Primary path: reads from user_jira_issues_cache in Supabase (kept fresh by
+        the Forge avi:jira:updated:issue trigger — no Jira API call needed).
+        Fallback: calls Jira REST API directly if the cache is unavailable or empty.
+        """
         print("[INFO] Attempting to fetch Jira issues...")
+
+        # Primary: Supabase cache (no OAuth token required)
+        cached = self.fetch_issues_from_cache()
+        if cached is not None:
+            return cached
+
+        print("[INFO] Cache miss — falling back to direct Jira API call")
+
         cloud_id = self.get_jira_cloud_id()
         if not cloud_id:
             print("[WARN] Cannot fetch issues: No Cloud ID")
@@ -5607,9 +5869,9 @@ class TimeTracker:
                 # If project-level JQL returned 0 issues, try broader fallback so user_assigned_issues is populated
                 if not issues:
                     print("!!!DEBUG!!! Entering fallback JQL block for assigned issues.")
-                    # Option 1: Issues in open sprints
-                    fallback_jql_open = 'assignee = currentUser() AND Sprint in openSprints() AND statusCategory = "In Progress"'
-                    print(f"[INFO] Retrying with fallback JQL for open sprints")
+                    # Fallback: broad status-based query covering all project types (software, service desk, business)
+                    fallback_jql_open = 'assignee = currentUser() AND statusCategory = "In Progress"'
+                    print(f"[INFO] Retrying with fallback JQL (status-based, all project types)")
                     fallback_resp_open = requests.post(
                         f'https://api.atlassian.com/ex/jira/{cloud_id}/rest/api/3/search/jql',
                         json={
@@ -5626,13 +5888,13 @@ class TimeTracker:
                     issues = []
                     if fallback_resp_open.status_code == 200:
                         fallback_data_open = fallback_resp_open.json()
-                        open_issues = fallback_data_open.get('issues', [])
-                        issues.extend(open_issues)
-                        print(f"!!!DEBUG!!! Fallback JQL (open sprints) issues: {[i['key'] for i in open_issues]}")
-                        if open_issues:
-                            print(f"[OK] Fallback JQL (open sprints) returned {len(open_issues)} issues")
+                        fallback_issues = fallback_data_open.get('issues', [])
+                        issues.extend(fallback_issues)
+                        print(f"!!!DEBUG!!! Fallback JQL issues: {[i['key'] for i in fallback_issues]}")
+                        if fallback_issues:
+                            print(f"[OK] Fallback JQL returned {len(fallback_issues)} issues")
                     else:
-                        print("!!!DEBUG!!! Fallback JQL (open sprints) query failed or returned no issues.")
+                        print("!!!DEBUG!!! Fallback JQL query failed or returned no issues.")
 
                     # No-sprint fallback removed: backlog issues (Sprint is EMPTY)
                     # were polluting user_assigned_issues with items the user isn't
@@ -6370,8 +6632,16 @@ class TimeTracker:
             # Backfill OCR for any sessions that were throttled during rapid window switches.
             # Uses the ORIGINAL screenshot captured at throttle time, not a new one,
             # so the OCR text matches the window the user was actually viewing.
+            # Capped at 3 per batch to prevent CPU lag when many windows were rapidly switched
+            # (e.g. switching between chat conversations every 2 seconds generates 10+ backfill jobs,
+            # each taking 8-15s of PaddleOCR — that blocks the main thread for 60-120 seconds).
+            MAX_BACKFILL_PER_BATCH = 3
             pending_entries = self.session_manager.get_pending_ocr_entries()
+            backfill_count = 0
             for (pk_title, pk_app), saved_screenshot in pending_entries.items():
+                if backfill_count >= MAX_BACKFILL_PER_BATCH:
+                    print(f"[BATCH] Backfill OCR cap reached ({MAX_BACKFILL_PER_BATCH}) — skipping remaining {len(pending_entries) - backfill_count} entries")
+                    break
                 if saved_screenshot is not None:
                     ocr_result = self.ocr_processor.ocr_from_image(saved_screenshot)
                     del saved_screenshot
@@ -6381,6 +6651,7 @@ class TimeTracker:
                     ocr_result = self.ocr_processor.capture_and_ocr()
                 if ocr_result and not ocr_result.get('throttled'):
                     self.session_manager.backfill_ocr(pk_title, pk_app, ocr_result)
+                backfill_count += 1
 
             # Stop current timer so accumulated time is accurate
             self.session_manager.stop_current_timer()
@@ -6455,7 +6726,7 @@ class TimeTracker:
                     'batch_timestamp': batch_timestamp,
                     'batch_start': batch_start.isoformat(),
                     'batch_end': batch_end.isoformat(),
-                    'work_date': s.get('first_seen', '')[:10] if s.get('first_seen') else datetime.now().date().isoformat(),
+                    'work_date': _utc_ts_to_local_date(s.get('first_seen')),
                     'user_timezone': get_local_timezone_name(),
                     'project_key': project_key,
                     'user_assigned_issues': json.dumps(self.user_issues) if self.user_issues else None,
@@ -6470,7 +6741,7 @@ class TimeTracker:
             # Single batch insert to Supabase using service role client
             print(f"[BATCH] Inserting {len(records)} activity records...")
             print(f"[BATCH] Using service client with key type: {'service_role' if service_key else 'unknown'}")
-            print(f"[BATCH] Target table: activity_records, user_id: {self.current_user_id}")
+            secure_log("[BATCH] Target table: activity_records", user_id=self.current_user_id)
             result = self.supabase_service.table('activity_records').insert(records).execute()
             print(f"[BATCH] Insert result: data_count={len(result.data) if result.data else 0}, count={getattr(result, 'count', 'N/A')}")
 
@@ -6478,8 +6749,10 @@ class TimeTracker:
                 productive_count = sum(1 for r in records if r['status'] == 'pending')
                 analyzed_count = sum(1 for r in records if r['status'] == 'analyzed')
                 inserted_ids = [r.get('id', '?') for r in result.data]
+                print(f"[BATCH] Correlation ID | batch_timestamp={batch_timestamp}")
                 print(f"[BATCH] Uploaded {len(records)} activity records ({productive_count} pending AI, {analyzed_count} pre-analyzed)")
-                print(f"[BATCH] Inserted IDs: {inserted_ids}")
+                print(f"[BATCH] Inserted record IDs | ids={inserted_ids}")
+                secure_log("[BATCH] Inserted record IDs", ids=inserted_ids)
 
                 # Verify records actually exist in the database
                 try:
@@ -7557,6 +7830,9 @@ class TimeTracker:
                                     print("[OK] Proactive token refresh successful")
                                 else:
                                     print("[WARN] Proactive token refresh failed — will retry on next cycle")
+                    elif getattr(self.auth_manager, '_refresh_token_invalid', False):
+                        # Refresh token is permanently invalid — show reauth notification once
+                        self._show_reauth_notification()
 
                 except Exception as e:
                     print(f"[ERROR] Sync thread error: {e}")
@@ -7804,11 +8080,11 @@ class TimeTracker:
                 # IMPORTANT: Always update the previous window record when switching, regardless of interval
                 # The interval check only applies to creating NEW screenshots, not updating existing ones
                 if window_switched:
-                    # Process window event for event-based activity tracking (OCR capture and session management)
-                    tracking_mode = self.tracking_settings.get('tracking_mode', 'interval')
-                    event_enabled = self.tracking_settings.get('event_tracking_enabled', False)
-                    if event_enabled or tracking_mode == 'event':
-                        self.process_window_event(window_info)
+                    # ALWAYS process window events for activity tracking (creates sessions in active_sessions table)
+                    # Activity records (session-based tracking) should work regardless of screenshot capture mode
+                    # The tracking_mode/event_tracking_enabled settings control SCREENSHOT capture timing,
+                    # not activity record creation. Activity records are batched and uploaded every 5 minutes.
+                    self.process_window_event(window_info)
                     
                     # Update existing record of previous window with actual time spent
                     # This ensures we update the screenshot record with the actual duration
@@ -8752,7 +9028,7 @@ class TimeTracker:
             user_account_id = self.current_user.get('account_id')
             has_consent = self.consent_manager.has_valid_consent(user_account_id)
             if not has_consent:
-                print(f"[INFO] User {self.current_user.get('email')} has not provided consent for screenshot capture")
+                secure_log("[INFO] User has not provided consent for screenshot capture", email=self.current_user.get('email'))
         elif self.current_user_id and self.current_user_id.startswith('anonymous_'):
             # Anonymous users don't need consent yet (they'll provide it on login)
             has_consent = True

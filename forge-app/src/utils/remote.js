@@ -4,8 +4,26 @@
  * The AI server handles Supabase operations securely without exposing credentials
  */
 
-import api, { invokeRemote, route } from '@forge/api';
+import api, { invokeRemote, route, storage } from '@forge/api';
 import { getFromCache, setInCache, TTL, CacheKeys } from './cache.js';
+
+// Persistent Forge storage cache for org and user IDs.
+// Survives across invocations (unlike in-memory cache) — 24 hour TTL.
+const STORAGE_TTL_MS = 24 * 60 * 60 * 1000;
+
+async function getStorageCached(key) {
+  try {
+    const entry = await storage.get(key);
+    if (!entry || Date.now() > entry.expiresAt) return null;
+    return entry.value;
+  } catch {
+    return null;
+  }
+}
+
+function setStorageCached(key, value) {
+  storage.set(key, { value, expiresAt: Date.now() + STORAGE_TTL_MS }).catch(() => {});
+}
 
 // Remote key from manifest.yml - must match exactly
 const REMOTE_KEY = 'ai-server';
@@ -25,68 +43,101 @@ const inFlightRequests = new Map();
  */
 const MAX_RETRIES = 2;
 const BASE_DELAY_MS = 1000;
+const RATE_LIMIT_DELAY_MS = 3000; // Longer wait on 429 before retrying
 
-async function performRetryDelay(attempt, endpoint) {
+async function performRetryDelay(attempt, endpoint, isRateLimit = false) {
   if (attempt === 0) return;
-  const delay = BASE_DELAY_MS * attempt;
-  console.log(`[Remote] Retry ${attempt}/${MAX_RETRIES} for ${endpoint} after ${delay}ms`);
+  const delay = isRateLimit ? RATE_LIMIT_DELAY_MS * attempt : BASE_DELAY_MS * attempt;
+  console.log(`[Remote] Retry ${attempt}/${MAX_RETRIES} for ${endpoint} after ${delay}ms${isRateLimit ? ' (rate limited)' : ''}`);
   await new Promise(resolve => setTimeout(resolve, delay));
 }
 
-async function remoteRequest(endpoint, options = {}) {
-  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
-    await performRetryDelay(attempt, endpoint);
+function isRetryableStatus(status) {
+  return status === 401 || status === 429 || status >= 500;
+}
 
-    try {
-      console.log(`[Remote] invokeRemote to ${REMOTE_KEY}${endpoint}`);
+function isRetryableNetworkError(error) {
+  return error.message?.includes('Authentication failed') ||
+    error.message?.includes('ETIMEDOUT') ||
+    error.message?.includes('ECONNRESET') ||
+    error.message?.includes('fetch failed');
+}
 
-      const response = await invokeRemote(REMOTE_KEY, {
-        path: endpoint,
-        method: options.method || 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...options.headers
-        },
-        body: options.body ? JSON.stringify(options.body) : undefined
-      });
+function canRetry(attempt) {
+  return attempt < MAX_RETRIES;
+}
 
-      console.log(`[Remote] Response status: ${response.status}`);
+async function executeRemoteCall(endpoint, options) {
+  console.log(`[Remote] invokeRemote to ${REMOTE_KEY}${endpoint}`);
 
-      if (!response.ok) {
-        const errorText = await response.text();
-        const shouldRetry = (response.status === 401 || response.status >= 500) && attempt < MAX_RETRIES;
+  const response = await invokeRemote(REMOTE_KEY, {
+    path: endpoint,
+    method: options.method || 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...options.headers
+    },
+    body: options.body ? JSON.stringify(options.body) : undefined
+  });
 
-        if (shouldRetry) {
-          console.warn(`[Remote] Retryable error ${response.status} on ${endpoint} (attempt ${attempt + 1})`);
-          continue;
-        }
+  console.log(`[Remote] Response status: ${response.status}`);
+  return response;
+}
 
-        console.error(`[Remote] Request failed: ${response.status}`, errorText);
-        throw new Error(`Remote request failed: ${errorText}`);
-      }
+async function parseSuccessfulResponse(response) {
+  const result = await response.json();
+  if (!result.success) {
+    throw new Error(result.error || 'Unknown error from remote');
+  }
+  return result.data;
+}
 
-      const result = await response.json();
+async function handleFailedResponse(response, attempt, endpoint) {
+  const errorText = await response.text();
 
-      if (!result.success) {
-        throw new Error(result.error || 'Unknown error from remote');
-      }
+  if (isRetryableStatus(response.status) && canRetry(attempt)) {
+    console.warn(`[Remote] Retryable error ${response.status} on ${endpoint} (attempt ${attempt + 1})`);
+    return { shouldRetry: true, isRateLimit: response.status === 429 };
+  }
 
-      return result.data;
-    } catch (error) {
-      const isRetryable = error.message?.includes('Authentication failed') ||
-        error.message?.includes('ETIMEDOUT') ||
-        error.message?.includes('ECONNRESET') ||
-        error.message?.includes('fetch failed');
-      const shouldRetry = isRetryable && attempt < MAX_RETRIES;
+  console.error(`[Remote] Request failed: ${response.status}`, errorText);
+  throw new Error(`Remote request failed: ${errorText}`);
+}
 
-      if (shouldRetry) {
-        console.warn(`[Remote] Retryable error on ${endpoint} (attempt ${attempt + 1}):`, error.message);
-        continue;
-      }
+function handleNetworkError(error, attempt, endpoint) {
+  if (isRetryableNetworkError(error) && canRetry(attempt)) {
+    console.warn(`[Remote] Retryable error on ${endpoint} (attempt ${attempt + 1}):`, error.message);
+    return { shouldRetry: true };
+  }
 
-      console.error(`[Remote] invokeRemote error:`, error.message);
-      throw error;
+  console.error(`[Remote] invokeRemote error:`, error.message);
+  throw error;
+}
+
+async function attemptRemoteRequest(endpoint, options, attempt) {
+  try {
+    const response = await executeRemoteCall(endpoint, options);
+
+    if (!response.ok) {
+      return handleFailedResponse(response, attempt, endpoint);
     }
+
+    return { data: await parseSuccessfulResponse(response) };
+  } catch (error) {
+    return handleNetworkError(error, attempt, endpoint);
+  }
+}
+
+async function remoteRequest(endpoint, options = {}) {
+  let lastWasRateLimit = false;
+  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    await performRetryDelay(attempt, endpoint, lastWasRateLimit);
+
+    const result = await attemptRemoteRequest(endpoint, options, attempt);
+    if (!result.shouldRetry) {
+      return result.data;
+    }
+    lastWasRateLimit = result.isRateLimit || false;
   }
 }
 
@@ -159,7 +210,7 @@ async function fetchJiraSiteInfo() {
 export async function getOrCreateOrganization(cloudId, orgName = null, jiraUrl = null) {
   const cacheKey = CacheKeys.organization(cloudId);
 
-  // Check cache first
+  // Check in-memory cache first (fastest)
   const cached = getFromCache(cacheKey);
   if (cached) {
     return cached;
@@ -173,6 +224,14 @@ export async function getOrCreateOrganization(cloudId, orgName = null, jiraUrl =
 
   const promise = (async () => {
     try {
+      // Check persistent Forge storage cache (survives across invocations)
+      const storageCached = await getStorageCached(`remote:org:${cloudId}`);
+      if (storageCached) {
+        console.log(`[Remote] Org ${cloudId} loaded from storage cache`);
+        setInCache(cacheKey, storageCached, TTL.ORGANIZATION);
+        return storageCached;
+      }
+
       // If orgName or jiraUrl not provided, fetch from Jira API
       if (!orgName || !jiraUrl) {
         const siteInfo = await fetchJiraSiteInfo();
@@ -187,8 +246,9 @@ export async function getOrCreateOrganization(cloudId, orgName = null, jiraUrl =
         body: { orgName, jiraUrl }
       });
 
-      // Cache the result
+      // Populate both caches
       setInCache(cacheKey, org, TTL.ORGANIZATION);
+      setStorageCached(`remote:org:${cloudId}`, org);
 
       return org;
     } catch (error) {
@@ -215,19 +275,29 @@ export async function getOrCreateOrganization(cloudId, orgName = null, jiraUrl =
 export async function getOrCreateUser(accountId, organizationId = null, email = null, displayName = null) {
   const cacheKey = CacheKeys.userId(accountId);
 
-  // Check cache first
+  // Check in-memory cache first (fastest)
   const cached = getFromCache(cacheKey);
   if (cached?.organizationId === organizationId) {
     return cached.userId;
   }
 
   try {
+    // Check persistent Forge storage cache (survives across invocations)
+    const storageCacheKey = `remote:user:${accountId}:${organizationId}`;
+    const storageCached = await getStorageCached(storageCacheKey);
+    if (storageCached) {
+      console.log(`[Remote] User ${accountId} loaded from storage cache`);
+      setInCache(cacheKey, { userId: storageCached, organizationId }, TTL.USER_ID);
+      return storageCached;
+    }
+
     const result = await remoteRequest('/api/forge/user', {
       body: { organizationId, email, displayName }
     });
 
-    // Cache the result
+    // Populate both caches
     setInCache(cacheKey, { userId: result.userId, organizationId }, TTL.USER_ID);
+    setStorageCached(storageCacheKey, result.userId);
 
     return result.userId;
   } catch (error) {

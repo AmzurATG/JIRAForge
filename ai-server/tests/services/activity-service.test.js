@@ -117,6 +117,27 @@ describe('analyzeBatch', () => {
       .rejects.toThrow(TypeError);
   });
 
+  it('salvages complete objects from a truncated JSON array response', async () => {
+    // The array starts normally but the second object is cut off mid-way.
+    // salvageTruncatedJsonArray recovers only the first complete entry.
+    const truncated =
+      '[{"recordIndex":0,"taskKey":"ATG-123","projectKey":"ATG","confidenceScore":0.9,"workType":"office","reasoning":"auth"},' +
+      '{"recordIndex":1,"taskKey":null]';
+    chatCompletionWithFallback.mockResolvedValue(makeLLMResponse(truncated));
+    const result = await analyzeBatch(records, issues, 'user-1', 'org-1');
+    expect(result.analyses).toHaveLength(1);
+    expect(result.analyses[0].taskKey).toBe('ATG-123');
+  });
+
+  it('throws when truncated JSON array has no recoverable complete objects', async () => {
+    // The brackets are present so the regex matches, JSON.parse fails, and
+    // salvageTruncatedJsonArray finds no object with "recordIndex" → throws.
+    const unrecoverable = '[{"taskKey":null]'; // no "recordIndex" key
+    chatCompletionWithFallback.mockResolvedValue(makeLLMResponse(unrecoverable));
+    await expect(analyzeBatch(records, issues, 'user-1', 'org-1'))
+      .rejects.toThrow('no complete records found');
+  });
+
   // --- validateAnalysisKeys ---
 
   it('clears taskKey and projectKey when AI returns a key not in assigned issues', async () => {
@@ -278,6 +299,18 @@ describe('classifyUnknownApp', () => {
     expect(result.classification).toBe('productive');
   });
 
+  it('returns fallback when response contains no JSON object at all', async () => {
+    // Direct JSON.parse fails, regex finds no {}, else branch throws →
+    // outer catch returns productive fallback with confidence 0.
+    chatCompletionWithFallback.mockResolvedValue(
+      makeLLMResponse('I cannot classify this application.')
+    );
+    const result = await classifyUnknownApp('app.exe', 'App', '');
+    expect(result.classification).toBe('productive');
+    expect(result.confidence).toBe(0);
+    expect(result.error).toContain('Failed to parse AI classification response');
+  });
+
   it('returns fallback result with zero confidence on AI failure', async () => {
     chatCompletionWithFallback.mockRejectedValue(new Error('API error'));
     const result = await classifyUnknownApp('app.exe', 'App', '');
@@ -355,6 +388,17 @@ describe('identifyAppByName', () => {
     );
     const result = await identifyAppByName('vscode');
     expect(result.identified).toBe(true);
+  });
+
+  it('returns error result when response contains no JSON object', async () => {
+    // Direct parse fails, regex finds no {}, else branch throws →
+    // outer catch returns { identified: false, error: ... }.
+    chatCompletionWithFallback.mockResolvedValue(
+      makeLLMResponse('I cannot identify this application.')
+    );
+    const result = await identifyAppByName('unknownapp');
+    expect(result.identified).toBe(false);
+    expect(result.error).toContain('Failed to parse AI response');
   });
 
   it('returns error result on complete AI failure', async () => {

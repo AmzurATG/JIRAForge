@@ -16,6 +16,8 @@ modules:
     - key: scheduledWorklogSync
       handler: index.scheduledWorklogSyncHandler
       timeoutSeconds: 900
+    - key: issueCacheSync
+      handler: index.issueCacheSyncHandler
 
   jira:projectPage:
     - key: brd-time-tracker-project-page
@@ -43,6 +45,12 @@ modules:
     - key: worklog-sync-trigger
       function: scheduledWorklogSync
       interval: hour
+
+  trigger:
+    - key: issue-cache-trigger
+      function: issueCacheSync
+      events:
+        - avi:jira:updated:issue
 
 resources:
   - key: main
