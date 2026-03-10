@@ -16,7 +16,7 @@ fi
 echo "🚀 Launching TimeTracker from: $APP_TO_LAUNCH"
 
 # Method 1: Try direct executable launch
-if "$APP_TO_LAUNCH/Contents/MacOS/TimeTrackerMac" 2>/dev/null &
+if "$APP_TO_LAUNCH/Contents/MacOS/TimeTracker" 2>/dev/null &
 then
     echo "✅ Launched via direct executable"
     exit 0

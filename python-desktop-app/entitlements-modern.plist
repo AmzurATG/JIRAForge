@@ -1,0 +1,113 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- ============================================================================ -->
+    <!-- HARDENED RUNTIME ENTITLEMENTS FOR macOS 26.3 TAHOE -->
+    <!-- Enhanced security model with modern framework support -->
+    <!-- ============================================================================ -->
+    
+    <!-- Python Runtime Support -->
+    <key>com.apple.security.cs.allow-jit</key>
+    <true/>
+    
+    <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+    <true/>
+    
+    <key>com.apple.security.cs.allow-dyld-environment-variables</key>
+    <true/>
+    
+    <!-- PyInstaller Bundle Support -->
+    <key>com.apple.security.cs.disable-library-validation</key>
+    <true/>
+    
+    <!-- ============================================================================ -->
+    <!-- MODERN macOS 26.3 SCREEN CAPTURE PERMISSIONS -->
+    <!-- Replaces deprecated CGWindowListCopyWindowInfo -->
+    <!-- ============================================================================ -->
+    
+    <!-- Modern screen capture using ScreenCaptureKit -->
+    <key>com.apple.security.device.screen-capture</key>
+    <true/>
+    
+    <!-- Enhanced camera access (if needed for future features) -->
+    <key>com.apple.security.device.camera</key>
+    <true/>
+    
+    <!-- ============================================================================ -->
+    <!-- NETWORK AND COMMUNICATION -->
+    <!-- Enhanced for modern API communication -->
+    <!-- ============================================================================ -->
+    
+    <!-- Outbound network connections (JIRA API, Supabase) -->
+    <key>com.apple.security.network.client</key>
+    <true/>
+    
+    <!-- Local server for Flask web UI -->
+    <key>com.apple.security.network.server</key>
+    <true/>
+    
+    <!-- ============================================================================ -->
+    <!-- FILE SYSTEM ACCESS -->
+    <!-- Modern permission model for macOS 26.3 -->
+    <!-- ============================================================================ -->
+    
+    <!-- User-selected file access -->
+    <key>com.apple.security.files.user-selected.read-write</key>
+    <true/>
+    
+    <!-- Downloads folder access -->
+    <key>com.apple.security.files.downloads.read-write</key>
+    <true/>
+    
+    <!-- Temporary file access -->
+    <key>com.apple.security.temporary-exception.files.absolute-path.read-write</key>
+    <array>
+        <string>/tmp/</string>
+        <string>/var/folders/</string>
+    </array>
+    
+    <!-- ============================================================================ -->
+    <!-- MODERN NOTIFICATION SYSTEM -->
+    <!-- Uses UserNotifications framework instead of legacy notifications -->
+    <!-- ============================================================================ -->
+    
+    <!-- Modern notification delivery -->
+    <key>com.apple.security.automation.apple-events</key>
+    <true/>
+    
+    <!-- ============================================================================ -->
+    <!-- ACCESSIBILITY AND INPUT MONITORING -->
+    <!-- Required for window tracking and activity monitoring -->
+    <!-- ============================================================================ -->
+    
+    <!-- Accessibility access for window monitoring -->
+    <key>com.apple.security.automation.apple-events</key>
+    <true/>
+    
+    <!-- ============================================================================ -->
+    <!-- KEYCHAIN AND SECURE STORAGE -->
+    <!-- Enhanced security for token storage -->
+    <!-- ============================================================================ -->
+    
+    <!-- Keychain access for secure token storage -->
+    <key>keychain-access-groups</key>
+    <array>
+        <string>$(AppIdentifierPrefix)com.jiraforge.timetracker</string>
+    </array>
+    
+    <!-- ============================================================================ -->
+    <!-- OPTIONAL: APP SANDBOX SUPPORT -->
+    <!-- Uncomment for maximum security (requires additional testing) -->
+    <!-- ============================================================================ -->
+    
+    <!--
+    <key>com.apple.security.app-sandbox</key>
+    <true/>
+    
+    <key>com.apple.security.inherit</key>
+    <true/>
+    -->
+    
+</dict>
+</plist>

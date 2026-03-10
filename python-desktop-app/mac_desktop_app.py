@@ -52,27 +52,32 @@ except ImportError:
     AUTO_UPDATER_AVAILABLE = False
     print("[WARN] Auto-updater not available - update checking disabled")
 
-# Windows-specific imports
+# Import modern compatibility layer
 try:
-    import win32gui
-    import win32process
-    import win32con
-    import win32event
-    import winerror
-    WIN32_AVAILABLE = True
+    from macos_compatibility import (
+        init_compatibility_layer, get_compatibility, get_screen_capture,
+        get_notifications, get_dependency_manager, create_compatibility_report
+    )
+    # Initialize compatibility layer on import
+    init_compatibility_layer()
+    COMPAT_LAYER_AVAILABLE = True
+    print("[INFO] Modern macOS compatibility layer loaded")
 except ImportError:
-    WIN32_AVAILABLE = False
+    COMPAT_LAYER_AVAILABLE = False
+    print("[WARN] Compatibility layer not available - using legacy imports")
 
-# macOS-specific imports
+# Legacy macOS imports (fallback)
 try:
     import Quartz
     from Cocoa import NSWorkspace, NSScreen, NSApp, NSApplicationActivationPolicyAccessory
-    from Quartz import CGWindowListCopyWindowInfo, CGImageGetDataProvider, CGDataProviderCopyData, CGImageGetWidth, CGImageGetHeight, CGImageGetBytesPerRow, CGImageGetBitsPerComponent, CGImageGetBitsPerPixel, CGImageGetColorSpace, CGColorSpaceCreateDeviceRGB, CGImageCreate, CGBitmapContextCreate, CGBitmapContextCreateImage, CGContextFillRect, CGRectMake, CFArrayGetValueAtIndex, CFArrayGetCount, kCGWindowListOptionOnScreenOnly, kCGWindowListExcludeDesktopElements, kCGNullWindowID, CGWindowListCreateImage, kCGWindowImageDefault
-    from Quartz.CoreGraphics import CGDisplayCreateImage, CGMainDisplayID
+    from Quartz import CGWindowListCopyWindowInfo, CGDisplayCreateImage, CGMainDisplayID
     MACOS_AVAILABLE = True
 except ImportError:
     MACOS_AVAILABLE = False
-    print("[WARN] macOS frameworks (PyObjC) not available - window detection and screenshot capture will be limited")
+    print("[WARN] macOS frameworks (PyObjC) not available - limited functionality")
+
+# Remove Windows support (not needed for macOS-only build)
+WIN32_AVAILABLE = False
 
 # Tkinter for pause popup window
 try:
@@ -5979,7 +5984,7 @@ class TimeTracker:
             # Upload succeeded - get public URL
             screenshot_url = storage_client.storage.from_('screenshots').get_public_url(storage_path)
 
-            # Upload thumbnail
+            # Upload thumbnail (optional - failure does NOT block DB insert)
             thumb_result = storage_client.storage.from_('screenshots').upload(
                 thumb_path, thumb_bytes, file_options={'content-type': 'image/jpeg'}
             )
@@ -5987,66 +5992,71 @@ class TimeTracker:
             thumb_url = None
             if thumb_result:
                 thumb_url = storage_client.storage.from_('screenshots').get_public_url(thumb_path)
-                
-                # Issues cache was already refreshed before building screenshot_data
+            else:
+                print(f"[WARN] Thumbnail upload failed - continuing without thumbnail (DB record will still be inserted)")
+                self.add_admin_log('WARN', f'Thumbnail upload failed for {filename} - screenshot will still be saved')
 
-                # Update screenshot_data with URLs for database insert
-                screenshot_data['storage_url'] = screenshot_url
-                screenshot_data['thumbnail_url'] = thumb_url
-                screenshot_data['status'] = 'pending'
-                
-                # Use service client for database insert to bypass RLS
-                db_client = self.supabase_service if self.supabase_service else self.supabase
-                result = db_client.table('screenshots').insert(screenshot_data).execute()
-                
-                if result.data:
-                    screenshot_id = result.data[0]['id']
-                    print(f"[OK] Screenshot uploaded and saved to database:")
-                    print(f"     - File: {filename}")
-                    print(f"     - Database ID: {screenshot_id}")
-                    print(f"     - Storage: {storage_path}")
-                    print(f"     - Size: {len(img_bytes)} bytes")
-                    print(f"     - Start: {start_time.strftime('%H:%M:%S')}")
-                    print(f"     - End:   {end_time.strftime('%H:%M:%S')}")
-                    print(f"     - Duration: {duration_seconds}s")
-                    print(f"     - App: {window_info['app']}")
-                    self.add_admin_log('INFO', f"Screenshot captured: {window_info['app']} ({duration_seconds}s)", {
-                        'file': filename,
-                        'id': screenshot_id[:8] + '...',  # Short ID for display
-                        'full_id': screenshot_id,
-                        'storage': storage_path,
-                        'size': len(img_bytes),
-                        'start': start_time.strftime('%H:%M:%S'),
-                        'end': end_time.strftime('%H:%M:%S'),
-                        'duration': duration_seconds,
-                        'app': window_info['app'],
-                        'title': window_info.get('title', '')[:50]  # Truncate long titles
-                    })
-                    
-                    # Store the screenshot ID so we can update end_time/duration later
-                    # When user switches windows OR when interval is reached, this record will be updated
-                    self.current_window_screenshot_id = screenshot_id
+            # Issues cache was already refreshed before building screenshot_data
 
-                    # IMPORTANT: Track the actual start_time saved to database
-                    # This may differ from current_window_start_time due to gap-free continuity logic
-                    self.current_window_db_start_time = start_time
+            # Update screenshot_data with URLs for database insert
+            # DB insert happens regardless of thumbnail success - thumbnail is optional
+            screenshot_data['storage_url'] = screenshot_url
+            screenshot_data['thumbnail_url'] = thumb_url  # May be None if thumbnail upload failed
+            screenshot_data['status'] = 'pending'
 
-                    # Track when this record was actually created (for interval safeguard)
-                    # This is different from start_time which may be from last_screenshot_end_time
-                    self.current_window_record_created_at = datetime.now(timezone.utc)
+            # Use service client for database insert to bypass RLS
+            db_client = self.supabase_service if self.supabase_service else self.supabase
+            result = db_client.table('screenshots').insert(screenshot_data).execute()
 
-                    # Track end_time for continuity - next screenshot will start from here
-                    # This ensures no gaps between records
-                    self.last_screenshot_end_time = end_time
-                    
-                    # For interval captures, current_window_start_time was already updated
-                    # in tracking_loop before calling upload_screenshot
-                    # For window switches, it was set in get_active_window()
-                    
-                    return screenshot_id
-                else:
-                    print(f"[WARN] Screenshot uploaded to storage but database insert returned no data")
-                    return None
+            if result.data:
+                screenshot_id = result.data[0]['id']
+                print(f"[OK] Screenshot uploaded and saved to database:")
+                print(f"     - File: {filename}")
+                print(f"     - Database ID: {screenshot_id}")
+                print(f"     - Storage: {storage_path}")
+                print(f"     - Size: {len(img_bytes)} bytes")
+                print(f"     - Start: {start_time.strftime('%H:%M:%S')}")
+                print(f"     - End:   {end_time.strftime('%H:%M:%S')}")
+                print(f"     - Duration: {duration_seconds}s")
+                print(f"     - App: {window_info['app']}")
+                self.add_admin_log('INFO', f"Screenshot captured: {window_info['app']} ({duration_seconds}s)", {
+                    'file': filename,
+                    'id': screenshot_id[:8] + '...',  # Short ID for display
+                    'full_id': screenshot_id,
+                    'storage': storage_path,
+                    'size': len(img_bytes),
+                    'start': start_time.strftime('%H:%M:%S'),
+                    'end': end_time.strftime('%H:%M:%S'),
+                    'duration': duration_seconds,
+                    'app': window_info['app'],
+                    'title': window_info.get('title', '')[:50]  # Truncate long titles
+                })
+
+                # Store the screenshot ID so we can update end_time/duration later
+                # When user switches windows OR when interval is reached, this record will be updated
+                self.current_window_screenshot_id = screenshot_id
+
+                # IMPORTANT: Track the actual start_time saved to database
+                # This may differ from current_window_start_time due to gap-free continuity logic
+                self.current_window_db_start_time = start_time
+
+                # Track when this record was actually created (for interval safeguard)
+                # This is different from start_time which may be from last_screenshot_end_time
+                self.current_window_record_created_at = datetime.now(timezone.utc)
+
+                # Track end_time for continuity - next screenshot will start from here
+                # This ensures no gaps between records
+                self.last_screenshot_end_time = end_time
+
+                # For interval captures, current_window_start_time was already updated
+                # in tracking_loop before calling upload_screenshot
+                # For window switches, it was set in get_active_window()
+
+                return screenshot_id
+            else:
+                print(f"[WARN] Screenshot uploaded to storage but database insert returned no data")
+                self.add_admin_log('WARN', f'Screenshot storage upload OK but DB insert failed for {filename}')
+                return None
             
         except requests.exceptions.ConnectionError:
             # Network error - save offline
@@ -6863,6 +6873,12 @@ class TimeTracker:
                                 print(f"[INFO] Fresh interval capture - record is final (won't be extended)")
                                 self.current_window_screenshot_id = None
                                 self.current_window_db_start_time = None
+                    elif capture_reason == "interval":
+                        # Screenshot was None (hash unchanged / screen not changed)
+                        # IMPORTANT: Still reset the interval timer so we don't re-enter this block
+                        # every 2 seconds until screen changes. Next attempt at next full interval.
+                        print(f"[DEBUG] Screenshot unchanged (hash match) - resetting interval timer")
+                        self.last_interval_time = time.time()
                                 self.current_window_record_created_at = None
 
                         # Always update last_screenshot_time (for min_screenshot_interval check)

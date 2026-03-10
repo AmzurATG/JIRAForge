@@ -32,7 +32,7 @@ echo -e "${BLUE}🔧 Complete macOS Launch Issue Fix${NC}"
 echo "========================================"
 
 APP_PATH="dist/TimeTracker.app"
-EXECUTABLE_PATH="$APP_PATH/Contents/MacOS/TimeTrackerMac"
+EXECUTABLE_PATH="$APP_PATH/Contents/MacOS/TimeTracker"
 
 if [ ! -d "$APP_PATH" ]; then
     print_error "TimeTracker.app not found at $APP_PATH"
@@ -129,7 +129,7 @@ cat > "$APP_PATH/Contents/Info.plist" << 'EOF'
     <key>CFBundleDisplayName</key>
     <string>TimeTracker</string>
     <key>CFBundleExecutable</key>
-    <string>TimeTrackerMac</string>
+    <string>TimeTracker</string>
     <key>CFBundleIdentifier</key>
     <string>com.jiraforge.timetracker</string>
     <key>CFBundleInfoDictionaryVersion</key>
@@ -233,7 +233,7 @@ fi
 echo "🚀 Launching TimeTracker from: $APP_TO_LAUNCH"
 
 # Method 1: Try direct executable launch
-if "$APP_TO_LAUNCH/Contents/MacOS/TimeTrackerMac" 2>/dev/null &
+if "$APP_TO_LAUNCH/Contents/MacOS/TimeTracker" 2>/dev/null &
 then
     echo "✅ Launched via direct executable"
     exit 0
@@ -270,7 +270,7 @@ fi
 # Test executable
 print_info "Testing executable..."
 cd dist
-if ./TimeTracker.app/Contents/MacOS/TimeTrackerMac --version 2>/dev/null | head -1; then
+if ./TimeTracker.app/Contents/MacOS/TimeTracker --version 2>/dev/null | head -1; then
     print_success "Executable responds to commands"
 else
     print_warning "Executable may have issues"
