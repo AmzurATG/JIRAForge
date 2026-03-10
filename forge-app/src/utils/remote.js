@@ -4,8 +4,26 @@
  * The AI server handles Supabase operations securely without exposing credentials
  */
 
-import api, { invokeRemote, route } from '@forge/api';
+import api, { invokeRemote, route, storage } from '@forge/api';
 import { getFromCache, setInCache, TTL, CacheKeys } from './cache.js';
+
+// Persistent Forge storage cache for org and user IDs.
+// Survives across invocations (unlike in-memory cache) — 24 hour TTL.
+const STORAGE_TTL_MS = 24 * 60 * 60 * 1000;
+
+async function getStorageCached(key) {
+  try {
+    const entry = await storage.get(key);
+    if (!entry || Date.now() > entry.expiresAt) return null;
+    return entry.value;
+  } catch {
+    return null;
+  }
+}
+
+function setStorageCached(key, value) {
+  storage.set(key, { value, expiresAt: Date.now() + STORAGE_TTL_MS }).catch(() => {});
+}
 
 // Remote key from manifest.yml - must match exactly
 const REMOTE_KEY = 'ai-server';
@@ -192,7 +210,7 @@ async function fetchJiraSiteInfo() {
 export async function getOrCreateOrganization(cloudId, orgName = null, jiraUrl = null) {
   const cacheKey = CacheKeys.organization(cloudId);
 
-  // Check cache first
+  // Check in-memory cache first (fastest)
   const cached = getFromCache(cacheKey);
   if (cached) {
     return cached;
@@ -206,6 +224,14 @@ export async function getOrCreateOrganization(cloudId, orgName = null, jiraUrl =
 
   const promise = (async () => {
     try {
+      // Check persistent Forge storage cache (survives across invocations)
+      const storageCached = await getStorageCached(`remote:org:${cloudId}`);
+      if (storageCached) {
+        console.log(`[Remote] Org ${cloudId} loaded from storage cache`);
+        setInCache(cacheKey, storageCached, TTL.ORGANIZATION);
+        return storageCached;
+      }
+
       // If orgName or jiraUrl not provided, fetch from Jira API
       if (!orgName || !jiraUrl) {
         const siteInfo = await fetchJiraSiteInfo();
@@ -220,8 +246,9 @@ export async function getOrCreateOrganization(cloudId, orgName = null, jiraUrl =
         body: { orgName, jiraUrl }
       });
 
-      // Cache the result
+      // Populate both caches
       setInCache(cacheKey, org, TTL.ORGANIZATION);
+      setStorageCached(`remote:org:${cloudId}`, org);
 
       return org;
     } catch (error) {
@@ -248,19 +275,29 @@ export async function getOrCreateOrganization(cloudId, orgName = null, jiraUrl =
 export async function getOrCreateUser(accountId, organizationId = null, email = null, displayName = null) {
   const cacheKey = CacheKeys.userId(accountId);
 
-  // Check cache first
+  // Check in-memory cache first (fastest)
   const cached = getFromCache(cacheKey);
   if (cached?.organizationId === organizationId) {
     return cached.userId;
   }
 
   try {
+    // Check persistent Forge storage cache (survives across invocations)
+    const storageCacheKey = `remote:user:${accountId}:${organizationId}`;
+    const storageCached = await getStorageCached(storageCacheKey);
+    if (storageCached) {
+      console.log(`[Remote] User ${accountId} loaded from storage cache`);
+      setInCache(cacheKey, { userId: storageCached, organizationId }, TTL.USER_ID);
+      return storageCached;
+    }
+
     const result = await remoteRequest('/api/forge/user', {
       body: { organizationId, email, displayName }
     });
 
-    // Cache the result
+    // Populate both caches
     setInCache(cacheKey, { userId: result.userId, organizationId }, TTL.USER_ID);
+    setStorageCached(storageCacheKey, result.userId);
 
     return result.userId;
   } catch (error) {

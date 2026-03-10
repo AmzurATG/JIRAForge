@@ -155,14 +155,13 @@ async function updateSessionsAndAnalysis({ validSessionIds, issueKey, userId, or
   }
 
   // Also update activity_records for hybrid OCR approach data
-  // Extract project key from issue key (e.g., SCRUM-5 -> SCRUM)
+  // validSessionIds may contain activity_record IDs (from new pipeline groups)
+  // Use id=in.() so only the specific sessions in this group are updated
   const projectKey = issueKey.split('-')[0];
   try {
-    // Update any activity_records that are in the unassigned_activity sessions
-    // by matching on user_id + organization_id + unassigned issue key
     await supabaseRequest(
       supabaseConfig,
-      `activity_records?user_id=eq.${userId}&organization_id=eq.${organizationId}&user_assigned_issue_key=is.null`,
+      `activity_records?id=in.(${sessionIdsParam})&user_id=eq.${userId}&organization_id=eq.${organizationId}`,
       {
         method: 'PATCH',
         body: {
@@ -722,11 +721,14 @@ export async function bulkReassignByTimeInterval(req) {
         console.log(`[bulkReassignByTimeInterval] Updated ${unassignedArray.length} unassigned_activity records`);
       }
 
-      // Mark any unassigned_work_groups that contained these activities as assigned
-      const groupMembers = await supabaseRequest(
-        supabaseConfig,
-        `unassigned_group_members?unassigned_activity_id=in.(${sanitizeUUIDArray(unassignedArray.map(u => u.id)).join(',') || 'null'})&select=group_id`
-      );
+      // Mark any unassigned_work_groups that contained these legacy activities as assigned
+      const legacyUnassignedIds = sanitizeUUIDArray(unassignedArray.map(u => u.id));
+      const groupMembers = legacyUnassignedIds.length > 0
+        ? await supabaseRequest(
+            supabaseConfig,
+            `unassigned_group_members?unassigned_activity_id=in.(${legacyUnassignedIds.join(',')})&select=group_id`
+          )
+        : [];
 
       const groupMembersArray = ensureArray(groupMembers);
       const uniqueGroupIds = sanitizeUUIDArray([...new Set(groupMembersArray.map(m => m.group_id).filter(Boolean))]);
