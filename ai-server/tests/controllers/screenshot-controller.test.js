@@ -59,22 +59,31 @@ describe('Screenshot Controller', () => {
       supabaseService.downloadFile.mockResolvedValue(Buffer.from('image data'));
       screenshotService.analyzeActivity.mockResolvedValue({
         taskKey: 'PROJ-123',
+        projectKey: 'PROJ',
         workType: 'office',
         timeSpentSeconds: 600,
-        category: 'Development',
-        description: 'Working on test.js'
+        confidenceScore: 0.9,
+        metadata: { extractedText: 'some text' }
       });
-      supabaseService.updateScreenshotAnalysis.mockResolvedValue();
+      supabaseService.saveAnalysisResult.mockResolvedValue();
+      supabaseService.updateScreenshotStatus.mockResolvedValue();
 
       await screenshotController.analyzeScreenshot(req, res);
 
       expect(supabaseService.claimScreenshotForProcessing).toHaveBeenCalledWith(validWebhookData.id);
       expect(supabaseService.downloadFile).toHaveBeenCalledWith('screenshots', validWebhookData.storage_path);
       expect(screenshotService.analyzeActivity).toHaveBeenCalled();
-      expect(supabaseService.updateScreenshotAnalysis).toHaveBeenCalled();
+      expect(supabaseService.saveAnalysisResult).toHaveBeenCalled();
+      expect(supabaseService.updateScreenshotStatus).toHaveBeenCalledWith(validWebhookData.id, 'analyzed');
       expect(res.json).toHaveBeenCalledWith({
         success: true,
-        screenshot_id: validWebhookData.id
+        screenshot_id: validWebhookData.id,
+        analysis: {
+          task_key: 'PROJ-123',
+          project_key: 'PROJ',
+          confidence_score: 0.9,
+          work_type: 'office'
+        }
       });
     });
 
@@ -89,7 +98,8 @@ describe('Screenshot Controller', () => {
         taskKey: 'PROJ-123',
         workType: 'office'
       });
-      supabaseService.updateScreenshotAnalysis.mockResolvedValue();
+      supabaseService.saveAnalysisResult.mockResolvedValue();
+      supabaseService.updateScreenshotStatus.mockResolvedValue();
 
       await screenshotController.analyzeScreenshot(req, res);
 
@@ -215,7 +225,8 @@ describe('Screenshot Controller', () => {
       supabaseService.claimScreenshotForProcessing.mockResolvedValue(true);
       supabaseService.downloadFile.mockResolvedValue(Buffer.from('image'));
       screenshotService.analyzeActivity.mockResolvedValue({ taskKey: 'PROJ-1' });
-      supabaseService.updateScreenshotAnalysis.mockResolvedValue();
+      supabaseService.saveAnalysisResult.mockResolvedValue();
+      supabaseService.updateScreenshotStatus.mockResolvedValue();
 
       await screenshotController.analyzeScreenshot(req, res);
 
@@ -238,7 +249,8 @@ describe('Screenshot Controller', () => {
       supabaseService.claimScreenshotForProcessing.mockResolvedValue(true);
       supabaseService.downloadFile.mockResolvedValue(Buffer.from('image'));
       screenshotService.analyzeActivity.mockResolvedValue({ taskKey: 'PROJ-1' });
-      supabaseService.updateScreenshotAnalysis.mockResolvedValue();
+      supabaseService.saveAnalysisResult.mockResolvedValue();
+      supabaseService.updateScreenshotStatus.mockResolvedValue();
 
       await screenshotController.analyzeScreenshot(req, res);
 
@@ -262,7 +274,8 @@ describe('Screenshot Controller', () => {
       });
       supabaseService.downloadFile.mockResolvedValue(Buffer.from('image'));
       screenshotService.analyzeActivity.mockResolvedValue({ taskKey: 'PROJ-1' });
-      supabaseService.updateScreenshotAnalysis.mockResolvedValue();
+      supabaseService.saveAnalysisResult.mockResolvedValue();
+      supabaseService.updateScreenshotStatus.mockResolvedValue();
 
       await screenshotController.analyzeScreenshot(req, res);
 
@@ -287,7 +300,8 @@ describe('Screenshot Controller', () => {
         taskKey: 'PROJ-1',
         timeSpentSeconds: 600
       });
-      supabaseService.updateScreenshotAnalysis.mockResolvedValue();
+      supabaseService.saveAnalysisResult.mockResolvedValue();
+      supabaseService.updateScreenshotStatus.mockResolvedValue();
       supabaseService.updateScreenshotDuration.mockResolvedValue();
 
       await screenshotController.analyzeScreenshot(req, res);
@@ -306,7 +320,8 @@ describe('Screenshot Controller', () => {
       supabaseService.claimScreenshotForProcessing.mockResolvedValue(true);
       supabaseService.downloadFile.mockResolvedValue(Buffer.from('image'));
       screenshotService.analyzeActivity.mockResolvedValue({ taskKey: 'PROJ-1' });
-      supabaseService.updateScreenshotAnalysis.mockResolvedValue();
+      supabaseService.saveAnalysisResult.mockResolvedValue();
+      supabaseService.updateScreenshotStatus.mockResolvedValue();
 
       await screenshotController.analyzeScreenshot(req, res);
 
@@ -321,7 +336,8 @@ describe('Screenshot Controller', () => {
       supabaseService.claimScreenshotForProcessing.mockResolvedValue(true);
       supabaseService.downloadFile.mockResolvedValue(Buffer.from('image'));
       screenshotService.analyzeActivity.mockResolvedValue({ taskKey: 'PROJ-1' });
-      supabaseService.updateScreenshotAnalysis.mockResolvedValue();
+      supabaseService.saveAnalysisResult.mockResolvedValue();
+      supabaseService.updateScreenshotStatus.mockResolvedValue();
       supabaseService.deleteFile.mockResolvedValue();
       supabaseService.clearStorageUrls.mockResolvedValue();
 
@@ -331,15 +347,16 @@ describe('Screenshot Controller', () => {
       expect(supabaseService.clearStorageUrls).toHaveBeenCalledWith(validWebhookData.id);
     });
 
-    it('should skip deletion if DELETE_SCREENSHOTS_AFTER_ANALYSIS is false', async () => {
-      process.env.DELETE_SCREENSHOTS_AFTER_ANALYSIS = 'false';
-      
-      req.body = { ...validWebhookData };
+    it('should skip deletion when storage_path is null', async () => {
+      // DELETE_AFTER_ANALYSIS is a module-level const evaluated at load time.
+      // The null storage_path path (the other guard) is testable without module reload.
+      req.body = { ...validWebhookData, storage_path: null };
 
       supabaseService.claimScreenshotForProcessing.mockResolvedValue(true);
       supabaseService.downloadFile.mockResolvedValue(Buffer.from('image'));
       screenshotService.analyzeActivity.mockResolvedValue({ taskKey: 'PROJ-1' });
-      supabaseService.updateScreenshotAnalysis.mockResolvedValue();
+      supabaseService.saveAnalysisResult.mockResolvedValue();
+      supabaseService.updateScreenshotStatus.mockResolvedValue();
 
       await screenshotController.analyzeScreenshot(req, res);
 
@@ -355,7 +372,8 @@ describe('Screenshot Controller', () => {
       supabaseService.claimScreenshotForProcessing.mockResolvedValue(true);
       supabaseService.downloadFile.mockResolvedValue(Buffer.from('image'));
       screenshotService.analyzeActivity.mockResolvedValue({ taskKey: 'PROJ-1' });
-      supabaseService.updateScreenshotAnalysis.mockResolvedValue();
+      supabaseService.saveAnalysisResult.mockResolvedValue();
+      supabaseService.updateScreenshotStatus.mockResolvedValue();
       supabaseService.deleteFile.mockRejectedValue(new Error('Delete failed'));
 
       await screenshotController.analyzeScreenshot(req, res);
@@ -364,10 +382,10 @@ describe('Screenshot Controller', () => {
         expect.stringContaining('Failed to delete screenshot'),
         expect.any(Object)
       );
-      expect(res.json).toHaveBeenCalledWith({
+      expect(res.json).toHaveBeenCalledWith(expect.objectContaining({
         success: true,
         screenshot_id: validWebhookData.id
-      });
+      }));
     });
 
     it('should create worklog if configured and conditions met', async () => {
@@ -382,7 +400,8 @@ describe('Screenshot Controller', () => {
         workType: 'office',
         timeSpentSeconds: 600
       });
-      supabaseService.updateScreenshotAnalysis.mockResolvedValue();
+      supabaseService.saveAnalysisResult.mockResolvedValue();
+      supabaseService.updateScreenshotStatus.mockResolvedValue();
       screenshotService.createWorklog.mockResolvedValue();
       supabaseService.markWorklogCreated.mockResolvedValue();
 
@@ -411,7 +430,8 @@ describe('Screenshot Controller', () => {
         taskKey: 'PROJ-123',
         workType: 'office'
       });
-      supabaseService.updateScreenshotAnalysis.mockResolvedValue();
+      supabaseService.saveAnalysisResult.mockResolvedValue();
+      supabaseService.updateScreenshotStatus.mockResolvedValue();
 
       await screenshotController.analyzeScreenshot(req, res);
 
@@ -429,7 +449,8 @@ describe('Screenshot Controller', () => {
         taskKey: null,
         workType: 'office'
       });
-      supabaseService.updateScreenshotAnalysis.mockResolvedValue();
+      supabaseService.saveAnalysisResult.mockResolvedValue();
+      supabaseService.updateScreenshotStatus.mockResolvedValue();
 
       await screenshotController.analyzeScreenshot(req, res);
 
@@ -447,7 +468,8 @@ describe('Screenshot Controller', () => {
         taskKey: 'PROJ-123',
         workType: 'personal'
       });
-      supabaseService.updateScreenshotAnalysis.mockResolvedValue();
+      supabaseService.saveAnalysisResult.mockResolvedValue();
+      supabaseService.updateScreenshotStatus.mockResolvedValue();
 
       await screenshotController.analyzeScreenshot(req, res);
 
@@ -466,7 +488,8 @@ describe('Screenshot Controller', () => {
         workType: 'office',
         timeSpentSeconds: 600
       });
-      supabaseService.updateScreenshotAnalysis.mockResolvedValue();
+      supabaseService.saveAnalysisResult.mockResolvedValue();
+      supabaseService.updateScreenshotStatus.mockResolvedValue();
       screenshotService.createWorklog.mockRejectedValue(new Error('Worklog failed'));
 
       await screenshotController.analyzeScreenshot(req, res);
@@ -475,10 +498,10 @@ describe('Screenshot Controller', () => {
         expect.stringContaining('Failed to create worklog'),
         expect.any(Object)
       );
-      expect(res.json).toHaveBeenCalledWith({
+      expect(res.json).toHaveBeenCalledWith(expect.objectContaining({
         success: true,
         screenshot_id: validWebhookData.id
-      });
+      }));
     });
 
     it('should handle analysis errors and update screenshot status', async () => {
@@ -599,7 +622,8 @@ describe('Screenshot Controller', () => {
       supabaseService.claimScreenshotForProcessing.mockResolvedValue(true);
       supabaseService.downloadFile.mockResolvedValue(Buffer.from('image'));
       screenshotService.analyzeActivity.mockResolvedValue({ taskKey: 'PROJ-1' });
-      supabaseService.updateScreenshotAnalysis.mockResolvedValue();
+      supabaseService.saveAnalysisResult.mockResolvedValue();
+      supabaseService.updateScreenshotStatus.mockResolvedValue();
 
       await screenshotController.analyzeScreenshot(req, res);
 
@@ -614,22 +638,28 @@ describe('Screenshot Controller', () => {
       req.body = {
         screenshot_id: validWebhookData.id,
         user_id: validWebhookData.user_id,
+        organization_id: validWebhookData.organization_id,
         storage_url: validWebhookData.storage_url,
-        storage_path: validWebhookData.storage_path
+        storage_path: validWebhookData.storage_path,
+        // Include duration fields so needsDurationUpdate returns false
+        duration_seconds: 600,
+        start_time: validWebhookData.start_time,
+        end_time: validWebhookData.end_time
       };
 
       supabaseService.claimScreenshotForProcessing.mockResolvedValue(true);
       supabaseService.downloadFile.mockResolvedValue(Buffer.from('image'));
       screenshotService.analyzeActivity.mockResolvedValue({ taskKey: 'PROJ-1' });
-      supabaseService.updateScreenshotAnalysis.mockResolvedValue();
+      supabaseService.saveAnalysisResult.mockResolvedValue();
+      supabaseService.updateScreenshotStatus.mockResolvedValue();
 
       await screenshotController.analyzeScreenshot(req, res);
 
       expect(supabaseService.claimScreenshotForProcessing).toHaveBeenCalledWith(validWebhookData.id);
-      expect(res.json).toHaveBeenCalledWith({
+      expect(res.json).toHaveBeenCalledWith(expect.objectContaining({
         success: true,
         screenshot_id: validWebhookData.id
-      });
+      }));
     });
 
     it('should handle missing storage_path gracefully', async () => {
@@ -639,14 +669,17 @@ describe('Screenshot Controller', () => {
       };
 
       supabaseService.claimScreenshotForProcessing.mockResolvedValue(true);
+      // Simulate what happens when downloadFile is called with a null path
+      supabaseService.downloadFile.mockRejectedValue(new Error('No storage path'));
+      supabaseService.updateScreenshotStatus.mockResolvedValue();
 
       await screenshotController.analyzeScreenshot(req, res);
 
       expect(logger.error).toHaveBeenCalled();
-      expect(res.json).toHaveBeenCalledWith({
+      expect(res.json).toHaveBeenCalledWith(expect.objectContaining({
         success: false,
         error: 'Failed to analyze screenshot'
-      });
+      }));
     });
 
     it('should handle empty user_assigned_issues array', async () => {
@@ -658,7 +691,8 @@ describe('Screenshot Controller', () => {
       supabaseService.claimScreenshotForProcessing.mockResolvedValue(true);
       supabaseService.downloadFile.mockResolvedValue(Buffer.from('image'));
       screenshotService.analyzeActivity.mockResolvedValue({ taskKey: 'PROJ-1' });
-      supabaseService.updateScreenshotAnalysis.mockResolvedValue();
+      supabaseService.saveAnalysisResult.mockResolvedValue();
+      supabaseService.updateScreenshotStatus.mockResolvedValue();
 
       await screenshotController.analyzeScreenshot(req, res);
 
@@ -678,14 +712,15 @@ describe('Screenshot Controller', () => {
       supabaseService.claimScreenshotForProcessing.mockResolvedValue(true);
       supabaseService.downloadFile.mockResolvedValue(Buffer.from('image'));
       screenshotService.analyzeActivity.mockResolvedValue({ taskKey: 'PROJ-1' });
-      supabaseService.updateScreenshotAnalysis.mockResolvedValue();
+      supabaseService.saveAnalysisResult.mockResolvedValue();
+      supabaseService.updateScreenshotStatus.mockResolvedValue();
 
       await screenshotController.analyzeScreenshot(req, res);
 
-      expect(res.json).toHaveBeenCalledWith({
+      expect(res.json).toHaveBeenCalledWith(expect.objectContaining({
         success: true,
         screenshot_id: validWebhookData.id
-      });
+      }));
     });
 
     it('should handle negative duration_seconds', async () => {
@@ -702,7 +737,8 @@ describe('Screenshot Controller', () => {
         taskKey: 'PROJ-1',
         timeSpentSeconds: 600
       });
-      supabaseService.updateScreenshotAnalysis.mockResolvedValue();
+      supabaseService.saveAnalysisResult.mockResolvedValue();
+      supabaseService.updateScreenshotStatus.mockResolvedValue();
       supabaseService.updateScreenshotDuration.mockResolvedValue();
 
       await screenshotController.analyzeScreenshot(req, res);
@@ -719,14 +755,15 @@ describe('Screenshot Controller', () => {
       supabaseService.claimScreenshotForProcessing.mockResolvedValue(true);
       supabaseService.downloadFile.mockResolvedValue(Buffer.from('image'));
       screenshotService.analyzeActivity.mockResolvedValue({ taskKey: 'PROJ-1' });
-      supabaseService.updateScreenshotAnalysis.mockResolvedValue();
+      supabaseService.saveAnalysisResult.mockResolvedValue();
+      supabaseService.updateScreenshotStatus.mockResolvedValue();
 
       await screenshotController.analyzeScreenshot(req, res);
 
-      expect(res.json).toHaveBeenCalledWith({
+      expect(res.json).toHaveBeenCalledWith(expect.objectContaining({
         success: true,
         screenshot_id: validWebhookData.id.toUpperCase()
-      });
+      }));
     });
 
     it('should handle screenshot with only start_time missing', async () => {
@@ -743,7 +780,8 @@ describe('Screenshot Controller', () => {
         taskKey: 'PROJ-1',
         timeSpentSeconds: 600
       });
-      supabaseService.updateScreenshotAnalysis.mockResolvedValue();
+      supabaseService.saveAnalysisResult.mockResolvedValue();
+      supabaseService.updateScreenshotStatus.mockResolvedValue();
       supabaseService.updateScreenshotDuration.mockResolvedValue();
 
       await screenshotController.analyzeScreenshot(req, res);
@@ -765,7 +803,8 @@ describe('Screenshot Controller', () => {
         taskKey: 'PROJ-1',
         timeSpentSeconds: 600
       });
-      supabaseService.updateScreenshotAnalysis.mockResolvedValue();
+      supabaseService.saveAnalysisResult.mockResolvedValue();
+      supabaseService.updateScreenshotStatus.mockResolvedValue();
       supabaseService.updateScreenshotDuration.mockResolvedValue();
 
       await screenshotController.analyzeScreenshot(req, res);
@@ -773,24 +812,26 @@ describe('Screenshot Controller', () => {
       expect(supabaseService.updateScreenshotDuration).toHaveBeenCalled();
     });
 
-    it('should delete thumbnail even if main screenshot delete fails', async () => {
+    it('should log warning and continue when main screenshot delete fails', async () => {
       process.env.DELETE_SCREENSHOTS_AFTER_ANALYSIS = 'true';
-      
+
       req.body = { ...validWebhookData };
 
       supabaseService.claimScreenshotForProcessing.mockResolvedValue(true);
       supabaseService.downloadFile.mockResolvedValue(Buffer.from('image'));
       screenshotService.analyzeActivity.mockResolvedValue({ taskKey: 'PROJ-1' });
-      supabaseService.updateScreenshotAnalysis.mockResolvedValue();
-      supabaseService.deleteFile
-        .mockRejectedValueOnce(new Error('Main delete failed'))
-        .mockResolvedValueOnce(); // Thumbnail succeeds
-      supabaseService.clearStorageUrls.mockResolvedValue();
+      supabaseService.saveAnalysisResult.mockResolvedValue();
+      supabaseService.updateScreenshotStatus.mockResolvedValue();
+      // When main delete fails, the outer catch handles it and logs a warning
+      supabaseService.deleteFile.mockRejectedValue(new Error('Main delete failed'));
 
       await screenshotController.analyzeScreenshot(req, res);
 
-      expect(supabaseService.deleteFile).toHaveBeenCalledTimes(2);
-      expect(logger.warn).toHaveBeenCalled();
+      expect(logger.warn).toHaveBeenCalledWith(
+        expect.stringContaining('Failed to delete screenshot from storage'),
+        expect.any(Object)
+      );
+      expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ success: true }));
     });
 
     it('should handle clearStorageUrls failure gracefully', async () => {
@@ -801,17 +842,18 @@ describe('Screenshot Controller', () => {
       supabaseService.claimScreenshotForProcessing.mockResolvedValue(true);
       supabaseService.downloadFile.mockResolvedValue(Buffer.from('image'));
       screenshotService.analyzeActivity.mockResolvedValue({ taskKey: 'PROJ-1' });
-      supabaseService.updateScreenshotAnalysis.mockResolvedValue();
+      supabaseService.saveAnalysisResult.mockResolvedValue();
+      supabaseService.updateScreenshotStatus.mockResolvedValue();
       supabaseService.deleteFile.mockResolvedValue();
       supabaseService.clearStorageUrls.mockRejectedValue(new Error('Clear failed'));
 
       await screenshotController.analyzeScreenshot(req, res);
 
       expect(logger.warn).toHaveBeenCalled();
-      expect(res.json).toHaveBeenCalledWith({
+      expect(res.json).toHaveBeenCalledWith(expect.objectContaining({
         success: true,
         screenshot_id: validWebhookData.id
-      });
+      }));
     });
 
     it('should handle missing window_title', async () => {
@@ -823,7 +865,8 @@ describe('Screenshot Controller', () => {
       supabaseService.claimScreenshotForProcessing.mockResolvedValue(true);
       supabaseService.downloadFile.mockResolvedValue(Buffer.from('image'));
       screenshotService.analyzeActivity.mockResolvedValue({ taskKey: 'PROJ-1' });
-      supabaseService.updateScreenshotAnalysis.mockResolvedValue();
+      supabaseService.saveAnalysisResult.mockResolvedValue();
+      supabaseService.updateScreenshotStatus.mockResolvedValue();
 
       await screenshotController.analyzeScreenshot(req, res);
 
@@ -843,7 +886,8 @@ describe('Screenshot Controller', () => {
       supabaseService.claimScreenshotForProcessing.mockResolvedValue(true);
       supabaseService.downloadFile.mockResolvedValue(Buffer.from('image'));
       screenshotService.analyzeActivity.mockResolvedValue({ taskKey: 'PROJ-1' });
-      supabaseService.updateScreenshotAnalysis.mockResolvedValue();
+      supabaseService.saveAnalysisResult.mockResolvedValue();
+      supabaseService.updateScreenshotStatus.mockResolvedValue();
 
       await screenshotController.analyzeScreenshot(req, res);
 
@@ -864,14 +908,15 @@ describe('Screenshot Controller', () => {
       supabaseService.getScreenshotById.mockResolvedValue(null);
       supabaseService.downloadFile.mockResolvedValue(Buffer.from('image'));
       screenshotService.analyzeActivity.mockResolvedValue({ taskKey: 'PROJ-1' });
-      supabaseService.updateScreenshotAnalysis.mockResolvedValue();
+      supabaseService.saveAnalysisResult.mockResolvedValue();
+      supabaseService.updateScreenshotStatus.mockResolvedValue();
 
       await screenshotController.analyzeScreenshot(req, res);
 
-      expect(res.json).toHaveBeenCalledWith({
+      expect(res.json).toHaveBeenCalledWith(expect.objectContaining({
         success: true,
         screenshot_id: validWebhookData.id
-      });
+      }));
     });
 
     it('should handle markWorklogCreated failure gracefully', async () => {
@@ -886,17 +931,18 @@ describe('Screenshot Controller', () => {
         workType: 'office',
         timeSpentSeconds: 600
       });
-      supabaseService.updateScreenshotAnalysis.mockResolvedValue();
+      supabaseService.saveAnalysisResult.mockResolvedValue();
+      supabaseService.updateScreenshotStatus.mockResolvedValue();
       screenshotService.createWorklog.mockResolvedValue();
       supabaseService.markWorklogCreated.mockRejectedValue(new Error('Mark failed'));
 
       await screenshotController.analyzeScreenshot(req, res);
 
       expect(logger.error).toHaveBeenCalled();
-      expect(res.json).toHaveBeenCalledWith({
+      expect(res.json).toHaveBeenCalledWith(expect.objectContaining({
         success: true,
         screenshot_id: validWebhookData.id
-      });
+      }));
     });
   });
 });

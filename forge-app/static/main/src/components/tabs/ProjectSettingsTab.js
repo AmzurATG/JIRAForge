@@ -3,6 +3,7 @@ import { invoke } from '@forge/bridge';
 import ProjectStatusSettings from '../../shared/components/ProjectStatusSettings';
 import '../../shared/components/ProjectStatusSettings.css';
 import AppClassificationSettings from '../../shared/components/AppClassificationSettings';
+import ProjectWorklogSyncSettings from '../../shared/components/ProjectWorklogSyncSettings';
 import './ProjectSettingsTab.css';
 
 /**
@@ -222,6 +223,10 @@ function ProjectSettingsTab() {
                 onSave={handleSettingsSaved}
               />
               <AppClassificationSettings projectKey={selectedProject.key} />
+              <ProjectWorklogSyncSettings 
+                projectKey={selectedProject.key}
+                projectName={selectedProject.name}
+              />
             </>
           ) : (
             <div className="no-selection">

@@ -10,7 +10,76 @@
 
 import api, { route } from '@forge/api';
 import { isJiraAdmin, checkUserPermissions, getAllJiraProjects } from '../utils/jira.js';
+// eslint-disable-next-line deprecation/deprecation
 import { getSupabaseConfig, supabaseRequest, getOrCreateOrganization, getOrCreateUser } from '../utils/supabase.js';
+
+/**
+ * Check if user has project admin permissions
+ * @returns {Promise<boolean>} True if user is Jira admin or project admin
+ */
+async function hasProjectAdminPermission() {
+  const isAdmin = await isJiraAdmin();
+  if (isAdmin) return true;
+  
+  const permissions = await checkUserPermissions(['ADMINISTER_PROJECTS']);
+  return permissions.permissions?.ADMINISTER_PROJECTS?.havePermission || false;
+}
+
+/**
+ * Apply extra settings to project data object
+ * @param {Object} projectData - Project data to modify
+ * @param {Object} extraSettings - Extra settings to apply
+ */
+function applyExtraSettings(projectData, extraSettings) {
+  if (extraSettings.batchUploadInterval !== undefined) {
+    projectData.batch_upload_interval = extraSettings.batchUploadInterval;
+  }
+  if (extraSettings.autoWorklogEnabled !== undefined) {
+    projectData.auto_worklog_enabled = extraSettings.autoWorklogEnabled;
+  }
+  if (extraSettings.nonWorkThreshold !== undefined) {
+    projectData.non_work_threshold = extraSettings.nonWorkThreshold;
+  }
+}
+
+/**
+ * Upsert project settings in Supabase
+ * @param {Object} supabaseConfig - Supabase configuration
+ * @param {string} organizationId - Organization ID
+ * @param {string} projectKey - Project key
+ * @param {Object} projectData - Project data to save
+ * @returns {Promise<void>}
+ */
+async function upsertProjectSettings(supabaseConfig, organizationId, projectKey, projectData) {
+  // Check if settings already exist for this project
+  // eslint-disable-next-line deprecation/deprecation
+  const existingSettings = await supabaseRequest(
+    supabaseConfig,
+    `project_settings?organization_id=eq.${organizationId}&project_key=eq.${projectKey}&limit=1`
+  );
+
+  if (existingSettings && existingSettings.length > 0) {
+    // Update existing settings
+    const settingsId = existingSettings[0].id;
+    // eslint-disable-next-line deprecation/deprecation
+    await supabaseRequest(
+      supabaseConfig,
+      `project_settings?id=eq.${settingsId}`,
+      { method: 'PATCH', body: projectData }
+    );
+    console.log(`[ProjectSettings] Updated settings for project ${projectKey}`);
+  } else {
+    // Insert new settings
+    projectData.created_at = new Date().toISOString();
+    // eslint-disable-next-line deprecation/deprecation
+    await supabaseRequest(
+      supabaseConfig,
+      'project_settings',
+      { method: 'POST', body: projectData }
+    );
+    console.log(`[ProjectSettings] Created settings for project ${projectKey}`);
+  }
+}
 
 /**
  * Get all Jira statuses available in the system
@@ -71,6 +140,7 @@ export async function getJiraStatuses() {
  */
 export async function getProjectSettings(projectKey, cloudId, accountId) {
   try {
+    // eslint-disable-next-line deprecation/deprecation
     const supabaseConfig = await getSupabaseConfig(accountId);
     if (!supabaseConfig) {
       console.log('[ProjectSettings] Supabase not configured, returning defaults');
@@ -88,7 +158,7 @@ export async function getProjectSettings(projectKey, cloudId, accountId) {
         const org = await getOrCreateOrganization(cloudId, supabaseConfig);
         organizationId = org?.id;
       } catch (err) {
-        console.log('[ProjectSettings] Could not get organization');
+        console.log('[ProjectSettings] Could not get organization:', err.message);
       }
     }
 
@@ -101,6 +171,7 @@ export async function getProjectSettings(projectKey, cloudId, accountId) {
     }
 
     // Fetch project settings from Supabase
+    // eslint-disable-next-line deprecation/deprecation
     const response = await supabaseRequest(
       supabaseConfig,
       `project_settings?organization_id=eq.${organizationId}&project_key=eq.${projectKey}&limit=1`
@@ -149,6 +220,7 @@ export async function getProjectSettings(projectKey, cloudId, accountId) {
  */
 export async function getAllProjectSettings(cloudId, accountId) {
   try {
+    // eslint-disable-next-line deprecation/deprecation
     const supabaseConfig = await getSupabaseConfig(accountId);
     if (!supabaseConfig) {
       return [];
@@ -161,7 +233,7 @@ export async function getAllProjectSettings(cloudId, accountId) {
         const org = await getOrCreateOrganization(cloudId, supabaseConfig);
         organizationId = org?.id;
       } catch (err) {
-        console.log('[ProjectSettings] Could not get organization');
+        console.log('[ProjectSettings] Could not get organization:', err.message);
         return [];
       }
     }
@@ -171,6 +243,7 @@ export async function getAllProjectSettings(cloudId, accountId) {
     }
 
     // Fetch all project settings for this organization
+    // eslint-disable-next-line deprecation/deprecation
     const response = await supabaseRequest(
       supabaseConfig,
       `project_settings?organization_id=eq.${organizationId}&order=project_key.asc`
@@ -208,11 +281,8 @@ export async function getAllProjectSettings(cloudId, accountId) {
  */
 export async function saveProjectSettings(projectKey, projectName, trackedStatuses, cloudId, accountId, extraSettings = {}) {
   // Check if user is Jira Administrator or Project Admin
-  const isAdmin = await isJiraAdmin();
-  const permissions = await checkUserPermissions(['ADMINISTER_PROJECTS']);
-  const isProjectAdmin = permissions.permissions?.ADMINISTER_PROJECTS?.havePermission;
-
-  if (!isAdmin && !isProjectAdmin) {
+  const canSave = await hasProjectAdminPermission();
+  if (!canSave) {
     throw new Error('Access denied: Only Jira Administrators or Project Administrators can configure project settings');
   }
 
@@ -221,36 +291,21 @@ export async function saveProjectSettings(projectKey, projectName, trackedStatus
     throw new Error('At least one status must be selected for tracking');
   }
 
+  // eslint-disable-next-line deprecation/deprecation
   const supabaseConfig = await getSupabaseConfig(accountId);
   if (!supabaseConfig) {
     throw new Error('Supabase not configured. Please configure in Settings first.');
   }
 
-  // Get organization and user IDs for multi-tenancy
-  let organizationId = null;
-  let userId = null;
-
-  if (cloudId) {
-    try {
-      const org = await getOrCreateOrganization(cloudId, supabaseConfig);
-      organizationId = org?.id;
-    } catch (err) {
-      console.log('[ProjectSettings] Could not get organization:', err.message);
-      throw new Error('Could not determine organization');
-    }
-  }
-
+  // Get organization ID for multi-tenancy
+  const org = await getOrCreateOrganization(cloudId, supabaseConfig);
+  const organizationId = org?.id;
   if (!organizationId) {
     throw new Error('Organization not found');
   }
 
-  if (accountId) {
-    try {
-      userId = await getOrCreateUser(accountId, supabaseConfig, organizationId);
-    } catch (err) {
-      console.log('[ProjectSettings] Could not get user:', err.message);
-    }
-  }
+  // Get user ID
+  const userId = accountId ? await getOrCreateUser(accountId, supabaseConfig, organizationId) : null;
 
   // Prepare data for Supabase
   const projectData = {
@@ -262,42 +317,11 @@ export async function saveProjectSettings(projectKey, projectName, trackedStatus
     updated_at: new Date().toISOString()
   };
 
-  // Add optional new columns if provided
-  if (extraSettings.batchUploadInterval !== undefined) {
-    projectData.batch_upload_interval = extraSettings.batchUploadInterval;
-  }
-  if (extraSettings.autoWorklogEnabled !== undefined) {
-    projectData.auto_worklog_enabled = extraSettings.autoWorklogEnabled;
-  }
-  if (extraSettings.nonWorkThreshold !== undefined) {
-    projectData.non_work_threshold = extraSettings.nonWorkThreshold;
-  }
+  // Add optional settings
+  applyExtraSettings(projectData, extraSettings);
 
-  // Check if settings already exist for this project
-  const existingSettings = await supabaseRequest(
-    supabaseConfig,
-    `project_settings?organization_id=eq.${organizationId}&project_key=eq.${projectKey}&limit=1`
-  );
-
-  if (existingSettings && existingSettings.length > 0) {
-    // Update existing settings
-    const settingsId = existingSettings[0].id;
-    await supabaseRequest(
-      supabaseConfig,
-      `project_settings?id=eq.${settingsId}`,
-      { method: 'PATCH', body: projectData }
-    );
-    console.log(`[ProjectSettings] Updated settings for project ${projectKey}`);
-  } else {
-    // Insert new settings
-    projectData.created_at = new Date().toISOString();
-    await supabaseRequest(
-      supabaseConfig,
-      'project_settings',
-      { method: 'POST', body: projectData }
-    );
-    console.log(`[ProjectSettings] Created settings for project ${projectKey}`);
-  }
+  // Upsert settings
+  await upsertProjectSettings(supabaseConfig, organizationId, projectKey, projectData);
 
   return {
     success: true,
@@ -315,35 +339,26 @@ export async function saveProjectSettings(projectKey, projectName, trackedStatus
  */
 export async function deleteProjectSettings(projectKey, cloudId, accountId) {
   // Check if user is Jira Administrator or Project Admin
-  const isAdmin = await isJiraAdmin();
-  const permissions = await checkUserPermissions(['ADMINISTER_PROJECTS']);
-  const isProjectAdmin = permissions.permissions?.ADMINISTER_PROJECTS?.havePermission;
-
-  if (!isAdmin && !isProjectAdmin) {
+  const canDelete = await hasProjectAdminPermission();
+  if (!canDelete) {
     throw new Error('Access denied: Only Jira Administrators or Project Administrators can delete project settings');
   }
 
+  // eslint-disable-next-line deprecation/deprecation
   const supabaseConfig = await getSupabaseConfig(accountId);
   if (!supabaseConfig) {
     throw new Error('Supabase not configured');
   }
 
   // Get organization
-  let organizationId = null;
-  if (cloudId) {
-    try {
-      const org = await getOrCreateOrganization(cloudId, supabaseConfig);
-      organizationId = org?.id;
-    } catch (err) {
-      throw new Error('Could not determine organization');
-    }
-  }
-
+  const org = await getOrCreateOrganization(cloudId, supabaseConfig);
+  const organizationId = org?.id;
   if (!organizationId) {
     throw new Error('Organization not found');
   }
 
   // Delete project settings
+  // eslint-disable-next-line deprecation/deprecation
   await supabaseRequest(
     supabaseConfig,
     `project_settings?organization_id=eq.${organizationId}&project_key=eq.${projectKey}`,

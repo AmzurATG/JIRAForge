@@ -583,13 +583,13 @@ describe('Notification Controller', () => {
 
     it('should clear specific cooldown type', async () => {
       const { getClient } = require('../../src/services/db/supabase-client');
+      // Both eq() calls return this (chain). Make the object thenable so `await query` works.
       const mockSupabase = {
         from: jest.fn().mockReturnThis(),
         delete: jest.fn().mockReturnThis(),
-        eq: jest.fn().mockReturnThis()
+        eq: jest.fn().mockReturnThis(),
+        then: (resolve) => resolve({ error: null })
       };
-      mockSupabase.eq.mockResolvedValueOnce(mockSupabase);
-      mockSupabase.eq.mockResolvedValueOnce({ error: null });
       getClient.mockReturnValue(mockSupabase);
 
       const response = await request(app)

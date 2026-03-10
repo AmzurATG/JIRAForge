@@ -5,6 +5,7 @@
  */
 
 import { isJiraAdmin, checkUserPermissions } from '../utils/jira.js';
+// eslint-disable-next-line deprecation/deprecation
 import { getSupabaseConfig, supabaseRequest, getOrCreateOrganization, getOrCreateUser } from '../utils/supabase.js';
 import { remoteRequest } from '../utils/remote.js';
 
@@ -12,7 +13,183 @@ function normalizeIdentifier(identifier) {
   return (identifier || '')
     .toLowerCase()
     .replace(/\.(exe|app|dmg|msi|deb|rpm|snap|flatpak)$/i, '')
-    .replace(/[\s\-_\.]+/g, '');
+    .replaceAll(/[\s\-_.]+/g, '');
+}
+
+/**
+ * Deduplicate classification entries that refer to the same real-world application
+ * @param {Map} merged - Map of merged classification entries
+ * @returns {Map} Deduplicated map
+ */
+function deduplicateClassifications(merged) {
+  const deduped = new Map();
+  for (const entry of merged.values()) {
+    const normalized = normalizeIdentifier(entry.identifier);
+    const dedupeKey = `${normalized}|${entry.match_by}|${entry.classification}`;
+    const existing = deduped.get(dedupeKey);
+    
+    if (existing) {
+      // Prefer higher-priority source; if equal, prefer one with display_name
+      const sourcePriority = { project: 3, organization: 2, default: 1 };
+      const existingPriority = sourcePriority[existing.source] || 0;
+      const newPriority = sourcePriority[entry.source] || 0;
+      
+      if (newPriority > existingPriority || (newPriority === existingPriority && entry.display_name && !existing.display_name)) {
+        deduped.set(dedupeKey, entry);
+      }
+    } else {
+      deduped.set(dedupeKey, entry);
+    }
+  }
+  return deduped;
+}
+
+/**
+ * Update unknown activity records with new classification
+ * @param {Object} supabaseConfig - Supabase configuration
+ * @param {string} organizationId - Organization ID
+ * @param {string} projectKey - Project key (optional)
+ * @param {Object} data - Classification data
+ * @returns {Promise<number>} Number of updated records
+ */
+async function updateUnknownActivityRecords(supabaseConfig, organizationId, projectKey, data) {
+  try {
+    const statusForClassification = data.classification === 'productive' ? 'pending' : 'analyzed';
+    let activityBaseQuery =
+      `activity_records?organization_id=eq.${organizationId}` +
+      `&classification=eq.unknown` +
+      `&application_name=eq.${encodeURIComponent(data.identifier)}`;
+
+    if (projectKey) {
+      activityBaseQuery += `&project_key=eq.${projectKey}`;
+    }
+
+    // Count affected rows before PATCH so UI can show a useful result.
+    // eslint-disable-next-line deprecation/deprecation
+    const unknownRows = await supabaseRequest(
+      supabaseConfig,
+      `${activityBaseQuery}&select=id&limit=1000`
+    );
+    const updatedCount = Array.isArray(unknownRows) ? unknownRows.length : 0;
+
+    // eslint-disable-next-line deprecation/deprecation
+    await supabaseRequest(
+      supabaseConfig,
+      activityBaseQuery,
+      {
+        method: 'PATCH',
+        body: {
+          classification: data.classification,
+          status: statusForClassification
+        }
+      }
+    );
+    console.log(`[Classification] Updated unknown activity_records for ${data.identifier} → ${data.classification}`);
+    return updatedCount;
+  } catch (updateErr) {
+    // Don't fail the main save path if activity backfill update fails.
+    console.warn(
+      `[Classification] Saved classification but failed to update existing unknown activity records for ${data.identifier}:`,
+      updateErr.message
+    );
+    return 0;
+  }
+}
+
+/**
+ * Try psutil detection via desktop app
+ * @param {string} desktopAppUrl - Desktop app URL
+ * @param {string} searchTerm - Search term
+ * @returns {Promise<Object|null>} Detection result or null
+ */
+async function tryPsutilDetection(desktopAppUrl, searchTerm) {
+  if (!desktopAppUrl) {
+    return null;
+  }
+
+  try {
+    console.log('[Classification] Trying psutil detection via desktop app');
+    const response = await fetch(`${desktopAppUrl}/api/search-running-app`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ search_term: searchTerm })
+    });
+
+    if (response.ok) {
+      const result = await response.json();
+      if (result?.success && result?.found && result?.best_match) {
+        console.log(`[Classification] psutil found match: ${result.best_match.identifier}`);
+        return {
+          success: true,
+          found: true,
+          source: 'psutil',
+          matches: result.matches,
+          best_match: result.best_match
+        };
+      }
+    }
+  } catch (err) {
+    console.log('[Classification] Desktop app not available (continuing):', err.message);
+  }
+  
+  return null;
+}
+
+/**
+ * Try LLM identification via AI server
+ * @param {string} searchTerm - Search term
+ * @returns {Promise<Object>} Identification result
+ */
+async function tryLLMIdentification(searchTerm) {
+  try {
+    console.log('[Classification Service] STEP 3: Falling back to LLM identification via AI server');
+    console.log('[Classification Service] Calling remoteRequest to /api/identify-app with search_term:', searchTerm);
+    const llmResult = await remoteRequest('/api/identify-app', {
+      body: { search_term: searchTerm }
+    });
+    console.log('[Classification Service] LLM response:', JSON.stringify(llmResult, null, 2));
+
+    if (llmResult?.identified) {
+      console.log('[Classification Service] LLM successfully identified app:', llmResult.identifier);
+      console.log('[Classification Service] ========== searchAppIdentifier END (LLM success) ==========');
+      return {
+        success: true,
+        found: true,
+        source: 'llm',
+        matches: [{
+          identifier: llmResult.identifier,
+          display_name: llmResult.display_name,
+          confidence: llmResult.confidence,
+          source: 'llm'
+        }],
+        best_match: {
+          identifier: llmResult.identifier,
+          display_name: llmResult.display_name,
+          confidence: llmResult.confidence,
+          source: 'llm'
+        }
+      };
+    }
+    
+    console.log('[Classification Service] LLM could not identify app');
+    console.log('[Classification Service] ========== searchAppIdentifier END (LLM no match) ==========');
+    return {
+      success: true,
+      found: false,
+      source: 'none',
+      matches: [],
+      message: `Could not identify application matching "${searchTerm}"`
+    };
+  } catch (err) {
+    console.error('[Classification Service] LLM identification error:', err.message);
+    console.error('[Classification Service] Full error:', err);
+    console.log('[Classification Service] ========== searchAppIdentifier END (LLM error) ==========');
+    return {
+      success: false,
+      found: false,
+      error: `Failed to identify application: ${err.message}`
+    };
+  }
 }
 
 /**
@@ -25,6 +202,7 @@ function normalizeIdentifier(identifier) {
  */
 export async function getClassifications(projectKey, cloudId, accountId) {
   try {
+    // eslint-disable-next-line deprecation/deprecation
     const supabaseConfig = await getSupabaseConfig(accountId);
     if (!supabaseConfig) {
       console.log('[Classification] Supabase not configured');
@@ -37,12 +215,13 @@ export async function getClassifications(projectKey, cloudId, accountId) {
         const org = await getOrCreateOrganization(cloudId, supabaseConfig);
         organizationId = org?.id;
       } catch (err) {
-        console.log('[Classification] Could not get organization');
+        console.log('[Classification] Could not get organization:', err.message);
         return [];
       }
     }
 
     // Fetch global defaults (organization_id IS NULL, is_default = true)
+    // eslint-disable-next-line deprecation/deprecation
     const defaults = await supabaseRequest(
       supabaseConfig,
       'application_classifications?is_default=eq.true&organization_id=is.null&order=identifier.asc'
@@ -51,6 +230,7 @@ export async function getClassifications(projectKey, cloudId, accountId) {
     // Fetch org-level overrides
     let orgOverrides = [];
     if (organizationId) {
+      // eslint-disable-next-line deprecation/deprecation
       orgOverrides = await supabaseRequest(
         supabaseConfig,
         `application_classifications?organization_id=eq.${organizationId}&project_key=is.null&order=identifier.asc`
@@ -60,6 +240,7 @@ export async function getClassifications(projectKey, cloudId, accountId) {
     // Fetch project-level overrides
     let projectOverrides = [];
     if (organizationId && projectKey) {
+      // eslint-disable-next-line deprecation/deprecation
       projectOverrides = await supabaseRequest(
         supabaseConfig,
         `application_classifications?organization_id=eq.${organizationId}&project_key=eq.${projectKey}&order=identifier.asc`
@@ -89,28 +270,7 @@ export async function getClassifications(projectKey, cloudId, accountId) {
 
     // Deduplicate entries that refer to the same real-world application
     // (e.g., "code.exe", "vscode", "Visual Studio Code" are all VS Code)
-    const deduped = new Map();
-    for (const entry of merged.values()) {
-      const normalized = entry.identifier
-        .toLowerCase()
-        .replace(/\.(exe|app|dmg|msi|deb|rpm|snap|flatpak)$/i, '')
-        .replace(/[\s\-_\.]+/g, '');
-      const dedupeKey = `${normalized}|${entry.match_by}|${entry.classification}`;
-      const existing = deduped.get(dedupeKey);
-      if (!existing) {
-        deduped.set(dedupeKey, entry);
-      } else {
-        // Prefer higher-priority source; if equal, prefer one with display_name
-        const sourcePriority = { project: 3, organization: 2, default: 1 };
-        const existingPriority = sourcePriority[existing.source] || 0;
-        const newPriority = sourcePriority[entry.source] || 0;
-        if (newPriority > existingPriority) {
-          deduped.set(dedupeKey, entry);
-        } else if (newPriority === existingPriority && entry.display_name && !existing.display_name) {
-          deduped.set(dedupeKey, entry);
-        }
-      }
-    }
+    const deduped = deduplicateClassifications(merged);
 
     const result = Array.from(deduped.values());
     console.log(`[Classification] Fetched ${result.length} classifications (${(defaults || []).length} defaults, ${(orgOverrides || []).length} org, ${(projectOverrides || []).length} project)`);
@@ -139,6 +299,7 @@ export async function saveClassification(classification, projectKey, cloudId, ac
     throw new Error('Access denied: Only Jira Administrators or Project Administrators can manage classifications');
   }
 
+  // eslint-disable-next-line deprecation/deprecation
   const supabaseConfig = await getSupabaseConfig(accountId);
   if (!supabaseConfig) {
     throw new Error('Supabase not configured');
@@ -154,7 +315,7 @@ export async function saveClassification(classification, projectKey, cloudId, ac
   }
 
   // Input validation
-  if (!classification.identifier || !classification.identifier.trim()) {
+  if (!classification.identifier?.trim()) {
     throw new Error('Classification identifier is required');
   }
   if (!classification.classification || !['productive', 'non_productive', 'private'].includes(classification.classification)) {
@@ -191,10 +352,12 @@ export async function saveClassification(classification, projectKey, cloudId, ac
     query += '&project_key=is.null';
   }
 
+  // eslint-disable-next-line deprecation/deprecation
   const existing = await supabaseRequest(supabaseConfig, query);
 
   if (existing && existing.length > 0) {
     // Update
+    // eslint-disable-next-line deprecation/deprecation
     await supabaseRequest(
       supabaseConfig,
       `application_classifications?id=eq.${existing[0].id}`,
@@ -204,6 +367,7 @@ export async function saveClassification(classification, projectKey, cloudId, ac
   } else {
     // Insert
     data.created_at = new Date().toISOString();
+    // eslint-disable-next-line deprecation/deprecation
     await supabaseRequest(
       supabaseConfig,
       'application_classifications',
@@ -213,45 +377,12 @@ export async function saveClassification(classification, projectKey, cloudId, ac
   }
 
   // Reflect manual admin classification in existing unknown activity rows too.
-  // This keeps activity_records consistent with the newly saved app rule.
-  let updatedUnknownRecords = 0;
-  try {
-    const statusForClassification = data.classification === 'productive' ? 'pending' : 'analyzed';
-    let activityBaseQuery =
-      `activity_records?organization_id=eq.${organizationId}` +
-      `&classification=eq.unknown` +
-      `&application_name=eq.${encodeURIComponent(data.identifier)}`;
-
-    if (projectKey) {
-      activityBaseQuery += `&project_key=eq.${projectKey}`;
-    }
-
-    // Count affected rows before PATCH so UI can show a useful result.
-    const unknownRows = await supabaseRequest(
-      supabaseConfig,
-      `${activityBaseQuery}&select=id&limit=1000`
-    );
-    updatedUnknownRecords = Array.isArray(unknownRows) ? unknownRows.length : 0;
-
-    await supabaseRequest(
-      supabaseConfig,
-      activityBaseQuery,
-      {
-        method: 'PATCH',
-        body: {
-          classification: data.classification,
-          status: statusForClassification
-        }
-      }
-    );
-    console.log(`[Classification] Updated unknown activity_records for ${data.identifier} → ${data.classification}`);
-  } catch (updateErr) {
-    // Don't fail the main save path if activity backfill update fails.
-    console.warn(
-      `[Classification] Saved classification but failed to update existing unknown activity records for ${data.identifier}:`,
-      updateErr.message
-    );
-  }
+  const updatedUnknownRecords = await updateUnknownActivityRecords(
+    supabaseConfig,
+    organizationId,
+    projectKey,
+    data
+  );
 
   return {
     success: true,
@@ -276,12 +407,14 @@ export async function deleteClassification(classificationId, cloudId, accountId)
     throw new Error('Access denied: Only administrators can delete classifications');
   }
 
+  // eslint-disable-next-line deprecation/deprecation
   const supabaseConfig = await getSupabaseConfig(accountId);
   if (!supabaseConfig) {
     throw new Error('Supabase not configured');
   }
 
   // Verify it's not a default
+  // eslint-disable-next-line deprecation/deprecation
   const existing = await supabaseRequest(
     supabaseConfig,
     `application_classifications?id=eq.${classificationId}&limit=1`
@@ -295,6 +428,7 @@ export async function deleteClassification(classificationId, cloudId, accountId)
     throw new Error('Cannot delete system default classifications. Create an org/project override instead.');
   }
 
+  // eslint-disable-next-line deprecation/deprecation
   await supabaseRequest(
     supabaseConfig,
     `application_classifications?id=eq.${classificationId}`,
@@ -315,6 +449,7 @@ export async function deleteClassification(classificationId, cloudId, accountId)
  */
 export async function getUnknownApps(projectKey, cloudId, accountId) {
   try {
+    // eslint-disable-next-line deprecation/deprecation
     const supabaseConfig = await getSupabaseConfig(accountId);
     if (!supabaseConfig) return [];
 
@@ -335,6 +470,7 @@ export async function getUnknownApps(projectKey, cloudId, accountId) {
     );
 
     // Get distinct unknown apps from activity_records
+    // eslint-disable-next-line deprecation/deprecation
     const records = await supabaseRequest(
       supabaseConfig,
       `activity_records?organization_id=eq.${organizationId}&classification=eq.unknown&select=application_name,window_title,metadata&order=created_at.desc&limit=100`
@@ -434,6 +570,7 @@ export async function searchAppIdentifier(searchTerm, cloudId, accountId, option
 
   // STEP 1: Check DB for existing classification
   try {
+    // eslint-disable-next-line deprecation/deprecation
     const supabaseConfig = await getSupabaseConfig(accountId);
     if (supabaseConfig) {
       let organizationId = null;
@@ -442,7 +579,7 @@ export async function searchAppIdentifier(searchTerm, cloudId, accountId, option
           const org = await getOrCreateOrganization(cloudId, supabaseConfig);
           organizationId = org?.id;
         } catch (err) {
-          console.log('[Classification] Could not get organization for DB search');
+          console.log('[Classification] Could not get organization for DB search:', err.message);
         }
       }
 
@@ -452,6 +589,7 @@ export async function searchAppIdentifier(searchTerm, cloudId, accountId, option
       const searchPattern = `*${normalizedSearchTerm}*`;
       let endpoint = `application_classifications?or=(identifier.ilike.${searchPattern},display_name.ilike.${searchPattern})&limit=5`;
 
+      // eslint-disable-next-line deprecation/deprecation
       const dbResults = await supabaseRequest(supabaseConfig, endpoint);
 
       if (dbResults && dbResults.length > 0) {
@@ -482,81 +620,11 @@ export async function searchAppIdentifier(searchTerm, cloudId, accountId, option
   }
 
   // STEP 2: If desktop app URL provided, try psutil detection
-  if (options.desktopAppUrl) {
-    try {
-      console.log('[Classification] Trying psutil detection via desktop app');
-      const response = await fetch(`${options.desktopAppUrl}/api/search-running-app`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ search_term: searchTerm })
-      });
-
-      if (response.ok) {
-        const result = await response.json();
-        if (result.success && result.found && result.best_match) {
-          console.log(`[Classification] psutil found match: ${result.best_match.identifier}`);
-          return {
-            success: true,
-            found: true,
-            source: 'psutil',
-            matches: result.matches,
-            best_match: result.best_match
-          };
-        }
-      }
-    } catch (err) {
-      console.log('[Classification] Desktop app not available (continuing):', err.message);
-    }
+  const psutilResult = await tryPsutilDetection(options.desktopAppUrl, searchTerm);
+  if (psutilResult) {
+    return psutilResult;
   }
 
   // STEP 3: Fallback to LLM identification via AI server
-  try {
-    console.log('[Classification Service] STEP 3: Falling back to LLM identification via AI server');
-    console.log('[Classification Service] Calling remoteRequest to /api/identify-app with search_term:', searchTerm);
-    const llmResult = await remoteRequest('/api/identify-app', {
-      body: { search_term: searchTerm }
-    });
-    console.log('[Classification Service] LLM response:', JSON.stringify(llmResult, null, 2));
-
-    if (llmResult && llmResult.identified) {
-      console.log('[Classification Service] LLM successfully identified app:', llmResult.identifier);
-      console.log('[Classification Service] ========== searchAppIdentifier END (LLM success) ==========');
-      return {
-        success: true,
-        found: true,
-        source: 'llm',
-        matches: [{
-          identifier: llmResult.identifier,
-          display_name: llmResult.display_name,
-          confidence: llmResult.confidence,
-          source: 'llm'
-        }],
-        best_match: {
-          identifier: llmResult.identifier,
-          display_name: llmResult.display_name,
-          confidence: llmResult.confidence,
-          source: 'llm'
-        }
-      };
-    } else {
-      console.log('[Classification Service] LLM could not identify app');
-      console.log('[Classification Service] ========== searchAppIdentifier END (LLM no match) ==========');
-      return {
-        success: true,
-        found: false,
-        source: 'none',
-        matches: [],
-        message: `Could not identify application matching "${searchTerm}"`
-      };
-    }
-  } catch (err) {
-    console.error('[Classification Service] LLM identification error:', err.message);
-    console.error('[Classification Service] Full error:', err);
-    console.log('[Classification Service] ========== searchAppIdentifier END (LLM error) ==========');
-    return {
-      success: false,
-      found: false,
-      error: `Failed to identify application: ${err.message}`
-    };
-  }
+  return await tryLLMIdentification(searchTerm);
 }

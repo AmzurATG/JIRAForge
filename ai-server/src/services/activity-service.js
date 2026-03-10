@@ -118,25 +118,39 @@ Return ONLY valid JSON (no markdown, no extra text):
  * any fully-formed objects from the partial output.
  */
 function salvageTruncatedJsonArray(truncatedJson) {
-  // Find all complete JSON objects in the array
-  const objectPattern = /\{[^{}]*"recordIndex"\s*:\s*\d+[^{}]*\}/g;
-  const matches = truncatedJson.match(objectPattern);
-
-  if (!matches || matches.length === 0) {
-    throw new Error('Failed to parse AI response — no complete records found in truncated JSON');
-  }
-
+  // Find balanced {...} blocks without using vulnerable regex
+  // Instead of regex, iterate through string to find balanced braces
   const salvaged = [];
-  for (const match of matches) {
-    try {
-      salvaged.push(JSON.parse(match));
-    } catch {
-      // Skip malformed individual objects
+  let depth = 0;
+  let start = -1;
+
+  for (let i = 0; i < truncatedJson.length; i++) {
+    const char = truncatedJson[i];
+    if (char === '{') {
+      if (depth === 0) start = i;
+      depth++;
+    } else if (char === '}') {
+      depth--;
+      if (depth === 0 && start !== -1) {
+        const objectStr = truncatedJson.slice(start, i + 1);
+        // Validate it contains recordIndex before parsing
+        if (objectStr.includes('"recordIndex"')) {
+          try {
+            const parsed = JSON.parse(objectStr);
+            if (typeof parsed.recordIndex === 'number') {
+              salvaged.push(parsed);
+            }
+          } catch {
+            // Skip malformed individual objects
+          }
+        }
+        start = -1;
+      }
     }
   }
 
   if (salvaged.length === 0) {
-    throw new Error('Failed to parse AI response — could not salvage any records from truncated JSON');
+    throw new Error('Failed to parse AI response — no complete records found in truncated JSON');
   }
 
   logger.warn(`[ActivityService] Salvaged ${salvaged.length} records from truncated JSON response`);

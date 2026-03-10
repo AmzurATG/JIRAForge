@@ -209,23 +209,34 @@ class ActivityPollingService {
   }
 
   /**
-   * Process all user batches
+   * Process all user batches concurrently (up to ACTIVITY_POLLING_CONCURRENCY at a time)
    * @param {Object} userBatches - Batches grouped by user ID
    * @returns {Promise<Object>} Success and failure counts
    */
   async processUserBatches(userBatches) {
+    const concurrencyLimit = Number.parseInt(process.env.ACTIVITY_POLLING_CONCURRENCY || '10', 10);
     let successCount = 0;
     let failureCount = 0;
 
-    for (const [userId, records] of Object.entries(userBatches)) {
-      try {
-        const processed = await this.processSingleBatch(userId, records);
-        successCount += processed;
-      } catch (error) {
-        failureCount += records.length;
-        const recordIds = records.map(r => r.id);
-        logger.error(`Error processing activity batch for user ${userId}:`, error);
-        await activityDbService.markBatchFailed(recordIds, error.message);
+    const entries = Object.entries(userBatches);
+
+    for (let i = 0; i < entries.length; i += concurrencyLimit) {
+      const chunk = entries.slice(i, i + concurrencyLimit);
+      const results = await Promise.allSettled(
+        chunk.map(([userId, records]) => this.processSingleBatch(userId, records))
+      );
+
+      for (let j = 0; j < results.length; j++) {
+        const result = results[j];
+        const [userId, records] = chunk[j];
+        if (result.status === 'fulfilled') {
+          successCount += result.value;
+        } else {
+          failureCount += records.length;
+          const recordIds = records.map(r => r.id);
+          logger.error(`Error processing activity batch for user ${userId}:`, result.reason);
+          await activityDbService.markBatchFailed(recordIds, result.reason.message);
+        }
       }
     }
 

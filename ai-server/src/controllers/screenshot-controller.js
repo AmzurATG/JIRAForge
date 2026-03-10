@@ -250,7 +250,7 @@ async function updateScreenshotDurationIfNeeded(screenshotId, webhookData, actua
  * Handle analysis error and update screenshot status
  * @param {Error} error - Error object
  * @param {Object} webhookData - Webhook data
- * @returns {Object} Error response object
+ * @returns {Promise<Object>} Error response object
  */
 async function handleAnalysisError(error, webhookData) {
   const failedScreenshotId = webhookData.screenshot_id;

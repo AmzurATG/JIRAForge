@@ -2,18 +2,7 @@
  * Google Sheets Logger for LLM API Usage Tracking
  * Logs AI API calls to a Google Sheet for cost tracking and monitoring
  *
- * Columns logged:
- * - TimeStamp
- * - Employee Name
- * - IP Address
- * - Project Name
- * - API call name
- * - API account email
- * - Provider (Fireworks/Portkey)
- * - Model Used
- * - Input token size
- * - Output token size
- * - Cost incurred
+ * See SHEETS_LOG_HEADERS constant for logged columns (A-K).
  */
 
 const { google } = require('googleapis');
@@ -22,6 +11,33 @@ const os = require('node:os');
 
 // Singleton instance
 let sheetsLogger = null;
+
+// Column headers (single source of truth)
+const SHEETS_LOG_HEADERS = [
+  'TimeStamp',
+  'Employee Name',
+  'IP Address',
+  'Project Name',
+  'API call name',
+  'API account email',
+  'Provider',
+  'Model Used',
+  'Input token size',
+  'Output token size',
+  'Cost incurred'
+];
+
+/**
+ * Helper to disable sheets logger and return null
+ * @param {string} reason - Reason for disabling
+ * @param {string} level - Log level ('info' or 'warn')
+ * @returns {null}
+ */
+function disableLogger(reason, level = 'warn') {
+  logger[level](`[SheetsLogger] Disabled (${reason})`);
+  sheetsLogger = null;
+  return null;
+}
 
 /**
  * Get the machine's IP address
@@ -109,6 +125,14 @@ class SheetsLogger {
   }
 
   /**
+   * Check if logger is properly configured for operations
+   * @returns {boolean} True if enabled and sheet ID configured
+   */
+  _isConfigured() {
+    return this.enabled && this.sheetId;
+  }
+
+  /**
    * Initialize Google Sheets API client
    */
   async _getSheets() {
@@ -164,54 +188,48 @@ class SheetsLogger {
     employeeName = null,
     projectName = null
   }) {
-    if (this.enabled && this.sheetId) {
-      try {
-        const sheets = await this._getSheets();
+    if (!this._isConfigured()) {
+      logger.debug('[SheetsLogger] Not configured, skipping request log');
+      return false;
+    }
 
-        // Calculate cost if not provided
-        const calculatedCost = cost !== null ? cost : calculateCost(provider, model, inputTokens, outputTokens);
+    try {
+      const sheets = await this._getSheets();
 
-        // Prepare row data
-        const row = [
-          new Date().toISOString().replace('T', ' ').substring(0, 19),  // TimeStamp
-          employeeName || this.employeeName,                            // Employee Name
-          getIpAddress(),                                               // IP Address
-          projectName || this.projectName,                              // Project Name
-          apiCallName,                                                  // API call name
-          this.apiAccountEmail,                                         // API account email
-          provider,                                                     // Provider
-          model,                                                        // Model Used
-          inputTokens,                                                  // Input token size
-          outputTokens,                                                 // Output token size
-          calculatedCost                                                // Cost incurred
-        ];
+      // Calculate cost if not provided
+      const calculatedCost = cost !== null ? cost : calculateCost(provider, model, inputTokens, outputTokens);
 
-        // Append row to sheet
-        await sheets.spreadsheets.values.append({
-          spreadsheetId: this.sheetId,
-          range: `${this.sheetName}!A:K`,
-          valueInputOption: 'RAW',
-          insertDataOption: 'INSERT_ROWS',
-          resource: {
-            values: [row]
-          }
-        });
+      // Prepare row data
+      const row = [
+        new Date().toISOString().replace('T', ' ').substring(0, 19),  // TimeStamp
+        employeeName || this.employeeName,                            // Employee Name
+        getIpAddress(),                                               // IP Address
+        projectName || this.projectName,                              // Project Name
+        apiCallName,                                                  // API call name
+        this.apiAccountEmail,                                         // API account email
+        provider,                                                     // Provider
+        model,                                                        // Model Used
+        inputTokens,                                                  // Input token size
+        outputTokens,                                                 // Output token size
+        calculatedCost                                                // Cost incurred
+      ];
 
-        logger.debug('[SheetsLogger] Logged: %s | %s | %s | in:%d out:%d | $%s',
-          apiCallName, provider, model, inputTokens, outputTokens, calculatedCost);
+      // Append row to sheet
+      await sheets.spreadsheets.values.append({
+        spreadsheetId: this.sheetId,
+        range: `${this.sheetName}!A:K`,
+        valueInputOption: 'RAW',
+        insertDataOption: 'INSERT_ROWS',
+        resource: { values: [row] }
+      });
 
-        return true;
-      } catch (error) {
-        // Don't fail the request if logging fails
-        logger.warn('[SheetsLogger] Failed to log request:', error.message);
-        return false;
-      }
-    } else {
-      if (!this.enabled) {
-        logger.debug('[SheetsLogger] Logging disabled, skipping');
-      } else if (!this.sheetId) {
-        logger.debug('[SheetsLogger] No sheet ID configured, skipping');
-      }
+      logger.debug('[SheetsLogger] Logged: %s | %s | %s | in:%d out:%d | $%s',
+        apiCallName, provider, model, inputTokens, outputTokens, calculatedCost);
+
+      return true;
+    } catch (error) {
+      // Don't fail the request if logging fails
+      logger.warn('[SheetsLogger] Failed to log request:', error.message);
       return false;
     }
   }
@@ -221,15 +239,11 @@ class SheetsLogger {
    * @returns {Promise<boolean>} True if connection successful
    */
   async testConnection() {
-    if (!this.enabled || !this.sheetId) {
-      return false;
-    }
+    if (!this._isConfigured()) return false;
 
     try {
       const sheets = await this._getSheets();
-      await sheets.spreadsheets.get({
-        spreadsheetId: this.sheetId
-      });
+      await sheets.spreadsheets.get({ spreadsheetId: this.sheetId });
       logger.info('[SheetsLogger] Connection test successful');
       return true;
     } catch (error) {
@@ -243,46 +257,27 @@ class SheetsLogger {
    * @returns {Promise<boolean>} True if headers are set
    */
   async ensureHeaders() {
-    if (!this.enabled || !this.sheetId) {
-      return false;
-    }
+    if (!this._isConfigured()) return false;
 
     try {
       const sheets = await this._getSheets();
+      const headerRange = `${this.sheetName}!A1:K1`;
 
       // Check if first row has headers
       const response = await sheets.spreadsheets.values.get({
         spreadsheetId: this.sheetId,
-        range: `${this.sheetName}!A1:K1`
+        range: headerRange
       });
 
       const existingHeaders = response.data.values?.[0] || [];
 
-      if (existingHeaders.length === 0 || existingHeaders[0] !== 'TimeStamp') {
-        // Set headers
-        const headers = [
-          'TimeStamp',
-          'Employee Name',
-          'IP Address',
-          'Project Name',
-          'API call name',
-          'API account email',
-          'Provider',
-          'Model Used',
-          'Input token size',
-          'Output token size',
-          'Cost incurred'
-        ];
-
+      if (existingHeaders.length === 0 || existingHeaders[0] !== SHEETS_LOG_HEADERS[0]) {
         await sheets.spreadsheets.values.update({
           spreadsheetId: this.sheetId,
-          range: `${this.sheetName}!A1:K1`,
+          range: headerRange,
           valueInputOption: 'RAW',
-          resource: {
-            values: [headers]
-          }
+          resource: { values: [SHEETS_LOG_HEADERS] }
         });
-
         logger.info('[SheetsLogger] Headers created');
       }
 
@@ -307,23 +302,10 @@ function initializeSheetsLogger() {
   const employeeName = process.env.SHEETS_EMPLOYEE_NAME || 'AI Server';
   const apiAccountEmail = process.env.SHEETS_API_ACCOUNT_EMAIL || 'ai-server@amzur.com';
 
-  if (!enabled) {
-    logger.info('[SheetsLogger] Disabled (SHEETS_LOGGING_ENABLED != true)');
-    sheetsLogger = null;
-    return null;
-  }
-
-  if (!sheetId) {
-    logger.warn('[SheetsLogger] Disabled (GOOGLE_SHEET_ID not configured)');
-    sheetsLogger = null;
-    return null;
-  }
-
-  if (!credentials) {
-    logger.warn('[SheetsLogger] Disabled (GOOGLE_SERVICE_ACCOUNT_JSON not configured)');
-    sheetsLogger = null;
-    return null;
-  }
+  // Validate required configuration
+  if (!enabled) return disableLogger('SHEETS_LOGGING_ENABLED != true', 'info');
+  if (!sheetId) return disableLogger('GOOGLE_SHEET_ID not configured');
+  if (!credentials) return disableLogger('GOOGLE_SERVICE_ACCOUNT_JSON not configured');
 
   try {
     sheetsLogger = new SheetsLogger({
@@ -379,5 +361,6 @@ module.exports = {
   getSheetsLogger,
   logLLMRequest,
   calculateCost,
-  getIpAddress
+  getIpAddress,
+  SHEETS_LOG_HEADERS
 };

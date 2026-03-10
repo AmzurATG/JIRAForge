@@ -7,6 +7,7 @@
  */
 
 import { isJiraAdmin, checkUserPermissions } from '../utils/jira.js';
+// eslint-disable-next-line deprecation/deprecation
 import { getSupabaseConfig, supabaseRequest, getOrCreateOrganization, getOrCreateUser } from '../utils/supabase.js';
 import { DEFAULT_TRACKING_SETTINGS } from '../config/constants.js';
 
@@ -42,7 +43,86 @@ export async function saveUserSettings(accountId, settings) {
 
   // No settings to save - AI server connection is managed via Forge Remote in manifest.yml
   // This function is kept for backward compatibility
-  return;
+}
+
+/**
+ * Fetch tracking settings from database with fallback hierarchy
+ * @param {Object} supabaseConfig - Supabase configuration
+ * @param {string} organizationId - Organization ID
+ * @param {string} projectKey - Project key (optional)
+ * @returns {Promise<{response: Array, settingsSource: string}>} Settings response and source
+ */
+async function fetchTrackingSettingsWithFallback(supabaseConfig, organizationId, projectKey) {
+  let response;
+  let settingsSource = 'global';
+
+  // Priority: project-specific → org-level → global defaults
+  if (organizationId && projectKey) {
+    // Try project-specific settings first
+    // eslint-disable-next-line deprecation/deprecation
+    response = await supabaseRequest(
+      supabaseConfig,
+      `tracking_settings?organization_id=eq.${organizationId}&project_key=eq.${projectKey}&limit=1`
+    );
+    if (response && response.length > 0) {
+      settingsSource = 'project';
+      return { response, settingsSource };
+    }
+  }
+
+  // Fall back to org-level settings
+  if (organizationId) {
+    // eslint-disable-next-line deprecation/deprecation
+    response = await supabaseRequest(
+      supabaseConfig,
+      `tracking_settings?organization_id=eq.${organizationId}&project_key=is.null&limit=1`
+    );
+    if (response && response.length > 0) {
+      settingsSource = 'organization';
+      return { response, settingsSource };
+    }
+  }
+
+  // Fall back to global defaults
+  // eslint-disable-next-line deprecation/deprecation
+  response = await supabaseRequest(
+    supabaseConfig,
+    'tracking_settings?organization_id=is.null&project_key=is.null&limit=1'
+  );
+  if (response && response.length > 0) {
+    settingsSource = 'global';
+  }
+
+  return { response, settingsSource };
+}
+
+/**
+ * Transform database settings to API format
+ * @param {Object} settings - Raw database settings
+ * @param {string} settingsSource - Source of settings (project/organization/global/default)
+ * @returns {Object} Formatted settings
+ */
+function transformSettingsToApiFormat(settings, settingsSource) {
+  return {
+    screenshotMonitoringEnabled: settings.screenshot_monitoring_enabled,
+    screenshotIntervalSeconds: settings.screenshot_interval_seconds,
+    intervalTrackingEnabled: settings.interval_tracking_enabled ?? (settings.tracking_mode === 'interval'),
+    eventTrackingEnabled: settings.event_tracking_enabled,
+    trackWindowChanges: settings.track_window_changes,
+    trackIdleTime: settings.track_idle_time,
+    idleThresholdSeconds: settings.idle_threshold_seconds,
+    whitelistEnabled: settings.whitelist_enabled,
+    whitelistedApps: settings.whitelisted_apps || [],
+    blacklistEnabled: settings.blacklist_enabled,
+    blacklistedApps: settings.blacklisted_apps || [],
+    nonWorkThresholdPercent: settings.non_work_threshold_percent,
+    flagExcessiveNonWork: settings.flag_excessive_non_work,
+    privateSitesEnabled: settings.private_sites_enabled,
+    privateSites: settings.private_sites || [],
+    jiraWorklogSyncEnabled: settings.jira_worklog_sync_enabled ?? false,
+    projectKey: settings.project_key || null,
+    settingsSource: settingsSource
+  };
 }
 
 /**
@@ -55,6 +135,7 @@ export async function saveUserSettings(accountId, settings) {
  */
 export async function getTrackingSettings(accountId, cloudId, projectKey = null) {
   try {
+    // eslint-disable-next-line deprecation/deprecation
     const supabaseConfig = await getSupabaseConfig(accountId);
     if (!supabaseConfig) {
       console.log('[TrackingSettings] Supabase not configured, returning defaults');
@@ -68,69 +149,18 @@ export async function getTrackingSettings(accountId, cloudId, projectKey = null)
         const org = await getOrCreateOrganization(cloudId, supabaseConfig);
         organizationId = org?.id;
       } catch (err) {
-        console.log('[TrackingSettings] Could not get organization, using global settings');
+        console.log('[TrackingSettings] Could not get organization, using global settings:', err.message);
       }
     }
 
-    let response;
-    let settingsSource = 'global';
-
-    // Priority: project-specific → org-level → global defaults
-    if (organizationId && projectKey) {
-      // Try project-specific settings first
-      response = await supabaseRequest(
-        supabaseConfig,
-        `tracking_settings?organization_id=eq.${organizationId}&project_key=eq.${projectKey}&limit=1`
-      );
-      if (response && response.length > 0) {
-        settingsSource = 'project';
-      }
-    }
-
-    // Fall back to org-level settings
-    if (organizationId && (!response || response.length === 0)) {
-      response = await supabaseRequest(
-        supabaseConfig,
-        `tracking_settings?organization_id=eq.${organizationId}&project_key=is.null&limit=1`
-      );
-      if (response && response.length > 0) {
-        settingsSource = 'organization';
-      }
-    }
-
-    // Fall back to global defaults
-    if (!response || response.length === 0) {
-      response = await supabaseRequest(
-        supabaseConfig,
-        'tracking_settings?organization_id=is.null&project_key=is.null&limit=1'
-      );
-      if (response && response.length > 0) {
-        settingsSource = 'global';
-      }
-    }
+    const { response, settingsSource } = await fetchTrackingSettingsWithFallback(
+      supabaseConfig,
+      organizationId,
+      projectKey
+    );
 
     if (response && response.length > 0) {
-      const settings = response[0];
-      return {
-        screenshotMonitoringEnabled: settings.screenshot_monitoring_enabled,
-        screenshotIntervalSeconds: settings.screenshot_interval_seconds,
-        intervalTrackingEnabled: settings.interval_tracking_enabled ?? (settings.tracking_mode === 'interval'),
-        eventTrackingEnabled: settings.event_tracking_enabled,
-        trackWindowChanges: settings.track_window_changes,
-        trackIdleTime: settings.track_idle_time,
-        idleThresholdSeconds: settings.idle_threshold_seconds,
-        whitelistEnabled: settings.whitelist_enabled,
-        whitelistedApps: settings.whitelisted_apps || [],
-        blacklistEnabled: settings.blacklist_enabled,
-        blacklistedApps: settings.blacklisted_apps || [],
-        nonWorkThresholdPercent: settings.non_work_threshold_percent,
-        flagExcessiveNonWork: settings.flag_excessive_non_work,
-        privateSitesEnabled: settings.private_sites_enabled,
-        privateSites: settings.private_sites || [],
-        jiraWorklogSyncEnabled: settings.jira_worklog_sync_enabled ?? false,
-        projectKey: settings.project_key || null,
-        settingsSource: settingsSource
-      };
+      return transformSettingsToApiFormat(response[0], settingsSource);
     }
 
     return { ...DEFAULT_TRACKING_SETTINGS, settingsSource: 'default' };
@@ -220,10 +250,141 @@ async function deleteRemovedApplicationClassificationsFromTrackingSettings(
     : 'project_key=is.null';
 
   for (const entry of removedEntries) {
+    // eslint-disable-next-line deprecation/deprecation
     await supabaseRequest(
       supabaseConfig,
       `application_classifications?organization_id=eq.${organizationId}&${projectFilter}&identifier=eq.${encodeURIComponent(entry.identifier)}&match_by=eq.${entry.match_by}`,
       { method: 'DELETE' }
+    );
+  }
+}
+
+/**
+ * Fetch display name lookup from defaults and org-level classifications
+ * @param {Object} supabaseConfig - Supabase configuration
+ * @param {string} organizationId - Organization ID
+ * @returns {Promise<Map>} Map of identifier|match_by -> display_name
+ */
+async function fetchDisplayNameLookup(supabaseConfig, organizationId) {
+  const displayNameLookup = new Map();
+  
+  try {
+    // Fetch defaults (is_default=true)
+    // eslint-disable-next-line deprecation/deprecation
+    const defaults = await supabaseRequest(
+      supabaseConfig,
+      `application_classifications?is_default=eq.true&select=identifier,display_name,match_by`
+    );
+    if (defaults && Array.isArray(defaults)) {
+      for (const d of defaults) {
+        const key = `${d.identifier}|${d.match_by || 'process'}`;
+        displayNameLookup.set(key, d.display_name);
+      }
+    }
+    // Also fetch org-level (project_key is null) which may have custom display names
+    // eslint-disable-next-line deprecation/deprecation
+    const orgLevel = await supabaseRequest(
+      supabaseConfig,
+      `application_classifications?organization_id=eq.${organizationId}&project_key=is.null&select=identifier,display_name,match_by`
+    );
+    if (orgLevel && Array.isArray(orgLevel)) {
+      for (const o of orgLevel) {
+        const key = `${o.identifier}|${o.match_by || 'process'}`;
+        // Org-level overrides defaults if present
+        displayNameLookup.set(key, o.display_name);
+      }
+    }
+  } catch (lookupErr) {
+    console.warn('[TrackingSettings] Could not pre-fetch display names:', lookupErr.message);
+  }
+  
+  return displayNameLookup;
+}
+
+/**
+ * Upsert a single classification entry and backfill activity records
+ * @param {Object} supabaseConfig - Supabase configuration
+ * @param {Object} entry - Classification entry
+ * @param {string} organizationId - Organization ID
+ * @param {string} projectKey - Project key (optional)
+ * @param {string} projectFilter - Project filter for queries
+ * @param {string} userId - User ID
+ * @param {Map} displayNameLookup - Display name lookup map
+ */
+async function upsertSingleClassification(supabaseConfig, entry, organizationId, projectKey, projectFilter, userId, displayNameLookup) {
+  // eslint-disable-next-line deprecation/deprecation
+  const existing = await supabaseRequest(
+    supabaseConfig,
+    `application_classifications?organization_id=eq.${organizationId}&${projectFilter}&identifier=eq.${encodeURIComponent(entry.identifier)}&match_by=eq.${entry.match_by}&limit=1`
+  );
+
+  // Use display name from lookup if available, otherwise fall back to identifier
+  const lookupKey = `${entry.identifier}|${entry.match_by}`;
+  const resolvedDisplayName = displayNameLookup.get(lookupKey) || entry.identifier;
+
+  const payload = {
+    organization_id: organizationId,
+    project_key: projectKey || null,
+    identifier: entry.identifier,
+    display_name: resolvedDisplayName,
+    classification: entry.classification,
+    match_by: entry.match_by,
+    is_default: false,
+    updated_at: new Date().toISOString(),
+    created_by: userId || null
+  };
+
+  if (existing && existing.length > 0) {
+    // eslint-disable-next-line deprecation/deprecation
+    await supabaseRequest(
+      supabaseConfig,
+      `application_classifications?id=eq.${existing[0].id}`,
+      { method: 'PATCH', body: payload }
+    );
+  } else {
+    // eslint-disable-next-line deprecation/deprecation
+    await supabaseRequest(
+      supabaseConfig,
+      'application_classifications',
+      {
+        method: 'POST',
+        body: {
+          ...payload,
+          created_at: new Date().toISOString()
+        }
+      }
+    );
+  }
+
+  // Backfill already-uploaded unknown activity rows for this app so values
+  // don't remain stale after admin classification changes.
+  try {
+    const newStatus = entry.classification === 'productive' ? 'pending' : 'analyzed';
+    let updateQuery =
+      `activity_records?organization_id=eq.${organizationId}` +
+      `&classification=eq.unknown` +
+      `&application_name=eq.${encodeURIComponent(entry.identifier)}`;
+
+    if (projectKey) {
+      updateQuery += `&project_key=eq.${encodeURIComponent(projectKey)}`;
+    }
+
+    // eslint-disable-next-line deprecation/deprecation
+    await supabaseRequest(
+      supabaseConfig,
+      updateQuery,
+      {
+        method: 'PATCH',
+        body: {
+          classification: entry.classification,
+          status: newStatus
+        }
+      }
+    );
+  } catch (backfillErr) {
+    console.warn(
+      `[TrackingSettings] Classification saved for ${entry.identifier}, ` +
+      `but failed to backfill unknown activity_records: ${backfillErr.message}`
     );
   }
 }
@@ -255,107 +416,95 @@ async function upsertApplicationClassificationsFromTrackingSettings(
 
   // Pre-fetch all default and org-level classifications to get proper display names
   // This avoids using identifier as display_name when a proper name exists in defaults
-  const displayNameLookup = new Map();
-  try {
-    // Fetch defaults (is_default=true)
-    const defaults = await supabaseRequest(
-      supabaseConfig,
-      `application_classifications?is_default=eq.true&select=identifier,display_name,match_by`
-    );
-    if (defaults && Array.isArray(defaults)) {
-      for (const d of defaults) {
-        const key = `${d.identifier}|${d.match_by || 'process'}`;
-        displayNameLookup.set(key, d.display_name);
-      }
-    }
-    // Also fetch org-level (project_key is null) which may have custom display names
-    const orgLevel = await supabaseRequest(
-      supabaseConfig,
-      `application_classifications?organization_id=eq.${organizationId}&project_key=is.null&select=identifier,display_name,match_by`
-    );
-    if (orgLevel && Array.isArray(orgLevel)) {
-      for (const o of orgLevel) {
-        const key = `${o.identifier}|${o.match_by || 'process'}`;
-        // Org-level overrides defaults if present
-        displayNameLookup.set(key, o.display_name);
-      }
-    }
-  } catch (lookupErr) {
-    console.warn('[TrackingSettings] Could not pre-fetch display names:', lookupErr.message);
-  }
+  const displayNameLookup = await fetchDisplayNameLookup(supabaseConfig, organizationId);
 
   for (const entry of uniqueEntries) {
-    const existing = await supabaseRequest(
+    await upsertSingleClassification(
       supabaseConfig,
-      `application_classifications?organization_id=eq.${organizationId}&${projectFilter}&identifier=eq.${encodeURIComponent(entry.identifier)}&match_by=eq.${entry.match_by}&limit=1`
+      entry,
+      organizationId,
+      projectKey,
+      projectFilter,
+      userId,
+      displayNameLookup
     );
+  }
+}
 
-    // Use display name from lookup if available, otherwise fall back to identifier
-    const lookupKey = `${entry.identifier}|${entry.match_by}`;
-    const resolvedDisplayName = displayNameLookup.get(lookupKey) || entry.identifier;
+/**
+ * Validate tracking settings input
+ * @param {Object} settings - Settings to validate
+ * @throws {Error} If validation fails
+ */
+function validateTrackingSettings(settings) {
+  if (settings.screenshotIntervalSeconds < 60 || settings.screenshotIntervalSeconds > 3600) {
+    throw new Error('Screenshot interval must be between 60 and 3600 seconds');
+  }
 
-    const payload = {
-      organization_id: organizationId,
-      project_key: projectKey || null,
-      identifier: entry.identifier,
-      display_name: resolvedDisplayName,
-      classification: entry.classification,
-      match_by: entry.match_by,
-      is_default: false,
-      updated_at: new Date().toISOString(),
-      created_by: userId || null
-    };
+  if (settings.nonWorkThresholdPercent < 0 || settings.nonWorkThresholdPercent > 100) {
+    throw new Error('Non-work threshold must be between 0 and 100 percent');
+  }
+}
 
-    if (existing && existing.length > 0) {
-      await supabaseRequest(
-        supabaseConfig,
-        `application_classifications?id=eq.${existing[0].id}`,
-        { method: 'PATCH', body: payload }
-      );
-    } else {
-      await supabaseRequest(
-        supabaseConfig,
-        'application_classifications',
-        {
-          method: 'POST',
-          body: {
-            ...payload,
-            created_at: new Date().toISOString()
-          }
-        }
-      );
-    }
-
-    // Backfill already-uploaded unknown activity rows for this app so values
-    // don't remain stale after admin classification changes.
+/**
+ * Resolve organization and user IDs for multi-tenancy
+ * @param {Object} supabaseConfig - Supabase configuration
+ * @param {string} cloudId - Jira Cloud ID
+ * @param {string} accountId - Atlassian account ID
+ * @returns {Promise<{organizationId: string|null, userId: string|null}>}
+ */
+async function resolveOrganizationAndUser(supabaseConfig, cloudId, accountId) {
+  let organizationId = null;
+  let userId = null;
+  
+  if (cloudId) {
     try {
-      const newStatus = entry.classification === 'productive' ? 'pending' : 'analyzed';
-      let updateQuery =
-        `activity_records?organization_id=eq.${organizationId}` +
-        `&classification=eq.unknown` +
-        `&application_name=eq.${encodeURIComponent(entry.identifier)}`;
-
-      if (projectKey) {
-        updateQuery += `&project_key=eq.${encodeURIComponent(projectKey)}`;
-      }
-
-      await supabaseRequest(
-        supabaseConfig,
-        updateQuery,
-        {
-          method: 'PATCH',
-          body: {
-            classification: entry.classification,
-            status: newStatus
-          }
-        }
-      );
-    } catch (backfillErr) {
-      console.warn(
-        `[TrackingSettings] Classification saved for ${entry.identifier}, ` +
-        `but failed to backfill unknown activity_records: ${backfillErr.message}`
-      );
+      const org = await getOrCreateOrganization(cloudId, supabaseConfig);
+      organizationId = org?.id;
+    } catch (err) {
+      console.log('[TrackingSettings] Could not get organization:', err.message);
     }
+  }
+
+  if (accountId) {
+    try {
+      userId = await getOrCreateUser(accountId, supabaseConfig, organizationId);
+    } catch (err) {
+      console.log('[TrackingSettings] Could not get user:', err.message);
+    }
+  }
+
+  return { organizationId, userId };
+}
+
+/**
+ * Fetch existing tracking settings based on organization and project
+ * @param {Object} supabaseConfig - Supabase configuration
+ * @param {string} organizationId - Organization ID
+ * @param {string} projectKey - Project key (optional)
+ * @returns {Promise<Array>} Existing settings array
+ */
+async function fetchExistingTrackingSettings(supabaseConfig, organizationId, projectKey) {
+  if (organizationId && projectKey) {
+    // Project-specific settings
+    // eslint-disable-next-line deprecation/deprecation
+    return await supabaseRequest(
+      supabaseConfig,
+      `tracking_settings?organization_id=eq.${organizationId}&project_key=eq.${projectKey}&limit=1`
+    );
+  } else if (organizationId) {
+    // Organization-level settings
+    // eslint-disable-next-line deprecation/deprecation
+    return await supabaseRequest(
+      supabaseConfig,
+      `tracking_settings?organization_id=eq.${organizationId}&project_key=is.null&limit=1`
+    );
+  } else {
+    // eslint-disable-next-line deprecation/deprecation
+    return await supabaseRequest(
+      supabaseConfig,
+      'tracking_settings?organization_id=is.null&limit=1'
+    );
   }
 }
 
@@ -379,40 +528,17 @@ export async function saveTrackingSettings(accountId, cloudId, settings, project
     throw new Error('Access denied: Only Jira Administrators or Project Administrators can configure tracking settings');
   }
 
+  // eslint-disable-next-line deprecation/deprecation
   const supabaseConfig = await getSupabaseConfig(accountId);
   if (!supabaseConfig) {
     throw new Error('Supabase not configured. Please configure in Settings first.');
   }
 
   // Validate settings
-  if (settings.screenshotIntervalSeconds < 60 || settings.screenshotIntervalSeconds > 3600) {
-    throw new Error('Screenshot interval must be between 60 and 3600 seconds');
-  }
-
-  if (settings.nonWorkThresholdPercent < 0 || settings.nonWorkThresholdPercent > 100) {
-    throw new Error('Non-work threshold must be between 0 and 100 percent');
-  }
+  validateTrackingSettings(settings);
 
   // Get organization and user IDs for multi-tenancy
-  let organizationId = null;
-  let userId = null;
-  
-  if (cloudId) {
-    try {
-      const org = await getOrCreateOrganization(cloudId, supabaseConfig);
-      organizationId = org?.id;
-    } catch (err) {
-      console.log('[TrackingSettings] Could not get organization:', err.message);
-    }
-  }
-
-  if (accountId) {
-    try {
-      userId = await getOrCreateUser(accountId, supabaseConfig, organizationId);
-    } catch (err) {
-      console.log('[TrackingSettings] Could not get user:', err.message);
-    }
-  }
+  const { organizationId, userId } = await resolveOrganizationAndUser(supabaseConfig, cloudId, accountId);
 
   // Prepare data for Supabase
   const trackingData = {
@@ -439,29 +565,12 @@ export async function saveTrackingSettings(accountId, cloudId, settings, project
   };
 
   // Check if settings already exist for this organization/project
-  let existingSettings;
-  if (organizationId && projectKey) {
-    // Project-specific settings
-    existingSettings = await supabaseRequest(
-      supabaseConfig,
-      `tracking_settings?organization_id=eq.${organizationId}&project_key=eq.${projectKey}&limit=1`
-    );
-  } else if (organizationId) {
-    // Organization-level settings
-    existingSettings = await supabaseRequest(
-      supabaseConfig,
-      `tracking_settings?organization_id=eq.${organizationId}&project_key=is.null&limit=1`
-    );
-  } else {
-    existingSettings = await supabaseRequest(
-      supabaseConfig,
-      'tracking_settings?organization_id=is.null&limit=1'
-    );
-  }
+  const existingSettings = await fetchExistingTrackingSettings(supabaseConfig, organizationId, projectKey);
 
   if (existingSettings && existingSettings.length > 0) {
     // Update existing settings
     const settingsId = existingSettings[0].id;
+    // eslint-disable-next-line deprecation/deprecation
     await supabaseRequest(
       supabaseConfig,
       `tracking_settings?id=eq.${settingsId}`,
@@ -471,6 +580,7 @@ export async function saveTrackingSettings(accountId, cloudId, settings, project
     // Insert new settings
     trackingData.created_by = userId;
     trackingData.created_at = new Date().toISOString();
+    // eslint-disable-next-line deprecation/deprecation
     await supabaseRequest(
       supabaseConfig,
       'tracking_settings',

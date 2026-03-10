@@ -8,6 +8,95 @@ import { checkUserPermissions, isJiraAdmin, getProjectsUserAdmins } from '../../
 import { MAX_DAILY_SUMMARY_DAYS, MAX_ISSUES_IN_ANALYTICS } from '../../config/constants.js';
 import { isValidProjectKey } from '../../utils/validators.js';
 
+// ============================================================================
+// HELPER FUNCTIONS
+// ============================================================================
+
+/**
+ * Initialize Supabase context with organization
+ * @param {string} accountId - Atlassian account ID
+ * @param {string} cloudId - Jira Cloud ID
+ * @returns {Promise<{supabaseConfig: Object, organization: Object}>}
+ */
+async function initializeContext(accountId, cloudId) {
+  const supabaseConfig = await getSupabaseConfig(accountId);
+  if (!supabaseConfig) {
+    throw new Error('Supabase not configured');
+  }
+
+  const organization = await getOrCreateOrganization(cloudId, supabaseConfig);
+  if (!organization) {
+    throw new Error('Unable to get organization information');
+  }
+
+  return { supabaseConfig, organization };
+}
+
+/**
+ * Validate date string format (YYYY-MM-DD)
+ * @param {string} date - Date string to validate
+ * @throws {Error} If date format is invalid
+ */
+function validateDateFormat(date) {
+  if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+    throw new Error('Invalid date format. Expected YYYY-MM-DD');
+  }
+}
+
+/**
+ * Check if user has project admin access
+ * @param {string} projectKey - Jira project key
+ * @returns {Promise<{isAdmin: boolean, hasPermission: boolean}>}
+ */
+async function checkProjectAdminAccess(projectKey) {
+  const isAdmin = await isJiraAdmin();
+  const permissions = await checkUserPermissions(['ADMINISTER_PROJECTS'], projectKey);
+  const hasPermission = permissions.permissions?.ADMINISTER_PROJECTS?.havePermission;
+  return { isAdmin, hasPermission };
+}
+
+/**
+ * Sort sessions by start time
+ * @param {Array} sessions - Array of session objects with startTime
+ */
+function sortSessionsByStartTime(sessions) {
+  sessions.sort((a, b) => {
+    const aTime = a.startTime ? new Date(a.startTime).getTime() : 0;
+    const bTime = b.startTime ? new Date(b.startTime).getTime() : 0;
+    return aTime - bTime;
+  });
+}
+
+/**
+ * Calculate session statistics
+ * @param {Array} sessions - Array of sessions with durationSeconds
+ * @returns {{totalSeconds: number, totalHours: number}}
+ */
+function calculateSessionStats(sessions) {
+  const totalSeconds = sessions.reduce((sum, s) => sum + s.durationSeconds, 0);
+  const totalHours = Math.round(totalSeconds / 3600 * 10) / 10;
+  return { totalSeconds, totalHours };
+}
+
+/**
+ * Extract session data from legacy screenshot record
+ * @param {Object} screenshot - Screenshot data
+ * @param {Object} record - Analysis result record
+ * @returns {{startTime: string, endTime: string, durationSeconds: number}|null}
+ */
+function extractLegacySession(screenshot, record) {
+  const endTime = screenshot.end_time || screenshot.timestamp;
+  const durationSeconds = screenshot.duration_seconds || record.time_spent_seconds || 300;
+  const startTime = screenshot.start_time || (endTime ? new Date(new Date(endTime).getTime() - durationSeconds * 1000).toISOString() : null);
+
+  if (!endTime) return null;
+  return { startTime, endTime, durationSeconds };
+}
+
+// ============================================================================
+// PUBLIC API
+// ============================================================================
+
 /**
  * Fetch project analytics data (Project Manager only)
  * @param {string} accountId - Atlassian account ID
@@ -22,24 +111,13 @@ export async function fetchProjectAnalytics(accountId, cloudId, projectKey) {
   }
 
   // 1. Check Project Admin Permission or Jira Admin
-  const isAdmin = await isJiraAdmin();
-  const permissions = await checkUserPermissions(['ADMINISTER_PROJECTS'], projectKey);
-  const hasPermission = permissions.permissions?.ADMINISTER_PROJECTS?.havePermission;
+  const { isAdmin, hasPermission } = await checkProjectAdminAccess(projectKey);
 
   if (!isAdmin && !hasPermission) {
     throw new Error(`Access denied: You are not an administrator for project ${projectKey}`);
   }
 
-  const supabaseConfig = await getSupabaseConfig(accountId);
-  if (!supabaseConfig) {
-    throw new Error('Supabase not configured');
-  }
-
-  // Get organization
-  const organization = await getOrCreateOrganization(cloudId, supabaseConfig);
-  if (!organization) {
-    throw new Error('Unable to get organization information');
-  }
+  const { supabaseConfig, organization } = await initializeContext(accountId, cloudId);
 
   // 2. Fetch Project Data - filter by organization_id
   const timeByProject = await supabaseRequest(
@@ -47,10 +125,10 @@ export async function fetchProjectAnalytics(accountId, cloudId, projectKey) {
     `project_time_summary?organization_id=eq.${organization.id}&project_key=eq.${projectKey}&order=total_seconds.desc`
   );
 
-  // Fetch issues for this project
+  // Fetch issues for this project from activity_records
   const timeByIssue = await supabaseRequest(
     supabaseConfig,
-    `analysis_results?organization_id=eq.${organization.id}&active_project_key=eq.${projectKey}&work_type=eq.office&select=active_task_key,user_id,screenshots(duration_seconds)&order=created_at.desc&limit=100`
+    `activity_records?organization_id=eq.${organization.id}&project_key=eq.${projectKey}&status=in.(pending,processing,analyzed)&classification=in.(productive,unknown)&select=user_assigned_issue_key,user_id,duration_seconds,total_time_seconds&order=created_at.desc&limit=100`
   );
 
   return {
@@ -77,24 +155,13 @@ export async function fetchProjectTeamAnalytics(accountId, cloudId, projectKey) 
   }
 
   // 1. Check Project Admin Permission or Jira Admin
-  const isAdmin = await isJiraAdmin();
-  const permissions = await checkUserPermissions(['ADMINISTER_PROJECTS'], projectKey);
-  const hasPermission = permissions.permissions?.ADMINISTER_PROJECTS?.havePermission;
+  const { isAdmin, hasPermission } = await checkProjectAdminAccess(projectKey);
 
   if (!isAdmin && !hasPermission) {
     throw new Error(`Access denied: You are not an administrator for project ${projectKey}`);
   }
 
-  const supabaseConfig = await getSupabaseConfig(accountId);
-  if (!supabaseConfig) {
-    throw new Error('Supabase not configured');
-  }
-
-  // Get organization
-  const organization = await getOrCreateOrganization(cloudId, supabaseConfig);
-  if (!organization) {
-    throw new Error('Unable to get organization information');
-  }
+  const { supabaseConfig, organization } = await initializeContext(accountId, cloudId);
 
   // 2. Fetch Team Data - filter by organization_id
   const teamDailySummary = await supabaseRequest(
@@ -299,57 +366,108 @@ export async function fetchProjectTeamAnalytics(accountId, cloudId, projectKey) 
  * @param {string} date - Date string in YYYY-MM-DD format
  * @returns {Promise<Object>} Timeline data with users and their activity sessions
  */
-export async function fetchTeamDayTimeline(accountId, cloudId, projectKey, date) {
-  // Validate date format
-  if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
-    throw new Error('Invalid date format. Expected YYYY-MM-DD');
-  }
 
-  // Validate project key if provided
-  if (projectKey && !isValidProjectKey(projectKey)) {
-    throw new Error('Invalid project key format');
-  }
-
-  // Check Project Admin Permission or Jira Admin
-  // User can view team timeline if they are:
-  // 1. Jira admin, OR
-  // 2. Project admin for the specific project (if projectKey provided), OR
-  // 3. Project admin for any project (if projectKey is null - viewing all projects)
-  const isAdmin = await isJiraAdmin();
+/**
+ * Resolve whether the current user has permission to view the team timeline,
+ * and return the list of projects they administer (empty for Jira admins).
+ * User can view team timeline if they are Jira admin, project admin for the
+ * specific project (if projectKey provided), or project admin for any project.
+ */
+async function resolveTeamPermissions(isAdmin, projectKey) {
   let hasPermission = isAdmin;
   let projectAdminProjects = [];
-  
+
   if (!isAdmin) {
-    // Check project admin permission - with or without specific projectKey
-    // When projectKey is null, this checks if user has project admin for ANY project
     const permissions = await checkUserPermissions(['ADMINISTER_PROJECTS'], projectKey || null);
     hasPermission = permissions.permissions?.ADMINISTER_PROJECTS?.havePermission;
-    
-    // If user is a project admin, get the list of projects they administer
+
     if (hasPermission) {
       projectAdminProjects = await getProjectsUserAdmins() || [];
       console.log('[TeamTimeline] Project admin projects:', projectAdminProjects);
     }
   }
 
+  return { hasPermission, projectAdminProjects };
+}
+
+/**
+ * Build the activity_records query string, including project/user OR-filter
+ * for project admins who need to see their own data plus their admin projects.
+ */
+function buildActivityQuery(orgId, date, filterByProjects, projectsToFilter, currentUserId) {
+  let query = `activity_records?organization_id=eq.${orgId}&work_date=eq.${date}&classification=neq.private&select=user_id,start_time,end_time,duration_seconds,project_key&order=user_id,start_time.asc&limit=5000`;
+
+  if (filterByProjects && projectsToFilter.length > 0) {
+    if (currentUserId) {
+      // Project admin: user's own records OR records from admin projects
+      query += `&or=(user_id.eq.${currentUserId},project_key.in.(${projectsToFilter.join(',')}))`;
+    } else {
+      // Fallback: just filter by project (shouldn't happen)
+      query += `&project_key=in.(${projectsToFilter.join(',')})`;
+    }
+  }
+
+  return query;
+}
+
+/**
+ * Build the legacy analysis_results query string with a ±1-day created_at buffer
+ * for timezone differences. Scopes to the current user for non-admins.
+ */
+function buildLegacyQuery(orgId, date, isAdmin, currentUserId) {
+  const legacyDateStart = new Date(`${date}T00:00:00.000Z`);
+  legacyDateStart.setDate(legacyDateStart.getDate() - 1);
+  const legacyDateEnd = new Date(`${date}T23:59:59.999Z`);
+  legacyDateEnd.setDate(legacyDateEnd.getDate() + 1);
+
+  let query = `analysis_results?organization_id=eq.${orgId}&work_type=eq.office&created_at=gte.${legacyDateStart.toISOString()}&created_at=lte.${legacyDateEnd.toISOString()}&select=user_id,time_spent_seconds,created_at,screenshots(start_time,end_time,duration_seconds,timestamp,work_date,project_key,deleted_at)&order=created_at.desc&limit=5000`;
+
+  // For non-admins (project admins): restrict to their own records only.
+  // Project-key filtering on the embedded screenshot data is applied in post-processing.
+  if (!isAdmin && currentUserId) {
+    query += `&user_id=eq.${currentUserId}`;
+  }
+
+  return query;
+}
+
+/** Build map: user_id → latest batch_end within the threshold window */
+function buildLatestBatchByUserMap(recentActivity) {
+  const latestBatchByUser = {};
+  for (const r of (recentActivity || [])) {
+    if (!latestBatchByUser[r.user_id] || r.batch_end > latestBatchByUser[r.user_id]) {
+      latestBatchByUser[r.user_id] = r.batch_end;
+    }
+  }
+  return latestBatchByUser;
+}
+
+/** Build lookup map: user_id → user record, to avoid O(n²) scanning */
+function buildUserByIdMap(allUsers) {
+  const userById = {};
+  for (const u of (allUsers || [])) {
+    if (u && u.id) userById[u.id] = u;
+  }
+  return userById;
+}
+
+export async function fetchTeamDayTimeline(accountId, cloudId, projectKey, date) {
+  validateDateFormat(date);
+
+  // Validate project key if provided
+  if (projectKey && !isValidProjectKey(projectKey)) {
+    throw new Error('Invalid project key format');
+  }
+
+  const isAdmin = await isJiraAdmin();
+  const { hasPermission, projectAdminProjects } = await resolveTeamPermissions(isAdmin, projectKey);
+
   if (!hasPermission) {
     throw new Error('Access denied: You do not have permission to view team timeline');
   }
 
-  const supabaseConfig = await getSupabaseConfig(accountId);
-  if (!supabaseConfig) {
-    throw new Error('Supabase not configured');
-  }
+  const { supabaseConfig, organization } = await initializeContext(accountId, cloudId);
 
-  // Get organization
-  const organization = await getOrCreateOrganization(cloudId, supabaseConfig);
-  if (!organization) {
-    throw new Error('Unable to get organization information');
-  }
-
-  // Determine which projects to filter by
-  // - Jira admins see all projects  
-  // - Project admins see only their administered projects + their own screenshots
   // Security: If project admin but projectAdminProjects is empty, return empty results
   // to prevent accidental exposure of org-wide data when project discovery fails
   if (!isAdmin && projectAdminProjects.length === 0) {
@@ -364,7 +482,7 @@ export async function fetchTeamDayTimeline(accountId, cloudId, projectKey, date)
       activeUsers: 0
     };
   }
-  
+
   // Get current user's ID for filtering (project admins should always see their own data)
   let currentUserId = null;
   if (!isAdmin) {
@@ -379,50 +497,20 @@ export async function fetchTeamDayTimeline(accountId, cloudId, projectKey, date)
   // - If specific projectKey provided, always filter by it (even for admins)
   // - Otherwise, project admins filter by their administered projects
   const projectsToFilter = projectKey ? [projectKey] : projectAdminProjects;
-  const filterByProjects = projectKey ? true : (!isAdmin && projectAdminProjects.length > 0);
+  const filterByProjects = !!projectKey || (!isAdmin && projectAdminProjects.length > 0);
 
-  console.log('[TeamTimeline] Fetching timeline for date:', date, 'org:', organization.id, 
+  console.log('[TeamTimeline] Fetching timeline for date:', date, 'org:', organization.id,
     'filterByProjects:', filterByProjects, 'projectCount:', projectsToFilter.length);
 
-  // Build query for activity_records on the specified date
-  // Uses start_time ordering for accurate timeline visualization
-  // Excludes private classifications — those should not appear in the team timeline
-  let query = `activity_records?organization_id=eq.${organization.id}&work_date=eq.${date}&classification=neq.private&select=user_id,start_time,end_time,duration_seconds,project_key&order=user_id,start_time.asc&limit=5000`;
-  
-  // Add project filter when filtering is enabled
-  // For project admins, use OR filter to include their own records + admin project records
-  if (filterByProjects && projectsToFilter.length > 0) {
-    if (currentUserId) {
-      // Project admin: user's own records OR records from admin projects
-      query += `&or=(user_id.eq.${currentUserId},project_key.in.(${projectsToFilter.join(',')}))`;
-    } else {
-      // Fallback: just filter by project (shouldn't happen)
-      query += `&project_key=in.(${projectsToFilter.join(',')})`;
-    }
-  }
-
-  // Build legacy query from analysis_results (which has work_type column)
-  // Query analysis_results and embed screenshot data via the foreign key relationship
-  // Narrow server-side by created_at (±1 day buffer for timezone differences) to avoid
-  // hitting the 5000-row limit on large orgs and silently dropping sessions
-  const legacyDateStart = new Date(`${date}T00:00:00.000Z`);
-  legacyDateStart.setDate(legacyDateStart.getDate() - 1);
-  const legacyDateEnd = new Date(`${date}T23:59:59.999Z`);
-  legacyDateEnd.setDate(legacyDateEnd.getDate() + 1);
-  let legacyQuery = `analysis_results?organization_id=eq.${organization.id}&work_type=eq.office&created_at=gte.${legacyDateStart.toISOString()}&created_at=lte.${legacyDateEnd.toISOString()}&select=user_id,time_spent_seconds,created_at,screenshots(start_time,end_time,duration_seconds,timestamp,work_date,project_key,deleted_at)&order=created_at.desc&limit=5000`;
-
-  // For non-admins (project admins): restrict to their own records only.
-  // Project-key filtering on the embedded screenshot data is applied in post-processing below.
-  if (!isAdmin && currentUserId) {
-    legacyQuery += `&user_id=eq.${currentUserId}`;
-  }
+  const activityQuery = buildActivityQuery(organization.id, date, filterByProjects, projectsToFilter, currentUserId);
+  const legacyQuery = buildLegacyQuery(organization.id, date, isAdmin, currentUserId);
 
   // Run all four queries in parallel. activity_records.batch_end is updated every 5 min
   // during active tracking (vs desktop_last_heartbeat every 4h) — used to compute a more
   // accurate effectiveLastActive signal for status dots.
   const activityThreshold = new Date(Date.now() - 270 * 60 * 1000).toISOString();
   const [activityRecords, legacyScreenshots, allUsers, recentActivity] = await Promise.all([
-    supabaseRequest(supabaseConfig, query),
+    supabaseRequest(supabaseConfig, activityQuery),
     supabaseRequest(supabaseConfig, legacyQuery),
     supabaseRequest(
       supabaseConfig,
@@ -438,13 +526,8 @@ export async function fetchTeamDayTimeline(accountId, cloudId, projectKey, date)
   console.log('[TeamTimeline] Found legacy screenshots count:', legacyScreenshots?.length || 0);
   console.log('[TeamTimeline] Found users count:', allUsers?.length || 0);
 
-  // Build map: user_id → latest batch_end within the threshold window
-  const latestBatchByUser = {};
-  for (const r of (recentActivity || [])) {
-    if (!latestBatchByUser[r.user_id] || r.batch_end > latestBatchByUser[r.user_id]) {
-      latestBatchByUser[r.user_id] = r.batch_end;
-    }
-  }
+  const latestBatchByUser = buildLatestBatchByUserMap(recentActivity);
+  const userById = buildUserByIdMap(allUsers);
 
   // Helper: effective last active = MAX(desktop_last_heartbeat, latest batch_end)
   const getEffectiveLastActive = (userId, heartbeat) => {
@@ -453,12 +536,6 @@ export async function fetchTeamDayTimeline(accountId, cloudId, projectKey, date)
     if (hb && ba) return new Date(Math.max(hb.getTime(), ba.getTime())).toISOString();
     return (hb || ba)?.toISOString() || null;
   };
-
-  // Pre-build user lookup map to avoid O(n²) scanning inside the records loop
-  const userById = {};
-  for (const u of (allUsers || [])) {
-    if (u && u.id) userById[u.id] = u;
-  }
 
   // Group activity records by user
   const userTimelineMap = {};
@@ -530,33 +607,20 @@ export async function fetchTeamDayTimeline(accountId, cloudId, projectKey, date)
       };
     }
 
-    // For legacy screenshots, use timestamp as fallback for end_time and start_time
-    // duration_seconds indicates actual tracked work time (prefer screenshot.duration_seconds, fallback to analysis_results.time_spent_seconds)
-    const endTime = screenshot.end_time || screenshot.timestamp;
-    const durationSeconds = screenshot.duration_seconds || record.time_spent_seconds || 300; // Default 5 min for legacy data
-    const startTime = screenshot.start_time || (endTime ? new Date(new Date(endTime).getTime() - durationSeconds * 1000).toISOString() : null);
-
-    if (endTime) {
-      userTimelineMap[userId].sessions.push({
-        startTime: startTime,
-        endTime: endTime,
-        durationSeconds: durationSeconds
-      });
+    // Extract session data from legacy screenshot
+    const session = extractLegacySession(screenshot, record);
+    if (session) {
+      userTimelineMap[userId].sessions.push(session);
     }
   });
 
   // Convert to array and calculate stats
   const userTimelines = Object.values(userTimelineMap).map(user => {
     // Sort sessions by start time to ensure correct timeline order
-    user.sessions.sort((a, b) => {
-      const aTime = a.startTime ? new Date(a.startTime).getTime() : 0;
-      const bTime = b.startTime ? new Date(b.startTime).getTime() : 0;
-      return aTime - bTime;
-    });
+    sortSessionsByStartTime(user.sessions);
 
     // Calculate total tracked time for the day
-    const totalSeconds = user.sessions.reduce((sum, s) => sum + s.durationSeconds, 0);
-    const totalHours = Math.round(totalSeconds / 3600 * 10) / 10;
+    const { totalHours } = calculateSessionStats(user.sessions);
 
     // Find first and last activity
     const firstSession = user.sessions[0];
@@ -625,21 +689,9 @@ export async function fetchTeamDayTimeline(accountId, cloudId, projectKey, date)
  * @returns {Promise<Object>} Timeline data for the current user
  */
 export async function fetchMyDayTimeline(accountId, cloudId, date) {
-  // Validate date format
-  if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
-    throw new Error('Invalid date format. Expected YYYY-MM-DD');
-  }
+  validateDateFormat(date);
 
-  const supabaseConfig = await getSupabaseConfig(accountId);
-  if (!supabaseConfig) {
-    throw new Error('Supabase not configured');
-  }
-
-  // Get organization
-  const organization = await getOrCreateOrganization(cloudId, supabaseConfig);
-  if (!organization) {
-    throw new Error('Unable to get organization information');
-  }
+  const { supabaseConfig, organization } = await initializeContext(accountId, cloudId);
 
   // Get current user's ID from their Supabase record
   const currentUser = await supabaseRequest(
@@ -708,25 +760,15 @@ export async function fetchMyDayTimeline(accountId, cloudId, date) {
     
     if (!matchesDate) return;
     
-    const endTime = screenshot.end_time || screenshot.timestamp;
-    const durationSeconds = screenshot.duration_seconds || record.time_spent_seconds || 300; // Default 5 min for legacy data
-    const startTime = screenshot.start_time || (endTime ? new Date(new Date(endTime).getTime() - durationSeconds * 1000).toISOString() : null);
-
-    if (endTime) {
-      sessions.push({
-        startTime: startTime,
-        endTime: endTime,
-        durationSeconds: durationSeconds
-      });
+    // Extract session data from legacy screenshot
+    const session = extractLegacySession(screenshot, record);
+    if (session) {
+      sessions.push(session);
     }
   });
 
   // Sort sessions by start time
-  sessions.sort((a, b) => {
-    const aTime = a.startTime ? new Date(a.startTime).getTime() : 0;
-    const bTime = b.startTime ? new Date(b.startTime).getTime() : 0;
-    return aTime - bTime;
-  });
+  sortSessionsByStartTime(sessions);
 
   if (sessions.length === 0) {
     return {
@@ -742,8 +784,7 @@ export async function fetchMyDayTimeline(accountId, cloudId, date) {
   }
 
   // Calculate stats
-  const totalSeconds = sessions.reduce((sum, s) => sum + s.durationSeconds, 0);
-  const totalHours = Math.round(totalSeconds / 3600 * 10) / 10;
+  const { totalHours } = calculateSessionStats(sessions);
 
   return {
     date,

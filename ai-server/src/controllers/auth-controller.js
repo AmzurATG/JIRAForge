@@ -17,6 +17,181 @@ const { getClient } = require('../services/db/supabase-client');
 const ATLASSIAN_TOKEN_URL = 'https://auth.atlassian.com/oauth/token';
 const ATLASSIAN_ME_URL = 'https://api.atlassian.com/me';
 
+// ============================================================================
+// Helper Functions (extracted to reduce duplication)
+// ============================================================================
+
+/**
+ * Get Atlassian OAuth credentials from environment
+ * @returns {{ clientId: string|undefined, clientSecret: string|undefined }}
+ */
+function getAtlassianCredentials() {
+  return {
+    clientId: process.env.ATLASSIAN_CLIENT_ID,
+    clientSecret: process.env.ATLASSIAN_CLIENT_SECRET
+  };
+}
+
+/**
+ * Check if Atlassian credentials are configured
+ * @param {Object} res - Express response object
+ * @returns {boolean} True if credentials are valid, false if error response sent
+ */
+function validateAtlassianCredentials(res) {
+  const { clientId, clientSecret } = getAtlassianCredentials();
+  if (!clientId || !clientSecret) {
+    logger.error('[Auth] Atlassian credentials not configured on server');
+    res.status(500).json({
+      success: false,
+      error: 'Server configuration error - Atlassian credentials not configured'
+    });
+    return false;
+  }
+  return true;
+}
+
+/**
+ * Verify Atlassian token and fetch user info
+ * @param {string} atlassianToken - Atlassian bearer token
+ * @returns {Promise<Object>} User info from Atlassian
+ * @throws {Error} If token is invalid or request fails
+ */
+async function verifyAtlassianToken(atlassianToken) {
+  const userResponse = await axios.get(ATLASSIAN_ME_URL, {
+    headers: {
+      'Authorization': `Bearer ${atlassianToken}`,
+      'Accept': 'application/json'
+    },
+    timeout: 10000
+  });
+  return userResponse.data;
+}
+
+/**
+ * Verify Atlassian token and return user, or send error response
+ * @param {string} atlassianToken - Atlassian bearer token
+ * @param {Object} res - Express response object
+ * @param {string} context - Context for logging (e.g., 'Supabase config', 'OCR config')
+ * @returns {Promise<Object|null>} User info or null if error response sent
+ */
+async function verifyAtlassianTokenOrRespond(atlassianToken, res, context = '') {
+  try {
+    return await verifyAtlassianToken(atlassianToken);
+  } catch (error) {
+    const logContext = context ? ` for ${context}` : '';
+    logger.warn(`[Auth] Invalid Atlassian token${logContext}:`, error.response?.status);
+    res.status(401).json({
+      success: false,
+      error: 'Invalid or expired Atlassian token'
+    });
+    return null;
+  }
+}
+
+/**
+ * Lookup user in database by Atlassian account ID
+ * @param {string} atlassianAccountId - Atlassian account ID
+ * @returns {Promise<{user: Object|null, error: Object|null}>}
+ */
+async function lookupUserByAtlassianId(atlassianAccountId) {
+  const supabase = getClient();
+  if (!supabase) {
+    return { user: null, error: { type: 'no_client' } };
+  }
+
+  const { data: dbUser, error: dbError } = await supabase
+    .from('users')
+    .select('id, organization_id')
+    .eq('atlassian_account_id', atlassianAccountId)
+    .single();
+
+  if (dbError || !dbUser) {
+    return { user: null, error: { type: 'not_found' } };
+  }
+
+  if (!dbUser.organization_id) {
+    return { user: dbUser, error: { type: 'no_org' } };
+  }
+
+  return { user: dbUser, error: null };
+}
+
+/**
+ * Lookup user and send appropriate error response if not found
+ * @param {string} atlassianAccountId - Atlassian account ID
+ * @param {Object} res - Express response object
+ * @param {string} context - Context for logging
+ * @returns {Promise<Object|null>} User object or null if error response sent
+ */
+async function lookupUserOrRespond(atlassianAccountId, res, context = '') {
+  const { user, error } = await lookupUserByAtlassianId(atlassianAccountId);
+  const logSuffix = context ? ` for ${context}` : '';
+
+  if (error?.type === 'no_client') {
+    logger.error(`[Auth] Supabase client not available for user lookup${logSuffix}`);
+    res.status(500).json({
+      success: false,
+      error: 'Server configuration error - database not available'
+    });
+    return null;
+  }
+
+  if (error?.type === 'not_found') {
+    logger.warn(`[Auth] User not found in system${logSuffix}: %s`, atlassianAccountId);
+    res.status(403).json({
+      success: false,
+      error: 'Access denied. Your Jira account is not associated with an organization that has the Forge app installed. Please contact your administrator to install the app.'
+    });
+    return null;
+  }
+
+  if (error?.type === 'no_org') {
+    logger.warn(`[Auth] User has no organization${logSuffix}: %s`, atlassianAccountId);
+    res.status(403).json({
+      success: false,
+      error: 'Access denied. Your account is not associated with an organization. Please contact your administrator.'
+    });
+    return null;
+  }
+
+  logger.info(`[Auth] User validated in system${logSuffix}: %s (org: %s)`, atlassianAccountId, user.organization_id);
+  return user;
+}
+
+/**
+ * Validate required request body field
+ * @param {Object} req - Express request object
+ * @param {Object} res - Express response object
+ * @param {string} fieldName - Field name to validate
+ * @param {string} errorMessage - Error message if missing
+ * @returns {boolean} True if valid, false if error response sent
+ */
+function validateRequiredField(req, res, fieldName, errorMessage) {
+  if (!req.body?.[fieldName]) {
+    res.status(400).json({
+      success: false,
+      error: errorMessage
+    });
+    return false;
+  }
+  return true;
+}
+
+/**
+ * Format Atlassian API error message
+ * @param {Error} error - Axios error object
+ * @returns {string} Formatted error message
+ */
+function formatAtlassianError(error) {
+  return error.response?.data?.error_description ||
+         error.response?.data?.error ||
+         error.message;
+}
+
+// ============================================================================
+// Route Handlers
+// ============================================================================
+
 /**
  * Exchange Atlassian OAuth code for tokens (with PKCE support)
  * This endpoint replaces the desktop app's direct call to Atlassian
@@ -31,31 +206,11 @@ exports.atlassianCallback = async (req, res) => {
   try {
     const { code, redirect_uri, code_verifier } = req.body;
 
-    if (!code) {
-      return res.status(400).json({
-        success: false,
-        error: 'Authorization code is required'
-      });
-    }
+    if (!validateRequiredField(req, res, 'code', 'Authorization code is required')) return;
+    if (!validateRequiredField(req, res, 'redirect_uri', 'Redirect URI is required')) return;
+    if (!validateAtlassianCredentials(res)) return;
 
-    if (!redirect_uri) {
-      return res.status(400).json({
-        success: false,
-        error: 'Redirect URI is required'
-      });
-    }
-
-    // Get secrets from environment (these are now ONLY on the server)
-    const clientId = process.env.ATLASSIAN_CLIENT_ID;
-    const clientSecret = process.env.ATLASSIAN_CLIENT_SECRET;
-
-    if (!clientId || !clientSecret) {
-      logger.error('[Auth] Atlassian credentials not configured on server');
-      return res.status(500).json({
-        success: false,
-        error: 'Server configuration error - Atlassian credentials not configured'
-      });
-    }
+    const { clientId, clientSecret } = getAtlassianCredentials();
 
     // Build token request payload
     const tokenRequestPayload = {
@@ -98,14 +253,9 @@ exports.atlassianCallback = async (req, res) => {
 
   } catch (error) {
     logger.error('[Auth] Atlassian callback error:', error.response?.data || error.message);
-
-    const errorMessage = error.response?.data?.error_description ||
-                         error.response?.data?.error ||
-                         error.message;
-
     res.status(error.response?.status || 500).json({
       success: false,
-      error: `Token exchange failed: ${errorMessage}`
+      error: `Token exchange failed: ${formatAtlassianError(error)}`
     });
   }
 };
@@ -120,24 +270,10 @@ exports.refreshToken = async (req, res) => {
   try {
     const { refresh_token } = req.body;
 
-    if (!refresh_token) {
-      return res.status(400).json({
-        success: false,
-        error: 'Refresh token is required'
-      });
-    }
+    if (!validateRequiredField(req, res, 'refresh_token', 'Refresh token is required')) return;
+    if (!validateAtlassianCredentials(res)) return;
 
-    // Get secrets from environment
-    const clientId = process.env.ATLASSIAN_CLIENT_ID;
-    const clientSecret = process.env.ATLASSIAN_CLIENT_SECRET;
-
-    if (!clientId || !clientSecret) {
-      logger.error('[Auth] Atlassian credentials not configured on server');
-      return res.status(500).json({
-        success: false,
-        error: 'Server configuration error'
-      });
-    }
+    const { clientId, clientSecret } = getAtlassianCredentials();
 
     // Refresh the token with Atlassian
     logger.info('[Auth] Refreshing Atlassian access token');
@@ -171,10 +307,6 @@ exports.refreshToken = async (req, res) => {
   } catch (error) {
     logger.error('[Auth] Token refresh error:', error.response?.data || error.message);
 
-    const errorMessage = error.response?.data?.error_description ||
-                         error.response?.data?.error ||
-                         error.message;
-
     // Check if refresh token is expired/invalid
     if (error.response?.status === 400 || error.response?.status === 401) {
       return res.status(401).json({
@@ -186,7 +318,7 @@ exports.refreshToken = async (req, res) => {
 
     res.status(error.response?.status || 500).json({
       success: false,
-      error: `Token refresh failed: ${errorMessage}`
+      error: `Token refresh failed: ${formatAtlassianError(error)}`
     });
   }
 };
@@ -202,12 +334,7 @@ exports.exchangeToken = async (req, res) => {
   try {
     const { atlassian_token } = req.body;
 
-    if (!atlassian_token) {
-      return res.status(400).json({
-        success: false,
-        error: 'Atlassian token is required'
-      });
-    }
+    if (!validateRequiredField(req, res, 'atlassian_token', 'Atlassian token is required')) return;
 
     // Get Supabase JWT secret from environment
     const supabaseJwtSecret = process.env.SUPABASE_JWT_SECRET;
@@ -223,24 +350,8 @@ exports.exchangeToken = async (req, res) => {
 
     // Verify the Atlassian token by fetching user info
     logger.info('[Auth] Verifying Atlassian token');
-
-    let atlassianUser;
-    try {
-      const userResponse = await axios.get(ATLASSIAN_ME_URL, {
-        headers: {
-          'Authorization': `Bearer ${atlassian_token}`,
-          'Accept': 'application/json'
-        },
-        timeout: 10000
-      });
-      atlassianUser = userResponse.data;
-    } catch (error) {
-      logger.warn('[Auth] Invalid Atlassian token:', error.response?.status);
-      return res.status(401).json({
-        success: false,
-        error: 'Invalid or expired Atlassian token'
-      });
-    }
+    const atlassianUser = await verifyAtlassianTokenOrRespond(atlassian_token, res);
+    if (!atlassianUser) return;
 
     // Extract user identifier from Atlassian
     const atlassianAccountId = atlassianUser.account_id;
@@ -256,38 +367,8 @@ exports.exchangeToken = async (req, res) => {
     logger.info('[Auth] Atlassian user verified: %s', atlassianAccountId);
 
     // Verify user exists in our system (registered via Forge app)
-    const supabase = getClient();
-    if (!supabase) {
-      logger.error('[Auth] Supabase client not available for user lookup');
-      return res.status(500).json({
-        success: false,
-        error: 'Server configuration error - database not available'
-      });
-    }
-
-    const { data: dbUser, error: dbError } = await supabase
-      .from('users')
-      .select('id, organization_id')
-      .eq('atlassian_account_id', atlassianAccountId)
-      .single();
-
-    if (dbError || !dbUser) {
-      logger.warn('[Auth] User not found in system: %s', atlassianAccountId);
-      return res.status(403).json({
-        success: false,
-        error: 'Access denied. Your Jira account is not associated with an organization that has the Forge app installed. Please contact your administrator to install the app.'
-      });
-    }
-
-    if (!dbUser.organization_id) {
-      logger.warn('[Auth] User has no organization: %s', atlassianAccountId);
-      return res.status(403).json({
-        success: false,
-        error: 'Access denied. Your account is not associated with an organization. Please contact your administrator.'
-      });
-    }
-
-    logger.info('[Auth] User validated in system: %s (org: %s)', atlassianAccountId, dbUser.organization_id);
+    const dbUser = await lookupUserOrRespond(atlassianAccountId, res);
+    if (!dbUser) return;
 
     // Extract Supabase reference from URL (e.g., jvijitdewbypqbatfboi from https://jvijitdewbypqbatfboi.supabase.co)
     const supabaseRefMatch = supabaseUrl ? /https:\/\/([^.]+)\.supabase\.co/.exec(supabaseUrl) : null;
@@ -367,66 +448,16 @@ exports.getSupabaseConfig = async (req, res) => {
   try {
     const { atlassian_token } = req.body;
 
-    if (!atlassian_token) {
-      return res.status(400).json({
-        success: false,
-        error: 'Atlassian token is required'
-      });
-    }
+    if (!validateRequiredField(req, res, 'atlassian_token', 'Atlassian token is required')) return;
 
     // Verify the Atlassian token first
-    let atlassianUser;
-    try {
-      const userResponse = await axios.get(ATLASSIAN_ME_URL, {
-        headers: {
-          'Authorization': `Bearer ${atlassian_token}`,
-          'Accept': 'application/json'
-        },
-        timeout: 10000
-      });
-      atlassianUser = userResponse.data;
-    } catch (error) {
-      logger.warn('[Auth] Invalid Atlassian token for Supabase config:', error.response?.status);
-      return res.status(401).json({
-        success: false,
-        error: 'Invalid or expired Atlassian token'
-      });
-    }
+    const atlassianUser = await verifyAtlassianTokenOrRespond(atlassian_token, res, 'Supabase config');
+    if (!atlassianUser) return;
 
     // Verify user exists in our system (registered via Forge app)
     const atlassianAccountId = atlassianUser.account_id;
-    const supabase = getClient();
-    if (!supabase) {
-      logger.error('[Auth] Supabase client not available for user lookup');
-      return res.status(500).json({
-        success: false,
-        error: 'Server configuration error - database not available'
-      });
-    }
-
-    const { data: dbUser, error: dbError } = await supabase
-      .from('users')
-      .select('id, organization_id')
-      .eq('atlassian_account_id', atlassianAccountId)
-      .single();
-
-    if (dbError || !dbUser) {
-      logger.warn('[Auth] User not found in system for Supabase config: %s', atlassianAccountId);
-      return res.status(403).json({
-        success: false,
-        error: 'Access denied. Your Jira account is not associated with an organization that has the Forge app installed. Please contact your administrator to install the app.'
-      });
-    }
-
-    if (!dbUser.organization_id) {
-      logger.warn('[Auth] User has no organization for Supabase config: %s', atlassianAccountId);
-      return res.status(403).json({
-        success: false,
-        error: 'Access denied. Your account is not associated with an organization. Please contact your administrator.'
-      });
-    }
-
-    logger.info('[Auth] User validated for Supabase config: %s (org: %s)', atlassianAccountId, dbUser.organization_id);
+    const dbUser = await lookupUserOrRespond(atlassianAccountId, res, 'Supabase config');
+    if (!dbUser) return;
 
     // Get Supabase credentials from environment
     const supabaseUrl = process.env.SUPABASE_URL;
@@ -470,29 +501,11 @@ exports.getOcrConfig = async (req, res) => {
   try {
     const { atlassian_token } = req.body;
 
-    if (!atlassian_token) {
-      return res.status(400).json({
-        success: false,
-        error: 'Atlassian token is required'
-      });
-    }
+    if (!validateRequiredField(req, res, 'atlassian_token', 'Atlassian token is required')) return;
 
     // Verify the Atlassian token first
-    try {
-      await axios.get(ATLASSIAN_ME_URL, {
-        headers: {
-          'Authorization': `Bearer ${atlassian_token}`,
-          'Accept': 'application/json'
-        },
-        timeout: 10000
-      });
-    } catch (error) {
-      logger.warn('[Auth] Invalid Atlassian token for OCR config:', error.response?.status);
-      return res.status(401).json({
-        success: false,
-        error: 'Invalid or expired Atlassian token'
-      });
-    }
+    const atlassianUser = await verifyAtlassianTokenOrRespond(atlassian_token, res, 'OCR config');
+    if (!atlassianUser) return;
 
     // Build OCR configuration from environment variables
     // This centralizes all OCR configuration in the AI server
@@ -579,29 +592,18 @@ exports.verifyToken = async (req, res) => {
   try {
     const { atlassian_token } = req.body;
 
-    if (!atlassian_token) {
-      return res.status(400).json({
-        success: false,
-        error: 'Atlassian token is required'
-      });
-    }
+    if (!validateRequiredField(req, res, 'atlassian_token', 'Atlassian token is required')) return;
 
     // Verify by fetching user info
-    const userResponse = await axios.get(ATLASSIAN_ME_URL, {
-      headers: {
-        'Authorization': `Bearer ${atlassian_token}`,
-        'Accept': 'application/json'
-      },
-      timeout: 10000
-    });
+    const atlassianUser = await verifyAtlassianToken(atlassian_token);
 
     res.json({
       success: true,
       valid: true,
       user: {
-        account_id: userResponse.data.account_id,
-        email: userResponse.data.email,
-        name: userResponse.data.name || userResponse.data.display_name
+        account_id: atlassianUser.account_id,
+        email: atlassianUser.email,
+        name: atlassianUser.name || atlassianUser.display_name
       }
     });
 

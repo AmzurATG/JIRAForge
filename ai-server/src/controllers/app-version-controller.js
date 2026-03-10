@@ -418,14 +418,37 @@ function validateDownloadUrl(url) {
  * Compute SHA256 hash of a file from URL
  * Streams the file to avoid loading entirely into memory
  *
- * @param {string} url - URL to download and hash (must already be validated)
+ * @param {string} url - Download URL (validated against ALLOWED_DOWNLOAD_DOMAINS)
  * @returns {Promise<string>} SHA256 hash as lowercase hex string
  */
 function computeSHA256FromUrl(url) {
+  // Validate and parse the URL here (defence-in-depth; also gives the static
+  // analyser a clear taint-sanitisation point — we use parsed.href, not the
+  // raw user string, in the https.get call below).
+  let parsed;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return Promise.reject(new Error('Invalid URL format'));
+  }
+  if (parsed.protocol !== 'https:') {
+    return Promise.reject(new Error('Only HTTPS URLs are allowed'));
+  }
+  const host = parsed.hostname.toLowerCase();
+  const isAllowed = ALLOWED_DOWNLOAD_DOMAINS.some(
+    domain => host === domain || host.endsWith(`.${domain}`)
+  );
+  if (!isAllowed) {
+    return Promise.reject(new Error(`Download domain not in allowed list: ${host}`));
+  }
+
+  // Use the normalised URL from the URL object — not the raw caller-supplied string.
+  const safeUrl = parsed.href;
+
   return new Promise((resolve, reject) => {
     const hash = crypto.createHash('sha256');
 
-    const request = https.get(url, (response) => {
+    const request = https.get(safeUrl, (response) => {
       // Handle redirects — validate Location header before following
       if (response.statusCode >= 300 && response.statusCode < 400 && response.headers.location) {
         const redirectError = validateDownloadUrl(response.headers.location);

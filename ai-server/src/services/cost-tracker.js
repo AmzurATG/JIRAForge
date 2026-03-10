@@ -6,23 +6,7 @@
  * - Set ENABLE_COST_TRACKING=false to disable
  * - Remove the import and function calls to completely remove
  * 
- * Columns logged:
- * - TimeStamp
- * - User ID
- * - User Email
- * - User Display Name
- * - Organization ID
- * - API Call Name
- * - Provider
- * - Model Used
- * - Input Tokens
- * - Output Tokens
- * - Total Tokens
- * - Cost (USD)
- * - Request Duration (ms)
- * - Analysis Type
- * - Screenshot ID (optional)
- * - Notes
+ * See COST_TRACKING_HEADERS constant for logged columns (A-P).
  */
 
 const { google } = require('googleapis');
@@ -35,6 +19,38 @@ let costTracker = null;
 // User details cache to avoid repeated DB calls
 const userCache = new Map();
 const CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+
+// Column headers (single source of truth)
+const COST_TRACKING_HEADERS = [
+  'TimeStamp',
+  'User ID',
+  'User Email',
+  'User Display Name',
+  'Organization ID',
+  'API Call Name',
+  'Provider',
+  'Model Used',
+  'Input Tokens',
+  'Output Tokens',
+  'Total Tokens',
+  'Cost (USD)',
+  'Request Duration (ms)',
+  'Analysis Type',
+  'Screenshot ID',
+  'Notes'
+];
+
+/**
+ * Helper to disable cost tracker and return null
+ * @param {string} reason - Reason for disabling
+ * @param {string} level - Log level ('info' or 'warn')
+ * @returns {null}
+ */
+function disableTracker(reason, level = 'warn') {
+  logger[level](`[CostTracker] Disabled (${reason})`);
+  costTracker = null;
+  return null;
+}
 
 /**
  * Get user details from cache or database
@@ -84,6 +100,14 @@ class CostTracker {
     this.enabled = config.enabled !== false;
     this._sheets = null;
     this._auth = null;
+  }
+
+  /**
+   * Check if tracker is properly configured for operations
+   * @returns {boolean} True if enabled and sheet ID configured
+   */
+  _isConfigured() {
+    return this.enabled && this.sheetId;
   }
 
   /**
@@ -148,13 +172,8 @@ class CostTracker {
     screenshotId = null,
     notes = null
   }) {
-    if (!this.enabled) {
-      logger.debug('[CostTracker] Cost tracking disabled, skipping');
-      return false;
-    }
-
-    if (!this.sheetId) {
-      logger.debug('[CostTracker] No sheet ID configured, skipping');
+    if (!this._isConfigured()) {
+      logger.debug('[CostTracker] Not configured, skipping cost log');
       return false;
     }
 
@@ -223,15 +242,11 @@ class CostTracker {
    * @returns {Promise<boolean>} True if connection successful
    */
   async testConnection() {
-    if (!this.enabled || !this.sheetId) {
-      return false;
-    }
+    if (!this._isConfigured()) return false;
 
     try {
       const sheets = await this._getSheets();
-      await sheets.spreadsheets.get({
-        spreadsheetId: this.sheetId
-      });
+      await sheets.spreadsheets.get({ spreadsheetId: this.sheetId });
       logger.info('[CostTracker] Connection test successful');
       return true;
     } catch (error) {
@@ -245,51 +260,27 @@ class CostTracker {
    * @returns {Promise<boolean>} True if headers are set
    */
   async ensureHeaders() {
-    if (!this.enabled || !this.sheetId) {
-      return false;
-    }
+    if (!this._isConfigured()) return false;
 
     try {
       const sheets = await this._getSheets();
+      const headerRange = `${this.sheetName}!A1:P1`;
 
       // Check if first row has headers
       const response = await sheets.spreadsheets.values.get({
         spreadsheetId: this.sheetId,
-        range: `${this.sheetName}!A1:P1`
+        range: headerRange
       });
 
       const existingHeaders = response.data.values?.[0] || [];
 
-      if (existingHeaders.length === 0 || existingHeaders[0] !== 'TimeStamp') {
-        // Set headers
-        const headers = [
-          'TimeStamp',
-          'User ID',
-          'User Email',
-          'User Display Name',
-          'Organization ID',
-          'API Call Name',
-          'Provider',
-          'Model Used',
-          'Input Tokens',
-          'Output Tokens',
-          'Total Tokens',
-          'Cost (USD)',
-          'Request Duration (ms)',
-          'Analysis Type',
-          'Screenshot ID',
-          'Notes'
-        ];
-
+      if (existingHeaders.length === 0 || existingHeaders[0] !== COST_TRACKING_HEADERS[0]) {
         await sheets.spreadsheets.values.update({
           spreadsheetId: this.sheetId,
-          range: `${this.sheetName}!A1:P1`,
+          range: headerRange,
           valueInputOption: 'RAW',
-          resource: {
-            values: [headers]
-          }
+          resource: { values: [COST_TRACKING_HEADERS] }
         });
-
         logger.info('[CostTracker] Headers created');
       }
 
@@ -311,23 +302,10 @@ function initializeCostTracker() {
   const sheetName = process.env.GOOGLE_SHEET_COST_TRACKING_TAB || 'LLM_Cost_Tracking';
   const credentials = process.env.GOOGLE_SERVICE_ACCOUNT_JSON;
 
-  if (!enabled) {
-    logger.info('[CostTracker] Disabled (ENABLE_COST_TRACKING != true)');
-    costTracker = null;
-    return null;
-  }
-
-  if (!sheetId) {
-    logger.warn('[CostTracker] Disabled (GOOGLE_SHEET_COST_SHEET_ID not configured)');
-    costTracker = null;
-    return null;
-  }
-
-  if (!credentials) {
-    logger.warn('[CostTracker] Disabled (GOOGLE_SERVICE_ACCOUNT_JSON not configured)');
-    costTracker = null;
-    return null;
-  }
+  // Validate required configuration
+  if (!enabled) return disableTracker('ENABLE_COST_TRACKING != true', 'info');
+  if (!sheetId) return disableTracker('GOOGLE_SHEET_COST_SHEET_ID not configured');
+  if (!credentials) return disableTracker('GOOGLE_SERVICE_ACCOUNT_JSON not configured');
 
   try {
     costTracker = new CostTracker({

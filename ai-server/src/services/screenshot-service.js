@@ -37,7 +37,7 @@ function isOCRFallbackEnabled() {
 exports.analyzeActivity = async ({ imageBuffer, windowTitle, applicationName, timestamp, userId, userAssignedIssues = [], organizationId = null, screenshotId = null }) => {
   try {
     // Calculate time spent (based on screenshot interval)
-    const timeSpentSeconds = parseInt(process.env.SCREENSHOT_INTERVAL || '300');
+    const timeSpentSeconds = Number.parseInt(process.env.SCREENSHOT_INTERVAL || '300');
 
     // Use AI Vision as primary analysis method
     let visionAnalysis = null;

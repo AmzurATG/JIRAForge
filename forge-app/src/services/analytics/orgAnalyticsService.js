@@ -5,6 +5,20 @@
 
 import { getSupabaseConfig, getOrCreateOrganization, supabaseRequest } from '../../utils/supabase.js';
 import { isJiraAdmin, getAllJiraProjectKeys } from '../../utils/jira.js';
+import {
+  formatDate,
+  getWorkDateStr,
+  secondsToHours,
+  sumTotalSeconds,
+  filterByDateRange,
+  filterByDateFrom,
+  filterByExactDate,
+  getActiveProjectCount,
+  daysAgoStr,
+  getWeekStartUTC,
+  computeHoursInRange,
+  formatDateDisplay
+} from './analyticsUtils.js';
 
 /**
  * Fetch all analytics data (Admin only)
@@ -46,83 +60,44 @@ export async function fetchAllAnalytics(accountId, cloudId) {
     `users?organization_id=eq.${organization.id}&select=id,display_name,email,is_active`
   );
 
-  // Calculate date ranges
-  // Use UTC methods to ensure consistent date calculations regardless of server timezone
+  // Calculate date ranges (UTC)
   const now = new Date();
   const currentMonthStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
   const lastMonthStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 1, 1));
   const lastMonthEnd = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 0));
 
-  const formatDate = (d) => {
-    const y = d.getUTCFullYear();
-    const m = String(d.getUTCMonth() + 1).padStart(2, '0');
-    const day = String(d.getUTCDate()).padStart(2, '0');
-    return `${y}-${m}-${day}`;
-  };
-
   const currentMonthStr = formatDate(currentMonthStart);
   const lastMonthStartStr = formatDate(lastMonthStart);
   const lastMonthEndStr = formatDate(lastMonthEnd);
 
-  // Calculate this month's metrics
-  const thisMonthData = (dailySummary || []).filter(day => {
-    const workDate = typeof day.work_date === 'string' ? day.work_date.split('T')[0] : String(day.work_date);
-    return workDate >= currentMonthStr;
-  });
+  const thisMonthData = filterByDateFrom(dailySummary || [], currentMonthStr);
+  const lastMonthData = filterByDateRange(dailySummary || [], lastMonthStartStr, lastMonthEndStr);
 
-  // Calculate last month's metrics
-  const lastMonthData = (dailySummary || []).filter(day => {
-    const workDate = typeof day.work_date === 'string' ? day.work_date.split('T')[0] : String(day.work_date);
-    return workDate >= lastMonthStartStr && workDate <= lastMonthEndStr;
-  });
+  const totalSecondsThisMonth = sumTotalSeconds(thisMonthData);
+  const totalHoursThisMonth = secondsToHours(totalSecondsThisMonth);
+  const totalSecondsLastMonth = sumTotalSeconds(lastMonthData);
+  const totalHoursLastMonth = secondsToHours(totalSecondsLastMonth);
 
-  // Total hours this month
-  const totalSecondsThisMonth = thisMonthData.reduce((sum, d) => sum + (d.total_seconds || 0), 0);
-  const totalHoursThisMonth = Math.round(totalSecondsThisMonth / 3600 * 10) / 10;
-
-  // Total hours last month
-  const totalSecondsLastMonth = lastMonthData.reduce((sum, d) => sum + (d.total_seconds || 0), 0);
-  const totalHoursLastMonth = Math.round(totalSecondsLastMonth / 3600 * 10) / 10;
-
-  // Calculate % change
   const hoursChange = totalHoursLastMonth > 0
     ? Math.round((totalHoursThisMonth - totalHoursLastMonth) / totalHoursLastMonth * 100)
     : 0;
 
-  // Unique active users this month
   const activeUsersThisMonth = new Set(thisMonthData.map(d => d.user_id)).size;
   const activeUsersLastMonth = new Set(lastMonthData.map(d => d.user_id)).size;
   const activeUsersChange = activeUsersThisMonth - activeUsersLastMonth;
 
-  // Total users and adoption rate
   const totalUsers = (allUsers || []).filter(u => u.is_active !== false).length;
   const adoptionRate = totalUsers > 0 ? Math.round(activeUsersThisMonth / totalUsers * 100) : 0;
 
-  // Fetch actual Jira projects to filter out invalid/stale project keys
   const validJiraProjectKeys = await getAllJiraProjectKeys();
   console.log('[Analytics] Valid Jira project keys:', Array.from(validJiraProjectKeys));
 
-  // Active projects this month - only count valid Jira projects
-  const activeProjectsThisMonth = new Set(
-    thisMonthData
-      .map(d => d.project_key)
-      .filter(key => key && validJiraProjectKeys.has(key))
-  ).size;
-  const activeProjectsLastMonth = new Set(
-    lastMonthData
-      .map(d => d.project_key)
-      .filter(key => key && validJiraProjectKeys.has(key))
-  ).size;
+  const activeProjectsThisMonth = getActiveProjectCount(thisMonthData, validJiraProjectKeys);
+  const activeProjectsLastMonth = getActiveProjectCount(lastMonthData, validJiraProjectKeys);
   const projectsChange = activeProjectsThisMonth - activeProjectsLastMonth;
 
-  // Calculate date thresholds for activity status
-  const sevenDaysAgo = new Date(now);
-  sevenDaysAgo.setUTCDate(sevenDaysAgo.getUTCDate() - 7);
-  const sevenDaysAgoStr = formatDate(sevenDaysAgo);
-  
-  const thirtyDaysAgo = new Date(now);
-  thirtyDaysAgo.setUTCDate(thirtyDaysAgo.getUTCDate() - 30);
-  const thirtyDaysAgoStr = formatDate(thirtyDaysAgo);
+  const sevenDaysAgoStr = daysAgoStr(now, 7);
+  const thirtyDaysAgoStr = daysAgoStr(now, 30);
 
   // Build project portfolio with contributor counts and activity-based status
   const projectPortfolio = (timeByProject || [])
@@ -135,38 +110,18 @@ export async function fetchAllAnalytics(accountId, cloudId) {
     })
     .map(project => {
       const projectAllTime = (dailySummary || []).filter(d => d.project_key === project.project_key);
-
-      // Find last active date — format using UTC to avoid server timezone shifts
       const lastActivityRecord = projectAllTime.length > 0 ? projectAllTime[0] : null;
-      let lastActiveDate = null;
-      if (lastActivityRecord) {
-        const dateStr = typeof lastActivityRecord.work_date === 'string' 
-          ? lastActivityRecord.work_date.split('T')[0] 
-          : String(lastActivityRecord.work_date);
-        const [y, m, d] = dateStr.split('-').map(Number);
-        const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-        lastActiveDate = `${monthNames[m - 1]} ${d}, ${y}`;
-      }
+      const lastActiveDate = lastActivityRecord ? formatDateDisplay(getWorkDateStr(lastActivityRecord)) : null;
 
-      // Determine activity status based on recent activity
       let activityStatus = 'inactive';
       if (lastActivityRecord) {
-        const lastDate = typeof lastActivityRecord.work_date === 'string' 
-          ? lastActivityRecord.work_date.split('T')[0] 
-          : String(lastActivityRecord.work_date);
-        
-        if (lastDate >= sevenDaysAgoStr) {
-          activityStatus = 'active';
-        } else if (lastDate >= thirtyDaysAgoStr) {
-          activityStatus = 'moderate';
-        }
+        const lastDate = getWorkDateStr(lastActivityRecord);
+        if (lastDate >= sevenDaysAgoStr) activityStatus = 'active';
+        else if (lastDate >= thirtyDaysAgoStr) activityStatus = 'moderate';
       }
 
-      // All-time totals from project_time_summary view
-      const totalHours = Math.round((project.total_seconds || 0) / 3600 * 10) / 10;
+      const totalHours = secondsToHours(project.total_seconds || 0);
       const contributorCount = project.unique_users || 0;
-      
-      // All-time issue count from all daily summaries
       const issueCount = new Set(projectAllTime.map(d => d.task_key || d.active_task_key).filter(Boolean)).size;
 
       return {
@@ -180,7 +135,6 @@ export async function fetchAllAnalytics(accountId, cloudId) {
       };
     }).filter(p => p.totalHours > 0 || p.totalSeconds > 0);
 
-  // Build org summary
   const orgSummary = {
     totalHours: totalHoursThisMonth,
     totalHoursChange: hoursChange,
@@ -192,45 +146,16 @@ export async function fetchAllAnalytics(accountId, cloudId) {
     adoptionRate: adoptionRate
   };
 
-  // Calculate user activity (today, this week, this month)
   const todayStr = formatDate(now);
+  const { weekStartStr } = getWeekStartUTC(now);
 
-  // Calculate week start (Monday)
-  const weekStart = new Date(now);
-  const dayOfWeek = weekStart.getDay();
-  const daysToMonday = dayOfWeek === 0 ? 6 : dayOfWeek - 1;
-  weekStart.setDate(weekStart.getDate() - daysToMonday);
-  const weekStartStr = formatDate(weekStart);
-
-  // Build user activity data
   const userActivity = (allUsers || [])
     .filter(user => user.is_active !== false)
     .map(user => {
       const userDailyData = (dailySummary || []).filter(d => d.user_id === user.id);
-
-      // Today's hours
-      const todayData = userDailyData.filter(d => {
-        const workDate = typeof d.work_date === 'string' ? d.work_date.split('T')[0] : String(d.work_date);
-        return workDate === todayStr;
-      });
-      const todaySeconds = todayData.reduce((sum, d) => sum + (d.total_seconds || 0), 0);
-      const todayHours = Math.round(todaySeconds / 3600 * 10) / 10;
-
-      // This week's hours
-      const weekData = userDailyData.filter(d => {
-        const workDate = typeof d.work_date === 'string' ? d.work_date.split('T')[0] : String(d.work_date);
-        return workDate >= weekStartStr && workDate <= todayStr;
-      });
-      const weekSeconds = weekData.reduce((sum, d) => sum + (d.total_seconds || 0), 0);
-      const weekHours = Math.round(weekSeconds / 3600 * 10) / 10;
-
-      // This month's hours
-      const monthData = userDailyData.filter(d => {
-        const workDate = typeof d.work_date === 'string' ? d.work_date.split('T')[0] : String(d.work_date);
-        return workDate >= currentMonthStr;
-      });
-      const monthSeconds = monthData.reduce((sum, d) => sum + (d.total_seconds || 0), 0);
-      const monthHours = Math.round(monthSeconds / 3600 * 10) / 10;
+      const todayHours = secondsToHours(sumTotalSeconds(filterByExactDate(userDailyData, todayStr)));
+      const weekHours = computeHoursInRange(userDailyData, weekStartStr, todayStr);
+      const monthHours = computeHoursInRange(userDailyData, currentMonthStr, todayStr);
 
       return {
         userId: user.id,

@@ -4,9 +4,87 @@
  */
 
 import { fetch } from '@forge/api';
+// eslint-disable-next-line deprecation/deprecation
 import { getSupabaseConfig, getOrCreateUser, getOrCreateOrganization, supabaseRequest, generateSignedUrl } from '../utils/supabase.js';
 import { DEFAULT_PAGINATION_LIMIT, DEFAULT_PAGINATION_OFFSET } from '../config/constants.js';
 import { isValidUUID, toSafeInteger } from '../utils/validators.js';
+
+/**
+ * Derive thumbnail path from storage path
+ * @param {string} storagePath - Original storage path
+ * @returns {string} Thumbnail path
+ */
+function deriveThumbnailPath(storagePath) {
+  if (storagePath.includes('/')) {
+    const dirPath = storagePath.substring(0, storagePath.lastIndexOf('/'));
+    const filename = storagePath.substring(storagePath.lastIndexOf('/') + 1);
+    const thumbFilename = filename.replace('screenshot_', 'thumb_').replace('.png', '.jpg');
+    return `${dirPath}/${thumbFilename}`;
+  }
+  return storagePath.replace('screenshot_', 'thumb_').replace('.png', '.jpg');
+}
+
+/**
+ * Extract thumbnail path from URL
+ * @param {string} thumbnailUrl - Thumbnail URL
+ * @returns {string|null} Extracted path or null
+ */
+function extractThumbnailPathFromUrl(thumbnailUrl) {
+  try {
+    const urlObj = new URL(thumbnailUrl);
+    // Extract path after '/screenshots/'
+    const pathMatch = /\/screenshots\/(.+)$/.exec(urlObj.pathname);
+    return pathMatch ? pathMatch[1] : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Generate signed URLs for a screenshot
+ * @param {Object} supabaseConfig - Supabase configuration
+ * @param {Object} screenshot - Screenshot object
+ * @returns {Promise<Object>} Screenshot with signed URLs
+ */
+async function generateSignedUrls(supabaseConfig, screenshot) {
+  const screenshotWithUrl = { ...screenshot };
+
+  // Generate signed URL for thumbnail if it exists
+  if (screenshot.thumbnail_url || screenshot.storage_path) {
+    try {
+      // Always derive thumbnail path from storage_path, not thumbnail_url (which is a full URL)
+      const thumbPath = screenshot.storage_path
+        ? deriveThumbnailPath(screenshot.storage_path)
+        : extractThumbnailPathFromUrl(screenshot.thumbnail_url);
+
+      if (!thumbPath) {
+        throw new Error('Could not determine thumbnail path');
+      }
+
+      // Generate signed URL for thumbnail (valid for 1 hour)
+      const signedUrl = await generateSignedUrl(supabaseConfig, 'screenshots', thumbPath, 3600);
+      screenshotWithUrl.signed_thumbnail_url = signedUrl;
+      console.log('[Screenshot Service] Generated signed thumbnail URL for:', thumbPath);
+    } catch (err) {
+      console.error('[Screenshot Service] Error generating signed thumbnail URL:', err);
+      // Fallback to original URL
+      screenshotWithUrl.signed_thumbnail_url = screenshot.thumbnail_url;
+    }
+  }
+
+  // Generate signed URL for full-size screenshot
+  if (screenshot.storage_path) {
+    try {
+      const signedFullUrl = await generateSignedUrl(supabaseConfig, 'screenshots', screenshot.storage_path, 3600);
+      screenshotWithUrl.signed_full_url = signedFullUrl;
+      console.log('[Screenshot Service] Generated signed full URL for:', screenshot.storage_path);
+    } catch (err) {
+      console.error('[Screenshot Service] Error generating signed full URL:', err);
+    }
+  }
+
+  return screenshotWithUrl;
+}
 
 /**
  * Fetch screenshots for a user with pagination
@@ -21,6 +99,7 @@ export async function fetchScreenshots(accountId, cloudId, rawLimit = DEFAULT_PA
   const limit = toSafeInteger(rawLimit, DEFAULT_PAGINATION_LIMIT, 1, 200);
   const offset = toSafeInteger(rawOffset, DEFAULT_PAGINATION_OFFSET, 0, 100000);
 
+  // eslint-disable-next-line deprecation/deprecation
   const supabaseConfig = await getSupabaseConfig(accountId);
   if (!supabaseConfig) {
     throw new Error('Supabase not configured. Please configure in Settings.');
@@ -40,6 +119,7 @@ export async function fetchScreenshots(accountId, cloudId, rawLimit = DEFAULT_PA
   // Fetch screenshots with analysis results (to get issue info)
   // Filter by both user_id AND organization_id for multi-tenancy
   // Updated to use screenshots.duration_seconds instead of analysis_results.time_spent_seconds
+  // eslint-disable-next-line deprecation/deprecation
   const screenshots = await supabaseRequest(
     supabaseConfig,
     `screenshots?user_id=eq.${userId}&organization_id=eq.${organization.id}&deleted_at=is.null&select=*,duration_seconds,analysis_results(active_task_key,active_project_key)&order=timestamp.desc&limit=${limit}&offset=${offset}`
@@ -47,60 +127,7 @@ export async function fetchScreenshots(accountId, cloudId, rawLimit = DEFAULT_PA
 
   // Generate signed URLs for private storage images (both thumbnail and full-size)
   const screenshotsWithUrls = await Promise.all(
-    (screenshots || []).map(async (screenshot) => {
-      const screenshotWithUrl = { ...screenshot };
-
-      // Generate signed URL for thumbnail if it exists
-      if (screenshot.thumbnail_url || screenshot.storage_path) {
-        try {
-          // Always derive thumbnail path from storage_path, not thumbnail_url (which is a full URL)
-          let thumbPath;
-          if (screenshot.storage_path) {
-            // Format: user_id/screenshot_timestamp.png -> user_id/thumb_timestamp.jpg
-            if (screenshot.storage_path.includes('/')) {
-              const dirPath = screenshot.storage_path.substring(0, screenshot.storage_path.lastIndexOf('/'));
-              const filename = screenshot.storage_path.substring(screenshot.storage_path.lastIndexOf('/') + 1);
-              const thumbFilename = filename.replace('screenshot_', 'thumb_').replace('.png', '.jpg');
-              thumbPath = `${dirPath}/${thumbFilename}`;
-            } else {
-              thumbPath = screenshot.storage_path.replace('screenshot_', 'thumb_').replace('.png', '.jpg');
-            }
-          } else {
-            // Fallback: extract path from thumbnail_url if storage_path missing
-            const urlObj = new URL(screenshot.thumbnail_url);
-            // Extract path after '/screenshots/'
-            const pathMatch = urlObj.pathname.match(/\/screenshots\/(.+)$/);
-            thumbPath = pathMatch ? pathMatch[1] : null;
-          }
-
-          if (!thumbPath) {
-            throw new Error('Could not determine thumbnail path');
-          }
-
-          // Generate signed URL for thumbnail (valid for 1 hour)
-          const signedUrl = await generateSignedUrl(supabaseConfig, 'screenshots', thumbPath, 3600);
-          screenshotWithUrl.signed_thumbnail_url = signedUrl;
-          console.log('[Screenshot Service] Generated signed thumbnail URL for:', thumbPath);
-        } catch (err) {
-          console.error('[Screenshot Service] Error generating signed thumbnail URL:', err);
-          // Fallback to original URL
-          screenshotWithUrl.signed_thumbnail_url = screenshot.thumbnail_url;
-        }
-      }
-
-      // Generate signed URL for full-size screenshot
-      if (screenshot.storage_path) {
-        try {
-          const signedFullUrl = await generateSignedUrl(supabaseConfig, 'screenshots', screenshot.storage_path, 3600);
-          screenshotWithUrl.signed_full_url = signedFullUrl;
-          console.log('[Screenshot Service] Generated signed full URL for:', screenshot.storage_path);
-        } catch (err) {
-          console.error('[Screenshot Service] Error generating signed full URL:', err);
-        }
-      }
-
-      return screenshotWithUrl;
-    })
+    (screenshots || []).map((screenshot) => generateSignedUrls(supabaseConfig, screenshot))
   );
 
   // Get total count for pagination (include organization filter)
@@ -116,7 +143,7 @@ export async function fetchScreenshots(accountId, cloudId, rawLimit = DEFAULT_PA
     }
   );
 
-  const totalCount = parseInt(countResponse.headers.get('content-range')?.split('/')[1] || '0', 10);
+  const totalCount = Number.parseInt(countResponse.headers.get('content-range')?.split('/')[1] || '0', 10);
 
   return {
     screenshots: screenshotsWithUrls || [],
@@ -139,6 +166,7 @@ export async function deleteScreenshot(accountId, cloudId, screenshotId) {
     throw new Error('Invalid screenshot ID format');
   }
 
+  // eslint-disable-next-line deprecation/deprecation
   const supabaseConfig = await getSupabaseConfig(accountId);
   if (!supabaseConfig) {
     throw new Error('Supabase not configured. Please configure in Settings.');
@@ -156,6 +184,7 @@ export async function deleteScreenshot(accountId, cloudId, screenshotId) {
   }
 
   // Verify screenshot belongs to user AND organization
+  // eslint-disable-next-line deprecation/deprecation
   const screenshot = await supabaseRequest(
     supabaseConfig,
     `screenshots?id=eq.${screenshotId}&user_id=eq.${userId}&organization_id=eq.${organization.id}&select=id,storage_path`
@@ -166,6 +195,7 @@ export async function deleteScreenshot(accountId, cloudId, screenshotId) {
   }
 
   // Soft delete: Update deleted_at timestamp
+  // eslint-disable-next-line deprecation/deprecation
   await supabaseRequest(
     supabaseConfig,
     `screenshots?id=eq.${screenshotId}`,

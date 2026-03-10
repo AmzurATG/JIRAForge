@@ -15,10 +15,18 @@ jest.mock('../../src/utils/datetime', () => ({
   getUTCISOString: jest.fn().mockReturnValue('2024-01-01T00:00:00Z'),
 }));
 
-jest.mock('../../src/services/feedback-session-store', () => ({}));
+jest.mock('../../src/services/feedback-session-store', () => ({
+  createSession: jest.fn().mockReturnValue('test-session-id'),
+}));
 
 const { getClient } = require('../../src/services/db/supabase-client');
-const { getDashboardData, supabaseQuery } = require('../../src/controllers/forge-proxy-controller');
+const {
+  getDashboardData, supabaseQuery,
+  getOrCreateOrganization, getOrCreateUser, getOrganizationMembership,
+  storageUpload, storageSignedUrl, storageDelete,
+  getLatestAppVersion, createFeedbackSession,
+} = require('../../src/controllers/forge-proxy-controller');
+const sessionStore = require('../../src/services/feedback-session-store');
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -317,6 +325,25 @@ describe('getDashboardData', () => {
 
     const { data } = res.json.mock.calls[0][0];
     expect(data.membership).toBeNull();
+  });
+
+  it('aggregates timeByIssue from analysis results (covers aggregateTimeByIssue)', async () => {
+    const analysisData = [
+      { active_task_key: 'ATG-1', active_project_key: 'ATG', screenshots: { duration_seconds: 300 } },
+      { active_task_key: 'ATG-1', active_project_key: 'ATG', screenshots: { duration_seconds: 200 } },
+      { active_task_key: 'ATG-2', active_project_key: 'ATG', screenshots: null },
+      { active_task_key: null, active_project_key: 'ATG', screenshots: null }, // skipped (no key)
+    ];
+    getClient.mockReturnValue(makeSupabaseClient({
+      analysis_results: { data: analysisData, error: null },
+    }));
+    const res = makeRes();
+    await getDashboardData(makeReq(), res);
+
+    const { data } = res.json.mock.calls[0][0];
+    expect(data.timeByIssue).toHaveLength(2);
+    const atg1 = data.timeByIssue.find(i => i.issueKey === 'ATG-1');
+    expect(atg1.totalSeconds).toBe(500);
   });
 });
 
@@ -680,5 +707,746 @@ describe('supabaseQuery', () => {
       query: { eq: { id: 'u-1' } },
     }), res);
     expect(getUTCISOString).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// supabaseQuery — additional uncovered branches
+// (maybeSingle, default filter key, SELECT/INSERT/UPDATE aliases,
+//  mutation filters with in/is)
+// ---------------------------------------------------------------------------
+
+describe('supabaseQuery — additional filter branches', () => {
+  beforeEach(() => { jest.clearAllMocks(); });
+
+  function makeQueryReq(body = {}) {
+    return {
+      forgeContext: { cloudId: 'cloud-1', accountId: 'account-1' },
+      body: { table: 'test_table', method: 'GET', ...body },
+    };
+  }
+  function makeSimpleClient(resolveValue = { data: [], error: null }) {
+    const q = makeQuery(resolveValue);
+    return { from: jest.fn().mockReturnValue(q), _q: q };
+  }
+
+  it('applies maybeSingle filter on GET', async () => {
+    const { _q: q, ...client } = makeSimpleClient({ data: { id: 1 }, error: null });
+    getClient.mockReturnValue(client);
+    const res = makeRes();
+    await supabaseQuery(makeQueryReq({ query: { maybeSingle: true } }), res);
+    expect(q.maybeSingle).toHaveBeenCalled();
+  });
+
+  it('ignores unknown filter key (default case in applySingleFilter)', async () => {
+    const { ...client } = makeSimpleClient({ data: [], error: null });
+    getClient.mockReturnValue(client);
+    const res = makeRes();
+    await supabaseQuery(makeQueryReq({ query: { unknownKey: 'value' } }), res);
+    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ success: true }));
+  });
+
+  it('handles SELECT method alias the same as GET', async () => {
+    // SELECT method routes through executeSelect; initQueryBuilder skips select('*')
+    // because the guard is `method === 'GET'`, not 'SELECT'.
+    const { ...client } = makeSimpleClient({ data: [{ id: 1 }], error: null });
+    getClient.mockReturnValue(client);
+    const res = makeRes();
+    await supabaseQuery(makeQueryReq({ method: 'SELECT' }), res);
+    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ success: true }));
+  });
+
+  it('handles INSERT method alias the same as POST', async () => {
+    const { _q: q, ...client } = makeSimpleClient({ data: [{ id: 1 }], error: null });
+    getClient.mockReturnValue(client);
+    const res = makeRes();
+    await supabaseQuery(makeQueryReq({ method: 'INSERT', body: { name: 'x' } }), res);
+    expect(q.insert).toHaveBeenCalledWith({ name: 'x' });
+  });
+
+  it('handles UPDATE method alias the same as PATCH', async () => {
+    const { _q: q, ...client } = makeSimpleClient({ data: [{ id: 1 }], error: null });
+    getClient.mockReturnValue(client);
+    const res = makeRes();
+    await supabaseQuery(makeQueryReq({ method: 'UPDATE', body: { name: 'y' }, query: { eq: { id: '1' } } }), res);
+    expect(q.update).toHaveBeenCalledWith({ name: 'y' });
+  });
+
+  it('applies in mutation filter on PATCH', async () => {
+    const { _q: q, ...client } = makeSimpleClient({ data: [], error: null });
+    getClient.mockReturnValue(client);
+    const res = makeRes();
+    await supabaseQuery(makeQueryReq({
+      method: 'PATCH',
+      body: { status: 'done' },
+      query: { in: { id: ['id-1', 'id-2'] } },
+    }), res);
+    expect(q.in).toHaveBeenCalledWith('id', ['id-1', 'id-2']);
+  });
+
+  it('applies in mutation filter on DELETE', async () => {
+    const { _q: q, ...client } = makeSimpleClient({ data: [], error: null });
+    getClient.mockReturnValue(client);
+    const res = makeRes();
+    await supabaseQuery(makeQueryReq({
+      method: 'DELETE',
+      query: { in: { org_id: ['org-1', 'org-2'] } },
+    }), res);
+    expect(q.in).toHaveBeenCalledWith('org_id', ['org-1', 'org-2']);
+  });
+
+  it('applies is mutation filter on DELETE', async () => {
+    const { _q: q, ...client } = makeSimpleClient({ data: [], error: null });
+    getClient.mockReturnValue(client);
+    const res = makeRes();
+    await supabaseQuery(makeQueryReq({
+      method: 'DELETE',
+      query: { is: { deleted_at: null } },
+    }), res);
+    expect(q.is).toHaveBeenCalledWith('deleted_at', null);
+  });
+
+  it('does not log security warning when jira_cloud_id eq filter is present', async () => {
+    const logger = require('../../src/utils/logger');
+    const { ...client } = makeSimpleClient({ data: [], error: null });
+    getClient.mockReturnValue(client);
+    const res = makeRes();
+    await supabaseQuery(makeQueryReq({
+      table: 'screenshots',
+      query: { eq: { jira_cloud_id: 'cloud-1' } },
+    }), res);
+    expect(logger.warn).not.toHaveBeenCalledWith(
+      '[ForgeProxy] SECURITY: Query to sensitive table without organization filter',
+      expect.any(Object)
+    );
+  });
+
+  it('does not log security warning when body has organization_id', async () => {
+    const logger = require('../../src/utils/logger');
+    const { ...client } = makeSimpleClient({ data: [], error: null });
+    getClient.mockReturnValue(client);
+    const res = makeRes();
+    await supabaseQuery(makeQueryReq({
+      table: 'users',
+      method: 'POST',
+      body: { organization_id: 'org-1', email: 'x@x.com' },
+    }), res);
+    expect(logger.warn).not.toHaveBeenCalledWith(
+      '[ForgeProxy] SECURITY: INSERT to sensitive table without organization_id',
+      expect.any(Object)
+    );
+  });
+
+  it('treats screenshot status=deleted as soft-delete (logs info)', async () => {
+    const logger = require('../../src/utils/logger');
+    const { _q: q, ...client } = makeSimpleClient({ data: [], error: null });
+    getClient.mockReturnValue(client);
+    const res = makeRes();
+    await supabaseQuery(makeQueryReq({
+      table: 'screenshots',
+      method: 'PATCH',
+      body: { status: 'deleted' },
+      query: { eq: { id: 'sc-1' } },
+    }), res);
+    // isSoftDelete=true because status==='deleted'; logger.info should fire
+    expect(logger.info).toHaveBeenCalledWith(
+      '[ForgeProxy] Screenshot soft-delete',
+      expect.any(Object)
+    );
+  });
+
+  it('handles order param with no dot (handleOrderParam no-op)', async () => {
+    const { _q: q, ...client } = makeSimpleClient({ data: [], error: null });
+    getClient.mockReturnValue(client);
+    const res = makeRes();
+    // 'created_at' has no dot after index 0 → dotIndex <= 0 → no order applied
+    await supabaseQuery(makeQueryReq({ query: { eq: { order: 'nodothere' } } }), res);
+    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ success: true }));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// getOrCreateOrganization
+// ---------------------------------------------------------------------------
+
+describe('getOrCreateOrganization', () => {
+  beforeEach(() => { jest.clearAllMocks(); });
+
+  function makeReqOrg(forgeCtx = {}, body = {}) {
+    return {
+      forgeContext: { cloudId: 'cloud-1', ...forgeCtx },
+      body: { orgName: 'Test Org', jiraUrl: 'https://test.atlassian.net', ...body },
+    };
+  }
+
+  it('returns 400 when cloudId is missing', async () => {
+    const res = makeRes();
+    await getOrCreateOrganization({ forgeContext: { cloudId: null }, body: {} }, res);
+    expect(res.status).toHaveBeenCalledWith(400);
+    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ success: false }));
+  });
+
+  it('returns 500 when supabase client is not configured', async () => {
+    getClient.mockReturnValue(null);
+    const res = makeRes();
+    await getOrCreateOrganization(makeReqOrg(), res);
+    expect(res.status).toHaveBeenCalledWith(500);
+  });
+
+  it('returns 500 when DB error occurs fetching org', async () => {
+    getClient.mockReturnValue(makeSupabaseClient({
+      organizations: { data: null, error: new Error('DB error') },
+    }));
+    const res = makeRes();
+    await getOrCreateOrganization(makeReqOrg(), res);
+    expect(res.status).toHaveBeenCalledWith(500);
+  });
+
+  it('returns existing org when found and no update needed', async () => {
+    const existingOrg = { id: 'org-1', org_name: 'Test Org', jira_cloud_id: 'cloud-1', jira_instance_url: 'https://test.atlassian.net' };
+    getClient.mockReturnValue(makeSupabaseClient({
+      organizations: { data: [existingOrg], error: null },
+    }));
+    const res = makeRes();
+    await getOrCreateOrganization(makeReqOrg(), res);
+    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ success: true, data: existingOrg }));
+  });
+
+  it('updates org when existing name is Unknown Organization', async () => {
+    const existingOrg = { id: 'org-1', org_name: 'Unknown Organization', jira_cloud_id: 'cloud-1', jira_instance_url: 'https://test.atlassian.net' };
+    const updatedOrg = { ...existingOrg, org_name: 'Test Org' };
+    getClient.mockReturnValue(makeSupabaseClient({
+      organizations: [
+        { data: [existingOrg], error: null },
+        { data: updatedOrg, error: null },
+      ],
+    }));
+    const res = makeRes();
+    await getOrCreateOrganization(makeReqOrg(), res);
+    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ success: true, data: updatedOrg }));
+  });
+
+  it('updates org when jira_instance_url includes cloudId', async () => {
+    const existingOrg = { id: 'org-1', org_name: 'Stale Name', jira_cloud_id: 'cloud-1', jira_instance_url: 'https://cloud-1.atlassian.net' };
+    const updatedOrg = { ...existingOrg, org_name: 'Test Org' };
+    getClient.mockReturnValue(makeSupabaseClient({
+      organizations: [
+        { data: [existingOrg], error: null },
+        { data: updatedOrg, error: null },
+      ],
+    }));
+    const res = makeRes();
+    await getOrCreateOrganization(makeReqOrg(), res);
+    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ success: true }));
+  });
+
+  it('falls through to return existing org when update returns null data', async () => {
+    const existingOrg = { id: 'org-1', org_name: 'Unknown Organization', jira_cloud_id: 'cloud-1', jira_instance_url: 'https://test.atlassian.net' };
+    getClient.mockReturnValue(makeSupabaseClient({
+      organizations: [
+        { data: [existingOrg], error: null },
+        { data: null, error: new Error('update failed') },
+      ],
+    }));
+    const res = makeRes();
+    await getOrCreateOrganization(makeReqOrg(), res);
+    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ success: true, data: existingOrg }));
+  });
+
+  it('creates new org and default settings when not found', async () => {
+    const newOrg = { id: 'new-org-1', org_name: 'Test Org', jira_cloud_id: 'cloud-1' };
+    getClient.mockReturnValue(makeSupabaseClient({
+      organizations: [
+        { data: [], error: null },
+        { data: newOrg, error: null },
+      ],
+      organization_settings: { data: null, error: null },
+    }));
+    const res = makeRes();
+    await getOrCreateOrganization(makeReqOrg(), res);
+    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ success: true, data: newOrg }));
+  });
+
+  it('returns 500 on DB error creating org', async () => {
+    getClient.mockReturnValue(makeSupabaseClient({
+      organizations: [
+        { data: [], error: null },
+        { data: null, error: new Error('insert failed') },
+      ],
+    }));
+    const res = makeRes();
+    await getOrCreateOrganization(makeReqOrg(), res);
+    expect(res.status).toHaveBeenCalledWith(500);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// getOrCreateUser
+// ---------------------------------------------------------------------------
+
+describe('getOrCreateUser', () => {
+  beforeEach(() => { jest.clearAllMocks(); });
+
+  function makeReqUser(forgeCtx = {}, body = {}) {
+    return {
+      forgeContext: { accountId: 'account-1', cloudId: 'cloud-1', ...forgeCtx },
+      body: { organizationId: 'org-1', email: 'user@test.com', displayName: 'Test User', ...body },
+    };
+  }
+
+  it('returns 400 when accountId is missing', async () => {
+    const res = makeRes();
+    await getOrCreateUser({ forgeContext: { accountId: null, cloudId: 'c' }, body: {} }, res);
+    expect(res.status).toHaveBeenCalledWith(400);
+  });
+
+  it('returns 500 when supabase client is not configured', async () => {
+    getClient.mockReturnValue(null);
+    const res = makeRes();
+    await getOrCreateUser(makeReqUser(), res);
+    expect(res.status).toHaveBeenCalledWith(500);
+  });
+
+  it('returns 500 on DB error fetching user', async () => {
+    getClient.mockReturnValue(makeSupabaseClient({
+      users: { data: null, error: new Error('DB error') },
+    }));
+    const res = makeRes();
+    await getOrCreateUser(makeReqUser(), res);
+    expect(res.status).toHaveBeenCalledWith(500);
+  });
+
+  it('returns existing user without updates when org matches', async () => {
+    const existingUser = { id: 'user-1', organization_id: 'org-1', email: 'user@test.com', display_name: 'Test User' };
+    getClient.mockReturnValue(makeSupabaseClient({
+      users: { data: [existingUser], error: null },
+    }));
+    const res = makeRes();
+    await getOrCreateUser(makeReqUser(), res);
+    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ success: true, data: { userId: 'user-1' } }));
+  });
+
+  it('updates organization_id when different and creates membership', async () => {
+    const existingUser = { id: 'user-1', organization_id: 'old-org', email: 'user@test.com', display_name: 'Test User' };
+    getClient.mockReturnValue(makeSupabaseClient({
+      users: [
+        { data: [existingUser], error: null },
+        { data: null, error: null }, // update org_id call
+        { data: null, error: null }, // update details call (skipped since email/display_name present)
+      ],
+      organization_members: [
+        { data: [], error: null },  // ensureOrganizationMembership: check existing
+        { data: [], error: null },  // ensureOrganizationMembership: count all members
+        { data: null, error: null }, // ensureOrganizationMembership: insert
+      ],
+    }));
+    const res = makeRes();
+    await getOrCreateUser(makeReqUser(), res);
+    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ success: true }));
+  });
+
+  it('updates email and display_name when missing on existing user', async () => {
+    const existingUser = { id: 'user-1', organization_id: 'org-1', email: null, display_name: null };
+    getClient.mockReturnValue(makeSupabaseClient({
+      users: [
+        { data: [existingUser], error: null },
+        { data: null, error: null }, // update details call
+      ],
+    }));
+    const res = makeRes();
+    await getOrCreateUser(makeReqUser(), res);
+    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ success: true }));
+  });
+
+  it('creates new user and membership when user not found', async () => {
+    const newUser = { id: 'new-user-1' };
+    getClient.mockReturnValue(makeSupabaseClient({
+      users: [
+        { data: [], error: null },
+        { data: newUser, error: null }, // insert call
+      ],
+      organization_members: [
+        { data: [], error: null },
+        { data: [], error: null },
+        { data: null, error: null },
+      ],
+    }));
+    const res = makeRes();
+    await getOrCreateUser(makeReqUser(), res);
+    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ success: true, data: { userId: 'new-user-1' } }));
+  });
+
+  it('creates new user without membership when no organizationId', async () => {
+    const newUser = { id: 'new-user-2' };
+    getClient.mockReturnValue(makeSupabaseClient({
+      users: [
+        { data: [], error: null },
+        { data: newUser, error: null },
+      ],
+    }));
+    const res = makeRes();
+    await getOrCreateUser(makeReqUser({}, { organizationId: null }), res);
+    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ success: true }));
+  });
+
+  it('returns 500 on DB error creating user', async () => {
+    getClient.mockReturnValue(makeSupabaseClient({
+      users: [
+        { data: [], error: null },
+        { data: null, error: new Error('insert failed') },
+      ],
+    }));
+    const res = makeRes();
+    await getOrCreateUser(makeReqUser(), res);
+    expect(res.status).toHaveBeenCalledWith(500);
+  });
+
+  it('skips membership creation when membership already exists (ensureOrganizationMembership early return)', async () => {
+    const existingUser = { id: 'user-1', organization_id: 'old-org', email: 'u@t.com', display_name: 'U' };
+    getClient.mockReturnValue(makeSupabaseClient({
+      users: [
+        { data: [existingUser], error: null },
+        { data: null, error: null }, // update org_id
+      ],
+      // First organization_members call returns existing membership → early return in ensureOrganizationMembership
+      organization_members: { data: [{ id: 'mem-1' }], error: null },
+    }));
+    const res = makeRes();
+    await getOrCreateUser(makeReqUser(), res);
+    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ success: true }));
+  });
+
+  it('logs error but does not throw when ensureOrganizationMembership fails', async () => {
+    const logger = require('../../src/utils/logger');
+    const existingUser = { id: 'user-1', organization_id: 'old-org', email: 'u@t.com', display_name: 'U' };
+    // Make organization_members throw to trigger the catch block in ensureOrganizationMembership
+    const client = makeSupabaseClient({
+      users: [
+        { data: [existingUser], error: null },
+        { data: null, error: null },
+      ],
+    });
+    // Override organization_members to throw synchronously
+    const originalFrom = client.from.getMockImplementation();
+    client.from.mockImplementation((table) => {
+      if (table === 'organization_members') throw new Error('membership DB crash');
+      return originalFrom(table);
+    });
+    getClient.mockReturnValue(client);
+    const res = makeRes();
+    await getOrCreateUser(makeReqUser(), res);
+    // getOrCreateUser should still succeed — ensureOrganizationMembership swallows the error
+    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ success: true }));
+    expect(logger.error).toHaveBeenCalledWith(
+      '[ForgeProxy] Membership creation error:',
+      expect.any(Error)
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// getOrganizationMembership
+// ---------------------------------------------------------------------------
+
+describe('getOrganizationMembership', () => {
+  beforeEach(() => { jest.clearAllMocks(); });
+
+  it('returns 500 when supabase client is not configured', async () => {
+    getClient.mockReturnValue(null);
+    const res = makeRes();
+    await getOrganizationMembership({ body: { userId: 'u-1', organizationId: 'o-1' } }, res);
+    expect(res.status).toHaveBeenCalledWith(500);
+  });
+
+  it('returns membership data on success', async () => {
+    const membership = { user_id: 'u-1', organization_id: 'o-1', role: 'member' };
+    getClient.mockReturnValue(makeSupabaseClient({
+      organization_members: { data: membership, error: null },
+    }));
+    const res = makeRes();
+    await getOrganizationMembership({ body: { userId: 'u-1', organizationId: 'o-1' } }, res);
+    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ success: true, data: membership }));
+  });
+
+  it('returns 500 on DB error', async () => {
+    getClient.mockReturnValue(makeSupabaseClient({
+      organization_members: { data: null, error: new Error('query error') },
+    }));
+    const res = makeRes();
+    await getOrganizationMembership({ body: { userId: 'u-1', organizationId: 'o-1' } }, res);
+    expect(res.status).toHaveBeenCalledWith(500);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// storageUpload / storageSignedUrl / storageDelete
+// ---------------------------------------------------------------------------
+
+function makeStorageClient(methodResults = {}) {
+  const bucket = {
+    upload: jest.fn().mockResolvedValue(methodResults.upload || { data: { path: 'file.exe' }, error: null }),
+    createSignedUrl: jest.fn().mockResolvedValue(methodResults.signedUrl || { data: { signedUrl: 'https://signed.url' }, error: null }),
+    remove: jest.fn().mockResolvedValue(methodResults.remove || { data: {}, error: null }),
+  };
+  return {
+    from: jest.fn().mockReturnValue(makeQuery({ data: null, error: null })),
+    storage: { from: jest.fn().mockReturnValue(bucket), _bucket: bucket },
+  };
+}
+
+describe('storageUpload', () => {
+  beforeEach(() => { jest.clearAllMocks(); });
+
+  it('returns 500 when supabase client is not configured', async () => {
+    getClient.mockReturnValue(null);
+    const res = makeRes();
+    await storageUpload({ forgeContext: { cloudId: 'c' }, body: { bucket: 'b', path: 'p', data: '' } }, res);
+    expect(res.status).toHaveBeenCalledWith(500);
+  });
+
+  it('returns upload data on success', async () => {
+    getClient.mockReturnValue(makeStorageClient());
+    const res = makeRes();
+    await storageUpload({
+      forgeContext: { cloudId: 'c' },
+      body: { bucket: 'screenshots', path: 'file.png', data: Buffer.from('img').toString('base64'), contentType: 'image/png' },
+    }, res);
+    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ success: true }));
+  });
+
+  it('returns 500 on upload error', async () => {
+    getClient.mockReturnValue(makeStorageClient({ upload: { data: null, error: new Error('upload failed') } }));
+    const res = makeRes();
+    await storageUpload({
+      forgeContext: { cloudId: 'c' },
+      body: { bucket: 'b', path: 'p', data: '' },
+    }, res);
+    expect(res.status).toHaveBeenCalledWith(500);
+  });
+});
+
+describe('storageSignedUrl', () => {
+  beforeEach(() => { jest.clearAllMocks(); });
+
+  it('returns 500 when supabase client is not configured', async () => {
+    getClient.mockReturnValue(null);
+    const res = makeRes();
+    await storageSignedUrl({ body: { bucket: 'b', path: 'p', expiresIn: 3600 } }, res);
+    expect(res.status).toHaveBeenCalledWith(500);
+  });
+
+  it('returns signed URL on success', async () => {
+    getClient.mockReturnValue(makeStorageClient());
+    const res = makeRes();
+    await storageSignedUrl({ body: { bucket: 'b', path: 'p', expiresIn: 3600 } }, res);
+    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ success: true, data: { signedUrl: 'https://signed.url' } }));
+  });
+
+  it('uses default expiresIn of 3600 when not provided', async () => {
+    const client = makeStorageClient();
+    getClient.mockReturnValue(client);
+    const res = makeRes();
+    await storageSignedUrl({ body: { bucket: 'b', path: 'p' } }, res);
+    expect(client.storage._bucket.createSignedUrl).toHaveBeenCalledWith('p', 3600);
+  });
+
+  it('returns 500 on signed URL error', async () => {
+    getClient.mockReturnValue(makeStorageClient({ signedUrl: { data: null, error: new Error('failed') } }));
+    const res = makeRes();
+    await storageSignedUrl({ body: { bucket: 'b', path: 'p' } }, res);
+    expect(res.status).toHaveBeenCalledWith(500);
+  });
+});
+
+describe('storageDelete', () => {
+  beforeEach(() => { jest.clearAllMocks(); });
+
+  it('returns 500 when supabase client is not configured', async () => {
+    getClient.mockReturnValue(null);
+    const res = makeRes();
+    await storageDelete({ body: { bucket: 'b', path: 'p' } }, res);
+    expect(res.status).toHaveBeenCalledWith(500);
+  });
+
+  it('returns success on delete', async () => {
+    getClient.mockReturnValue(makeStorageClient());
+    const res = makeRes();
+    await storageDelete({ body: { bucket: 'b', path: 'p' } }, res);
+    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ success: true }));
+  });
+
+  it('returns 500 on delete error', async () => {
+    getClient.mockReturnValue(makeStorageClient({ remove: { data: null, error: new Error('delete failed') } }));
+    const res = makeRes();
+    await storageDelete({ body: { bucket: 'b', path: 'p' } }, res);
+    expect(res.status).toHaveBeenCalledWith(500);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// getLatestAppVersion
+// ---------------------------------------------------------------------------
+
+describe('getLatestAppVersion', () => {
+  beforeEach(() => { jest.clearAllMocks(); });
+
+  function makeReqVersion(body = {}) {
+    return {
+      forgeContext: { cloudId: 'cloud-1' },
+      body: { platform: 'windows', ...body },
+    };
+  }
+
+  it('returns 500 when supabase client is not configured', async () => {
+    getClient.mockReturnValue(null);
+    const res = makeRes();
+    await getLatestAppVersion(makeReqVersion(), res);
+    expect(res.status).toHaveBeenCalledWith(500);
+  });
+
+  it('returns default version when no release found (PGRST116)', async () => {
+    getClient.mockReturnValue(makeSupabaseClient({
+      app_releases: { data: null, error: { code: 'PGRST116' } },
+    }));
+    const res = makeRes();
+    await getLatestAppVersion(makeReqVersion(), res);
+    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({
+      success: true,
+      data: expect.objectContaining({ latestVersion: '1.0.0', updateAvailable: false }),
+    }));
+  });
+
+  it('returns 500 on non-PGRST116 DB error', async () => {
+    getClient.mockReturnValue(makeSupabaseClient({
+      app_releases: { data: null, error: { code: '42000', message: 'error' } },
+    }));
+    const res = makeRes();
+    await getLatestAppVersion(makeReqVersion(), res);
+    expect(res.status).toHaveBeenCalledWith(500);
+  });
+
+  it('returns release with updateAvailable=false when no currentVersion', async () => {
+    const release = { version: '2.0.0', download_url: 'https://example.com/app.exe', release_notes: 'notes', is_mandatory: false, min_supported_version: null, file_size_bytes: 1000, published_at: '2026-01-01' };
+    getClient.mockReturnValue(makeSupabaseClient({
+      app_releases: { data: release, error: null },
+    }));
+    const res = makeRes();
+    await getLatestAppVersion(makeReqVersion(), res);
+    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({
+      success: true,
+      data: expect.objectContaining({ latestVersion: '2.0.0', updateAvailable: false }),
+    }));
+  });
+
+  it('returns updateAvailable=true when current version is older', async () => {
+    const release = { version: '2.0.0', download_url: 'https://example.com/app.exe', release_notes: 'notes', is_mandatory: false, min_supported_version: null, file_size_bytes: 1000, published_at: '2026-01-01' };
+    getClient.mockReturnValue(makeSupabaseClient({
+      app_releases: { data: release, error: null },
+    }));
+    const res = makeRes();
+    await getLatestAppVersion(makeReqVersion({ currentVersion: '1.0.0' }), res);
+    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({
+      success: true,
+      data: expect.objectContaining({ updateAvailable: true }),
+    }));
+  });
+
+  it('returns updateAvailable=false when already on latest', async () => {
+    const release = { version: '2.0.0', download_url: 'https://example.com/app.exe', release_notes: null, is_mandatory: false, min_supported_version: null, file_size_bytes: null, published_at: '2026-01-01' };
+    getClient.mockReturnValue(makeSupabaseClient({
+      app_releases: { data: release, error: null },
+    }));
+    const res = makeRes();
+    await getLatestAppVersion(makeReqVersion({ currentVersion: '2.0.0' }), res);
+    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({ updateAvailable: false }),
+    }));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// createFeedbackSession
+// ---------------------------------------------------------------------------
+
+describe('createFeedbackSession', () => {
+  beforeEach(() => { jest.clearAllMocks(); });
+
+  function makeReqFeedback(forgeCtx = {}, reqExtras = {}) {
+    return {
+      forgeContext: { cloudId: 'cloud-1', accountId: 'account-1', ...forgeCtx },
+      protocol: 'https',
+      get: jest.fn(h => h === 'host' ? 'example.com' : ''),
+      ...reqExtras,
+    };
+  }
+
+  it('returns 400 when cloudId is missing', async () => {
+    const res = makeRes();
+    await createFeedbackSession(makeReqFeedback({ cloudId: null }), res);
+    expect(res.status).toHaveBeenCalledWith(400);
+  });
+
+  it('returns 400 when accountId is missing', async () => {
+    const res = makeRes();
+    await createFeedbackSession(makeReqFeedback({ accountId: null }), res);
+    expect(res.status).toHaveBeenCalledWith(400);
+  });
+
+  it('returns 500 when supabase client is not configured', async () => {
+    getClient.mockReturnValue(null);
+    const res = makeRes();
+    await createFeedbackSession(makeReqFeedback(), res);
+    expect(res.status).toHaveBeenCalledWith(500);
+  });
+
+  it('returns feedback URL and sessionId on success with known user', async () => {
+    getClient.mockReturnValue(makeSupabaseClient({
+      users: { data: [{ email: 'user@test.com', display_name: 'Test User' }], error: null },
+    }));
+    sessionStore.createSession.mockReturnValue('session-abc');
+    const res = makeRes();
+    await createFeedbackSession(makeReqFeedback(), res);
+    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({
+      success: true,
+      data: expect.objectContaining({ sessionId: 'session-abc', feedbackUrl: expect.stringContaining('session-abc') }),
+    }));
+    expect(sessionStore.createSession).toHaveBeenCalledWith(expect.objectContaining({
+      cloudId: 'cloud-1',
+      userInfo: expect.objectContaining({ email: 'user@test.com' }),
+    }));
+  });
+
+  it('falls back to generated email when user not found in DB', async () => {
+    getClient.mockReturnValue(makeSupabaseClient({
+      users: { data: [], error: null },
+    }));
+    const res = makeRes();
+    await createFeedbackSession(makeReqFeedback(), res);
+    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ success: true }));
+    expect(sessionStore.createSession).toHaveBeenCalledWith(expect.objectContaining({
+      userInfo: expect.objectContaining({ email: 'account-1@atlassian.user' }),
+    }));
+  });
+
+  it('logs userError but continues when user DB query fails', async () => {
+    const logger = require('../../src/utils/logger');
+    getClient.mockReturnValue(makeSupabaseClient({
+      users: { data: null, error: new Error('user query failed') },
+    }));
+    const res = makeRes();
+    await createFeedbackSession(makeReqFeedback(), res);
+    // Should still succeed — userError is logged but not thrown
+    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ success: true }));
+    expect(logger.error).toHaveBeenCalledWith(
+      '[ForgeProxy] Error fetching user for feedback:',
+      expect.any(Error)
+    );
+  });
+
+  it('returns 500 on unexpected error', async () => {
+    getClient.mockImplementation(() => { throw new Error('crash'); });
+    const res = makeRes();
+    await createFeedbackSession(makeReqFeedback(), res);
+    expect(res.status).toHaveBeenCalledWith(500);
   });
 });

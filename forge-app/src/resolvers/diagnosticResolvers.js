@@ -70,6 +70,12 @@ export function registerDiagnosticResolvers(resolver) {
         return utcDate === targetDate;
       });
 
+      // Also get activity_records for the target date (hybrid OCR approach)
+      const activityRecords = await supabaseRequest(
+        supabaseConfig,
+        `activity_records?organization_id=eq.${organization.id}&work_date=eq.${targetDate}&select=id,window_title,application_name,classification,user_assigned_issue_key,project_key,duration_seconds,total_time_seconds,start_time,end_time,status,created_at&order=start_time.asc&limit=1000`
+      );
+
       // Get daily_time_summary data for comparison - filter by organization_id
       const dailySummaryQuery = `daily_time_summary?work_date=eq.${targetDate}&organization_id=eq.${organization.id}`;
       const dailySummary = await supabaseRequest(supabaseConfig, dailySummaryQuery);
@@ -80,11 +86,15 @@ export function registerDiagnosticResolvers(resolver) {
         `users?id=eq.${userId}&select=display_name,email,atlassian_account_id`
       );
 
+      // Calculate total time from activity_records
+      const activityTotalSeconds = (activityRecords || []).reduce((sum, r) => sum + (r.duration_seconds || r.total_time_seconds || 0), 0);
+
       return {
         success: true,
         data: {
           targetDate,
           currentUser: userInfo[0] || {},
+          // Legacy screenshot data
           screenshotCount: targetDateScreenshots.length,
           screenshots: targetDateScreenshots.map(s => ({
             id: s.id,
@@ -102,6 +112,22 @@ export function registerDiagnosticResolvers(resolver) {
               createdAtUTC: new Date(ar.created_at).toISOString()
             })) || []
           })),
+          // Hybrid OCR activity records
+          activityRecordCount: (activityRecords || []).length,
+          activityRecords: (activityRecords || []).map(r => ({
+            id: r.id,
+            windowTitle: r.window_title,
+            applicationName: r.application_name,
+            classification: r.classification,
+            issueKey: r.user_assigned_issue_key,
+            projectKey: r.project_key,
+            durationSeconds: r.duration_seconds || r.total_time_seconds || 0,
+            startTime: r.start_time,
+            endTime: r.end_time,
+            status: r.status,
+            createdAt: r.created_at
+          })),
+          activityTotalSeconds,
           dailySummary: dailySummary || [],
           totalTimeSeconds: dailySummary?.reduce((sum, item) => sum + (item.total_seconds || 0), 0) || 0
         }

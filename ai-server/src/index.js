@@ -3,6 +3,7 @@ const cors = require('cors');
 const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
 const path = require('node:path');
+const fs = require('node:fs');
 require('dotenv').config();
 
 const screenshotController = require('./controllers/screenshot-controller');
@@ -31,9 +32,41 @@ const PORT = process.env.PORT || 3001;
 // Trust proxy - required for ngrok tunnel
 app.set('trust proxy', 1);
 
+// CORS configuration - whitelist trusted origins
+const allowedOrigins = [
+  // Production domains (add your actual domain)
+  process.env.AI_SERVER_URL,
+  process.env.CORS_ALLOWED_ORIGIN,
+  // Development
+  'http://localhost:3000',
+  'http://localhost:3001',
+  'http://127.0.0.1:3000',
+  'http://127.0.0.1:3001',
+].filter(Boolean); // Remove undefined values
+
+const corsOptions = {
+  origin: (origin, callback) => {
+    // Allow requests with no origin (desktop apps, server-to-server, same-origin)
+    if (!origin) {
+      return callback(null, true);
+    }
+    // Check if origin is in whitelist
+    if (allowedOrigins.includes(origin)) {
+      return callback(null, true);
+    }
+    // Log rejected origins in development for debugging
+    if (process.env.NODE_ENV === 'development') {
+      logger.warn(`[CORS] Rejected origin: ${origin}`);
+    }
+    callback(new Error('Not allowed by CORS'));
+  },
+  credentials: true,
+  optionsSuccessStatus: 200
+};
+
 // Middleware
 app.use(helmet());
-app.use(cors());
+app.use(cors(corsOptions));
 app.use(express.json({ limit: '50mb' }));
 
 // Rate limiting
@@ -49,7 +82,13 @@ const limiter = rateLimit({
   }
 });
 
-app.use('/api/', limiter);
+// Apply general rate limiter to all /api/ routes EXCEPT /api/forge/*
+// Forge routes have their own forgeLimiter. All Forge calls come from Atlassian's
+// shared infrastructure IPs so a shared IP-based bucket would block all tenants.
+app.use('/api/', (req, res, next) => {
+  if (req.path.startsWith('/forge/')) return next();
+  return limiter(req, res, next);
+});
 
 // Root endpoint
 app.get('/', (req, res) => {
@@ -78,17 +117,33 @@ app.get('/health', (req, res) => {
 });
 
 // =============================================================================
-// LEGAL PAGES (Public - served as static HTML)
+// LEGAL PAGES (Public - served as HTML from layout + content templates)
 // =============================================================================
+
+function renderLegalPage(title, pageTitle, contentFile) {
+  const legalDir = path.join(__dirname, 'legal');
+  const layout = fs.readFileSync(path.join(legalDir, 'layout.html'), 'utf8');
+  const content = fs.readFileSync(path.join(legalDir, contentFile), 'utf8');
+  return layout
+    .replace('{{title}}', title)
+    .replace('{{pageTitle}}', pageTitle)
+    .replace('{{content}}', content);
+}
 
 // Privacy Policy
 app.get('/legal/privacy', (req, res) => {
-  res.sendFile(path.join(__dirname, 'legal', 'privacy-policy.html'));
+  res.type('html').send(renderLegalPage('Privacy Policy - BRD Time Tracker', 'Privacy Policy', 'privacy-content.html'));
 });
 
 // Terms of Service
 app.get('/legal/terms', (req, res) => {
-  res.sendFile(path.join(__dirname, 'legal', 'terms-of-service.html'));
+  res.type('html').send(renderLegalPage('Terms of Service - BRD Time Tracker', 'Terms of Service', 'terms-content.html'));
+});
+
+// Legal page styles (shared by Terms and Privacy pages)
+app.get('/legal/styles.css', (req, res) => {
+  res.type('text/css');
+  res.sendFile(path.join(__dirname, 'legal', 'styles.css'));
 });
 
 // Redirect shortcuts
@@ -214,14 +269,19 @@ app.use('/api/notifications', authMiddleware, notificationController);
 // =============================================================================
 
 // Rate limiter for Forge routes
+// NOTE: All Forge app calls arrive from Atlassian's shared infrastructure IPs,
+// not individual user IPs. The keyGenerator tries to use cloudId (per-tenant)
+// but forgeContext is set by forgeAuthMiddleware which runs AFTER this limiter,
+// so it always falls back to IP. Set a high limit to accommodate all tenants.
 const forgeLimiter = rateLimit({
   windowMs: 1 * 60 * 1000, // 1 minute
-  max: 200, // 200 requests per minute per IP
+  max: 2000, // High limit - all tenants share the same Atlassian egress IP(s)
   message: 'Too many requests from this IP, please try again later.',
   standardHeaders: true,
   legacyHeaders: false,
   keyGenerator: (req) => {
-    // Use cloudId from FIT token if available for rate limiting per tenant
+    // forgeContext is not yet set here (set by forgeAuthMiddleware downstream)
+    // so this always falls back to IP — which is Atlassian's shared IP
     return req.forgeContext?.cloudId || req.ip || 'unknown';
   }
 });
@@ -249,6 +309,9 @@ app.post('/api/forge/app-version/latest', forgeLimiter, forgeAuthMiddleware, for
 
 // Feedback session (opens feedback form in browser)
 app.post('/api/forge/feedback/session', forgeLimiter, forgeAuthMiddleware, forgeProxyController.createFeedbackSession);
+
+// Issue cache — called by the avi:jira:updated:issue trigger to keep user_jira_issues_cache fresh
+app.post('/api/forge/issues/cache', forgeLimiter, forgeAuthMiddleware, forgeProxyController.cacheUserIssues);
 
 // =============================================================================
 // PROTECTED ROUTES (require authMiddleware)
@@ -484,12 +547,23 @@ async function startServer() {
   });
 }
 
-// Initialize server
-try {
-  await startServer();
-} catch (error) {
-  logger.error('Failed to start server:', error);
-  process.exit(1);
+// Export for testing
+module.exports = { app, startServer };
+
+// Only start server if this file is run directly (not imported)
+// This allows tests to import the app without starting the server
+const isMainModule = require.main === module || process.env.START_SERVER === 'true';
+
+if (isMainModule) {
+  // Initialize server
+  (async () => {
+    try {
+      await startServer();
+    } catch (error) {
+      logger.error('Failed to start server:', error);
+      process.exit(1);
+    }
+  })();
 }
 
 // Graceful shutdown
