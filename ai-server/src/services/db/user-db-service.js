@@ -172,10 +172,71 @@ async function getUserById(userId) {
   }
 }
 
+/**
+ * Get organization by ID
+ * @param {string} organizationId - Organization ID
+ * @returns {Promise<Object|null>} Organization data or null
+ */
+async function getOrganizationById(organizationId) {
+  try {
+    const supabase = getClient();
+    const { data, error } = await supabase
+      .from('organizations')
+      .select('id, org_name, jira_cloud_id, jira_instance_url, is_active')
+      .eq('id', organizationId)
+      .single();
+
+    if (error) {
+      if (error.code === 'PGRST116') {
+        return null; // Not found
+      }
+      throw error;
+    }
+
+    return data;
+  } catch (error) {
+    logger.error('Error fetching organization by ID:', error);
+    return null;
+  }
+}
+
+/**
+ * Get the latest download URL for the desktop app
+ * @param {string} [platform='windows'] - Platform (windows, macos, linux)
+ * @returns {Promise<string|null>} Download URL or null
+ */
+async function getLatestDownloadUrl(platform = 'windows') {
+  try {
+    const supabase = getClient();
+    const { data, error } = await supabase
+      .from('app_releases')
+      .select('download_url')
+      .eq('platform', platform.toLowerCase())
+      .eq('is_latest', true)
+      .eq('is_active', true)
+      .single();
+
+    if (error) {
+      if (error.code === 'PGRST116') {
+        logger.warn(`No latest release found for platform: ${platform}`);
+        return null;
+      }
+      throw error;
+    }
+
+    return data?.download_url || null;
+  } catch (error) {
+    logger.error('Error fetching latest download URL:', error);
+    return null;
+  }
+}
+
 module.exports = {
   getUserAtlassianAccountId,
   getUserJiraIssues,
   getUserCachedIssues,
   getUserActiveIssues,
-  getUserById
+  getUserById,
+  getOrganizationById,
+  getLatestDownloadUrl
 };

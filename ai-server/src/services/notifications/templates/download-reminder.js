@@ -15,9 +15,10 @@ module.exports = {
      * @param {string} data.displayName - User's display name
      * @param {string} data.downloadUrl - URL to download the app
      * @param {string} [data.platform] - Platform name (Windows, macOS, Linux)
+     * @param {string} [data.settingsUrl] - URL to notification settings
      * @returns {string} Plain text email body
      */
-    text: ({ displayName, downloadUrl, platform = 'Windows' }) => `
+    text: ({ displayName, downloadUrl, platform = 'Windows', settingsUrl }) => `
 Hello ${displayName},
 
 We're so glad you're here! 😊 You're just one step away from unlocking the full TimeTracker experience.
@@ -39,7 +40,7 @@ The TimeTracker Team
 
 ---
 You're receiving this because you signed up for TimeTracker.
-You can update your notification preferences anytime in your settings.
+${settingsUrl ? `Update your notification preferences: ${settingsUrl}` : 'You can update your notification preferences in the app settings.'}
     `.trim(),
     
     /**
@@ -47,7 +48,7 @@ You can update your notification preferences anytime in your settings.
      * @param {Object} data - Template data
      * @returns {string} HTML email body
      */
-    html: ({ displayName, downloadUrl, platform = 'Windows' }) => `
+    html: ({ displayName, downloadUrl, platform = 'Windows', settingsUrl }) => `
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -199,7 +200,7 @@ You can update your notification preferences anytime in your settings.
             
             <div class="footer">
                 <p>You're receiving this email because you signed up for TimeTracker.</p>
-                <p>You can update your notification preferences anytime in your settings.</p>
+                ${settingsUrl ? `<p><a href="${settingsUrl}">Update your notification preferences</a></p>` : '<p>You can update your notification preferences in the app settings.</p>'}
             </div>
         </div>
     </div>

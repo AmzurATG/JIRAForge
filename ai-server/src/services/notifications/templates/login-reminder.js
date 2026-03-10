@@ -15,9 +15,10 @@ module.exports = {
      * @param {string} data.displayName - User's display name
      * @param {string} data.loginUrl - URL to login
      * @param {string} [data.lastLoginDate] - Last login date (optional)
+     * @param {string} [data.settingsUrl] - URL to notification settings
      * @returns {string} Plain text email body
      */
-    text: ({ displayName, loginUrl, lastLoginDate }) => `
+    text: ({ displayName, loginUrl, lastLoginDate, settingsUrl }) => `
 Hello ${displayName},
 
 I hope you're doing well! 😊
@@ -39,7 +40,7 @@ The TimeTracker Team
 
 ---
 You're receiving this because you have a JIRAForge account.
-You can update your notification preferences anytime in your settings.
+${settingsUrl ? `Update your notification preferences: ${settingsUrl}` : 'You can update your notification preferences in the app settings.'}
     `.trim(),
     
     /**
@@ -47,7 +48,7 @@ You can update your notification preferences anytime in your settings.
      * @param {Object} data - Template data
      * @returns {string} HTML email body
      */
-    html: ({ displayName, loginUrl, lastLoginDate }) => `
+    html: ({ displayName, loginUrl, lastLoginDate, settingsUrl }) => `
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -165,7 +166,7 @@ You can update your notification preferences anytime in your settings.
             
             <div class="footer">
                 <p>You're receiving this email because you have a JIRAForge account.</p>
-                <p>You can update your notification preferences anytime in your settings.</p>
+                ${settingsUrl ? `<p><a href="${settingsUrl}">Update your notification preferences</a></p>` : '<p>You can update your notification preferences in the app settings.</p>'}
             </div>
         </div>
     </div>

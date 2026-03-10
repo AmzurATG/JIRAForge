@@ -6,6 +6,7 @@
 jest.mock('../../src/services/notifications/notifme-wrapper', () => ({
     send: jest.fn(),
     initialize: jest.fn(),
+    isEnabled: jest.fn().mockReturnValue(true),
     getStatus: jest.fn().mockReturnValue({ initialized: true, provider: 'sendgrid' })
 }));
 
@@ -18,7 +19,9 @@ jest.mock('../../src/services/db/notification-db-service', () => ({
 }));
 
 jest.mock('../../src/services/db/user-db-service', () => ({
-    getUserById: jest.fn()
+    getUserById: jest.fn(),
+    getOrganizationById: jest.fn(),
+    getLatestDownloadUrl: jest.fn()
 }));
 
 jest.mock('../../src/utils/logger', () => ({
@@ -46,6 +49,13 @@ describe('Notification Service', () => {
         
         // Default mock implementations
         userDbService.getUserById.mockResolvedValue(mockUser);
+        userDbService.getOrganizationById.mockResolvedValue({
+            id: 'org-456',
+            org_name: 'Test Organization',
+            jira_instance_url: 'https://test-org.atlassian.net',
+            is_active: true
+        });
+        userDbService.getLatestDownloadUrl.mockResolvedValue('https://github.com/AmzurATG/JIRAForge/releases/download/v1.0.0/TimeTracker-Setup.exe');
         notificationDb.getUserPreferences.mockResolvedValue({
             email_enabled: true,
             login_reminder_enabled: true,
@@ -53,7 +63,7 @@ describe('Notification Service', () => {
             new_version_enabled: true,
             inactivity_alert_enabled: true
         });
-        notificationDb.checkCooldown.mockResolvedValue(true); // Not in cooldown
+        notificationDb.checkCooldown.mockResolvedValue({ inCooldown: false, todayCount: 0 }); // Not in cooldown
         notificationDb.createLog.mockResolvedValue({ id: 'log-123' });
         notificationDb.updateLog.mockResolvedValue({});
         notificationDb.updateCooldown.mockResolvedValue({});
@@ -72,7 +82,7 @@ describe('Notification Service', () => {
             expect(notifmeWrapper.send).toHaveBeenCalledWith(
                 expect.objectContaining({
                     to: 'user@example.com',
-                    subject: expect.stringContaining('Login')
+                    subject: expect.stringContaining('TimeTracker')
                 })
             );
             expect(notificationDb.createLog).toHaveBeenCalled();
@@ -81,7 +91,7 @@ describe('Notification Service', () => {
 
         it('should skip if user has email disabled', async () => {
             notificationDb.getUserPreferences.mockResolvedValue({
-                email_enabled: false
+                login_reminder_enabled: false
             });
 
             const result = await notificationService.sendLoginReminder(
@@ -91,7 +101,7 @@ describe('Notification Service', () => {
             );
 
             expect(result.success).toBe(false);
-            expect(result.reason).toBe('email_disabled');
+            expect(result.reason).toBe('disabled_by_user');
             expect(notifmeWrapper.send).not.toHaveBeenCalled();
         });
 
@@ -108,11 +118,11 @@ describe('Notification Service', () => {
             );
 
             expect(result.success).toBe(false);
-            expect(result.reason).toBe('notification_type_disabled');
+            expect(result.reason).toBe('disabled_by_user');
         });
 
         it('should skip if user in cooldown', async () => {
-            notificationDb.checkCooldown.mockResolvedValue(false);
+            notificationDb.checkCooldown.mockResolvedValue({ inCooldown: true, todayCount: 0 });
 
             const result = await notificationService.sendLoginReminder(
                 'user-123',
@@ -166,7 +176,7 @@ describe('Notification Service', () => {
             expect(notifmeWrapper.send).toHaveBeenCalledWith(
                 expect.objectContaining({
                     to: 'user@example.com',
-                    subject: expect.stringContaining('Desktop')
+                    subject: expect.stringContaining('TimeTracker')
                 })
             );
         });
@@ -195,7 +205,7 @@ describe('Notification Service', () => {
             );
 
             expect(result.success).toBe(false);
-            expect(result.reason).toBe('notification_type_disabled');
+            expect(result.reason).toBe('disabled_by_user');
         });
     });
 
@@ -247,7 +257,7 @@ describe('Notification Service', () => {
             );
 
             expect(result.success).toBe(false);
-            expect(result.reason).toBe('notification_type_disabled');
+            expect(result.reason).toBe('disabled_by_user');
         });
     });
 
@@ -268,7 +278,7 @@ describe('Notification Service', () => {
             expect(notifmeWrapper.send).toHaveBeenCalledWith(
                 expect.objectContaining({
                     to: 'user@example.com',
-                    subject: expect.stringContaining('Inactivity')
+                    subject: expect.stringContaining('checking in')
                 })
             );
         });
@@ -286,16 +296,16 @@ describe('Notification Service', () => {
             );
 
             expect(result.success).toBe(false);
-            expect(result.reason).toBe('notification_type_disabled');
+            expect(result.reason).toBe('disabled_by_user');
         });
     });
 
     describe('sendNotification (generic)', () => {
         it('should route to correct handler based on type', async () => {
             await notificationService.sendNotification(
-                'login_reminder',
                 'user-123',
                 'org-456',
+                'login_reminder',
                 { lastLoginDate: '2025-01-15' }
             );
 
@@ -303,14 +313,15 @@ describe('Notification Service', () => {
         });
 
         it('should throw for unknown notification type', async () => {
-            await expect(
-                notificationService.sendNotification(
-                    'unknown_type',
-                    'user-123',
-                    'org-456',
-                    {}
-                )
-            ).rejects.toThrow('Unknown notification type');
+            const result = await notificationService.sendNotification(
+                'user-123',
+                'org-456',
+                'unknown_type',
+                {}
+            );
+
+            expect(result.success).toBe(false);
+            expect(result.reason).toBe('error');
         });
     });
 

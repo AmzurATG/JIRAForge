@@ -7,13 +7,59 @@
 
 const notifmeWrapper = require('./notifme-wrapper');
 const notificationDb = require('../db/notification-db-service');
-const { getUserById } = require('../db/user-db-service');
+const { getUserById, getOrganizationById, getLatestDownloadUrl } = require('../db/user-db-service');
 const templates = require('./templates');
 const logger = require('../../utils/logger');
 
 class NotificationService {
     constructor() {
         this.templates = templates.byType;
+    }
+
+    /**
+     * Build login URL for a user based on their organization's Jira instance
+     * @param {string} organizationId - Organization ID
+     * @returns {Promise<string>} Login URL
+     */
+    async _buildLoginUrl(organizationId) {
+        const org = await getOrganizationById(organizationId);
+        if (org?.jira_instance_url) {
+            // Link directly to the Jira instance - the Forge app is accessible from there
+            return `${org.jira_instance_url}/jira/software/projects`;
+        }
+        // If no Jira URL available, use a more helpful fallback
+        logger.warn(`[Notification] No jira_instance_url for organization ${organizationId}`);
+        return process.env.FORGE_APP_URL || 'https://marketplace.atlassian.com/apps';
+    }
+
+    /**
+     * Build settings URL for a user based on their organization's Jira instance
+     * @param {string} organizationId - Organization ID
+     * @returns {Promise<string>} Settings URL
+     */
+    async _buildSettingsUrl(organizationId) {
+        const org = await getOrganizationById(organizationId);
+        if (org?.jira_instance_url) {
+            // Link to Jira settings where users can access the app settings
+            return `${org.jira_instance_url}/jira/settings/apps`;
+        }
+        logger.warn(`[Notification] No jira_instance_url for organization ${organizationId}`);
+        return process.env.SETTINGS_URL || null;
+    }
+
+    /**
+     * Get download URL from app_releases table or environment
+     * @param {string} [platform='windows'] - Platform
+     * @returns {Promise<string>} Download URL
+     */
+    async _getDownloadUrl(platform = 'windows') {
+        // First try to get from app_releases table (most accurate)
+        const dbUrl = await getLatestDownloadUrl(platform);
+        if (dbUrl) {
+            return dbUrl;
+        }
+        // Fallback to environment variable or a more helpful default
+        return process.env.DOWNLOAD_URL || 'https://github.com/AmzurATG/JIRAForge/releases/latest';
     }
 
     /**
@@ -156,10 +202,14 @@ class NotificationService {
      * @returns {Promise<Object>} Send result
      */
     async sendLoginReminder(userId, organizationId, options = {}) {
-        const loginUrl = options.loginUrl || process.env.FORGE_APP_URL || 'https://jiraforge.io';
+        // Build dynamic login URL based on organization's Jira instance
+        const loginUrl = options.loginUrl || await this._buildLoginUrl(organizationId);
+        // Build dynamic settings URL for notification preferences
+        const settingsUrl = await this._buildSettingsUrl(organizationId);
         return this.sendNotification(userId, organizationId, 'login_reminder', { 
             loginUrl,
-            lastLoginDate: options.lastLoginDate
+            lastLoginDate: options.lastLoginDate,
+            settingsUrl
         });
     }
 
@@ -171,10 +221,14 @@ class NotificationService {
      * @returns {Promise<Object>} Send result
      */
     async sendDownloadReminder(userId, organizationId, platform = 'Windows', downloadUrl = null) {
-        const resolvedUrl = downloadUrl || process.env.DOWNLOAD_URL || 'https://jiraforge.io/download';
+        // Get download URL from app_releases table or fallback
+        const resolvedUrl = downloadUrl || await this._getDownloadUrl(platform.toLowerCase());
+        // Build dynamic settings URL for notification preferences
+        const settingsUrl = await this._buildSettingsUrl(organizationId);
         return this.sendNotification(userId, organizationId, 'download_reminder', {
             downloadUrl: resolvedUrl,
-            platform
+            platform,
+            settingsUrl
         });
     }
 
@@ -191,12 +245,17 @@ class NotificationService {
      * @returns {Promise<Object>} Send result
      */
     async sendNewVersionNotification(userId, organizationId, versionInfo) {
+        // Get download URL from app_releases or use provided one
+        const downloadUrl = versionInfo.downloadUrl || await this._getDownloadUrl();
+        // Build dynamic settings URL for notification preferences
+        const settingsUrl = await this._buildSettingsUrl(organizationId);
         return this.sendNotification(userId, organizationId, 'new_version', {
             version: versionInfo.version,
             currentVersion: versionInfo.currentVersion,
             releaseNotes: versionInfo.releaseNotes || 'Bug fixes and performance improvements',
-            downloadUrl: versionInfo.downloadUrl || process.env.DOWNLOAD_URL || 'https://jiraforge.io/download',
-            isMandatory: versionInfo.isMandatory || false
+            downloadUrl,
+            isMandatory: versionInfo.isMandatory || false,
+            settingsUrl
         });
     }
 
@@ -210,7 +269,8 @@ class NotificationService {
      * @returns {Promise<Object>} Send result
      */
     async sendInactivityAlert(userId, organizationId, activityInfo) {
-        const settingsUrl = process.env.SETTINGS_URL || 'https://jiraforge.io/settings';
+        // Build dynamic settings URL based on organization's Jira instance
+        const settingsUrl = await this._buildSettingsUrl(organizationId);
         return this.sendNotification(userId, organizationId, 'inactivity_alert', {
             lastActivityTime: activityInfo.lastActivityTime,
             hoursInactive: activityInfo.hoursInactive,
@@ -246,7 +306,8 @@ class NotificationService {
      * @returns {Promise<Object>} Send result
      */
     async sendAdminDownloadDigest(adminUserId, organizationId, { orgName, users, downloadUrl = null }) {
-        const resolvedUrl = downloadUrl || process.env.DOWNLOAD_URL || 'https://jiraforge.io/download';
+        // Get download URL from app_releases table or fallback
+        const resolvedUrl = downloadUrl || await this._getDownloadUrl();
         return this.sendNotification(adminUserId, organizationId, 'admin_download_digest', {
             orgName,
             users,
