@@ -6749,7 +6749,9 @@ class TimeTracker:
                 productive_count = sum(1 for r in records if r['status'] == 'pending')
                 analyzed_count = sum(1 for r in records if r['status'] == 'analyzed')
                 inserted_ids = [r.get('id', '?') for r in result.data]
+                print(f"[BATCH] Correlation ID | batch_timestamp={batch_timestamp}")
                 print(f"[BATCH] Uploaded {len(records)} activity records ({productive_count} pending AI, {analyzed_count} pre-analyzed)")
+                print(f"[BATCH] Inserted record IDs | ids={inserted_ids}")
                 secure_log("[BATCH] Inserted record IDs", ids=inserted_ids)
 
                 # Verify records actually exist in the database
