@@ -4,7 +4,8 @@
  * The AI server handles Supabase operations securely without exposing credentials
  */
 
-import api, { invokeRemote, route, storage } from '@forge/api';
+import api, { invokeRemote, route } from '@forge/api';
+import { storage } from '@forge/kvs';
 import { getFromCache, setInCache, TTL, CacheKeys } from './cache.js';
 
 // Persistent Forge storage cache for org and user IDs.
