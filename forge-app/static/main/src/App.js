@@ -193,7 +193,7 @@ function AppContent() {
               </span>
               {sidebarOpen && <span className="sidebar-label">Unassigned Work</span>}
             </button>
-            {(userPermissions.projectAdminProjects?.length > 0 || (userPermissions.isJiraAdmin && userPermissions.allProjectKeys?.length > 0)) && (
+            {(userPermissions.isJiraAdmin || userPermissions.projectAdminProjects?.length > 0) && (
               <button
                 className={`sidebar-item ${activeTab === 'team-analytics' ? 'active' : ''}`}
                 onClick={() => setActiveTab('team-analytics')}

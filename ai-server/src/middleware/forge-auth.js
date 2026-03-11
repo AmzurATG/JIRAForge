@@ -8,11 +8,15 @@ const logger = require('../utils/logger');
 // Atlassian's JWKS endpoint for FIT token verification
 const JWKS_URL = 'https://forge.cdn.prod.atlassian-dev.net/.well-known/jwks.json';
 
-// Your Forge App ID (from manifest.yml) - MUST be set in environment
+// Your Forge App ID(s) (from manifest.yml) - MUST be set in environment
+// Supports multiple app IDs separated by commas for dev/prod using same server
 if (!process.env.FORGE_APP_ID) {
-  throw new Error('FORGE_APP_ID environment variable is required. Set it in .env to your Forge app ARI.');
+  throw new Error('FORGE_APP_ID environment variable is required. Set it in .env to your Forge app ARI(s). Separate multiple IDs with commas.');
 }
-const FORGE_APP_ID = process.env.FORGE_APP_ID;
+// Parse comma-separated app IDs and trim whitespace
+const FORGE_APP_IDS = process.env.FORGE_APP_ID.split(',').map(id => id.trim()).filter(Boolean);
+// Log the configured app IDs at startup for debugging
+logger.info('[FIT] Configured FORGE_APP_IDs:', FORGE_APP_IDS);
 
 // Cache the JWKS and jose module
 let cachedJWKS = null;
@@ -50,13 +54,77 @@ async function validateFIT(token) {
     const jose = await getJose();
     const JWKS = await getJWKS();
 
-    const { payload } = await jose.jwtVerify(token, JWKS, {
-      issuer: 'forge/invocation-token',
-      audience: FORGE_APP_ID
-    });
+    // First decode the token to inspect the actual aud claim (for flexible matching)
+    const parts = token.split('.');
+    let decodedPayload = null;
+    if (parts.length === 3) {
+      try {
+        decodedPayload = JSON.parse(Buffer.from(parts[1], 'base64url').toString());
+      } catch (_) {
+        // Fall through to standard validation
+      }
+    }
+
+    // Log the actual aud for debugging (before validation attempt)
+    if (decodedPayload) {
+      logger.debug('[FIT] Token aud claim:', decodedPayload.aud, '| Expected one of:', FORGE_APP_IDS);
+    }
+
+    // Build audience options to try:
+    // For each configured app ID, add both full ARI and UUID-only formats
+    const audienceOptions = [];
+    for (const appId of FORGE_APP_IDS) {
+      audienceOptions.push(appId);
+      // Extract UUID from full ARI format
+      const appUUID = appId.includes('/') ? appId.split('/').pop() : appId;
+      if (!audienceOptions.includes(appUUID)) {
+        audienceOptions.push(appUUID);
+      }
+    }
+    
+    // Also add the actual token's aud if it contains any of our app UUIDs (handles edge cases)
+    if (decodedPayload?.aud) {
+      const tokenAud = Array.isArray(decodedPayload.aud) ? decodedPayload.aud : [decodedPayload.aud];
+      for (const aud of tokenAud) {
+        if (typeof aud === 'string') {
+          // Check if token aud contains any of our known app UUIDs
+          const matchesKnownApp = FORGE_APP_IDS.some(appId => {
+            const uuid = appId.includes('/') ? appId.split('/').pop() : appId;
+            return aud.includes(uuid);
+          });
+          if (matchesKnownApp && !audienceOptions.includes(aud)) {
+            audienceOptions.push(aud);
+          }
+        }
+      }
+    }
+
+    let payload;
+    let lastError;
+    for (const aud of audienceOptions) {
+      try {
+        ({ payload } = await jose.jwtVerify(token, JWKS, {
+          issuer: 'forge/invocation-token',
+          audience: aud
+        }));
+        logger.debug('[FIT] Token validated with audience:', aud);
+        break;
+      } catch (err) {
+        lastError = err;
+      }
+    }
+    if (!payload) throw lastError;
 
     return payload;
   } catch (error) {
+    // Log detailed debugging info on validation failure
+    try {
+      const parts = token.split('.');
+      if (parts.length === 3) {
+        const decoded = JSON.parse(Buffer.from(parts[1], 'base64url').toString());
+        logger.error('[FIT] Token validation failed. Expected one of:', FORGE_APP_IDS, '| Actual aud:', JSON.stringify(decoded.aud), '| iss:', decoded.iss);
+      }
+    } catch (_) {}
     logger.error('[FIT] Token validation failed:', error.message);
     throw error;
   }

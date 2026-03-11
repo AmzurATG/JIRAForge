@@ -4,6 +4,7 @@
  */
 
 import { fetchTimeAnalytics, fetchTimeAnalyticsBatch, fetchAllAnalytics, fetchProjectAnalytics, fetchProjectTeamAnalytics, fetchTeamDayTimeline, fetchMyDayTimeline } from '../services/analyticsService.js';
+import { isJiraAdmin, checkUserPermissions } from '../utils/jira.js';
 
 // Feature flag for using batch API (set to true for production)
 const USE_BATCH_API = true;
@@ -46,20 +47,18 @@ export function registerAnalyticsResolvers(resolver) {
   resolver.define('getAllAnalytics', async (req) => {
     const { context } = req;
     const accountId = context.accountId;
-    const cloudId = context.cloudId;  // Multi-tenancy: Get Jira Cloud ID from context
+    const cloudId = context.cloudId;
 
     try {
+      const adminCheck = await isJiraAdmin();
+      if (!adminCheck) {
+        return { success: false, error: 'Access denied: Jira Administrator required' };
+      }
       const data = await fetchAllAnalytics(accountId, cloudId);
-      return {
-        success: true,
-        data
-      };
+      return { success: true, data };
     } catch (error) {
       console.error('Error fetching all analytics:', error);
-      return {
-        success: false,
-        error: error.message
-      };
+      return { success: false, error: error.message };
     }
   });
 
@@ -95,20 +94,22 @@ export function registerAnalyticsResolvers(resolver) {
     const { payload, context } = req;
     const { projectKey } = payload;
     const accountId = context.accountId;
-    const cloudId = context.cloudId;  // Multi-tenancy: Get Jira Cloud ID from context
+    const cloudId = context.cloudId;
 
     try {
+      const [adminCheck, projectPerms] = await Promise.all([
+        isJiraAdmin(),
+        checkUserPermissions(['ADMINISTER_PROJECTS'], projectKey)
+      ]);
+      const isProjectAdmin = projectPerms.permissions?.ADMINISTER_PROJECTS?.havePermission || false;
+      if (!adminCheck && !isProjectAdmin) {
+        return { success: false, error: 'Access denied: Project Admin or Jira Administrator required' };
+      }
       const data = await fetchProjectTeamAnalytics(accountId, cloudId, projectKey);
-      return {
-        success: true,
-        data
-      };
+      return { success: true, data };
     } catch (error) {
       console.error('Error fetching team analytics:', error);
-      return {
-        success: false,
-        error: error.message
-      };
+      return { success: false, error: error.message };
     }
   });
 
@@ -124,17 +125,19 @@ export function registerAnalyticsResolvers(resolver) {
     const cloudId = context.cloudId;
 
     try {
+      const [adminCheck, projectPerms] = await Promise.all([
+        isJiraAdmin(),
+        checkUserPermissions(['ADMINISTER_PROJECTS'], projectKey)
+      ]);
+      const isProjectAdmin = projectPerms.permissions?.ADMINISTER_PROJECTS?.havePermission || false;
+      if (!adminCheck && !isProjectAdmin) {
+        return { success: false, error: 'Access denied: Project Admin or Jira Administrator required' };
+      }
       const data = await fetchTeamDayTimeline(accountId, cloudId, projectKey, date);
-      return {
-        success: true,
-        data
-      };
+      return { success: true, data };
     } catch (error) {
       console.error('Error fetching team day timeline:', error);
-      return {
-        success: false,
-        error: error.message
-      };
+      return { success: false, error: error.message };
     }
   });
 
