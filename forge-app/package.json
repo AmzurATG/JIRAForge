@@ -24,6 +24,7 @@
   "license": "MIT",
   "dependencies": {
     "@forge/api": "^3.0.0",
+    "@forge/kvs": "^1.4.0",
     "@forge/resolver": "^1.5.0"
   },
   "devDependencies": {
