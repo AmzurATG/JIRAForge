@@ -107,7 +107,7 @@ function handleSpecialParam(key, value, query) {
       query._select = value;
       return true;
     case 'or':
-      query.or = value.replaceAll(/^\(|\)$/g, '');
+      query.or = value.replaceAll(/(?:^\()|(?:\)$)/g, '');
       return true;
     default:
       return false;
