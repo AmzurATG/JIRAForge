@@ -291,7 +291,7 @@ function AppContent() {
           )}
           {activeTab === 'time-analytics' && <TimeAnalyticsTab />}
           {activeTab === 'screenshots' && <ScreenshotsTab />}
-          {activeTab === 'team-analytics' && <TeamAnalyticsTab />}
+          {activeTab === 'team-analytics' && (userPermissions.isJiraAdmin || userPermissions.projectAdminProjects?.length > 0) && <TeamAnalyticsTab />}
           {activeTab === 'org-analytics' && <OrgAnalyticsTab />}
           {activeTab === 'brd-upload' && <BRDUploadTab />}
           {activeTab === 'unassigned-work' && <UnassignedWork />}

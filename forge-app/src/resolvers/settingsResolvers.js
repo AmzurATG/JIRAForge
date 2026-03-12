@@ -19,6 +19,8 @@ import {
   deleteProjectSettings
 } from '../services/projectSettingsService.js';
 
+import { isJiraAdmin, checkUserPermissions } from '../utils/jira.js';
+
 /**
  * Register settings resolvers
  * @param {Resolver} resolver - Forge resolver instance
@@ -170,6 +172,7 @@ export function registerSettingsResolvers(resolver) {
 
   /**
    * Resolver for getting project settings (tracked statuses)
+   * Only project admins or Jira admins can read these settings
    */
   resolver.define('getProjectSettings', async (req) => {
     const { payload, context } = req;
@@ -178,6 +181,15 @@ export function registerSettingsResolvers(resolver) {
     const cloudId = context.cloudId;
 
     try {
+      const [adminCheck, projectPerms] = await Promise.all([
+        isJiraAdmin(),
+        checkUserPermissions(['ADMINISTER_PROJECTS'], projectKey)
+      ]);
+      const isProjectAdmin = projectPerms.permissions?.ADMINISTER_PROJECTS?.havePermission || false;
+      if (!adminCheck && !isProjectAdmin) {
+        return { success: false, error: 'Access denied: Project Admin or Jira Administrator required' };
+      }
+
       const settings = await getProjectSettings(projectKey, cloudId, accountId);
       return {
         success: true,
@@ -194,6 +206,7 @@ export function registerSettingsResolvers(resolver) {
 
   /**
    * Resolver for getting all project settings in the organization
+   * Only project admins or Jira admins can read the full org-wide settings list
    */
   resolver.define('getAllProjectSettings', async (req) => {
     const { context } = req;
@@ -201,6 +214,15 @@ export function registerSettingsResolvers(resolver) {
     const cloudId = context.cloudId;
 
     try {
+      const [adminCheck, projectPerms] = await Promise.all([
+        isJiraAdmin(),
+        checkUserPermissions(['ADMINISTER_PROJECTS'])
+      ]);
+      const hasProjectAdmin = projectPerms.permissions?.ADMINISTER_PROJECTS?.havePermission || false;
+      if (!adminCheck && !hasProjectAdmin) {
+        return { success: false, error: 'Access denied: Project Admin or Jira Administrator required', projectSettings: [] };
+      }
+
       const allSettings = await getAllProjectSettings(cloudId, accountId);
       return {
         success: true,

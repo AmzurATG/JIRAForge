@@ -15,7 +15,7 @@ export function AppProvider({ children }) {
 
   // Active Issues State (for Dashboard)
   const [activeIssues, setActiveIssues] = useState([]);
-  const [issuesLoading, setIssuesLoading] = useState(false);
+  const [issuesLoading, setIssuesLoading] = useState(true);
 
   // Status Update State
   const [statusUpdating, setStatusUpdating] = useState(null);
@@ -65,17 +65,31 @@ export function AppProvider({ children }) {
     }
   };
 
-  const loadActiveIssues = useCallback(async () => {
+  const loadActiveIssues = useCallback(async (retryCount = 0) => {
+    const MAX_RETRIES = 5;
+    const RETRY_DELAY_MS = 3000;
+
     setIssuesLoading(true);
     try {
       const result = await invoke('getActiveIssuesWithTime');
       if (result.success) {
         setActiveIssues(result.issues || []);
+        setIssuesLoading(false);
+      } else if (retryCount < MAX_RETRIES) {
+        console.warn(`[loadActiveIssues] Attempt ${retryCount + 1} failed, retrying in ${RETRY_DELAY_MS}ms...`, result.error);
+        setTimeout(() => loadActiveIssues(retryCount + 1), RETRY_DELAY_MS);
+      } else {
+        console.error('[loadActiveIssues] All retries exhausted:', result.error);
+        setIssuesLoading(false);
       }
     } catch (err) {
-      console.error('Failed to load active issues:', err);
-    } finally {
-      setIssuesLoading(false);
+      if (retryCount < MAX_RETRIES) {
+        console.warn(`[loadActiveIssues] Attempt ${retryCount + 1} threw, retrying in ${RETRY_DELAY_MS}ms...`, err);
+        setTimeout(() => loadActiveIssues(retryCount + 1), RETRY_DELAY_MS);
+      } else {
+        console.error('[loadActiveIssues] All retries exhausted:', err);
+        setIssuesLoading(false);
+      }
     }
   }, []);
 
