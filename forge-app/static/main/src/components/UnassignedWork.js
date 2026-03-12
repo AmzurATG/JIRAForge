@@ -9,7 +9,6 @@ function UnassignedWork() {
   const [sessions, setSessions] = useState([]);
   const [groups, setGroups] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(null);
   const [userIssues, setUserIssues] = useState([]);
   const [userProjects, setUserProjects] = useState([]);
 
@@ -69,10 +68,12 @@ function UnassignedWork() {
     }
   };
 
-  const loadUnassignedWork = async (append = false) => {
+  const loadUnassignedWork = async (append = false, retryCount = 0) => {
+    const MAX_RETRIES = 5;
+    const RETRY_DELAY_MS = 3000;
+
     if (!append) {
       setLoading(true);
-      setError(null);
     }
 
     try {
@@ -101,15 +102,26 @@ function UnassignedWork() {
             setSessions(sessionsResult.sessions || []);
           }
         }
+
+        setLoading(false);
+        setLoadingMore(false);
+      } else if (!append && retryCount < MAX_RETRIES) {
+        console.warn(`[UnassignedWork] Attempt ${retryCount + 1} failed, retrying in ${RETRY_DELAY_MS}ms...`, groupsResult.error);
+        setTimeout(() => loadUnassignedWork(false, retryCount + 1), RETRY_DELAY_MS);
       } else {
-        setError(groupsResult.error || 'Failed to load unassigned work');
+        console.error('[UnassignedWork] Load failed:', groupsResult.error);
+        setLoading(false);
+        setLoadingMore(false);
       }
     } catch (err) {
-      console.error('Error loading unassigned work:', err);
-      setError(err.message);
-    } finally {
-      setLoading(false);
-      setLoadingMore(false);
+      if (!append && retryCount < MAX_RETRIES) {
+        console.warn(`[UnassignedWork] Attempt ${retryCount + 1} threw, retrying in ${RETRY_DELAY_MS}ms...`, err);
+        setTimeout(() => loadUnassignedWork(false, retryCount + 1), RETRY_DELAY_MS);
+      } else {
+        console.error('[UnassignedWork] Load error:', err);
+        setLoading(false);
+        setLoadingMore(false);
+      }
     }
   };
 
@@ -168,27 +180,6 @@ function UnassignedWork() {
 
   if (loading) {
     return <div className="unassigned-work-container"><div className="loading">Loading unassigned work...</div></div>;
-  }
-
-  if (error) {
-    return (
-      <div className="unassigned-work-container">
-        <h2>Unassigned Work</h2>
-        <div className="error-state">
-          <div className="error-state-icon">
-            <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="#de350b" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-              <circle cx="12" cy="12" r="10"></circle>
-              <line x1="12" y1="8" x2="12" y2="12"></line>
-              <line x1="12" y1="16" x2="12.01" y2="16"></line>
-            </svg>
-          </div>
-          <p className="error-state-message">Unable to load unassigned work. This is usually a temporary issue.</p>
-          <button className="error-retry-btn" onClick={() => loadUnassignedWork()} disabled={loading}>
-            {loading ? 'Retrying...' : 'Try Again'}
-          </button>
-        </div>
-      </div>
-    );
   }
 
   if (sessions.length === 0) {

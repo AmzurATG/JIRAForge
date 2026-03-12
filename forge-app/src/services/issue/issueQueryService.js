@@ -32,13 +32,13 @@ export async function getAssignedIssues(accountId) {
  * @returns {Promise<Object>} Issues with time tracking data
  */
 export async function getActiveIssuesWithTime(accountId, cloudId) {
-  // Fetch ALL assigned issues from Jira (regardless of status)
-  const jiraData = await getAllUserAssignedIssues();
+  // Fetch Jira issues and Supabase config in parallel (independent calls)
+  const [jiraData, supabaseConfig] = await Promise.all([
+    getAllUserAssignedIssues(),
+    getSupabaseConfig(accountId)
+  ]);
   console.log('[BACKEND] Jira returned issues:', jiraData.issues?.length || 0);
   const issues = jiraData.issues || [];
-
-  // Get Supabase config to fetch time tracking data
-  const supabaseConfig = await getSupabaseConfig(accountId);
   if (!supabaseConfig) {
     // If Supabase not configured, return issues without time tracking
     return {
@@ -73,19 +73,18 @@ export async function getActiveIssuesWithTime(accountId, cloudId) {
   const allActivityRecords = [];
   let activityOffset = 0;
 
-  // Check if this user has activity records
-  const allRecordsDebug = await supabaseRequest(
-    supabaseConfig,
-    `activity_records?user_id=eq.${userId}&select=id,status,classification,total_time_seconds&limit=10`
-  );
-  console.log(`[getActiveIssuesWithTime] Records for userId=${userId}: count=${allRecordsDebug?.length || 0}`);
-
   // Build list of user IDs to query - start with the resolved userId
   let userIdsToQuery = [userId];
 
-  // If no records found for this user, check for other users in the same organization
+  // Check if this user has any activity records; if not, look for duplicate user records
   // This handles cases where Desktop App and Forge App created separate user records
-  if (!allRecordsDebug || allRecordsDebug.length === 0) {
+  const firstPageCheck = await supabaseRequest(
+    supabaseConfig,
+    `activity_records?user_id=eq.${userId}&select=id&limit=1`
+  );
+  console.log(`[getActiveIssuesWithTime] Records for userId=${userId}: hasAny=${(firstPageCheck?.length || 0) > 0}`);
+
+  if (!firstPageCheck || firstPageCheck.length === 0) {
     console.log(`[getActiveIssuesWithTime] No records for userId=${userId}, checking for other users in organization...`);
     
     // Find all users in this organization that have activity records
@@ -139,24 +138,9 @@ export async function getActiveIssuesWithTime(accountId, cloudId) {
   console.log(`[getActiveIssuesWithTime] Querying activity records for ${userIdsToQuery.length} user ID(s): ${userIdsToQuery.join(', ')}`);
 
   // Build the user filter - single user or multiple users
-  const userFilter = userIdsToQuery.length === 1 
-    ? `user_id=eq.${userIdsToQuery[0]}` 
+  const userFilter = userIdsToQuery.length === 1
+    ? `user_id=eq.${userIdsToQuery[0]}`
     : `user_id=in.(${userIdsToQuery.join(',')})`;
-
-  // Debug: log activity records status distribution
-  const activityDebug = await supabaseRequest(
-    supabaseConfig,
-    `activity_records?${userFilter}&organization_id=eq.${organization.id}&select=id,status,user_assigned_issue_key,project_key&limit=100`
-  );
-  if (activityDebug && Array.isArray(activityDebug)) {
-    const statusCounts = activityDebug.reduce((acc, r) => {
-      acc[r.status] = (acc[r.status] || 0) + 1;
-      return acc;
-    }, {});
-    const withIssueKey = activityDebug.filter(r => r.user_assigned_issue_key).length;
-    const withProjectKey = activityDebug.filter(r => r.project_key).length;
-    console.log(`[getActiveIssuesWithTime] Activity records: total=${activityDebug.length}, statusCounts=${JSON.stringify(statusCounts)}, withIssueKey=${withIssueKey}, withProjectKey=${withProjectKey}`);
-  }
 
   while (true) {
     // Fetch ALL activity records for productive work (pending, processing, or analyzed)
