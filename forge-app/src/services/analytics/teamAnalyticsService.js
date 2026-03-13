@@ -395,7 +395,7 @@ async function resolveTeamPermissions(isAdmin, projectKey) {
  * for project admins who need to see their own data plus their admin projects.
  */
 function buildActivityQuery(orgId, date, filterByProjects, projectsToFilter, currentUserId) {
-  let query = `activity_records?organization_id=eq.${orgId}&work_date=eq.${date}&classification=neq.private&select=user_id,start_time,end_time,duration_seconds,project_key&order=user_id,start_time.asc&limit=5000`;
+  let query = `activity_records?organization_id=eq.${orgId}&work_date=eq.${date}&select=user_id,start_time,end_time,duration_seconds,project_key&order=user_id,start_time.asc&limit=5000`;
 
   if (filterByProjects && projectsToFilter.length > 0) {
     if (currentUserId) {
@@ -717,8 +717,8 @@ export async function fetchMyDayTimeline(accountId, cloudId, date) {
   const displayName = currentUser[0].display_name || currentUser[0].email || 'User';
 
   // Fetch activity records for current user on the specified date
-  // Excludes private classifications — those should not appear in the user's own timeline
-  const activityQuery = `activity_records?organization_id=eq.${organization.id}&user_id=eq.${userId}&work_date=eq.${date}&classification=neq.private&select=start_time,end_time,duration_seconds&order=start_time.asc&limit=500`;
+  // All classifications included — timeline shows all activity to indicate user presence
+  const activityQuery = `activity_records?organization_id=eq.${organization.id}&user_id=eq.${userId}&work_date=eq.${date}&select=start_time,end_time,duration_seconds&order=start_time.asc&limit=500`;
 
   // Also fetch legacy data from analysis_results (work_type='office' only)
   // Query analysis_results and embed screenshot data - filter by date in code

@@ -792,6 +792,188 @@ export async function bulkReassignByTimeInterval(req) {
 }
 
 /**
+ * Dismiss (soft-delete) an entire unassigned work group.
+ * Marks the group as dismissed and flags all its sessions so they are never re-clustered.
+ * The underlying data is NOT deleted from Supabase.
+ */
+export async function dismissUnassignedGroup(req) {
+  try {
+    const { groupId } = req.payload;
+
+    if (!groupId || !isValidUUID(groupId)) {
+      return { success: false, error: 'Valid group ID required' };
+    }
+
+    const ctx = await initializeRequestContext(req);
+    if (!ctx.success) return ctx;
+
+    const { config: supabaseConfig, organization, userId } = ctx;
+    const now = new Date().toISOString();
+
+    // Step 1: Fetch all group members to get source record IDs for both pipelines
+    const members = await supabaseRequest(
+      supabaseConfig,
+      `unassigned_group_members?group_id=eq.${groupId}&select=id,activity_record_id,unassigned_activity_id`
+    );
+    const membersArray = ensureArray(members);
+
+    const activityRecordIds = sanitizeUUIDArray(
+      membersArray.map(m => m.activity_record_id).filter(Boolean)
+    );
+    const unassignedActivityIds = sanitizeUUIDArray(
+      membersArray.map(m => m.unassigned_activity_id).filter(Boolean)
+    );
+
+    // Step 2: Mark new-pipeline activity_records as clustering_dismissed
+    if (activityRecordIds.length > 0) {
+      await supabaseRequest(
+        supabaseConfig,
+        `activity_records?id=in.(${activityRecordIds.join(',')})&user_id=eq.${userId}&organization_id=eq.${organization.id}`,
+        {
+          method: 'PATCH',
+          body: { clustering_dismissed: true, clustering_dismissed_at: now }
+        }
+      );
+    }
+
+    // Step 3: Mark legacy unassigned_activity records as clustering_dismissed
+    if (unassignedActivityIds.length > 0) {
+      await supabaseRequest(
+        supabaseConfig,
+        `unassigned_activity?id=in.(${unassignedActivityIds.join(',')})&user_id=eq.${userId}&organization_id=eq.${organization.id}`,
+        {
+          method: 'PATCH',
+          body: { clustering_dismissed: true, clustering_dismissed_at: now }
+        }
+      );
+    }
+
+    // Step 4: Mark the group itself as dismissed
+    await supabaseRequest(
+      supabaseConfig,
+      `unassigned_work_groups?id=eq.${groupId}&user_id=eq.${userId}&organization_id=eq.${organization.id}`,
+      {
+        method: 'PATCH',
+        body: { is_dismissed: true, dismissed_at: now, dismissed_by: userId }
+      }
+    );
+
+    console.log(`[dismissUnassignedGroup] Group ${groupId} dismissed (${membersArray.length} sessions marked clustering_dismissed)`);
+
+    return {
+      success: true,
+      dismissed_sessions: membersArray.length
+    };
+
+  } catch (error) {
+    return handleResolverError(error, 'dismissing unassigned group');
+  }
+}
+
+/**
+ * Remove a single session from an unassigned work group.
+ * Marks the session as excluded from future clustering and removes it from the group.
+ * The underlying activity record is NOT deleted from Supabase.
+ */
+export async function dismissGroupMember(req) {
+  try {
+    const { groupId, sessionId } = req.payload;
+
+    if (!groupId || !isValidUUID(groupId)) {
+      return { success: false, error: 'Valid group ID required' };
+    }
+    if (!sessionId || !isValidUUID(sessionId)) {
+      return { success: false, error: 'Valid session ID required' };
+    }
+
+    const ctx = await initializeRequestContext(req);
+    if (!ctx.success) return ctx;
+
+    const { config: supabaseConfig, organization, userId } = ctx;
+    const now = new Date().toISOString();
+
+    // Step 1: Find the member row — sessionId may be activity_record_id or unassigned_activity_id
+    let memberRow = null;
+    let source = null;
+
+    const arMembers = ensureArray(await supabaseRequest(
+      supabaseConfig,
+      `unassigned_group_members?group_id=eq.${groupId}&activity_record_id=eq.${sessionId}&select=id,activity_record_id,unassigned_activity_id`
+    ));
+    if (arMembers.length > 0) {
+      memberRow = arMembers[0];
+      source = 'activity_records';
+    } else {
+      const legacyMembers = ensureArray(await supabaseRequest(
+        supabaseConfig,
+        `unassigned_group_members?group_id=eq.${groupId}&unassigned_activity_id=eq.${sessionId}&select=id,activity_record_id,unassigned_activity_id`
+      ));
+      if (legacyMembers.length > 0) {
+        memberRow = legacyMembers[0];
+        source = 'unassigned_activity';
+      }
+    }
+
+    if (!memberRow) {
+      return { success: false, error: 'Session not found in this group' };
+    }
+
+    // Step 2: Mark the source record as clustering_dismissed
+    if (source === 'activity_records') {
+      await supabaseRequest(
+        supabaseConfig,
+        `activity_records?id=eq.${sessionId}&user_id=eq.${userId}&organization_id=eq.${organization.id}`,
+        {
+          method: 'PATCH',
+          body: { clustering_dismissed: true, clustering_dismissed_at: now }
+        }
+      );
+    } else {
+      await supabaseRequest(
+        supabaseConfig,
+        `unassigned_activity?id=eq.${sessionId}&user_id=eq.${userId}&organization_id=eq.${organization.id}`,
+        {
+          method: 'PATCH',
+          body: { clustering_dismissed: true, clustering_dismissed_at: now }
+        }
+      );
+    }
+
+    // Step 3: Remove from unassigned_group_members (session no longer belongs to this group)
+    await supabaseRequest(
+      supabaseConfig,
+      `unassigned_group_members?id=eq.${memberRow.id}`,
+      { method: 'DELETE' }
+    );
+
+    // Step 4: Decrement session_count on the group so the UI stays accurate
+    const groupRows = ensureArray(await supabaseRequest(
+      supabaseConfig,
+      `unassigned_work_groups?id=eq.${groupId}&user_id=eq.${userId}&organization_id=eq.${organization.id}&select=id,session_count`
+    ));
+    if (groupRows.length > 0) {
+      const newCount = Math.max(0, (groupRows[0].session_count || 1) - 1);
+      await supabaseRequest(
+        supabaseConfig,
+        `unassigned_work_groups?id=eq.${groupId}&user_id=eq.${userId}&organization_id=eq.${organization.id}`,
+        { method: 'PATCH', body: { session_count: newCount } }
+      );
+    }
+
+    console.log(`[dismissGroupMember] Session ${sessionId} (${source}) removed from group ${groupId} and marked clustering_dismissed`);
+
+    return {
+      success: true,
+      session_id: sessionId,
+      source
+    };
+
+  } catch (error) {
+    return handleResolverError(error, 'dismissing group member');
+  }
+}
+
+/**
  * Register assignment resolvers
  */
 export function registerAssignmentResolvers(resolver) {
@@ -799,4 +981,6 @@ export function registerAssignmentResolvers(resolver) {
   resolver.define('createIssueAndAssign', createIssueAndAssign);
   resolver.define('previewBulkReassign', previewBulkReassign);
   resolver.define('bulkReassignByTimeInterval', bulkReassignByTimeInterval);
+  resolver.define('dismissUnassignedGroup', dismissUnassignedGroup);
+  resolver.define('dismissGroupMember', dismissGroupMember);
 }

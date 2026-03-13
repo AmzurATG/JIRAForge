@@ -104,7 +104,7 @@ export async function getUnassignedWork(req) {
     const { config: supabaseConfig, organization, userId } = ctx;
 
     // Query activity_records for unassigned work (hybrid OCR approach)
-    let activityQuery = `activity_records?user_id=eq.${userId}&organization_id=eq.${organization.id}&user_assigned_issue_key=is.null&status=in.(pending,processing,analyzed)&classification=in.(productive,unknown)&select=id,window_title,application_name,start_time,end_time,duration_seconds,total_time_seconds,created_at&order=created_at.desc`;
+    let activityQuery = `activity_records?user_id=eq.${userId}&organization_id=eq.${organization.id}&user_assigned_issue_key=is.null&status=in.(pending,processing,analyzed)&classification=in.(productive,unknown)&clustering_dismissed=eq.false&select=id,window_title,application_name,start_time,end_time,duration_seconds,total_time_seconds,created_at&order=created_at.desc`;
     activityQuery += `&limit=${limit}&offset=${offset}`;
     if (dateFrom && isValidDate(dateFrom)) activityQuery += `&created_at=gte.${dateFrom}`;
     if (dateTo && isValidDate(dateTo)) activityQuery += `&created_at=lte.${dateTo}`;
@@ -180,7 +180,7 @@ export async function getUnassignedGroups(req) {
     // First, get total count for pagination info
     const countResult = await supabaseRequest(
       supabaseConfig,
-      `unassigned_work_groups?user_id=eq.${userId}&organization_id=eq.${organization.id}&is_assigned=eq.false&select=id`,
+      `unassigned_work_groups?user_id=eq.${userId}&organization_id=eq.${organization.id}&is_assigned=eq.false&is_dismissed=eq.false&select=id`,
       { headers: { 'Prefer': 'count=exact' } }
     );
     const totalCount = ensureArray(countResult).length;
@@ -189,7 +189,7 @@ export async function getUnassignedGroups(req) {
     // Session details loaded on-demand via getGroupDetails
     const groups = await supabaseRequest(
       supabaseConfig,
-      `unassigned_work_groups?user_id=eq.${userId}&organization_id=eq.${organization.id}&is_assigned=eq.false&order=created_at.desc&limit=${limit}&offset=${offset}&select=id,group_label,group_description,session_count,total_seconds,confidence_level,recommended_action,suggested_issue_key,recommendation_reason,created_at`
+      `unassigned_work_groups?user_id=eq.${userId}&organization_id=eq.${organization.id}&is_assigned=eq.false&is_dismissed=eq.false&order=created_at.desc&limit=${limit}&offset=${offset}&select=id,group_label,group_description,session_count,total_seconds,confidence_level,recommended_action,suggested_issue_key,recommendation_reason,created_at`
     );
 
     if (!groups || groups.length === 0) {

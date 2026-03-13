@@ -10,7 +10,9 @@ function GroupAccordion({
   totalGroups,
   loadingMore,
   onLoadMore,
-  onAssignClick
+  onAssignClick,
+  onDismissGroup,
+  onDismissMember
 }) {
   // Accordion states
   const [expandedGroups, setExpandedGroups] = useState(new Set());
@@ -18,6 +20,11 @@ function GroupAccordion({
   const [loadingWorkSessions, setLoadingWorkSessions] = useState({});
   const [groupDetails, setGroupDetails] = useState({});
   const [loadingDetails, setLoadingDetails] = useState({});
+
+  // Dismiss states
+  const [confirmingDismiss, setConfirmingDismiss] = useState({}); // { groupId: true }
+  const [dismissingGroup, setDismissingGroup] = useState({});     // { groupId: true }
+  const [dismissingMember, setDismissingMember] = useState({});   // { key: true }
 
   const formatTimeOfDay = (dateString) => {
     const date = parseUTC(dateString);
@@ -51,6 +58,57 @@ function GroupAccordion({
     const end = parseUTC(session.endTime);
     if (!start || !end) return 0;
     return Math.round((end - start) / 1000);
+  };
+
+  const handleDismissGroupClick = (groupId, e) => {
+    e.stopPropagation();
+    setConfirmingDismiss(prev => ({ ...prev, [groupId]: true }));
+  };
+
+  const handleConfirmDismiss = async (groupId, e) => {
+    e.stopPropagation();
+    setConfirmingDismiss(prev => ({ ...prev, [groupId]: false }));
+    setDismissingGroup(prev => ({ ...prev, [groupId]: true }));
+    try {
+      await onDismissGroup(groupId);
+    } finally {
+      setDismissingGroup(prev => ({ ...prev, [groupId]: false }));
+    }
+  };
+
+  const handleCancelDismiss = (groupId, e) => {
+    e.stopPropagation();
+    setConfirmingDismiss(prev => ({ ...prev, [groupId]: false }));
+  };
+
+  const handleDismissMemberClick = async (groupId, session, e) => {
+    e.stopPropagation();
+    const key = `${groupId}-${(session.activityIds || []).join('-')}`;
+    setDismissingMember(prev => ({ ...prev, [key]: true }));
+    try {
+      await onDismissMember(groupId, session.activityIds || []);
+      // Remove the session from the work-sessions local state
+      setGroupWorkSessions(prev => {
+        const dateGroups = prev[groupId] || [];
+        const updated = dateGroups
+          .map(dg => ({
+            ...dg,
+            sessions: dg.sessions.filter(s => s !== session),
+            totalSeconds: dg.totalSeconds - (session.durationSeconds || 0)
+          }))
+          .filter(dg => dg.sessions.length > 0);
+        return { ...prev, [groupId]: updated };
+      });
+      // Clear the cached groupDetails so the session_count in the header
+      // falls back to the correctly updated group.session_count from parent state
+      setGroupDetails(prev => {
+        const next = { ...prev };
+        delete next[groupId];
+        return next;
+      });
+    } finally {
+      setDismissingMember(prev => ({ ...prev, [key]: false }));
+    }
   };
 
   const toggleGroup = async (groupId) => {
@@ -208,6 +266,33 @@ function GroupAccordion({
                   >
                     Assign
                   </button>
+                  {confirmingDismiss[group.id] ? (
+                    <div className="dismiss-confirm" onClick={e => e.stopPropagation()}>
+                      <span>Delete?</span>
+                      <button
+                        className="dismiss-confirm-yes"
+                        onClick={(e) => handleConfirmDismiss(group.id, e)}
+                        disabled={dismissingGroup[group.id]}
+                      >
+                        Yes
+                      </button>
+                      <button
+                        className="dismiss-confirm-no"
+                        onClick={(e) => handleCancelDismiss(group.id, e)}
+                      >
+                        No
+                      </button>
+                    </div>
+                  ) : (
+                    <button
+                      className="dismiss-button-compact"
+                      onClick={(e) => handleDismissGroupClick(group.id, e)}
+                      disabled={dismissingGroup[group.id]}
+                      title="Delete this group"
+                    >
+                      {dismissingGroup[group.id] ? '…' : '×'}
+                    </button>
+                  )}
                 </div>
               </div>
 
@@ -266,8 +351,10 @@ function GroupAccordion({
                                 <div className="sessions-list">
                                   {dateGroup.sessions.map((session, sessionIdx) => {
                                     const sessionDuration = getSessionDuration(session);
+                                    const memberKey = `${group.id}-${(session.activityIds || []).join('-')}`;
+                                    const isDismissingThis = dismissingMember[memberKey];
                                     return (
-                                      <div key={sessionIdx} className="session-item">
+                                      <div key={sessionIdx} className={`session-item${isDismissingThis ? ' session-item-dismissing' : ''}`}>
                                         <span className="session-time">
                                           {formatTimeOfDay(session.startTime)}
                                           {' → '}
@@ -282,6 +369,21 @@ function GroupAccordion({
                                         <span className="session-duration">
                                           {formatTime(sessionDuration)}
                                         </span>
+                                        <button
+                                          className="session-dismiss-btn"
+                                          onClick={(e) => handleDismissMemberClick(group.id, session, e)}
+                                          disabled={isDismissingThis}
+                                          title="Remove from cluster"
+                                        >
+                                          {isDismissingThis ? (
+                                            <span style={{ fontSize: '11px' }}>…</span>
+                                          ) : (
+                                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                                              <line x1="18" y1="6" x2="6" y2="18"></line>
+                                              <line x1="6" y1="6" x2="18" y2="18"></line>
+                                            </svg>
+                                          )}
+                                        </button>
                                       </div>
                                     );
                                   })}
@@ -298,6 +400,14 @@ function GroupAccordion({
                           onClick={(e) => handleAssignClick(group, e)}
                         >
                           Assign This Group
+                        </button>
+                        {/* Footer delete button confirms directly — user already read the group details */}
+                        <button
+                          className="dismiss-button-full"
+                          onClick={(e) => handleConfirmDismiss(group.id, e)}
+                          disabled={dismissingGroup[group.id]}
+                        >
+                          {dismissingGroup[group.id] ? 'Deleting…' : 'Delete Group'}
                         </button>
                       </div>
                     </>
