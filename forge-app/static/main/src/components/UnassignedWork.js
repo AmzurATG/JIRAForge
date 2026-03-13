@@ -164,6 +164,37 @@ function UnassignedWork() {
     loadUnassignedWork();
   };
 
+  // Dismiss handlers
+  const handleDismissGroup = async (groupId) => {
+    try {
+      const result = await invoke('dismissUnassignedGroup', { groupId });
+      if (result.success) {
+        setGroups(prev => prev.filter(g => g.id !== groupId));
+        setTotalGroups(prev => Math.max(0, prev - 1));
+      } else {
+        console.error('[UnassignedWork] Dismiss group failed:', result.error);
+      }
+    } catch (err) {
+      console.error('[UnassignedWork] Error dismissing group:', err);
+    }
+  };
+
+  const handleDismissMember = async (groupId, sessionIds) => {
+    try {
+      // Sequential — each call reads then writes session_count; parallel would cause a race condition
+      for (const sessionId of sessionIds) {
+        await invoke('dismissGroupMember', { groupId, sessionId });
+      }
+      setGroups(prev => prev.map(g =>
+        g.id === groupId
+          ? { ...g, session_count: Math.max(0, (g.session_count || 0) - sessionIds.length) }
+          : g
+      ));
+    } catch (err) {
+      console.error('[UnassignedWork] Error dismissing member:', err);
+    }
+  };
+
   // Bulk edit handlers
   const handleBulkEditSuccess = () => {
     loadUnassignedWork();
@@ -251,6 +282,8 @@ function UnassignedWork() {
         loadingMore={loadingMore}
         onLoadMore={loadMoreGroups}
         onAssignClick={handleAssignClick}
+        onDismissGroup={handleDismissGroup}
+        onDismissMember={handleDismissMember}
       />
 
       {/* Assignment Modal */}

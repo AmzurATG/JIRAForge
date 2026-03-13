@@ -37,6 +37,7 @@ async function getUsersWithUnassignedWork() {
       .from('unassigned_activity')
       .select('id, user_id, organization_id')
       .eq('manually_assigned', false)
+      .eq('clustering_dismissed', false)
       .order('timestamp', { ascending: false });
 
     if (legacyError) {
@@ -51,7 +52,8 @@ async function getUsersWithUnassignedWork() {
       .select('id, user_id, organization_id')
       .is('user_assigned_issue_key', null)
       .in('status', ['pending', 'processing', 'analyzed'])
-      .in('classification', ['productive', 'unknown']);
+      .in('classification', ['productive', 'unknown'])
+      .eq('clustering_dismissed', false);
 
     if (arError) {
       logger.warn('Error fetching activity_records for clustering:', arError);
@@ -124,6 +126,7 @@ async function getUnassignedActivities(userId, organizationId) {
       `)
       .eq('user_id', userId)
       .eq('manually_assigned', false)
+      .eq('clustering_dismissed', false)
       .order('timestamp', { ascending: false });
 
     if (organizationId) {
@@ -166,6 +169,7 @@ async function getUnassignedActivities(userId, organizationId) {
       .is('user_assigned_issue_key', null)
       .in('status', ['pending', 'processing', 'analyzed'])
       .in('classification', ['productive', 'unknown'])
+      .eq('clustering_dismissed', false)
       .order('start_time', { ascending: false });
 
     if (organizationId) {
@@ -399,7 +403,8 @@ async function getUngroupedActivityCount() {
     const { data: legacyData, error: legacyError } = await supabase
       .from('unassigned_activity')
       .select('id')
-      .eq('manually_assigned', false);
+      .eq('manually_assigned', false)
+      .eq('clustering_dismissed', false);
 
     if (legacyError) {
       throw legacyError;
@@ -413,7 +418,8 @@ async function getUngroupedActivityCount() {
       .select('id')
       .is('user_assigned_issue_key', null)
       .in('status', ['pending', 'processing', 'analyzed'])
-      .in('classification', ['productive', 'unknown']);
+      .in('classification', ['productive', 'unknown'])
+      .eq('clustering_dismissed', false);
 
     if (arError) {
       logger.warn('Error counting activity_records for ungrouped count:', arError);
