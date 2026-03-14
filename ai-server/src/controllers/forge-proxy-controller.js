@@ -313,6 +313,79 @@ exports.supabaseQuery = async (req, res) => {
 };
 
 /**
+ * Check if an existing organization record should be updated with better info
+ */
+function shouldUpdateOrgInfo(orgName, existingOrg, cloudId) {
+  if (!orgName || orgName === 'Unknown Organization') return false;
+  return existingOrg.org_name === 'Unknown Organization' ||
+    existingOrg.jira_instance_url?.includes(cloudId);
+}
+
+/**
+ * Update an existing org with better info, falling back to the original if update fails
+ */
+async function resolveExistingOrg(supabase, existingOrg, orgName, jiraUrl, cloudId) {
+  if (!shouldUpdateOrgInfo(orgName, existingOrg, cloudId)) {
+    logger.info('[ForgeProxy] Found existing organization', { id: existingOrg.id });
+    return existingOrg;
+  }
+
+  logger.info('[ForgeProxy] Updating organization with better info', {
+    id: existingOrg.id,
+    oldName: existingOrg.org_name,
+    newName: orgName
+  });
+
+  const { data: updatedOrg, error: updateError } = await supabase
+    .from('organizations')
+    .update({
+      org_name: orgName,
+      jira_instance_url: jiraUrl || existingOrg.jira_instance_url,
+      updated_at: getUTCISOString()
+    })
+    .eq('id', existingOrg.id)
+    .select()
+    .single();
+
+  if (!updateError && updatedOrg) {
+    return updatedOrg;
+  }
+
+  logger.info('[ForgeProxy] Found existing organization', { id: existingOrg.id });
+  return existingOrg;
+}
+
+/**
+ * Create a new organization and its default settings
+ */
+async function createOrganization(supabase, cloudId, orgName, jiraUrl) {
+  const { data: newOrg, error: createError } = await supabase
+    .from('organizations')
+    .insert({
+      jira_cloud_id: cloudId,
+      org_name: orgName || 'Unknown Organization',
+      jira_instance_url: jiraUrl || `https://${cloudId}.atlassian.net`,
+      subscription_status: 'active',
+      subscription_tier: 'free'
+    })
+    .select()
+    .single();
+
+  if (createError) throw createError;
+
+  await supabase
+    .from('organization_settings')
+    .insert({
+      organization_id: newOrg.id,
+      screenshot_interval: 300,
+      auto_worklog_enabled: true
+    });
+
+  logger.info('[ForgeProxy] Created new organization', { id: newOrg.id });
+  return newOrg;
+}
+
+/**
  * Get or create organization by Jira Cloud ID
  */
 exports.getOrCreateOrganization = async (req, res) => {
@@ -320,7 +393,6 @@ exports.getOrCreateOrganization = async (req, res) => {
     const { cloudId } = req.forgeContext;
     const { orgName, jiraUrl } = req.body;
 
-    // Validate cloudId - required for organization lookup/creation
     if (!cloudId) {
       logger.error('[ForgeProxy] Missing cloudId in forgeContext');
       return res.status(400).json({
@@ -331,103 +403,80 @@ exports.getOrCreateOrganization = async (req, res) => {
 
     const supabase = getClient();
     if (!supabase) {
-      return res.status(500).json({
-        success: false,
-        error: 'Database not configured'
-      });
+      return res.status(500).json({ success: false, error: 'Database not configured' });
     }
 
     logger.info('[ForgeProxy] Get/Create organization', { cloudId });
 
-    // Try to find existing organization
     const { data: existingOrgs, error: findError } = await supabase
       .from('organizations')
       .select('*')
       .eq('jira_cloud_id', cloudId);
 
-    if (findError) {
-      throw findError;
+    if (findError) throw findError;
+
+    if (existingOrgs?.length > 0) {
+      const org = await resolveExistingOrg(supabase, existingOrgs[0], orgName, jiraUrl, cloudId);
+      return res.json({ success: true, data: org });
     }
 
-    if (existingOrgs && existingOrgs.length > 0) {
-      const existingOrg = existingOrgs[0];
-      
-      // Update organization if we have better info now (fix "Unknown Organization" issue)
-      if (orgName && orgName !== 'Unknown Organization' && 
-          (existingOrg.org_name === 'Unknown Organization' || 
-           existingOrg.jira_instance_url?.includes(cloudId))) {
-        logger.info('[ForgeProxy] Updating organization with better info', { 
-          id: existingOrg.id, 
-          oldName: existingOrg.org_name, 
-          newName: orgName 
-        });
-        
-        const { data: updatedOrg, error: updateError } = await supabase
-          .from('organizations')
-          .update({
-            org_name: orgName,
-            jira_instance_url: jiraUrl || existingOrg.jira_instance_url,
-            updated_at: getUTCISOString()
-          })
-          .eq('id', existingOrg.id)
-          .select()
-          .single();
-        
-        if (!updateError && updatedOrg) {
-          return res.json({
-            success: true,
-            data: updatedOrg
-          });
-        }
-      }
-      
-      logger.info('[ForgeProxy] Found existing organization', { id: existingOrg.id });
-      return res.json({
-        success: true,
-        data: existingOrg
-      });
-    }
-
-    // Create new organization
-    const { data: newOrg, error: createError } = await supabase
-      .from('organizations')
-      .insert({
-        jira_cloud_id: cloudId,
-        org_name: orgName || 'Unknown Organization',
-        jira_instance_url: jiraUrl || `https://${cloudId}.atlassian.net`,
-        subscription_status: 'active',
-        subscription_tier: 'free'
-      })
-      .select()
-      .single();
-
-    if (createError) {
-      throw createError;
-    }
-
-    // Create default organization settings
-    await supabase
-      .from('organization_settings')
-      .insert({
-        organization_id: newOrg.id,
-        screenshot_interval: 300,
-        auto_worklog_enabled: true
-      });
-
-    logger.info('[ForgeProxy] Created new organization', { id: newOrg.id });
-
-    res.json({
-      success: true,
-      data: newOrg
-    });
+    const newOrg = await createOrganization(supabase, cloudId, orgName, jiraUrl);
+    res.json({ success: true, data: newOrg });
   } catch (error) {
     logger.error('[ForgeProxy] Organization error:', error);
-    res.status(500).json({
-      success: false,
-      error: error.message
-    });
+    res.status(500).json({ success: false, error: error.message });
   }
 };
+
+/**
+ * Check if a user record is missing profile details
+ */
+function isMissingUserDetails(user) {
+  return !user.email || !user.display_name;
+}
+
+/**
+ * Update an existing user's org and/or missing profile fields if needed
+ */
+async function updateExistingUserIfNeeded(supabase, user, organizationId, email, displayName) {
+  if (organizationId && user.organization_id !== organizationId) {
+    await supabase.from('users').update({ organization_id: organizationId }).eq('id', user.id);
+    await ensureOrganizationMembership(supabase, user.id, organizationId);
+  }
+
+  if (isMissingUserDetails(user) && (email || displayName)) {
+    await supabase.from('users').update({
+      email: email || user.email,
+      display_name: displayName || user.display_name,
+      updated_at: getUTCISOString()
+    }).eq('id', user.id);
+  }
+}
+
+/**
+ * Create a new user and their organization membership
+ */
+async function createUser(supabase, accountId, organizationId, email, displayName) {
+  const { data: newUser, error: createError } = await supabase
+    .from('users')
+    .insert({
+      atlassian_account_id: accountId,
+      organization_id: organizationId,
+      email: email || null,
+      display_name: displayName || null
+    })
+    .select()
+    .single();
+
+  if (createError) throw createError;
+
+  if (organizationId) {
+    await ensureOrganizationMembership(supabase, newUser.id, organizationId);
+  }
+
+  logger.info('[ForgeProxy] Created new user', { id: newUser.id });
+  return newUser;
+}
 
 /**
  * Get or create user by Atlassian account ID
@@ -437,7 +486,6 @@ exports.getOrCreateUser = async (req, res) => {
     const { accountId, cloudId } = req.forgeContext;
     const { organizationId, email, displayName } = req.body;
 
-    // Validate accountId - required for user creation
     if (!accountId) {
       logger.error('[ForgeProxy] Missing accountId in forgeContext', { cloudId });
       return res.status(400).json({
@@ -448,94 +496,30 @@ exports.getOrCreateUser = async (req, res) => {
 
     const supabase = getClient();
     if (!supabase) {
-      return res.status(500).json({
-        success: false,
-        error: 'Database not configured'
-      });
+      return res.status(500).json({ success: false, error: 'Database not configured' });
     }
 
     logger.info('[ForgeProxy] Get/Create user', { accountId, cloudId });
 
-    // Try to find existing user
     const { data: existingUsers, error: findError } = await supabase
       .from('users')
       .select('id, organization_id, email, display_name')
       .eq('atlassian_account_id', accountId);
 
-    if (findError) {
-      throw findError;
-    }
+    if (findError) throw findError;
 
-    if (existingUsers && existingUsers.length > 0) {
+    if (existingUsers?.length > 0) {
       const user = existingUsers[0];
-      let updated = false;
-
-      // Update organization_id if provided and different
-      if (organizationId && user.organization_id !== organizationId) {
-        await supabase
-          .from('users')
-          .update({ organization_id: organizationId })
-          .eq('id', user.id);
-        updated = true;
-
-        // Ensure organization membership
-        await ensureOrganizationMembership(supabase, user.id, organizationId);
-      }
-
-      // Update user details if missing
-      if ((!user.email || !user.display_name) && (email || displayName)) {
-        await supabase
-          .from('users')
-          .update({
-            email: email || user.email,
-            display_name: displayName || user.display_name,
-            updated_at: getUTCISOString()
-          })
-          .eq('id', user.id);
-        updated = true;
-      }
-
-      logger.info('[ForgeProxy] Found existing user', { id: user.id, updated });
-
-      return res.json({
-        success: true,
-        data: { userId: user.id }
-      });
+      await updateExistingUserIfNeeded(supabase, user, organizationId, email, displayName);
+      logger.info('[ForgeProxy] Found existing user', { id: user.id });
+      return res.json({ success: true, data: { userId: user.id } });
     }
 
-    // Create new user
-    const { data: newUser, error: createError } = await supabase
-      .from('users')
-      .insert({
-        atlassian_account_id: accountId,
-        organization_id: organizationId,
-        email: email || null,
-        display_name: displayName || null
-      })
-      .select()
-      .single();
-
-    if (createError) {
-      throw createError;
-    }
-
-    // Create organization membership
-    if (organizationId) {
-      await ensureOrganizationMembership(supabase, newUser.id, organizationId);
-    }
-
-    logger.info('[ForgeProxy] Created new user', { id: newUser.id });
-
-    res.json({
-      success: true,
-      data: { userId: newUser.id }
-    });
+    const newUser = await createUser(supabase, accountId, organizationId, email, displayName);
+    res.json({ success: true, data: { userId: newUser.id } });
   } catch (error) {
     logger.error('[ForgeProxy] User error:', error);
-    res.status(500).json({
-      success: false,
-      error: error.message
-    });
+    res.status(500).json({ success: false, error: error.message });
   }
 };
 

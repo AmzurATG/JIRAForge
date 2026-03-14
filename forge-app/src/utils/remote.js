@@ -5,7 +5,7 @@
  */
 
 import api, { invokeRemote, route } from '@forge/api';
-import { storage } from '@forge/kvs';
+import { kvs } from '@forge/kvs';
 import { getFromCache, setInCache, TTL, CacheKeys } from './cache.js';
 
 // Persistent Forge storage cache for org and user IDs.
@@ -14,7 +14,7 @@ const STORAGE_TTL_MS = 24 * 60 * 60 * 1000;
 
 async function getStorageCached(key) {
   try {
-    const entry = await storage.get(key);
+    const entry = await kvs.get(key);
     if (!entry || Date.now() > entry.expiresAt) return null;
     return entry.value;
   } catch {
@@ -23,7 +23,7 @@ async function getStorageCached(key) {
 }
 
 function setStorageCached(key, value) {
-  storage.set(key, { value, expiresAt: Date.now() + STORAGE_TTL_MS }).catch(() => {});
+  kvs.set(key, { value, expiresAt: Date.now() + STORAGE_TTL_MS }).catch(() => {});
 }
 
 // Remote key from manifest.yml - must match exactly

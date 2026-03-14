@@ -45,6 +45,96 @@ async function getJWKS() {
 }
 
 /**
+ * Safely decode JWT payload without verification.
+ * Returns null if token is malformed or decoding fails.
+ * @param {string} token - Raw JWT string
+ * @returns {Object|null}
+ */
+function decodeTokenPayload(token) {
+  const parts = token.split('.');
+  if (parts.length !== 3) return null;
+  try {
+    return JSON.parse(Buffer.from(parts[1], 'base64url').toString());
+  } catch (_) {
+    return null;
+  }
+}
+
+/**
+ * Build the list of audience values to try for token verification.
+ * Includes full ARI, UUID-only, and any matching aud values from the token itself.
+ * @param {Object|null} decodedPayload - Decoded (unverified) token payload
+ * @returns {Array<string>}
+ */
+function buildAudienceOptions(decodedPayload) {
+  const audienceOptions = [];
+
+  for (const appId of FORGE_APP_IDS) {
+    audienceOptions.push(appId);
+    const appUUID = appId.includes('/') ? appId.split('/').pop() : appId;
+    if (!audienceOptions.includes(appUUID)) {
+      audienceOptions.push(appUUID);
+    }
+  }
+
+  if (!decodedPayload?.aud) return audienceOptions;
+
+  // Also add token's own aud values if they contain any of our known app UUIDs
+  const tokenAud = Array.isArray(decodedPayload.aud) ? decodedPayload.aud : [decodedPayload.aud];
+  for (const aud of tokenAud) {
+    if (typeof aud !== 'string') continue;
+    const matchesKnownApp = FORGE_APP_IDS.some(appId => {
+      const uuid = appId.includes('/') ? appId.split('/').pop() : appId;
+      return aud.includes(uuid);
+    });
+    if (matchesKnownApp && !audienceOptions.includes(aud)) {
+      audienceOptions.push(aud);
+    }
+  }
+
+  return audienceOptions;
+}
+
+/**
+ * Attempt JWT verification against each audience option in order.
+ * Returns the verified payload, or throws the last error if all attempts fail.
+ * @param {Object} jose - jose module
+ * @param {Object} JWKS - JWKS key set
+ * @param {string} token - Raw JWT string
+ * @param {Array<string>} audienceOptions - Audience values to try
+ * @returns {Promise<Object>} Verified payload
+ */
+async function tryVerifyWithAudiences(jose, JWKS, token, audienceOptions) {
+  let lastError;
+  for (const aud of audienceOptions) {
+    try {
+      const { payload } = await jose.jwtVerify(token, JWKS, {
+        issuer: 'forge/invocation-token',
+        audience: aud
+      });
+      logger.debug('[FIT] Token validated with audience:', aud);
+      return payload;
+    } catch (err) {
+      lastError = err;
+    }
+  }
+  throw lastError;
+}
+
+/**
+ * Log detailed token debugging info after a validation failure.
+ * @param {string} token - Raw JWT string
+ * @param {Error} error - Validation error
+ */
+function logValidationFailure(token, error) {
+  const decoded = decodeTokenPayload(token);
+  if (decoded) {
+    logger.error('[FIT] Token validation failed. Expected one of:', FORGE_APP_IDS, '| Actual aud:', JSON.stringify(decoded.aud), '| iss:', decoded.iss);
+  }
+  logger.error('[FIT] Token validation failed:', error.message);
+}
+
+/**
  * Validate Forge Invocation Token (FIT)
  * @param {string} token - The JWT token from Authorization header
  * @returns {Promise<Object>} - Validated payload with context
@@ -54,78 +144,15 @@ async function validateFIT(token) {
     const jose = await getJose();
     const JWKS = await getJWKS();
 
-    // First decode the token to inspect the actual aud claim (for flexible matching)
-    const parts = token.split('.');
-    let decodedPayload = null;
-    if (parts.length === 3) {
-      try {
-        decodedPayload = JSON.parse(Buffer.from(parts[1], 'base64url').toString());
-      } catch (_) {
-        // Fall through to standard validation
-      }
-    }
-
-    // Log the actual aud for debugging (before validation attempt)
+    const decodedPayload = decodeTokenPayload(token);
     if (decodedPayload) {
       logger.debug('[FIT] Token aud claim:', decodedPayload.aud, '| Expected one of:', FORGE_APP_IDS);
     }
 
-    // Build audience options to try:
-    // For each configured app ID, add both full ARI and UUID-only formats
-    const audienceOptions = [];
-    for (const appId of FORGE_APP_IDS) {
-      audienceOptions.push(appId);
-      // Extract UUID from full ARI format
-      const appUUID = appId.includes('/') ? appId.split('/').pop() : appId;
-      if (!audienceOptions.includes(appUUID)) {
-        audienceOptions.push(appUUID);
-      }
-    }
-    
-    // Also add the actual token's aud if it contains any of our app UUIDs (handles edge cases)
-    if (decodedPayload?.aud) {
-      const tokenAud = Array.isArray(decodedPayload.aud) ? decodedPayload.aud : [decodedPayload.aud];
-      for (const aud of tokenAud) {
-        if (typeof aud === 'string') {
-          // Check if token aud contains any of our known app UUIDs
-          const matchesKnownApp = FORGE_APP_IDS.some(appId => {
-            const uuid = appId.includes('/') ? appId.split('/').pop() : appId;
-            return aud.includes(uuid);
-          });
-          if (matchesKnownApp && !audienceOptions.includes(aud)) {
-            audienceOptions.push(aud);
-          }
-        }
-      }
-    }
-
-    let payload;
-    let lastError;
-    for (const aud of audienceOptions) {
-      try {
-        ({ payload } = await jose.jwtVerify(token, JWKS, {
-          issuer: 'forge/invocation-token',
-          audience: aud
-        }));
-        logger.debug('[FIT] Token validated with audience:', aud);
-        break;
-      } catch (err) {
-        lastError = err;
-      }
-    }
-    if (!payload) throw lastError;
-
-    return payload;
+    const audienceOptions = buildAudienceOptions(decodedPayload);
+    return await tryVerifyWithAudiences(jose, JWKS, token, audienceOptions);
   } catch (error) {
-    // Log detailed debugging info on validation failure
-    try {
-      const parts = token.split('.');
-      if (parts.length === 3) {
-        const decoded = JSON.parse(Buffer.from(parts[1], 'base64url').toString());
-        logger.error('[FIT] Token validation failed. Expected one of:', FORGE_APP_IDS, '| Actual aud:', JSON.stringify(decoded.aud), '| iss:', decoded.iss);
-      }
-    } catch (_) {}
-    logger.error('[FIT] Token validation failed:', error.message);
+    logValidationFailure(token, error);
     throw error;
   }
 }
