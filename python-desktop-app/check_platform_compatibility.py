@@ -126,17 +126,13 @@ def check_system_binaries():
 
 
 def check_ocr_engines():
-    """Check configured OCR engines"""
+    """Check OCR engines from environment configuration"""
     print_section("OCR Engine Configuration")
     
+    # Get engines from environment config (defaults: paddle + tesseract)
     engines = get_configured_engines()
     
-    if not engines:
-        print("⚠️  No OCR engines configured in .env file")
-        print("   Set OCR_PRIMARY_ENGINE and OCR_FALLBACK_ENGINES")
-        return False
-    
-    print(f"Configured engines: {', '.join(engines)}")
+    print(f"OCR engines (from env config): {', '.join(engines)}")
     print()
     
     all_ready = True

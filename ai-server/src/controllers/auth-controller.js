@@ -511,8 +511,8 @@ exports.getOcrConfig = async (req, res) => {
     // This centralizes all OCR configuration in the AI server
     const ocrConfig = {
       // Primary and fallback engines
-      primary_engine: process.env.OCR_PRIMARY_ENGINE || 'paddle',
-      fallback_engines: (process.env.OCR_FALLBACK_ENGINES || 'tesseract').split(',').map(e => e.trim()),
+      primary_engine: process.env.OCR_PRIMARY_ENGINE || 'rapidocr',
+      fallback_engines: (process.env.OCR_FALLBACK_ENGINES || 'winrtocr').split(',').map(e => e.trim()),
       
       // Global preprocessing settings
       use_preprocessing: (process.env.OCR_USE_PREPROCESSING || 'true').toLowerCase() === 'true',
@@ -619,6 +619,117 @@ exports.verifyToken = async (req, res) => {
     res.status(500).json({
       success: false,
       error: `Verification failed: ${error.message}`
+    });
+  }
+};
+
+/**
+ * Receive and log client diagnostics (OCR status, login events, errors)
+ * Desktop app sends this periodically or on errors to help debugging
+ *
+ * POST /api/auth/diagnostics
+ * Body: { 
+ *   atlassian_token: string,
+ *   type: 'ocr' | 'login' | 'error',
+ *   diagnostics: object 
+ * }
+ */
+exports.submitDiagnostics = async (req, res) => {
+  try {
+    const { atlassian_token, type, diagnostics, app_version } = req.body;
+
+    if (!validateRequiredField(req, res, 'atlassian_token', 'Atlassian token is required')) return;
+    if (!validateRequiredField(req, res, 'type', 'Diagnostics type is required')) return;
+    if (!validateRequiredField(req, res, 'diagnostics', 'Diagnostics data is required')) return;
+
+    // Verify the Atlassian token first
+    const atlassianUser = await verifyAtlassianTokenOrRespond(atlassian_token, res, 'diagnostics');
+    if (!atlassianUser) return;
+
+    const atlassianAccountId = atlassianUser.account_id;
+    const userEmail = atlassianUser.email;
+
+    // Log the diagnostics to server logs with structured format for easy searching
+    const logPrefix = `[DIAG:${type.toUpperCase()}]`;
+    const hostname = diagnostics?.system_info?.hostname || 'unknown';
+    const platform = diagnostics?.system_info?.platform || 'unknown';
+    
+    logger.info(`${logPrefix} User: ${userEmail} | Host: ${hostname} | Platform: ${platform} | App: ${app_version || 'unknown'}`);
+    
+    if (type === 'ocr') {
+      // Log OCR-specific diagnostics
+      const ocrStatus = diagnostics?.status || 'unknown';
+      const primaryEngine = diagnostics?.config?.primary_engine || 'unknown';
+      const engineDetails = diagnostics?.engine_init_details || {};
+      
+      logger.info(`${logPrefix} OCR Status: ${ocrStatus}`);
+      logger.info(`${logPrefix} Primary Engine: ${primaryEngine}`);
+      
+      // Log PaddleOCR details
+      const paddle = engineDetails.paddle || {};
+      logger.info(`${logPrefix} PaddleOCR: module=${paddle.module_available}, engine=${paddle.engine_available}, user_models=${paddle.user_models_exist}, version=${paddle.version || 'N/A'}`);
+      if (paddle.initialization_error) {
+        logger.error(`${logPrefix} PaddleOCR Init Error: ${paddle.initialization_error}`);
+      }
+      
+      // Log Tesseract details
+      const tesseract = engineDetails.tesseract || {};
+      logger.info(`${logPrefix} Tesseract: module=${tesseract.module_available}, engine=${tesseract.engine_available}, version=${tesseract.tesseract_version || 'N/A'}`);
+      if (tesseract.initialization_error) {
+        logger.error(`${logPrefix} Tesseract Init Error: ${tesseract.initialization_error}`);
+      }
+      
+      // Log bundled dependency status for exe deployments
+      const bundled = diagnostics?.bundled_dependencies;
+      if (bundled) {
+        logger.info(`${logPrefix} Bundled: tesseract=${bundled.tesseract_exe ? 'YES' : 'NO'}, paddle_bundled=${bundled.paddleocr_models_bundled ? 'YES' : 'NO'}, paddle_user=${bundled.paddleocr_user_models ? 'YES' : 'NO'}`);
+      }
+      
+      // Log recommendations
+      const recommendations = diagnostics?.recommendations || [];
+      if (recommendations.length > 0) {
+        logger.warn(`${logPrefix} Recommendations: ${recommendations.join(' | ')}`);
+      }
+      
+    } else if (type === 'login') {
+      // Log login-specific diagnostics
+      const loginStatus = diagnostics?.status || 'unknown';
+      const loginStep = diagnostics?.step || 'unknown';
+      const errorMessage = diagnostics?.error || null;
+      
+      logger.info(`${logPrefix} Login Status: ${loginStatus} | Step: ${loginStep}`);
+      if (errorMessage) {
+        logger.error(`${logPrefix} Login Error: ${errorMessage}`);
+        if (diagnostics?.error_details) {
+          logger.error(`${logPrefix} Error Details: ${JSON.stringify(diagnostics.error_details)}`);
+        }
+      }
+      
+    } else if (type === 'error') {
+      // Log general error diagnostics
+      const errorCategory = diagnostics?.category || 'general';
+      const errorMessage = diagnostics?.message || 'Unknown error';
+      const stackTrace = diagnostics?.stack_trace || null;
+      
+      logger.error(`${logPrefix} Category: ${errorCategory} | Error: ${errorMessage}`);
+      if (stackTrace) {
+        logger.error(`${logPrefix} Stack: ${stackTrace.substring(0, 500)}`);
+      }
+    }
+    
+    // Log the full diagnostics as JSON for detailed analysis (at debug level)
+    logger.debug(`${logPrefix} Full diagnostics: ${JSON.stringify(diagnostics)}`);
+
+    res.json({
+      success: true,
+      message: 'Diagnostics received and logged'
+    });
+
+  } catch (error) {
+    logger.error('[Auth] Diagnostics submission error:', error);
+    res.status(500).json({
+      success: false,
+      error: `Failed to submit diagnostics: ${error.message}`
     });
   }
 };

@@ -63,6 +63,9 @@ class OCRFacade:
         self._engine_backoff_until: Dict[str, float] = {}
         self._engine_backoff_seconds: float = 120.0
         
+        # Track initialization errors for detailed diagnostics
+        self._engine_init_errors: Dict[str, str] = {}
+        
         # Privacy filter for redacting sensitive information
         self._privacy_filter = None
         
@@ -85,17 +88,38 @@ class OCRFacade:
             if self._primary_engine.is_available():
                 logger.info(f"Primary OCR engine: {self.config.primary_engine}")
             else:
+                # Capture detailed initialization error if available
+                init_error = getattr(self._primary_engine, '_init_error', None)
+                init_tb = getattr(self._primary_engine, '_init_traceback', '')
+                
+                error_detail = f"Engine registered but not available"
+                if init_error:
+                    error_detail = f"{init_error}"
+                    if init_tb:
+                        # Store first 500 chars of traceback for diagnostics
+                        error_detail += f"; Traceback: {init_tb[:500]}"
+                
+                self._engine_init_errors[self.config.primary_engine] = error_detail
+                
                 logger.warning(
                     f"Primary engine '{self.config.primary_engine}' registered but not available. "
+                    f"Error: {init_error or 'Unknown'}. "
                     f"Install: {EngineFactory.get_package_suggestion(self.config.primary_engine)}"
                 )
                 self._primary_engine = None
         except ValueError as e:
+            self._engine_init_errors[self.config.primary_engine] = f"Not registered: {str(e)}"
             logger.warning(
                 f"Primary OCR engine '{self.config.primary_engine}' not registered. "
                 f"Install: {EngineFactory.get_package_suggestion(self.config.primary_engine)}. "
                 f"Will use fallback engines."
             )
+            self._primary_engine = None
+        except Exception as e:
+            import traceback
+            tb = traceback.format_exc()
+            self._engine_init_errors[self.config.primary_engine] = f"Init exception: {str(e)}; Traceback: {tb[:500]}"
+            logger.error(f"Failed to initialize primary engine '{self.config.primary_engine}': {e}")
             self._primary_engine = None
         
         # Create fallback engines
@@ -108,15 +132,25 @@ class OCRFacade:
                     self._fallback_engines.append(engine)
                     logger.debug(f"Fallback engine available: {engine_name}")
                 else:
-                    logger.debug(f"Fallback engine {engine_name} not available")
+                    # Capture detailed initialization error
+                    init_error = getattr(engine, '_init_error', None)
+                    error_detail = init_error or 'Engine not available'
+                    self._engine_init_errors[engine_name] = error_detail
+                    logger.debug(f"Fallback engine {engine_name} not available: {error_detail}")
             except ValueError as e:
+                self._engine_init_errors[engine_name] = f"Not registered: {str(e)}"
                 logger.debug(f"Fallback engine {engine_name} not registered: {e}")
+            except Exception as e:
+                self._engine_init_errors[engine_name] = f"Init exception: {str(e)}"
+                logger.debug(f"Fallback engine {engine_name} init failed: {e}")
         
-        # Log final configuration
+        # Log final configuration with details
         if not self._primary_engine and not self._fallback_engines:
+            init_errors_summary = "; ".join([f"{eng}: {err}" for eng, err in self._engine_init_errors.items()])
             logger.warning(
-                "No OCR engines available! Text extraction will use metadata fallback only. "
-                "Install an OCR engine: pip install paddlepaddle paddleocr"
+                f"No OCR engines available! Text extraction will use metadata fallback only. "
+                f"Initialization errors: {init_errors_summary}. "
+                f"Install an OCR engine: pip install paddlepaddle paddleocr"
             )
     
     def _initialize_privacy_filter(self):
@@ -240,6 +274,352 @@ class OCRFacade:
                 'privacy_error': str(e)
             }
     
+    def get_ocr_diagnostics(self) -> Dict[str, Any]:
+        """
+        Get detailed OCR system diagnostics for debugging deployment issues.
+        
+        Returns a comprehensive status report including:
+        - Available engines and their status
+        - Bundled paths (for PyInstaller exe)
+        - Configuration details
+        - Error messages if engines are unavailable
+        - Initialization logs for remote debugging
+        
+        Useful for debugging OCR failures in deployed applications.
+        """
+        import sys
+        import platform
+        from datetime import datetime
+        
+        diagnostics = {
+            'timestamp': datetime.utcnow().isoformat() + 'Z',
+            'is_frozen_exe': getattr(sys, 'frozen', False),
+            'bundled_path': getattr(sys, '_MEIPASS', None),
+            'executable_path': sys.executable if getattr(sys, 'frozen', False) else None,
+            'system_info': {
+                'platform': platform.system(),
+                'platform_version': platform.version(),
+                'machine': platform.machine(),
+                'python_version': platform.python_version(),
+                'hostname': platform.node(),
+            },
+            'config': {
+                'primary_engine': self.config.primary_engine,
+                'fallback_engines': self.config.fallback_engines,
+                'use_preprocessing': self.config.use_preprocessing,
+            },
+            'engines': {},
+            'privacy_filter': {
+                'available': self._privacy_filter is not None,
+                'detectors': self._privacy_filter.get_available_detectors() if self._privacy_filter else []
+            },
+            'initialization_logs': [],
+            'recommendations': []
+        }
+        
+        # Check primary engine
+        if self._primary_engine:
+            diagnostics['engines']['primary'] = {
+                'name': self.config.primary_engine,
+                'available': self._primary_engine.is_available(),
+                'capabilities': self._primary_engine.get_capabilities(),
+                'status': 'ready' if self._primary_engine.is_available() else 'unavailable'
+            }
+        else:
+            diagnostics['engines']['primary'] = {
+                'name': self.config.primary_engine,
+                'available': False,
+                'status': 'not_initialized',
+                'error': f"Engine '{self.config.primary_engine}' could not be created"
+            }
+            diagnostics['recommendations'].append(
+                f"Install {self.config.primary_engine}: pip install paddlepaddle paddleocr"
+            )
+        
+        # Check fallback engines
+        diagnostics['engines']['fallbacks'] = []
+        for engine in self._fallback_engines:
+            diagnostics['engines']['fallbacks'].append({
+                'name': engine.get_name(),
+                'available': engine.is_available(),
+                'status': 'ready' if engine.is_available() else 'unavailable'
+            })
+        
+        # Check for common deployment issues
+        if diagnostics['is_frozen_exe']:
+            import os
+            base_path = diagnostics['bundled_path'] or os.path.dirname(sys.executable)
+            
+            # Check Tesseract bundling
+            tesseract_bundled = os.path.exists(os.path.join(base_path, 'tesseract', 'tesseract.exe'))
+            tessdata_bundled = os.path.exists(os.path.join(base_path, 'tesseract', 'tessdata', 'eng.traineddata'))
+            
+            diagnostics['bundled_dependencies'] = {
+                'tesseract_exe': tesseract_bundled,
+                'tesseract_tessdata': tessdata_bundled,
+                'tesseract_path_checked': os.path.join(base_path, 'tesseract', 'tesseract.exe'),
+            }
+            
+            # Check PaddleOCR models - bundled in exe
+            paddleocr_bundled = os.path.isdir(os.path.join(base_path, '.paddleocr'))
+            diagnostics['bundled_dependencies']['paddleocr_models_bundled'] = paddleocr_bundled
+            diagnostics['bundled_dependencies']['paddleocr_bundled_path'] = os.path.join(base_path, '.paddleocr')
+            
+            # Check PaddleOCR models - copied to user home (where PaddleOCR looks)
+            user_paddleocr = os.path.join(os.path.expanduser('~'), '.paddleocr', 'whl')
+            user_models_exist = os.path.isdir(user_paddleocr)
+            diagnostics['bundled_dependencies']['paddleocr_user_models'] = user_models_exist
+            diagnostics['bundled_dependencies']['paddleocr_user_path'] = user_paddleocr
+            
+            if not tesseract_bundled and 'tesseract' in self.config.fallback_engines:
+                diagnostics['recommendations'].append(
+                    "Tesseract binary not found in bundled exe. "
+                    "Ensure Tesseract is installed on the build machine at C:\\Program Files\\Tesseract-OCR\\"
+                )
+            
+            if not paddleocr_bundled and self.config.primary_engine == 'paddle':
+                diagnostics['recommendations'].append(
+                    "PaddleOCR models not found in bundled exe. "
+                    "Run PaddleOCR once on the build machine to download models to ~/.paddleocr/ before building."
+                )
+            elif paddleocr_bundled and not user_models_exist:
+                diagnostics['recommendations'].append(
+                    f"PaddleOCR models are bundled but NOT yet copied to user home ({user_paddleocr}). "
+                    "This should happen automatically on first OCR run."
+                )
+        
+        # Collect engine-specific initialization details
+        diagnostics['engine_init_details'] = self._get_engine_init_details()
+        
+        # Include initialization errors (captured during facade setup)
+        diagnostics['engine_init_errors'] = dict(self._engine_init_errors) if self._engine_init_errors else {}
+        
+        # Overall status
+        any_engine_available = (
+            (self._primary_engine and self._primary_engine.is_available()) or
+            any(e.is_available() for e in self._fallback_engines)
+        )
+        diagnostics['ocr_available'] = any_engine_available
+        diagnostics['status'] = 'ready' if any_engine_available else 'no_engines_available'
+        
+        if not any_engine_available:
+            init_error_summary = "; ".join([f"{eng}: {err}" for eng, err in self._engine_init_errors.items()]) if self._engine_init_errors else "Unknown"
+            diagnostics['recommendations'].append(
+                f"No OCR engines are available. OCR will fall back to metadata-only extraction. "
+                f"Text from screenshots will NOT be extracted. "
+                f"Initialization errors: {init_error_summary}"
+            )
+        
+        return diagnostics
+    
+    def _get_engine_init_details(self) -> Dict[str, Any]:
+        """
+        Get detailed initialization info for each OCR engine.
+        Useful for diagnosing why engines are not available.
+        """
+        import os
+        import sys
+        
+        details = {}
+        
+        # PaddleOCR details
+        try:
+            from .engines.paddle_engine import _PADDLEOCR_AVAILABLE, _PADDLEOCR_VERSION
+            
+            paddle_details = {
+                'module_available': _PADDLEOCR_AVAILABLE,
+                'version': _PADDLEOCR_VERSION,
+            }
+            
+            # Check model paths
+            user_paddleocr = os.path.join(os.path.expanduser('~'), '.paddleocr')
+            user_whl = os.path.join(user_paddleocr, 'whl')
+            paddle_details['user_models_path'] = user_paddleocr
+            paddle_details['user_models_exist'] = os.path.isdir(user_whl)
+            
+            # List what's in the models directory (if exists)
+            if os.path.isdir(user_whl):
+                try:
+                    paddle_details['user_models_contents'] = os.listdir(user_whl)[:10]  # First 10
+                except Exception as e:
+                    paddle_details['user_models_contents_error'] = str(e)
+            
+            # Check bundled path (for frozen exe)
+            if getattr(sys, 'frozen', False):
+                base_path = getattr(sys, '_MEIPASS', os.path.dirname(sys.executable))
+                bundled_path = os.path.join(base_path, '.paddleocr')
+                bundled_whl = os.path.join(bundled_path, 'whl')
+                paddle_details['bundled_path'] = bundled_path
+                paddle_details['bundled_models_exist'] = os.path.isdir(bundled_whl)
+                
+                # Check paddle libs bundling
+                paddle_libs = os.path.join(base_path, 'paddle', 'libs')
+                paddle_details['bundled_paddle_libs'] = paddle_libs
+                paddle_details['bundled_paddle_libs_exist'] = os.path.isdir(paddle_libs)
+            
+            # Check if engine instance is working
+            paddle_engine = None
+            if self._primary_engine and self._primary_engine.get_name() == 'paddle':
+                paddle_engine = self._primary_engine
+            else:
+                # Check fallback engines
+                for e in self._fallback_engines:
+                    if e.get_name() == 'paddle':
+                        paddle_engine = e
+                        break
+            
+            if paddle_engine:
+                paddle_details['engine_available'] = paddle_engine.is_available()
+                paddle_details['initialization_error'] = getattr(paddle_engine, '_init_error', None)
+                paddle_details['initialization_traceback'] = getattr(paddle_engine, '_init_traceback', None)
+                
+                # Get detailed import diagnostics from engine
+                if hasattr(paddle_engine, 'get_import_diagnostics'):
+                    paddle_details['import_diagnostics'] = paddle_engine.get_import_diagnostics()
+            
+            details['paddle'] = paddle_details
+            
+        except Exception as e:
+            import traceback
+            details['paddle'] = {'error': str(e), 'traceback': traceback.format_exc()[:500]}
+        
+        # Tesseract details
+        try:
+            from .engines.tesseract_engine import _TESSERACT_AVAILABLE, _get_bundled_tesseract_paths
+            
+            tesseract_details = {
+                'module_available': _TESSERACT_AVAILABLE,
+            }
+            
+            # Try to get Tesseract version
+            if _TESSERACT_AVAILABLE:
+                try:
+                    import pytesseract
+                    tesseract_details['tesseract_version'] = str(pytesseract.get_tesseract_version())
+                    tesseract_details['tesseract_cmd'] = pytesseract.pytesseract.tesseract_cmd
+                except Exception as e:
+                    tesseract_details['version_error'] = str(e)
+            
+            # Check bundled paths
+            bundled_exe, bundled_tessdata = _get_bundled_tesseract_paths()
+            tesseract_details['bundled_exe'] = bundled_exe
+            tesseract_details['bundled_tessdata'] = bundled_tessdata
+            tesseract_details['bundled_exe_exists'] = bundled_exe and os.path.exists(bundled_exe)
+            tesseract_details['bundled_tessdata_exists'] = bundled_tessdata and os.path.isdir(bundled_tessdata)
+            
+            # Check TESSDATA_PREFIX env var
+            tesseract_details['tessdata_prefix_env'] = os.environ.get('TESSDATA_PREFIX')
+            
+            # Check if engine instance is working
+            for e in [self._primary_engine] + self._fallback_engines:
+                if e and e.get_name() == 'tesseract':
+                    tesseract_details['engine_available'] = e.is_available()
+                    tesseract_details['initialization_error'] = getattr(e, '_init_error', None)
+                    break
+            
+            details['tesseract'] = tesseract_details
+            
+        except Exception as e:
+            details['tesseract'] = {'error': str(e)}
+        
+        return details
+    
+    def get_diagnostics_json(self) -> str:
+        """
+        Get diagnostics as a JSON string for sending to AI server.
+        """
+        import json
+        diag = self.get_ocr_diagnostics()
+        return json.dumps(diag, default=str, indent=2)
+    
+    def log_diagnostics(self):
+        """Log OCR diagnostics at INFO level for debugging."""
+        diag = self.get_ocr_diagnostics()
+        
+        logger.info("=" * 60)
+        logger.info("OCR DIAGNOSTICS REPORT")
+        logger.info("=" * 60)
+        logger.info(f"Timestamp: {diag.get('timestamp', 'N/A')}")
+        logger.info(f"Running as frozen exe: {diag['is_frozen_exe']}")
+        if diag['bundled_path']:
+            logger.info(f"Bundled path (_MEIPASS): {diag['bundled_path']}")
+        
+        # System info
+        sys_info = diag.get('system_info', {})
+        logger.info(f"System: {sys_info.get('platform')} {sys_info.get('platform_version')}")
+        logger.info(f"Machine: {sys_info.get('machine')} | Python: {sys_info.get('python_version')}")
+        logger.info(f"Hostname: {sys_info.get('hostname')}")
+        
+        logger.info(f"Primary engine: {diag['config']['primary_engine']}")
+        logger.info(f"Fallback engines: {diag['config']['fallback_engines']}")
+        
+        # Engine status
+        if 'primary' in diag['engines']:
+            pe = diag['engines']['primary']
+            status = "READY" if pe.get('available') else "UNAVAILABLE"
+            logger.info(f"Primary engine ({pe['name']}): {status}")
+            if pe.get('error'):
+                logger.warning(f"  Error: {pe['error']}")
+        
+        for fe in diag['engines'].get('fallbacks', []):
+            status = "READY" if fe.get('available') else "UNAVAILABLE"
+            logger.info(f"Fallback engine ({fe['name']}): {status}")
+        
+        # Engine initialization details
+        if 'engine_init_details' in diag:
+            logger.info("-" * 40)
+            logger.info("ENGINE INITIALIZATION DETAILS:")
+            
+            paddle = diag['engine_init_details'].get('paddle', {})
+            logger.info(f"  [PaddleOCR]")
+            logger.info(f"    Module available: {paddle.get('module_available', 'N/A')}")
+            logger.info(f"    Version: {paddle.get('version', 'N/A')}")
+            logger.info(f"    Engine ready: {paddle.get('engine_available', 'N/A')}")
+            logger.info(f"    User models exist: {paddle.get('user_models_exist', 'N/A')}")
+            logger.info(f"    User models path: {paddle.get('user_models_path', 'N/A')}")
+            if diag['is_frozen_exe']:
+                logger.info(f"    Bundled models exist: {paddle.get('bundled_models_exist', 'N/A')}")
+            if paddle.get('initialization_error'):
+                logger.error(f"    Init error: {paddle.get('initialization_error')}")
+            
+            tesseract = diag['engine_init_details'].get('tesseract', {})
+            logger.info(f"  [Tesseract]")
+            logger.info(f"    Module available: {tesseract.get('module_available', 'N/A')}")
+            logger.info(f"    Version: {tesseract.get('tesseract_version', 'N/A')}")
+            logger.info(f"    Engine ready: {tesseract.get('engine_available', 'N/A')}")
+            logger.info(f"    Tesseract cmd: {tesseract.get('tesseract_cmd', 'N/A')}")
+            if diag['is_frozen_exe']:
+                logger.info(f"    Bundled exe exists: {tesseract.get('bundled_exe_exists', 'N/A')}")
+                logger.info(f"    Bundled tessdata exists: {tesseract.get('bundled_tessdata_exists', 'N/A')}")
+            if tesseract.get('initialization_error'):
+                logger.error(f"    Init error: {tesseract.get('initialization_error')}")
+        
+        # Bundled dependencies (for exe)
+        if 'bundled_dependencies' in diag:
+            bd = diag['bundled_dependencies']
+            logger.info("-" * 40)
+            logger.info("Bundled dependencies:")
+            logger.info(f"  Tesseract exe: {'FOUND' if bd.get('tesseract_exe') else 'MISSING'}")
+            logger.info(f"  Tesseract tessdata: {'FOUND' if bd.get('tesseract_tessdata') else 'MISSING'}")
+            logger.info(f"  PaddleOCR models (bundled): {'FOUND' if bd.get('paddleocr_models_bundled') else 'MISSING'}")
+            logger.info(f"  PaddleOCR models (user home): {'FOUND' if bd.get('paddleocr_user_models') else 'MISSING'}")
+            if bd.get('paddleocr_user_path'):
+                logger.info(f"    User models path: {bd['paddleocr_user_path']}")
+        
+        # Overall
+        logger.info("-" * 40)
+        logger.info(f"OCR Status: {diag['status'].upper()}")
+        
+        # Recommendations
+        if diag['recommendations']:
+            logger.warning("RECOMMENDATIONS:")
+            for rec in diag['recommendations']:
+                logger.warning(f"  - {rec}")
+        
+        logger.info("=" * 60)
+        
+        return diag
+
     # For productivity classification, we don't need every line from a code editor.
     # The first N lines are enough to determine what the user is working on.
     MAX_OCR_LINES = 40
@@ -270,6 +650,9 @@ class OCRFacade:
             Standardized result dict
         """
         effective_max_lines = max_lines or self.MAX_OCR_LINES
+        
+        # Track all engine failure reasons for detailed error reporting
+        engine_failures: Dict[str, str] = {}
 
         try:
             total_start = time.perf_counter()
@@ -286,10 +669,12 @@ class OCRFacade:
                 engine_name = engine.get_name()
                 backoff_until = self._engine_backoff_until.get(engine_name, 0.0)
                 if backoff_until > time.time():
+                    remaining_seconds = int(backoff_until - time.time())
+                    skip_reason = f"Temporary backoff ({remaining_seconds}s remaining due to previous failure)"
                     logger.warning(
-                        f"Skipping OCR engine '{engine_name}' due to temporary backoff "
-                        f"({backoff_until - time.time():.0f}s remaining)"
+                        f"Skipping OCR engine '{engine_name}': {skip_reason}"
                     )
+                    engine_failures[engine_name] = skip_reason
                     continue
                 engine_config = self.config.get_engine_config(engine_name)
                 min_confidence = engine_config.min_confidence
@@ -356,14 +741,18 @@ class OCRFacade:
                             'boxes': result.get('boxes')
                         }
                     else:
+                        conf = result.get('confidence', 0)
+                        fail_reason = f"Confidence too low ({conf:.2f} < {min_confidence} threshold)"
                         logger.debug(
-                            f"{engine_name} below threshold "
-                            f"(conf: {result.get('confidence', 0):.2f} < {min_confidence}, "
-                            f"prep: {prep_ms:.1f}ms, infer: {infer_ms:.1f}ms)"
+                            f"{engine_name}: {fail_reason} "
+                            f"(prep: {prep_ms:.1f}ms, infer: {infer_ms:.1f}ms)"
                         )
+                        engine_failures[engine_name] = fail_reason
                         
                 except Exception as e:
-                    logger.warning(f"Engine {engine_name} failed: {e}")
+                    error_str = str(e)
+                    logger.warning(f"Engine {engine_name} failed: {error_str}")
+                    engine_failures[engine_name] = f"Exception: {error_str}"
                     self._engine_failure_counts[engine_name] = self._engine_failure_counts.get(engine_name, 0) + 1
                     err_text = str(e).lower()
                     # Paddle-specific auto-heal: temporarily route to fallback engines
@@ -380,19 +769,34 @@ class OCRFacade:
                         )
                     continue
             
-            logger.warning("All OCR engines failed or below threshold, using metadata fallback")
-            fallback = self._create_metadata_fallback(window_title, app_name)
+            # Build detailed error message for metadata fallback
+            if engine_failures:
+                error_details = "; ".join([f"{eng}: {reason}" for eng, reason in engine_failures.items()])
+                logger.warning(f"All OCR engines failed. Details: {error_details}")
+            else:
+                # Include initialization errors for detailed diagnostics
+                if self._engine_init_errors:
+                    init_errors = "; ".join([f"{eng}: {err}" for eng, err in self._engine_init_errors.items()])
+                    error_details = f"No OCR engines available. Initialization errors: {init_errors}"
+                else:
+                    error_details = "No OCR engines available or configured"
+                logger.warning(f"All OCR engines failed or below threshold, using metadata fallback. {error_details}")
+            
+            fallback = self._create_metadata_fallback(window_title, app_name, error_details)
             fallback['total_ms'] = (time.perf_counter() - total_start) * 1000.0
             return fallback
             
         except Exception as e:
+            import traceback
+            error_tb = traceback.format_exc()
             logger.error(f"Text extraction failed: {e}")
+            logger.error(f"Full traceback:\n{error_tb}")
             return {
                 'text': '',
                 'confidence': 0.0,
                 'method': 'error',
                 'success': False,
-                'error': str(e),
+                'error_message': f"{str(e)}; Traceback: {error_tb[:500]}",
                 'total_ms': (time.perf_counter() - total_start) * 1000.0 if 'total_start' in locals() else None,
                 'window_title': window_title,
                 'app_name': app_name,
@@ -448,7 +852,8 @@ class OCRFacade:
     def _create_metadata_fallback(
         self,
         window_title: str,
-        app_name: str
+        app_name: str,
+        error_message: str = ''
     ) -> Dict[str, Any]:
         """
         Create metadata fallback result when OCR fails.
@@ -456,6 +861,7 @@ class OCRFacade:
         Args:
             window_title: Window title
             app_name: Application name
+            error_message: Detailed reason why OCR failed
         
         Returns:
             Fallback result dict
@@ -465,6 +871,7 @@ class OCRFacade:
             'confidence': 0.0,
             'method': 'metadata',
             'success': False,
+            'error_message': error_message or 'OCR engines unavailable',
             'window_title': window_title,
             'app_name': app_name,
             'line_count': 0,
@@ -497,6 +904,20 @@ class OCRFacade:
 _facade_instance: Optional[OCRFacade] = None
 
 
+def reset_facade() -> None:
+    """
+    Reset the global OCRFacade singleton and engine cache.
+
+    Call this after updating OCR environment variables at runtime (e.g. after
+    fetching fresh config from the AI server) so that the next OCR call picks
+    up the new configuration instead of reusing the stale startup singleton.
+    """
+    global _facade_instance
+    _facade_instance = None
+    EngineFactory.clear_cache()
+    logger.info("OCR facade and engine cache reset — will reinitialise on next OCR call")
+
+
 def get_facade(config: Optional[OCRConfig] = None) -> OCRFacade:
     """
     Get or create global OCRFacade instance.
@@ -511,6 +932,8 @@ def get_facade(config: Optional[OCRConfig] = None) -> OCRFacade:
     
     if _facade_instance is None or config is not None:
         _facade_instance = OCRFacade(config)
+        # Log diagnostics on first initialization to help debug OCR issues
+        _facade_instance.log_diagnostics()
     
     return _facade_instance
 
@@ -561,7 +984,5 @@ def extract_text_from_image(
     )
 
 
-def reset_facade():
-    """Reset global facade instance (useful for testing)"""
-    global _facade_instance
-    _facade_instance = None
+# NOTE: reset_facade() is defined earlier in this file (around line 907) and properly
+# clears both _facade_instance AND the EngineFactory cache. Do NOT redefine it here.

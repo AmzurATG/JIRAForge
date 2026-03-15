@@ -1,0 +1,40 @@
+﻿python.exe : 1966 INFO: PyInstaller: 6.2.0
+At line:1 char:28
++ ... ERSITE="1"; & .\venv\Scripts\python.exe -m PyInstaller desktop_app.sp ...
++                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (1966 INFO: PyInstaller: 6.2.0:Str 
+   ing) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+1966 INFO: Python: 3.11.0
+2453 INFO: Platform: Windows-10-10.0.26200-SP0
+2546 INFO: UPX is available and will be used if enabled on build targets.
+2546 INFO: Removing temporary files and cleaning cache in 
+C:\Users\IswaryaK\AppData\Local\pyinstaller
+1286 INFO: PaddleOCR models already exist at: C:\Users\IswaryaK\.paddleocr
+1213 INFO: Using device of type: cpu
+5936 WARNING: Failed to collect submodules for 
+'ppocr.postprocess.pse_postprocess' because importing 
+'ppocr.postprocess.pse_postprocess' raised: FileNotFoundError: [WinError 3] 
+The system cannot find the path specified: 
+'ppocr/postprocess/pse_postprocess/pse'
+834 WARNING: Failed to collect submodules for 'ppstructure.table.table_metric' 
+because importing 'ppstructure.table.table_metric' raised: 
+ModuleNotFoundError: No module named 'apted'
+355719 ERROR: Hidden import 'paddleocr.paddleocr' not found
+355719 ERROR: Hidden import 'paddleocr.ppocr' not found
+355719 ERROR: Hidden import 'paddleocr.ppocr.utils' not found
+355722 ERROR: Hidden import 'paddleocr.ppocr.utils.utility' not found
+355722 ERROR: Hidden import 'paddleocr.ppocr.utils.logging' not found
+355722 ERROR: Hidden import 'paddleocr.ppocr.data' not found
+355722 ERROR: Hidden import 'paddleocr.ppocr.data.imaug' not found
+355722 ERROR: Hidden import 'paddleocr.ppocr.postprocess' not found
+355722 ERROR: Hidden import 'paddleocr.tools' not found
+355722 ERROR: Hidden import 'paddleocr.tools.infer' not found
+355722 ERROR: Hidden import 'paddleocr.tools.infer.utility' not found
+355722 ERROR: Hidden import 'paddleocr.tools.infer.predict_det' not found
+355722 ERROR: Hidden import 'paddleocr.tools.infer.predict_rec' not found
+355722 ERROR: Hidden import 'paddleocr.tools.infer.predict_cls' not found
+355722 ERROR: Hidden import 'paddleocr.tools.infer.predict_system' not found
+419652 WARNING: Hidden import "pycparser.lextab" not found!
+419652 WARNING: Hidden import "pycparser.yacctab" not found!

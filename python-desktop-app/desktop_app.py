@@ -44,6 +44,9 @@ import fnmatch
 # OCR for text extraction
 from ocr import extract_text_from_image
 
+# OCR dependency check is deferred until after AI server config is fetched
+# (so it uses the correct engines from the server, not local defaults)
+
 # ============================================================================
 # SECURE LOGGING (PII SANITIZATION) - Embedded for single-file bundling
 # ============================================================================
@@ -326,10 +329,10 @@ SCREENSHOT_MONITORING_HARD_DISABLED = True
 # Embedded credentials (for production builds - no .env file needed)
 # SECURITY: All sensitive keys moved to AI Server - fetched at runtime after authentication
 EMBEDDED_CONFIG = {
-    'ATLASSIAN_CLIENT_ID': 'k2Xwzy8c1g3Wk6Xpbeev0x70CXEp9lJH',
+    'ATLASSIAN_CLIENT_ID': 'Q8HT4Jn205AuTiAarj088oWNDrOqwvM5',
     # REMOVED: ATLASSIAN_CLIENT_SECRET - now on AI Server only (security fix)
     # REMOVED: SUPABASE_URL, SUPABASE_ANON_KEY, SUPABASE_SERVICE_ROLE_KEY - fetched from AI Server
-    'AI_SERVER_URL': 'https://timetracker-forge.amzur.com',  # AI Server for secure token exchange & config
+    'AI_SERVER_URL': 'https://forgesync.amzur.com',  # AI Server for secure token exchange & config
     'CAPTURE_INTERVAL': '300',
     'WEB_PORT': '51777',
     'ADMIN_PASSWORD': 'admin123'
@@ -390,55 +393,56 @@ def set_runtime_ocr_config(config_dict):
     global RUNTIME_OCR_CONFIG
     RUNTIME_OCR_CONFIG = {}
 
-    # Enforce lean OCR policy for desktop runtime:
-    # - primary engine: paddle
-    # - fallback engine: tesseract only
-    RUNTIME_OCR_CONFIG['OCR_PRIMARY_ENGINE'] = 'paddle'
-    RUNTIME_OCR_CONFIG['OCR_FALLBACK_ENGINES'] = 'tesseract'
-    
-    # Set global settings
+    # Use whatever engines the AI server has configured — no hardcoded overrides.
+    primary = config_dict.get('primary_engine', 'rapidocr')
+    fallbacks = config_dict.get('fallback_engines', ['winrtocr'])
+    if isinstance(fallbacks, list):
+        fallbacks = ','.join(fallbacks)
+    RUNTIME_OCR_CONFIG['OCR_PRIMARY_ENGINE'] = primary
+    RUNTIME_OCR_CONFIG['OCR_FALLBACK_ENGINES'] = fallbacks
+
+    # Global preprocessing settings
     RUNTIME_OCR_CONFIG['OCR_USE_PREPROCESSING'] = str(config_dict.get('use_preprocessing', True)).lower()
     RUNTIME_OCR_CONFIG['OCR_MAX_IMAGE_DIMENSION'] = str(config_dict.get('max_image_dimension', 4096))
     RUNTIME_OCR_CONFIG['OCR_PREPROCESSING_TARGET_DPI'] = str(config_dict.get('preprocessing_target_dpi', 300))
-    
-    # Set per-engine configurations (only required engines)
+
+    # Per-engine configurations — apply all engines returned by the server
     engines = config_dict.get('engines', {})
-    required_engines = {'paddle', 'tesseract'}
     for engine_name, engine_config in engines.items():
-        engine_name_lower = str(engine_name).lower()
-        if engine_name_lower not in required_engines:
-            continue
         prefix = f'OCR_{engine_name.upper()}_'
         RUNTIME_OCR_CONFIG[f'{prefix}ENABLED'] = str(engine_config.get('enabled', True)).lower()
-        default_conf = 0.4 if engine_name_lower == 'paddle' else 0.5
-        RUNTIME_OCR_CONFIG[f'{prefix}MIN_CONFIDENCE'] = str(engine_config.get('min_confidence', default_conf))
+        RUNTIME_OCR_CONFIG[f'{prefix}MIN_CONFIDENCE'] = str(engine_config.get('min_confidence', 0.5))
         RUNTIME_OCR_CONFIG[f'{prefix}USE_GPU'] = str(engine_config.get('use_gpu', False)).lower()
         RUNTIME_OCR_CONFIG[f'{prefix}LANGUAGE'] = engine_config.get('language', 'en')
-        
-        # Set extra params
-        extra_params = engine_config.get('extra_params', {})
-        for param_name, param_value in extra_params.items():
+
+        # Extra engine-specific params
+        for param_name, param_value in engine_config.get('extra_params', {}).items():
             RUNTIME_OCR_CONFIG[f'{prefix}{param_name.upper()}'] = str(param_value)
 
-    # Ensure required engines always have usable defaults.
-    if 'OCR_PADDLE_ENABLED' not in RUNTIME_OCR_CONFIG:
-        RUNTIME_OCR_CONFIG['OCR_PADDLE_ENABLED'] = 'true'
-    RUNTIME_OCR_CONFIG['OCR_PADDLE_MIN_CONFIDENCE'] = '0.4'
-    if 'OCR_PADDLE_USE_GPU' not in RUNTIME_OCR_CONFIG:
-        RUNTIME_OCR_CONFIG['OCR_PADDLE_USE_GPU'] = 'false'
-    if 'OCR_PADDLE_LANGUAGE' not in RUNTIME_OCR_CONFIG:
-        RUNTIME_OCR_CONFIG['OCR_PADDLE_LANGUAGE'] = 'en'
+    # Push all OCR config values into os.environ so the OCR facade and config modules
+    # (which use os.getenv() directly) pick up the values fetched from the AI server.
+    for key, value in RUNTIME_OCR_CONFIG.items():
+        os.environ[key] = str(value)
 
-    if 'OCR_TESSERACT_ENABLED' not in RUNTIME_OCR_CONFIG:
-        RUNTIME_OCR_CONFIG['OCR_TESSERACT_ENABLED'] = 'true'
-    if 'OCR_TESSERACT_MIN_CONFIDENCE' not in RUNTIME_OCR_CONFIG:
-        RUNTIME_OCR_CONFIG['OCR_TESSERACT_MIN_CONFIDENCE'] = '0.5'
-    if 'OCR_TESSERACT_USE_GPU' not in RUNTIME_OCR_CONFIG:
-        RUNTIME_OCR_CONFIG['OCR_TESSERACT_USE_GPU'] = 'false'
-    if 'OCR_TESSERACT_LANGUAGE' not in RUNTIME_OCR_CONFIG:
-        RUNTIME_OCR_CONFIG['OCR_TESSERACT_LANGUAGE'] = 'en'
+    # Now that the correct engine config is in os.environ, run the dependency check
+    # so missing packages for the server-configured engines are installed.
+    try:
+        from ocr.auto_installer import check_and_install_dependencies
+        check_and_install_dependencies(auto_install=True, silent=False)
+    except Exception as _e:
+        print(f"[WARN] OCR dependency check failed: {_e}")
 
-    print("[OK] OCR config loaded from AI server (engines: paddle, tesseract)")
+    # Reset the global OCRFacade singleton so the next OCR call re-reads os.environ
+    # and picks up the config just fetched from the AI server instead of the stale
+    # startup defaults that were baked in before authentication.
+    try:
+        from ocr.facade import reset_facade
+        reset_facade()
+        print("[OK] OCR facade reset — will reinitialise with AI server config on next call")
+    except Exception as _e:
+        print(f"[WARN] Could not reset OCR facade: {_e}")
+
+    print(f"[OK] OCR config loaded from AI server (engines: {primary}, {fallbacks})")
 
 
 # ============================================================================
@@ -1369,7 +1373,7 @@ class AtlassianAuthManager:
         self.redirect_uri = f'http://localhost:{web_port}/auth/callback'
         self.authorization_url = 'https://auth.atlassian.com/authorize'
         # Token exchange now goes through AI Server
-        self.ai_server_url = get_env_var('AI_SERVER_URL', 'https://timetracker-forge.amzur.com')
+        self.ai_server_url = get_env_var('AI_SERVER_URL', 'https://forgesync.amzur.com')
         self.store_path = store_path or os.path.join(get_app_data_dir(), 'time_tracker_auth.json')
 
         # Prevents concurrent token refreshes from burning the same refresh_token twice.
@@ -1571,7 +1575,23 @@ class AtlassianAuthManager:
         if response.status_code != 200:
             error_data = response.json() if response.headers.get('content-type', '').startswith('application/json') else {}
             error = error_data.get('error', response.text)
-            raise Exception(f"Token exchange failed: {error}")
+            
+            # Provide more helpful error messages
+            if response.status_code == 403:
+                if 'not associated with an organization' in error.lower() or 'forge app installed' in error.lower():
+                    raise Exception(
+                        f"Access denied: Your Jira account is not registered with an organization that has the TimeTracker Forge app installed. "
+                        f"Please ask your Jira administrator to install the TimeTracker app from the Atlassian Marketplace. "
+                        f"(Server: {error})"
+                    )
+                else:
+                    raise Exception(f"Access denied: {error}")
+            elif response.status_code == 401:
+                raise Exception(f"Authentication failed: Invalid or expired OAuth code. Please try logging in again. (Server: {error})")
+            elif response.status_code == 500:
+                raise Exception(f"Server error during token exchange. This may be a temporary issue with the authentication server. (Server: {error})")
+            else:
+                raise Exception(f"Token exchange failed (HTTP {response.status_code}): {error}")
 
         result = response.json()
         if not result.get('success'):
@@ -1907,6 +1927,98 @@ class AtlassianAuthManager:
         # Remove JSON file (contains metadata)
         if os.path.exists(self.store_path):
             os.remove(self.store_path)
+    
+    def send_diagnostics(self, diag_type: str, diagnostics: dict) -> bool:
+        """
+        Send diagnostics to AI server for remote debugging.
+        
+        Args:
+            diag_type: Type of diagnostics ('ocr', 'login', 'error')
+            diagnostics: Dictionary with diagnostic information
+            
+        Returns:
+            bool: True if sent successfully, False otherwise
+        """
+        access_token = self.tokens.get('access_token')
+        if not access_token:
+            print("[WARN] Cannot send diagnostics - not authenticated")
+            return False
+        
+        try:
+            payload = {
+                'atlassian_token': access_token,
+                'type': diag_type,
+                'diagnostics': diagnostics,
+                'app_version': APP_VERSION
+            }
+            
+            response = requests.post(
+                f"{self.ai_server_url}/api/auth/diagnostics",
+                json=payload,
+                headers={'Content-Type': 'application/json'},
+                timeout=(10, 30)
+            )
+            
+            if response.status_code == 200:
+                print(f"[OK] {diag_type.upper()} diagnostics sent to server")
+                return True
+            else:
+                print(f"[WARN] Failed to send diagnostics: {response.status_code}")
+                return False
+                
+        except Exception as e:
+            print(f"[WARN] Error sending diagnostics: {e}")
+            return False
+
+
+def send_ocr_diagnostics(auth_manager):
+    """
+    Collect and send OCR diagnostics to the AI server.
+    Call this after OCR is initialized to report engine status.
+    
+    Args:
+        auth_manager: AtlassianAuthManager instance
+    """
+    try:
+        from ocr import get_facade
+        facade = get_facade()
+        diagnostics = facade.get_ocr_diagnostics()
+        auth_manager.send_diagnostics('ocr', diagnostics)
+    except Exception as e:
+        print(f"[WARN] Failed to collect OCR diagnostics: {e}")
+
+
+def send_login_diagnostics(auth_manager, status: str, step: str, error: str = None, error_details: dict = None):
+    """
+    Send login event diagnostics to the AI server.
+    
+    Args:
+        auth_manager: AtlassianAuthManager instance
+        status: 'success', 'failed', 'started'
+        step: Login step ('oauth_start', 'oauth_callback', 'token_exchange', 'config_fetch', etc.)
+        error: Error message if failed
+        error_details: Additional error context
+    """
+    import platform
+    from datetime import datetime
+    
+    diagnostics = {
+        'status': status,
+        'step': step,
+        'timestamp': datetime.utcnow().isoformat() + 'Z',
+        'system_info': {
+            'platform': platform.system(),
+            'platform_version': platform.version(),
+            'hostname': platform.node(),
+        }
+    }
+    
+    if error:
+        diagnostics['error'] = error
+    if error_details:
+        diagnostics['error_details'] = error_details
+    
+    auth_manager.send_diagnostics('login', diagnostics)
 
 # ============================================================================
 # OFFLINE DATA MANAGER
@@ -3764,10 +3876,12 @@ class ActiveSessionManager:
 class LocalOCRProcessor:
     """Handles local OCR processing using the dynamic OCR facade.
 
-    Uses the OCR facade which respects environment configuration:
-    - OCR_PRIMARY_ENGINE (paddle, tesseract, easyocr, etc.)
-    - OCR_FALLBACK_ENGINES (comma-separated list)
-    - Engine-specific settings (OCR_PADDLE_MIN_CONFIDENCE, etc.)
+    Uses the OCR facade which reads configuration from environment variables:
+    - OCR_PRIMARY_ENGINE (default: rapidocr)
+    - OCR_FALLBACK_ENGINES (default: winrtocr)
+    - Engine-specific settings (OCR_RAPIDOCR_MIN_CONFIDENCE, etc.)
+
+    OCR models are automatically downloaded on first run if not present.
 
     Captures screenshot in memory, extracts text via configured engines, discards image.
     Throttled to max once per 3 seconds to limit CPU spikes on rapid switching.
@@ -3778,9 +3892,9 @@ class LocalOCRProcessor:
         self._min_interval = 10  # seconds between OCR calls (matches min_screenshot_interval in tracking_loop)
         print("[OCR] LocalOCRProcessor initialized - using dynamic engine selection")
 
-        # Log which OCR engines are configured
-        primary = os.getenv('OCR_PRIMARY_ENGINE', 'paddle')
-        fallback = os.getenv('OCR_FALLBACK_ENGINES', 'tesseract')
+        # Log which OCR engines are configured from environment (with defaults)
+        primary = os.getenv('OCR_PRIMARY_ENGINE', 'rapidocr')
+        fallback = os.getenv('OCR_FALLBACK_ENGINES', 'winrtocr')
         print(f"[OCR] Primary engine: {primary}, Fallback: {fallback}")
 
         # Async OCR worker infrastructure
@@ -4016,11 +4130,16 @@ class LocalOCRProcessor:
             if text and len(text) > 2000:
                 text = text[:2000]
             
+            # Capture the error_message from OCR result if available
+            error_message = ocr_result.get('error_message')
+            if not success and not error_message:
+                error_message = f"OCR failed with method: {method}"
+            
             return {
                 'text': text.strip() if text else None,
                 'method': method,
                 'confidence': confidence,
-                'error_message': None if success else f"OCR failed with method: {method}",
+                'error_message': error_message,
                 'prep_ms': prep_ms,
                 'infer_ms': infer_ms,
                 'total_ms': total_ms,
@@ -4078,11 +4197,16 @@ class LocalOCRProcessor:
                 f"total: {total_ms if total_ms is not None else 'NA'}ms)"
             )
 
+            # Capture the error_message from OCR result if available
+            error_message = ocr_result.get('error_message')
+            if not success and not error_message:
+                error_message = f"OCR failed with method: {method}"
+
             return {
                 'text': text.strip() if text else None,
                 'method': method,
                 'confidence': confidence,
-                'error_message': None if success else f"OCR failed with method: {method}",
+                'error_message': error_message,
                 'prep_ms': prep_ms,
                 'infer_ms': infer_ms,
                 'total_ms': total_ms
@@ -4249,7 +4373,10 @@ class TimeTracker:
         # ====================================================================
         self.classification_manager = AppClassificationManager(self.offline_manager.db_path)
         self.session_manager = ActiveSessionManager(self.offline_manager.db_path)
-        self.ocr_processor = LocalOCRProcessor()
+        
+        # OCR engine setup is deferred until after authentication so it uses
+        # the correct engine config fetched from the AI server.
+        self.ocr_processor = None
         atexit.register(self._shutdown_cleanup)
         self.batch_upload_interval = 300  # 5 min default (overridden by project settings)
         self.last_batch_upload_time = time.time()
@@ -4290,6 +4417,115 @@ class TimeTracker:
 
         print("[OK] Application initialized")
         self.add_admin_log('INFO', f'Application started (v{self.app_version})')
+
+    def _setup_ocr_engines(self):
+        """
+        Setup OCR engines, downloading models if necessary.
+        
+        This is called during app initialization to ensure OCR is ready.
+        For distributed EXE files, this will:
+        1. Check if bundled models exist and copy them to user's home
+        2. Download missing PaddleOCR models from the internet
+        3. Optionally check/install Tesseract as fallback
+        
+        Shows progress messages to the user during setup.
+        """
+        try:
+            from ocr.runtime_installer import (
+                ensure_ocr_ready,
+                check_paddleocr_models,
+                check_tesseract_installed,
+                get_ocr_status_summary
+            )
+            
+            # Check if we're running as frozen EXE (production) or development
+            is_frozen = getattr(sys, 'frozen', False)
+            
+            if is_frozen:
+                print("[OCR] Running as bundled EXE - checking OCR engine setup...")
+            else:
+                print("[OCR] Running in development mode - verifying OCR engines...")
+            
+            # Define a progress callback that prints to console
+            def progress_callback(message: str, current: int, total: int):
+                if total > 0:
+                    print(f"[OCR] [{current}/{total}] {message}")
+                else:
+                    print(f"[OCR] {message}")
+            
+            # Run the OCR setup
+            # - download_if_missing=True: Download models if not present
+            # - install_tesseract=False: Don't auto-install Tesseract (let user decide)
+            result = ensure_ocr_ready(
+                callback=progress_callback,
+                download_if_missing=True,
+                install_tesseract=False  # Can be enabled if you want auto-install
+            )
+            
+            # Log the results
+            configured = result.get('configured_engines', [])
+            if 'paddle' in configured:
+                if result['paddleocr_ready']:
+                    print("[OK] PaddleOCR models ready")
+                else:
+                    missing = [m for m, ok in result['paddleocr_models'].items() if not ok]
+                    print(f"[WARN] PaddleOCR models missing: {missing}")
+                    print("[WARN] OCR text extraction may not work properly")
+                    self.add_admin_log('WARNING', f'PaddleOCR models missing: {missing}')
+
+            if 'tesseract' in configured:
+                if result['tesseract_ready']:
+                    print(f"[OK] Tesseract fallback available at: {result['tesseract_path']}")
+                else:
+                    print("[INFO] Tesseract not installed (optional fallback engine)")
+            
+            if result['errors']:
+                for error in result['errors']:
+                    print(f"[WARN] OCR setup: {error}")
+                    self.add_admin_log('WARNING', f'OCR setup error: {error}')
+            
+            # In EXE mode, print detailed diagnostics if OCR is not fully ready
+            if is_frozen and (not result['paddleocr_ready'] or result['errors']):
+                print("[OCR] === Detailed OCR Diagnostics ===")
+                try:
+                    from ocr.facade import get_facade
+                    facade = get_facade()
+                    diagnostics = facade.get_ocr_diagnostics()
+                    
+                    # Print key diagnostic info
+                    print(f"[OCR] OCR Available: {diagnostics.get('ocr_available', False)}")
+                    print(f"[OCR] Status: {diagnostics.get('status', 'unknown')}")
+                    
+                    if diagnostics.get('engine_init_errors'):
+                        print("[OCR] Engine initialization errors:")
+                        for eng, err in diagnostics['engine_init_errors'].items():
+                            # Truncate long errors for console output
+                            err_short = err[:300] + '...' if len(err) > 300 else err
+                            print(f"[OCR]   - {eng}: {err_short}")
+                            self.add_admin_log('ERROR', f'OCR {eng} init error: {err_short}')
+                    
+                    if diagnostics.get('bundled_dependencies'):
+                        bd = diagnostics['bundled_dependencies']
+                        print(f"[OCR] Bundled PaddleOCR: {bd.get('paddleocr_models_bundled', False)}")
+                        print(f"[OCR] User PaddleOCR: {bd.get('paddleocr_user_models', False)}")
+                        print(f"[OCR] User path: {bd.get('paddleocr_user_path', 'N/A')}")
+                    
+                    if diagnostics.get('recommendations'):
+                        print("[OCR] Recommendations:")
+                        for rec in diagnostics['recommendations']:
+                            print(f"[OCR]   - {rec}")
+                    
+                except Exception as diag_error:
+                    print(f"[OCR] Could not get detailed diagnostics: {diag_error}")
+                print("[OCR] ================================")
+                    
+        except ImportError as e:
+            print(f"[WARN] OCR runtime installer not available: {e}")
+            print("[INFO] OCR will attempt to download models on first use")
+        except Exception as e:
+            print(f"[WARN] OCR setup encountered an error: {e}")
+            print("[INFO] OCR may still work if models are already present")
+            self.add_admin_log('WARNING', f'OCR setup error: {str(e)}')
 
     def check_for_app_updates(self, show_notification=True, force=False):
         """
@@ -4365,6 +4601,11 @@ class TimeTracker:
         if not self.auth_manager.get_ocr_config():
             print("[WARN] Failed to get OCR config from AI server, using defaults")
             # OCR config is not critical - continue with defaults
+
+        # Now that the correct engine config is in os.environ, set up OCR engines
+        # and create the processor (uses AI-server-provided engine names).
+        self._setup_ocr_engines()
+        self.ocr_processor = LocalOCRProcessor()
 
         # Now initialize Supabase clients with runtime config
         try:
@@ -4443,26 +4684,55 @@ class TimeTracker:
             """Handle OAuth callback"""
             error = request.args.get('error')
             if error:
-                return f"Authentication failed: {error}", 400
+                error_description = request.args.get('error_description', 'Unknown error')
+                print(f"[ERROR] OAuth error from Atlassian: {error} - {error_description}")
+                # Try to send login diagnostics even though login failed
+                try:
+                    send_login_diagnostics(
+                        self.auth_manager, 
+                        'failed', 
+                        'oauth_callback', 
+                        error=f"Atlassian OAuth error: {error}",
+                        error_details={'error_code': error, 'error_description': error_description}
+                    )
+                except:
+                    pass
+                return f"Authentication failed: {error} - {error_description}", 400
             
             code = request.args.get('code')
             state = request.args.get('state')
             
             if not code:
-                return "Authentication failed: no code", 400
+                print("[ERROR] OAuth callback missing authorization code")
+                return "Authentication failed: no authorization code received", 400
             
             try:
                 # Exchange code for tokens via AI Server (ATLASSIAN_CLIENT_SECRET is on server)
+                print("[INFO] Exchanging OAuth code for tokens...")
                 tokens = self.auth_manager.handle_callback(code, state)
 
                 # Get user info from Atlassian
+                print("[INFO] Fetching user info from Atlassian...")
                 user_info = self.auth_manager.get_user_info()
                 if not user_info:
-                    return "Failed to get user information", 500
+                    error_msg = "Failed to get user information from Atlassian API"
+                    print(f"[ERROR] {error_msg}")
+                    send_login_diagnostics(
+                        self.auth_manager, 'failed', 'get_user_info',
+                        error=error_msg
+                    )
+                    return error_msg, 500
 
                 # Initialize Supabase clients (fetches config from AI server)
+                print("[INFO] Initializing database connection...")
                 if not self.initialize_supabase():
-                    return "Failed to initialize database connection", 500
+                    error_msg = "Failed to initialize database connection - check AI server connectivity"
+                    print(f"[ERROR] {error_msg}")
+                    send_login_diagnostics(
+                        self.auth_manager, 'failed', 'initialize_supabase',
+                        error=error_msg
+                    )
+                    return error_msg, 500
 
                 # Check if we had anonymous tracking before login
                 had_anonymous = self.current_user_id and self.current_user_id.startswith('anonymous_')
@@ -4472,8 +4742,19 @@ class TimeTracker:
                 self.current_user_id = self.ensure_user_exists(user_info)
 
                 secure_log("[OK] Authenticated user", email=user_info.get('email', 'unknown'))
+                
+                # Send successful login diagnostics
+                send_login_diagnostics(
+                    self.auth_manager, 'success', 'complete',
+                    error_details={'user_id': self.current_user_id}
+                )
+                
+                # Send OCR diagnostics now that user is authenticated
+                print("[INFO] Sending OCR diagnostics to server...")
+                send_ocr_diagnostics(self.auth_manager)
 
                 # Reset reauth notification flag on successful login
+                self._reauth_notification_shown = False
                 self._reauth_notification_shown = False
 
                 # Update desktop app status to logged in
@@ -4511,18 +4792,66 @@ class TimeTracker:
             except Exception as e:
                 print(f"[ERROR] Auth callback failed: {e}")
                 traceback.print_exc()
-                # Show a user-friendly error page with a retry button
+                
+                # Categorize the error for better diagnostics
                 error_msg = str(e)
-                is_timeout = 'timeout' in error_msg.lower() or 'connect' in error_msg.lower()
-                retry_hint = "The server may be temporarily slow. Please try again." if is_timeout else "Please try again."
+                error_lower = error_msg.lower()
+                
+                error_category = 'unknown'
+                if 'timeout' in error_lower or 'timed out' in error_lower:
+                    error_category = 'timeout'
+                elif 'connection' in error_lower or 'connect' in error_lower:
+                    error_category = 'connection'
+                elif 'token' in error_lower:
+                    error_category = 'token_exchange'
+                elif 'state' in error_lower or 'csrf' in error_lower:
+                    error_category = 'state_mismatch'
+                elif 'access denied' in error_lower or 'forbidden' in error_lower:
+                    error_category = 'access_denied'
+                elif 'not found' in error_lower:
+                    error_category = 'not_found'
+                
+                # Send login failure diagnostics
+                try:
+                    send_login_diagnostics(
+                        self.auth_manager, 
+                        'failed', 
+                        'auth_callback',
+                        error=error_msg,
+                        error_details={
+                            'category': error_category,
+                            'stack_trace': traceback.format_exc()[:500]  # First 500 chars
+                        }
+                    )
+                except:
+                    pass  # Don't fail login error page if diagnostics fail
+                
+                # Show a user-friendly error page with categorized messages
+                is_timeout = error_category in ('timeout', 'connection')
+                
+                if error_category == 'timeout':
+                    retry_hint = "The authentication server is taking too long to respond. This may be a temporary issue."
+                elif error_category == 'connection':
+                    retry_hint = "Could not connect to the authentication server. Please check your internet connection."
+                elif error_category == 'access_denied':
+                    retry_hint = "Access was denied. Please ensure your Jira account has the TimeTracker Forge app installed. Contact your administrator."
+                elif error_category == 'token_exchange':
+                    retry_hint = "Token exchange failed. This may be a temporary server issue."
+                elif error_category == 'state_mismatch':
+                    retry_hint = "Security check failed. Please try logging in again."
+                else:
+                    retry_hint = "Please try again. If the problem persists, contact support."
+                
                 return f"""<!DOCTYPE html><html><head><title>Authentication Failed</title>
                     <style>body{{font-family:system-ui,sans-serif;display:flex;justify-content:center;align-items:center;min-height:100vh;margin:0;background:#f4f5f7}}
                     .card{{background:#fff;border-radius:8px;padding:40px;max-width:500px;text-align:center;box-shadow:0 2px 8px rgba(0,0,0,.1)}}
                     h2{{color:#de350b;margin-bottom:8px}}p{{color:#5e6c84;line-height:1.5}}
                     .btn{{display:inline-block;margin-top:20px;padding:10px 24px;background:#0052CC;color:#fff;border-radius:4px;text-decoration:none;font-weight:500}}
-                    .btn:hover{{background:#0747a6}}.detail{{font-size:12px;color:#97a0af;margin-top:16px;word-break:break-all}}</style></head>
+                    .btn:hover{{background:#0747a6}}.detail{{font-size:12px;color:#97a0af;margin-top:16px;word-break:break-all}}
+                    .category{{font-size:11px;color:#b3b3b3;margin-top:8px;text-transform:uppercase}}</style></head>
                     <body><div class="card"><h2>Authentication Failed</h2><p>{retry_hint}</p>
                     <a class="btn" href="/login">Try Again</a>
+                    <p class="category">Error Type: {error_category}</p>
                     <p class="detail">{error_msg}</p></div></body></html>""", 500
         
         @self.app.route('/success')
@@ -6626,7 +6955,7 @@ class TimeTracker:
         """
         try:
             # Wait briefly for any in-flight async OCR to finish before uploading
-            if not self.ocr_processor.wait_for_ocr(timeout=5.0):
+            if self.ocr_processor and not self.ocr_processor.wait_for_ocr(timeout=5.0):
                 print("[BATCH] Async OCR still running after 5s timeout — uploading without it")
 
             # Backfill OCR for any sessions that were throttled during rapid window switches.
@@ -6708,16 +7037,33 @@ class TimeTracker:
                 else:
                     status = 'pending'  # AI server will analyze
 
+                # If no OCR was performed (throttled and not backfilled), use metadata fallback
+                # so AI can still analyze based on window title
+                ocr_text = s.get('ocr_text')
+                ocr_method = s.get('ocr_method')
+                ocr_confidence = s.get('ocr_confidence')
+                ocr_error_message = s.get('ocr_error_message')
+                
+                if ocr_text is None and ocr_method is None:
+                    # No OCR was attempted - use window title as metadata fallback
+                    window_title = s.get('window_title', '')
+                    app_name = s.get('application_name', '')
+                    if window_title or app_name:
+                        ocr_text = f"[Window: {window_title}] [App: {app_name}]"
+                        ocr_method = 'metadata_title'
+                        ocr_confidence = 0.0
+                        ocr_error_message = 'OCR skipped (throttled, not backfilled)'
+
                 record = {
                     'user_id': self.current_user_id,
                     'organization_id': self.organization_id,
                     'window_title': s.get('window_title', ''),
                     'application_name': s.get('application_name', ''),
                     'classification': classification,
-                    'ocr_text': s.get('ocr_text'),
-                    'ocr_method': s.get('ocr_method'),
-                    'ocr_confidence': s.get('ocr_confidence'),
-                    'ocr_error_message': s.get('ocr_error_message'),
+                    'ocr_text': ocr_text,
+                    'ocr_method': ocr_method,
+                    'ocr_confidence': ocr_confidence,
+                    'ocr_error_message': ocr_error_message,
                     'total_time_seconds': int(s.get('total_time_seconds', 0)),
                     'visit_count': s.get('visit_count', 1),
                     'start_time': s.get('first_seen'),
@@ -6828,6 +7174,8 @@ class TimeTracker:
             spreadsheet_processes = {'excel.exe', 'libreofficecalc.exe', 'soffice.bin'}
             force_ocr = (classification == 'unknown') or issue_key_in_title or (app_name.lower() in spreadsheet_processes)
 
+            if not self.ocr_processor:
+                return
             capture_result = self.ocr_processor.capture_screenshot_only(force=force_ocr)
             screenshot = capture_result.get('screenshot')
             throttled = capture_result.get('throttled', False)
@@ -8805,7 +9153,8 @@ class TimeTracker:
         self._shutdown_done = True
         try:
             print("[SHUTDOWN] Stopping OCR worker thread...")
-            self.ocr_processor.shutdown()
+            if self.ocr_processor:
+                self.ocr_processor.shutdown()
         except Exception as e:
             print(f"[SHUTDOWN] OCR worker shutdown error: {e}")
         try:

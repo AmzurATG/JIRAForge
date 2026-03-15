@@ -38,7 +38,7 @@ from .base_engine import BaseOCREngine
 # Image processing utilities
 from .image_processor import preprocess_image, preprocess_screenshot, resize_if_needed
 
-# Available engines (for direct access if needed)
+# Available engines (for direct access if needed — all optional)
 from .engines import PaddleOCREngine, TesseractEngine, MockOCREngine
 
 __all__ = [
@@ -61,12 +61,10 @@ __all__ = [
     'preprocess_screenshot',
     'resize_if_needed',
     
-    # Engine implementations
-    'PaddleOCREngine',
-    'TesseractEngine',
     # Version
     '__version__',
 ]
 
-if MockOCREngine is not None:
-    __all__.append('MockOCREngine')
+for _eng in ('PaddleOCREngine', 'TesseractEngine', 'MockOCREngine'):
+    if globals().get(_eng) is not None:
+        __all__.append(_eng)
