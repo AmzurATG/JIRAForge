@@ -227,10 +227,67 @@ else:
                         'ocr.engines.easyocr_engine']
 
 # ==============================================================================
+# WINRTOCR DETECTION (only if configured) — Windows-only OCR via WinRT
+# ==============================================================================
+if 'winrtocr' in configured_engines or 'winrt' in configured_engines:
+    print("[INFO] WinRTocr engine configured - bundling WinRT dependencies...")
+    # Our native winrtocr_engine.py uses winsdk directly — always try to bundle it
+    try:
+        import winsdk
+        engine_hiddenimports += collect_submodules('winsdk')
+        engine_datas += collect_data_files('winsdk')
+        engine_binaries += collect_dynamic_libs('winsdk')
+        print("[INFO] winsdk submodules collected for native WinRT engine")
+    except ImportError:
+        print("[WARN] winsdk not installed — native WinRT engine will not work in EXE")
+        # Manually list the critical winsdk submodules
+        engine_hiddenimports += [
+            'winsdk',
+            'winsdk._winrt',
+            'winsdk.windows.media.ocr',
+            'winsdk.windows.globalization',
+            'winsdk.windows.graphics.imaging',
+            'winsdk.windows.storage.streams',
+            'winsdk.windows.foundation',
+        ]
+    except Exception as e:
+        print(f"[WARN] Could not collect winsdk submodules: {e}")
+    # Also bundle the winrtocr library and its deps (for kthread_sleep used by native engine)
+    try:
+        import winrtocr
+        engine_hiddenimports += collect_submodules('winrtocr')
+        engine_datas += collect_data_files('winrtocr')
+        # winrtocr/winsdk shared dependencies
+        for dep_pkg in ['kthread_sleep', 'flatten_everything',
+                        'a_cv_imwrite_imread_plus', 'pathos', 'callpyfile',
+                        'kthread', 'PrettyColorPrinter', 'tolerant_isinstance',
+                        'touchtouch', 'cprinter', 'isiter', 'dill',
+                        'multiprocess', 'pox', 'ppft']:
+            try:
+                engine_hiddenimports += collect_submodules(dep_pkg)
+            except Exception:
+                engine_hiddenimports.append(dep_pkg)
+        print("[INFO] winrtocr library bundled")
+    except ImportError:
+        print("[INFO] winrtocr library not installed (native winsdk engine will be used)")
+    # winrtocr get_ocr_df() needs pandas; native engine does not
+    try:
+        engine_hiddenimports += collect_submodules('pandas')
+        engine_datas += collect_data_files('pandas')
+    except Exception:
+        pass
+    # Always include the native engine module
+    engine_hiddenimports.append('ocr.engines.winrtocr_engine')
+    print("[INFO] WinRTocr bundled successfully")
+else:
+    print("[INFO] WinRTocr engine NOT configured - skipping WinRT bundling")
+    engine_excludes += ['winrtocr']
+
+# ==============================================================================
 # DYNAMIC ENGINE DETECTION (for any other configured engine)
 # Attempts to collect submodules/data for arbitrary OCR packages
 # ==============================================================================
-known_engines = {'paddle', 'tesseract', 'easyocr', 'mock', 'demo'}
+known_engines = {'paddle', 'tesseract', 'easyocr', 'winrtocr', 'winrt', 'mock', 'demo'}
 dynamic_engines = [e for e in configured_engines if e not in known_engines]
 
 for engine_name in dynamic_engines:
@@ -461,7 +518,7 @@ a = Analysis(
     excludes=[
         # Exclude unnecessary packages to reduce size
         'matplotlib',
-        'pandas',
+        ] + (['pandas'] if ('winrtocr' not in configured_engines and 'winrt' not in configured_engines) else []) + [
         'xmlrpc',
         # Security: spacy/NLP not needed
         'detect_secrets',

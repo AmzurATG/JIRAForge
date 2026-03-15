@@ -148,6 +148,16 @@ def get_engine_dependencies(engine_name: str) -> List[str]:
     elif engine_name in ['mock', 'demo']:
         return []  # No dependencies, built-in
     
+    elif engine_name in ('winrtocr', 'winrt'):
+        if os_type != 'windows':
+            logger.warning("WinRTocr is only available on Windows")
+            return []
+        # winrtocr pulls in winsdk and other deps automatically via pip
+        return ['winrtocr']
+    
+    elif engine_name in ('rapidocr', 'rapid'):
+        return ['rapidocr_onnxruntime']
+    
     else:
         # Unknown engine - check for OCR_<ENGINE>_PACKAGE in environment
         package_env_var = f'OCR_{engine_name.upper()}_PACKAGE'

@@ -296,7 +296,8 @@ class DynamicOCREngine(BaseOCREngine):
                 temp_fd, temp_file = tempfile.mkstemp(suffix='.png')
                 os.close(temp_fd)
                 pil_img.save(temp_file, format='PNG')
-                img_input = temp_file
+                # WinRTocr.get_ocr_df() expects an imagelist (list), not a single path
+                img_input = [temp_file]
                 logger.debug(f"Saved temp file for {self.engine_name}: {temp_file}")
             
             try:
