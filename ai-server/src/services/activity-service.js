@@ -138,39 +138,48 @@ Return ONLY valid JSON (no markdown, no extra text):
 // ============================================================================
 
 /**
+ * Parse and validate a single JSON object candidate from the salvage scan.
+ * Returns the parsed object if it has a numeric recordIndex, otherwise null.
+ * @param {string} objectStr - Candidate JSON object string
+ * @returns {Object|null}
+ */
+function tryParseJsonObject(objectStr) {
+  if (!objectStr.includes('"recordIndex"')) return null;
+  try {
+    const parsed = JSON.parse(objectStr);
+    return typeof parsed.recordIndex === 'number' ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Attempt to salvage a truncated JSON array by extracting complete objects.
  * When max_tokens cuts off the LLM response mid-JSON, this recovers
  * any fully-formed objects from the partial output.
  */
 function salvageTruncatedJsonArray(truncatedJson) {
-  // Find balanced {...} blocks without using vulnerable regex
-  // Instead of regex, iterate through string to find balanced braces
+  // Iterate through string to find balanced {...} blocks (no regex)
   const salvaged = [];
   let depth = 0;
   let start = -1;
 
   for (let i = 0; i < truncatedJson.length; i++) {
     const char = truncatedJson[i];
+
     if (char === '{') {
       if (depth === 0) start = i;
       depth++;
-    } else if (char === '}') {
-      depth--;
-      if (depth === 0 && start !== -1) {
-        const objectStr = truncatedJson.slice(start, i + 1);
-        // Validate it contains recordIndex before parsing
-        if (objectStr.includes('"recordIndex"')) {
-          try {
-            const parsed = JSON.parse(objectStr);
-            if (typeof parsed.recordIndex === 'number') {
-              salvaged.push(parsed);
-            }
-          } catch {
-            // Skip malformed individual objects
-          }
-        }
-        start = -1;
-      }
+      continue;
+    }
+
+    if (char !== '}') continue;
+
+    depth--;
+    if (depth === 0 && start !== -1) {
+      const parsed = tryParseJsonObject(truncatedJson.slice(start, i + 1));
+      if (parsed) salvaged.push(parsed);
+      start = -1;
     }
   }
 
