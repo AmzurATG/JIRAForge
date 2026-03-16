@@ -3013,15 +3013,25 @@ class TimeTracker:
             
             if update_info is None:
                 print("[INFO] Could not check for updates")
+                # Clear stale update flag to prevent showing outdated update prompts
+                self.update_available = False
                 return None
             
             self.latest_version_info = update_info
             self.update_available = update_info.get('update_available', False)
             
+            # Local safety check: verify the latest version is genuinely newer
+            # than our running version. Prevents showing "update available" for
+            # the same version we're already running (e.g. stale server data,
+            # race conditions, or the user already installed the update).
             if self.update_available:
                 latest_version = update_info.get('latest_version', 'unknown')
-                print(f"[INFO] Update available: v{latest_version}")
-                self.add_admin_log('INFO', f'Update available: v{latest_version}')
+                if not is_version_newer(latest_version, APP_VERSION):
+                    self.update_available = False
+                    print(f"[INFO] Server indicated update to v{latest_version} but v{APP_VERSION} is already current - ignoring")
+                else:
+                    print(f"[INFO] Update available: v{latest_version}")
+                    self.add_admin_log('INFO', f'Update available: v{latest_version}')
                 
                 # Show notification if enabled and not already shown for this version
                 if show_notification and not self.update_notification_shown:
@@ -6526,7 +6536,10 @@ class TimeTracker:
         def get_update_label():
             if getattr(self, 'update_available', False):
                 latest = self.latest_version_info.get('latest_version', '') if self.latest_version_info else ''
-                return f"⬇ Download Update (v{latest})" if latest else "⬇ Download Update"
+                # Don't show update prompt for the same version we're running
+                if latest and not is_version_newer(latest, APP_VERSION):
+                    return f"Check for Updates (v{self.app_version})"
+                return f"\u2B07 Download Update (v{latest})" if latest else "\u2B07 Download Update"
             return f"Check for Updates (v{self.app_version})"
         
         menu_items.append(item(lambda text: get_update_label(), check_updates_action))
