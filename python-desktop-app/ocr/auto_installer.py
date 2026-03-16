@@ -23,9 +23,15 @@ from pathlib import Path
 # Load environment variables from .env file
 try:
     from dotenv import load_dotenv
-    # Load from the python-desktop-app directory
+    # Load from the python-desktop-app directory first
     env_path = Path(__file__).parent.parent / '.env'
-    load_dotenv(dotenv_path=env_path)
+    if env_path.exists():
+        load_dotenv(dotenv_path=env_path)
+    else:
+        # Fallback: load from ai-server/.env (source of truth for OCR config)
+        ai_server_env = Path(__file__).parent.parent.parent / 'ai-server' / '.env'
+        if ai_server_env.exists():
+            load_dotenv(dotenv_path=ai_server_env)
 except ImportError:
     pass  # dotenv not available, will use system environment variables
 
@@ -142,12 +148,45 @@ def get_engine_dependencies(engine_name: str) -> List[str]:
     elif engine_name in ['mock', 'demo']:
         return []  # No dependencies, built-in
     
+    elif engine_name in ('winrtocr', 'winrt'):
+        if os_type != 'windows':
+            logger.warning("WinRTocr is only available on Windows")
+            return []
+        # winrtocr pulls in winsdk and other deps automatically via pip
+        return ['winrtocr']
+    
+    elif engine_name in ('rapidocr', 'rapid'):
+        return ['rapidocr_onnxruntime']
+    
     else:
-        # Unknown engine - return empty list or check for custom package
+        # Unknown engine - check for OCR_<ENGINE>_PACKAGE in environment
+        package_env_var = f'OCR_{engine_name.upper()}_PACKAGE'
+        package_name = os.getenv(package_env_var)
+        
+        if package_name:
+            logger.info(f"Found custom package for '{engine_name}': {package_name}")
+            return [package_name]
+        
+        # Try to guess the package name using dynamic engine logic
+        try:
+            from ocr.engines.dynamic_engine import _guess_package_name
+            guessed = _guess_package_name(engine_name)
+            if guessed:
+                logger.info(f"Auto-detected package '{guessed}' for engine '{engine_name}'")
+                return [guessed]
+        except ImportError:
+            pass
+        
+        logger.warning(
+            f"Unknown engine: {engine_name}. "
+            f"Set {package_env_var} in .env to specify the pip package."
+        )
         return []
 
 
 # Legacy mapping (for backward compatibility)
+# NOTE: Actual dependencies are resolved dynamically by get_engine_dependencies()
+# For unknown engines, set OCR_<ENGINE>_PACKAGE=<pip-package> in .env
 ENGINE_DEPENDENCIES: Dict[str, List[str]] = {
     'paddle': [],  # Use get_engine_dependencies() instead
     'tesseract': [],
@@ -194,20 +233,23 @@ def is_package_installed(package_name: str) -> bool:
 
 def get_configured_engines() -> List[str]:
     """
-    Get OCR engines configured in .env file.
+    Get OCR engines from environment configuration.
+    
+    Reads from environment variables:
+    - OCR_PRIMARY_ENGINE: Primary OCR engine (default: rapidocr)
+    - OCR_FALLBACK_ENGINES: Comma-separated fallback engines (default: winrtocr)
     
     Returns:
-        List of engine names (e.g., ['paddle', 'tesseract'])
+        List of engine names (e.g., ['rapidocr', 'winrtocr'])
     """
     engines = []
     
-    # Primary engine
-    primary = os.getenv('OCR_PRIMARY_ENGINE')
-    if primary:
-        engines.append(primary.lower())
+    # Primary engine from env (default: rapidocr)
+    primary = os.getenv('OCR_PRIMARY_ENGINE', 'rapidocr')
+    engines.append(primary.lower())
     
-    # Fallback engines
-    fallbacks = os.getenv('OCR_FALLBACK_ENGINES', '')
+    # Fallback engines from env (default: winrtocr)
+    fallbacks = os.getenv('OCR_FALLBACK_ENGINES', 'winrtocr')
     if fallbacks:
         for engine in fallbacks.split(','):
             engine = engine.strip().lower()
@@ -402,8 +444,12 @@ def check_and_install_dependencies(
     silent: bool = False
 ) -> Dict[str, bool]:
     """
-    Check configured OCR engines and install missing dependencies.
+    Check OCR engines from environment config and install missing dependencies.
     Platform-aware: installs correct packages for Windows, Linux, and macOS.
+    
+    Reads engine configuration from environment variables:
+    - OCR_PRIMARY_ENGINE (default: rapidocr)
+    - OCR_FALLBACK_ENGINES (default: winrtocr)
     
     Args:
         auto_install: If True, automatically install missing packages
@@ -418,12 +464,8 @@ def check_and_install_dependencies(
         logger.debug("Running in production mode, skipping dependency check")
         return {}
     
+    # Get engines from environment config
     engines = get_configured_engines()
-    
-    if not engines:
-        if not silent:
-            print("⚠️  No OCR engines configured in .env file")
-        return {}
     
     os_type = get_os_type()
     cpu_arch = get_cpu_architecture()
@@ -435,7 +477,7 @@ def check_and_install_dependencies(
         print(f"Operating System: {os_type.upper()} ({cpu_arch})")
         if is_apple_silicon():
             print(f"Apple Silicon detected: Using optimized dependencies")
-        print(f"Configured engines: {', '.join(engines)}\n")
+        print(f"OCR engines (from env config): {', '.join(engines)}\n")
     
     results = {}
     
@@ -518,9 +560,10 @@ def add_engine_to_env(engine_name: str, as_primary: bool = False) -> bool:
     dependencies = get_engine_dependencies(engine_name)
     
     if not dependencies and engine_name not in ['mock', 'demo']:
-        print(f"❌ Unknown engine: {engine_name}")
-        print(f"Available engines: paddle, tesseract, easyocr, mock, demo")
-        return False
+        print(f"⚠️  No known dependencies for engine: {engine_name}")
+        print(f"   Known engines: paddle, tesseract, easyocr, mock, demo")
+        print(f"   For custom engines, set OCR_{engine_name.upper()}_PACKAGE in .env")
+        print(f"   Proceeding anyway (engine may use dynamic adapter)...")
     
     print(f"\n🔧 Adding {engine_name} to .env file...")
     print(f"Platform: {os_type.upper()}  ({get_cpu_architecture()})")

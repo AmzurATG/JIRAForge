@@ -49,6 +49,10 @@ class DynamicOCREngine(BaseOCREngine):
         'read',
         'readtext',
         'process',
+        '__call__',  # callable class instances (e.g. RapidOCR)
+        'get_ocr_df',  # WinRTocr returns pandas DataFrame
+        'get_text',
+        'run',
     ]
     
     def __init__(
@@ -93,22 +97,43 @@ class DynamicOCREngine(BaseOCREngine):
         return self.engine_name
     
     def is_available(self) -> bool:
-        """Check if the OCR package is installed"""
-        try:
-            importlib.import_module(self.package_name)
-            return True
-        except ImportError:
-            logger.debug(f"Package '{self.package_name}' not installed for {self.engine_name}")
-            return False
+        """Check if the OCR package is installed."""
+        # Try multiple import name variants to handle hyphenated pip package names
+        # e.g. 'rapidocr-onnxruntime' pip package imports as 'rapidocr'
+        candidates = [
+            self.package_name,
+            self.package_name.replace('-', '_'),
+            self.package_name.split('-')[0],
+        ]
+        for name in dict.fromkeys(candidates):  # deduplicate while preserving order
+            try:
+                importlib.import_module(name)
+                return True
+            except ImportError:
+                continue
+        logger.debug(f"Package '{self.package_name}' not installed for {self.engine_name}")
+        return False
     
     def _initialize(self):
         """Lazy initialization of OCR library"""
         if self._initialized:
             return
-        
+
         try:
-            # Import the package
-            module = importlib.import_module(self.package_name)
+            # Import the package — try variants to handle hyphenated pip names
+            module = None
+            for name in dict.fromkeys([
+                self.package_name,
+                self.package_name.replace('-', '_'),
+                self.package_name.split('-')[0],
+            ]):
+                try:
+                    module = importlib.import_module(name)
+                    break
+                except ImportError:
+                    continue
+            if module is None:
+                raise ImportError(f"Cannot import '{self.package_name}' under any known name")
             logger.debug(f"Imported package: {self.package_name}")
             
             # Find the OCR class
@@ -131,15 +156,28 @@ class DynamicOCREngine(BaseOCREngine):
             
             # Find the OCR method
             if self.method_name:
-                self._ocr_method = getattr(self._ocr_instance, self.method_name)
+                if hasattr(self._ocr_instance, self.method_name):
+                    self._ocr_method = getattr(self._ocr_instance, self.method_name)
+                    logger.debug(f"Using specified method: {self.method_name}")
+                else:
+                    # Method name specified but not found - try auto-detect
+                    logger.warning(
+                        f"Method '{self.method_name}' not found on {self.engine_name}, "
+                        f"available: {[m for m in dir(self._ocr_instance) if not m.startswith('_')][:10]}"
+                    )
+                    self._ocr_method = self._find_ocr_method(self._ocr_instance)
             else:
                 self._ocr_method = self._find_ocr_method(self._ocr_instance)
             
             if not self._ocr_method:
-                raise ValueError(f"Could not find OCR method for {self.engine_name}")
+                available_methods = [m for m in dir(self._ocr_instance) if not m.startswith('_')][:15]
+                raise ValueError(
+                    f"Could not find OCR method for {self.engine_name}. "
+                    f"Available methods: {available_methods}"
+                )
             
             self._initialized = True
-            logger.info(f"Dynamic engine ready: {self.engine_name}")
+            logger.info(f"Dynamic engine ready: {self.engine_name} (method: {getattr(self._ocr_method, '__name__', str(self._ocr_method))})")
             
         except Exception as e:
             logger.error(f"Failed to initialize {self.engine_name}: {e}")
@@ -151,6 +189,10 @@ class DynamicOCREngine(BaseOCREngine):
         common_patterns = [
             f"{self.engine_name}OCR",
             f"{self.engine_name.capitalize()}OCR",
+            f"{self.engine_name.upper()}ocr",  # e.g. WinRTocr
+            f"{self.engine_name.capitalize()}ocr",  # e.g. Winrtocr
+            "RapidOCR",  # rapidocr_onnxruntime.RapidOCR
+            "WinRTocr",  # winrtocr.WinRTocr
             "OCR",
             "Reader",
             "Recognizer",
@@ -179,27 +221,37 @@ class DynamicOCREngine(BaseOCREngine):
         
         return None
     
+    # Keys used for engine routing — must NOT be forwarded to the OCR class constructor
+    _META_KEYS = frozenset({'class', 'class_name', 'method', 'method_name', 'package', 'package_name'})
+
     def _build_init_params(self) -> Dict[str, Any]:
-        """Build initialization parameters for the OCR class"""
+        """Build initialization parameters for the OCR class.
+
+        Only passes parameters that are explicitly listed in extra_params AND are
+        not internal routing keys (class, method, package).  This prevents crashes
+        when an OCR library's __init__ does not accept those meta-keys.
+        """
         params = {}
-        
-        # Common parameter mappings
-        if self.use_gpu:
-            # Try different GPU parameter names
-            for gpu_param in ['use_gpu', 'gpu', 'device']:
-                if gpu_param in self.extra_params or gpu_param == 'use_gpu':
-                    params[gpu_param] = True if gpu_param == 'use_gpu' else 'cuda'
-        
+
+        # Language: only pass when the caller explicitly named a lang param in extra_params
         if self.language:
-            # Try different language parameter names
             for lang_param in ['lang', 'language', 'languages']:
-                if lang_param in self.extra_params or lang_param in ['lang', 'language']:
+                if lang_param in self.extra_params:
                     params[lang_param] = self.language
                     break
-        
-        # Add all extra parameters
-        params.update(self.extra_params)
-        
+
+        # GPU: only add when explicitly mapped via extra_params
+        if self.use_gpu:
+            for gpu_param in ['use_gpu', 'gpu', 'device']:
+                if gpu_param in self.extra_params:
+                    params[gpu_param] = self.extra_params[gpu_param]
+                    break
+
+        # Add remaining extra params, filtering out meta/routing keys
+        for key, value in self.extra_params.items():
+            if key not in self._META_KEYS:
+                params[key] = value
+
         return params
     
     def extract_text(self, image: np.ndarray) -> Dict[str, Any]:
@@ -230,8 +282,35 @@ class DynamicOCREngine(BaseOCREngine):
             # Convert image to format the library expects
             img_input = self._convert_image(image)
             
-            # Call the OCR method
-            result = self._ocr_method(img_input)
+            # Special handling for libraries that need file paths instead of arrays
+            # (WinRTocr has a bug where numpy arrays fail with "Ran out of input")
+            needs_file_path = self.package_name.lower() in ('winrtocr',) or \
+                              self.engine_name.lower() in ('winrt', 'winrtocr')
+            
+            temp_file = None
+            if needs_file_path:
+                import tempfile
+                import os
+                # Save to temp PNG file
+                pil_img = Image.fromarray(img_input) if isinstance(img_input, np.ndarray) else img_input
+                temp_fd, temp_file = tempfile.mkstemp(suffix='.png')
+                os.close(temp_fd)
+                pil_img.save(temp_file, format='PNG')
+                # WinRTocr.get_ocr_df() expects an imagelist (list), not a single path
+                img_input = [temp_file]
+                logger.debug(f"Saved temp file for {self.engine_name}: {temp_file}")
+            
+            try:
+                # Call the OCR method
+                result = self._ocr_method(img_input)
+            finally:
+                # Clean up temp file
+                if temp_file:
+                    try:
+                        import os
+                        os.unlink(temp_file)
+                    except Exception:
+                        pass
             
             # Parse the result into standardized format
             return self._parse_result(result)
@@ -251,6 +330,19 @@ class DynamicOCREngine(BaseOCREngine):
         - List of dicts: [{'text': '...', 'conf': 0.9}, ...]
         """
         try:
+            # Case 0: Top-level tuple (e.g. RapidOCR returns (result_list, elapsed_time))
+            if isinstance(result, tuple) and len(result) >= 1:
+                # RapidOCR format: (list_of_results | None, elapsed_time)
+                inner_result = result[0]
+                if inner_result is None:
+                    # No text detected
+                    return self._create_success_result(text='', confidence=0.0)
+                if isinstance(inner_result, list):
+                    # Recursively parse the inner list
+                    return self._parse_result(inner_result)
+                # If inner is something else, try parsing it directly
+                return self._parse_result(inner_result)
+
             # Case 1: Plain string
             if isinstance(result, str):
                 return self._create_success_result(
@@ -277,12 +369,13 @@ class DynamicOCREngine(BaseOCREngine):
                 boxes = []
                 
                 for item in result:
-                    if isinstance(item, tuple):
-                        # (text, confidence) or (bbox, text, confidence)
+                    if isinstance(item, (tuple, list)):
+                        # (text, confidence) or (bbox, text, confidence) or [bbox, text, score]
                         if len(item) == 2:
                             texts.append(str(item[0]))
                             confidences.append(float(item[1]))
                         elif len(item) >= 3:
+                            # RapidOCR format: [box, text, score]
                             boxes.append(item[0])
                             texts.append(str(item[1]))
                             confidences.append(float(item[2]))
@@ -306,6 +399,26 @@ class DynamicOCREngine(BaseOCREngine):
                         boxes=boxes if boxes else None
                     )
             
+            # Case 4: pandas DataFrame (e.g. winrtocr returns a DataFrame with 'text'/'conf' columns)
+            try:
+                import pandas as pd
+                if isinstance(result, pd.DataFrame) and not result.empty:
+                    text_col = next((c for c in ['text', 'Text', 'word', 'Word'] if c in result.columns), None)
+                    conf_col = next((c for c in ['conf', 'confidence', 'Confidence', 'score'] if c in result.columns), None)
+                    if text_col:
+                        texts = result[text_col].dropna().astype(str).tolist()
+                        if conf_col:
+                            confs = result[conf_col].dropna().astype(float).tolist()
+                            avg_conf = sum(confs) / len(confs) if confs else 0.9
+                        else:
+                            avg_conf = 0.9
+                        return self._create_success_result(
+                            text='\n'.join(t for t in texts if t.strip()),
+                            confidence=avg_conf
+                        )
+            except ImportError:
+                pass
+
             # Unknown format
             logger.warning(f"Unknown result format from {self.engine_name}: {type(result)}")
             return self._create_error_result(f"Unknown result format: {type(result)}")
@@ -343,6 +456,18 @@ def create_dynamic_engine(engine_name: str, config_params: Dict[str, Any]) -> Op
     class_name = config_params.get('class') or config_params.get('class_name')
     method_name = config_params.get('method') or config_params.get('method_name')
     
+    # If method not specified, use known defaults for common OCR libraries
+    if not method_name:
+        method_name = _get_default_method(engine_name, package_name)
+        if method_name:
+            logger.debug(f"Using default method '{method_name}' for {engine_name}")
+    
+    # If class not specified, use known defaults for common OCR libraries
+    if not class_name:
+        class_name = _get_default_class(engine_name, package_name)
+        if class_name:
+            logger.debug(f"Using default class '{class_name}' for {engine_name}")
+    
     return DynamicOCREngine(
         engine_name=engine_name,
         package_name=package_name,
@@ -350,6 +475,33 @@ def create_dynamic_engine(engine_name: str, config_params: Dict[str, Any]) -> Op
         method_name=method_name,
         **config_params
     )
+
+
+def _get_default_method(engine_name: str, package_name: str) -> Optional[str]:
+    """Get known default method for common OCR libraries."""
+    defaults = {
+        'rapidocr': '__call__',
+        'rapidocr_onnxruntime': '__call__',
+        'winrtocr': 'get_ocr_df',
+        'winrt': 'get_ocr_df',
+        'easyocr': 'readtext',
+        'paddleocr': 'ocr',
+        'pytesseract': 'image_to_string',
+    }
+    return defaults.get(engine_name.lower()) or defaults.get(package_name.lower())
+
+
+def _get_default_class(engine_name: str, package_name: str) -> Optional[str]:
+    """Get known default class for common OCR libraries."""
+    defaults = {
+        'rapidocr': 'RapidOCR',
+        'rapidocr_onnxruntime': 'RapidOCR',
+        'winrtocr': 'WinRTocr',
+        'winrt': 'WinRTocr',
+        'easyocr': 'Reader',
+        'paddleocr': 'PaddleOCR',
+    }
+    return defaults.get(engine_name.lower()) or defaults.get(package_name.lower())
 
 
 def _guess_package_name(engine_name: str) -> Optional[str]:
@@ -379,6 +531,12 @@ def _guess_package_name(engine_name: str) -> Optional[str]:
         'doctr': 'python-doctr',
         'trocr': 'transformers',
         'kerasocr': 'keras_ocr',
+        # RapidOCR — pip: rapidocr-onnxruntime, imports as rapidocr_onnxruntime
+        'rapidocr': 'rapidocr_onnxruntime',
+        'rapid': 'rapidocr_onnxruntime',
+        # WinRTocr — pip: winrtocr, imports as winrtocr
+        'winrtocr': 'winrtocr',
+        'winrt': 'winrtocr',
     }
     
     engine_lower = engine_name.lower()

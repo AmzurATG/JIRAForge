@@ -18,7 +18,24 @@ const logger = require('../utils/logger');
 // PROMPTS
 // ============================================================================
 
-const BATCH_ANALYSIS_SYSTEM_PROMPT = `You are an expert at analyzing work activity from text. You match activity records to Jira issues based on window titles, application names, and OCR-extracted text. You focus on understanding the CONTENT and matching it semantically to issue descriptions. You understand that Jira keys may appear in window titles or extracted text.`;
+const BATCH_ANALYSIS_SYSTEM_PROMPT = `You are an expert at analyzing work activity from text. You match activity records to Jira issues based on window titles, application names, and OCR-extracted text. You focus on understanding the CONTENT and matching it semantically to issue descriptions. You understand that Jira keys may appear in window titles or extracted text.
+
+MATCHING GUIDELINES:
+1. If a window title or OCR text contains a Jira key (like ABC-123), prioritize that match
+2. If the user is in a development tool (VS Code, IntelliJ, PyCharm, etc.) working on code related to a project, match to the most relevant "In Progress" issue from that project
+3. If the window title mentions specific features (login, auth, UI, API, etc.), match to issues with similar features
+4. When OCR text is unavailable (shows "no text extracted"), rely heavily on window title context
+5. Browser activity on documentation, Stack Overflow, or technical sites related to an issue topic should be matched
+6. Code editors with file/folder names visible in title should be matched based on what the code likely relates to
+
+CONFIDENCE SCORING:
+- 0.8-1.0: Direct match (Jira key visible, explicit feature match)
+- 0.6-0.7: Strong contextual match (same project area, related functionality)
+- 0.4-0.5: Reasonable match (working in project, related to general area)
+- 0.2-0.3: Weak match (only project matches, specific task unclear)
+- 0.0-0.1: No match possible
+
+Be GENEROUS with matching when the user is clearly doing development work in a project they have issues for.`;
 
 const APP_CLASSIFICATION_SYSTEM_PROMPT = `You are an expert at classifying desktop applications and websites into work categories. You determine whether an application is productive (work-related), non_productive (entertainment/personal), or private (sensitive personal data like banking, healthcare, passwords). You base your classification on the application name, window title, and any visible text content.`;
 
@@ -44,6 +61,14 @@ function buildBatchAnalysisPrompt(records, assignedIssuesText) {
   return `Analyze these activity records and match each to the most relevant Jira issue.
 Match based on MEANING, not just keywords. If a window title contains a Jira key, use it. If OCR text references specific features or code related to an issue, match it.
 
+IMPORTANT: When OCR text shows "(no text extracted)", you must rely on:
+- The application name (Code.exe = VS Code, chrome.exe = browser, etc.)
+- The window title (which often contains file names, project names, or page titles)
+- Context from the project key and issue summaries
+
+For development tools with project/file names in the title, match to relevant "In Progress" issues.
+For browsers with technical sites in the title, match based on the topic being researched.
+
 User's Assigned Issues (from Jira):
 ${assignedIssuesText}
 
@@ -51,7 +76,7 @@ Activity Records:
 ${recordDescriptions}
 
 For EACH record, determine:
-1. Which Jira issue is the user most likely working on?
+1. Which Jira issue is the user most likely working on? (Be reasonably generous if context suggests project work)
 2. Is this office work or non-office?
 3. How confident are you in the match?
 

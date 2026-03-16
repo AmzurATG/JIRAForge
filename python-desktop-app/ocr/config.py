@@ -42,8 +42,8 @@ class OCRConfig:
     Automatically discovers ANY OCR engine from environment variables.
     Pattern: OCR_<ENGINE>_<SETTING>=value
     """
-    primary_engine: str = 'paddle'      # Primary OCR engine
-    fallback_engines: List[str] = field(default_factory=lambda: ['tesseract'])
+    primary_engine: str = 'rapidocr'      # Primary OCR engine
+    fallback_engines: List[str] = field(default_factory=lambda: ['winrtocr'])
     use_preprocessing: bool = True
     preprocessing_target_dpi: int = 300
     max_image_dimension: int = 4096
@@ -66,10 +66,10 @@ class OCRConfig:
         config = cls()
         
         # Primary engine
-        config.primary_engine = os.getenv('OCR_PRIMARY_ENGINE', 'paddle').lower()
+        config.primary_engine = os.getenv('OCR_PRIMARY_ENGINE', 'rapidocr').lower()
         
         # Fallback engines (comma-separated)
-        fallback = os.getenv('OCR_FALLBACK_ENGINES', 'tesseract')
+        fallback = os.getenv('OCR_FALLBACK_ENGINES', 'winrtocr')
         config.fallback_engines = [e.strip().lower() for e in fallback.split(',') if e.strip()]
         
         # Preprocessing
@@ -167,8 +167,8 @@ class OCRConfig:
             }
         """
         config = cls()
-        config.primary_engine = data.get('primary_engine', 'paddle')
-        config.fallback_engines = data.get('fallback_engines', ['tesseract'])
+        config.primary_engine = data.get('primary_engine', 'rapidocr')
+        config.fallback_engines = data.get('fallback_engines', ['winrtocr'])
         config.use_preprocessing = data.get('use_preprocessing', True)
         config.max_image_dimension = data.get('max_image_dimension', 4096)
         

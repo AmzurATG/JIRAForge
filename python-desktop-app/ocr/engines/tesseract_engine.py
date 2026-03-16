@@ -2,17 +2,66 @@
 Tesseract OCR Engine Adapter
 
 Wraps pytesseract library to comply with BaseOCREngine interface.
-Requires Tesseract binary to be installed on the system.
+Requires Tesseract binary to be installed on the system or bundled with PyInstaller.
 """
 import numpy as np
 from PIL import Image
 import logging
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, Tuple
 import os
+import sys
 
 from ..base_engine import BaseOCREngine
 
 logger = logging.getLogger(__name__)
+
+
+def _get_bundled_tesseract_paths() -> Tuple[Optional[str], Optional[str]]:
+    """
+    Detect bundled Tesseract paths when running as a frozen PyInstaller exe.
+    
+    PyInstaller bundles files to sys._MEIPASS (for onefile) or next to the exe.
+    The spec file bundles Tesseract to 'tesseract/' subfolder.
+    
+    Returns:
+        Tuple of (tesseract_exe_path, tessdata_prefix) or (None, None) if not found
+    """
+    # Check if running as frozen exe
+    if not getattr(sys, 'frozen', False):
+        return None, None
+    
+    # Get the base path for bundled files
+    # For onefile: sys._MEIPASS is the temp extraction folder
+    # For onedir: it's the folder containing the exe
+    if hasattr(sys, '_MEIPASS'):
+        base_path = sys._MEIPASS
+    else:
+        base_path = os.path.dirname(sys.executable)
+    
+    # Check for bundled tesseract in the 'tesseract' subfolder
+    tesseract_exe = os.path.join(base_path, 'tesseract', 'tesseract.exe')
+    tessdata_dir = os.path.join(base_path, 'tesseract', 'tessdata')
+    
+    tesseract_path = None
+    tessdata_prefix = None
+    
+    if os.path.exists(tesseract_exe):
+        tesseract_path = tesseract_exe
+        logger.info(f"Found bundled Tesseract at: {tesseract_path}")
+    else:
+        # Also check in the same directory as exe (alternative bundling)
+        alt_tesseract = os.path.join(os.path.dirname(sys.executable), 'tesseract', 'tesseract.exe')
+        if os.path.exists(alt_tesseract):
+            tesseract_path = alt_tesseract
+            tessdata_dir = os.path.join(os.path.dirname(sys.executable), 'tesseract', 'tessdata')
+            logger.info(f"Found bundled Tesseract at alternate path: {tesseract_path}")
+    
+    if tesseract_path and os.path.isdir(tessdata_dir):
+        tessdata_prefix = tessdata_dir
+        logger.info(f"Found bundled tessdata at: {tessdata_prefix}")
+    
+    return tesseract_path, tessdata_prefix
+
 
 # Check if pytesseract is available
 _TESSERACT_AVAILABLE = False
@@ -81,14 +130,31 @@ class TesseractEngine(BaseOCREngine):
         self.min_confidence = min_confidence
         self.extra_params = extra_params
         
-        # Set Tesseract path if provided
+        # PRIORITY ORDER for finding Tesseract:
+        # 1. Explicit parameter (tesseract_path)
+        # 2. Environment variables (TESSERACT_CMD, OCR_TESSERACT_PATH)
+        # 3. Bundled with PyInstaller (sys._MEIPASS/tesseract/)
+        # 4. System PATH (default pytesseract behavior)
+        
         tesseract_path = extra_params.get('tesseract_path') or os.getenv('TESSERACT_CMD') or os.getenv('OCR_TESSERACT_PATH')
+        tessdata_prefix = os.getenv('TESSDATA_PREFIX')
+        
+        # If no explicit path, check for bundled tesseract (PyInstaller exe)
+        if not tesseract_path:
+            bundled_tesseract, bundled_tessdata = _get_bundled_tesseract_paths()
+            if bundled_tesseract:
+                tesseract_path = bundled_tesseract
+                logger.info(f"Using bundled Tesseract: {tesseract_path}")
+            if bundled_tessdata and not tessdata_prefix:
+                tessdata_prefix = bundled_tessdata
+                logger.info(f"Using bundled tessdata: {tessdata_prefix}")
+        
+        # Set Tesseract path
         if tesseract_path and _TESSERACT_AVAILABLE:
             _tesseract.pytesseract.tesseract_cmd = tesseract_path
             logger.debug(f"Tesseract path set to: {tesseract_path}")
         
-        # Set TESSDATA_PREFIX if provided (for language data files)
-        tessdata_prefix = os.getenv('TESSDATA_PREFIX')
+        # Set TESSDATA_PREFIX (for language data files)
         if tessdata_prefix:
             os.environ['TESSDATA_PREFIX'] = tessdata_prefix
             logger.debug(f"TESSDATA_PREFIX set to: {tessdata_prefix}")
