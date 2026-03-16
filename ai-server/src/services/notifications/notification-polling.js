@@ -346,7 +346,7 @@ class NotificationPollingService {
     async _getLatestAppRelease(supabase) {
         const { data: latestRelease, error } = await supabase
             .from('app_releases')
-            .select('version, download_url, release_notes, is_mandatory')
+            .select('version, download_url, release_notes, is_mandatory, published_at')
             .eq('platform', 'windows')
             .eq('is_latest', true)
             .eq('is_active', true)
@@ -429,6 +429,17 @@ class NotificationPollingService {
             if (!latestRelease) {
                 logger.debug('[NotificationPolling] No latest release found for version notifications');
                 return;
+            }
+
+            // Grace period: wait at least 2 hours after a release is published
+            // before sending emails, giving users time to update on their own
+            if (latestRelease.published_at) {
+                const publishedAt = new Date(latestRelease.published_at);
+                const gracePeriodMs = 2 * 60 * 60 * 1000; // 2 hours
+                if (Date.now() - publishedAt.getTime() < gracePeriodMs) {
+                    logger.info(`[NotificationPolling] Release v${latestRelease.version} published recently (${latestRelease.published_at}), waiting for grace period before sending emails`);
+                    return;
+                }
             }
 
             const users = await this._queryUsersWithOutdatedVersion(supabase, latestRelease.version);
