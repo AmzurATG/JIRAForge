@@ -11,7 +11,7 @@ module.exports = {
 
     text: ({ displayName, orgName, inactiveUsers }) => {
         const lines = inactiveUsers.map(u =>
-            `  - ${u.name}: inactive for ${u.hoursInactive}h (last active: ${u.lastActivity})`
+            `  - ${u.name}: inactive for ${u.hoursInactive} (last active: ${u.lastActivity})`
         ).join('\n');
         return `Hello ${displayName},\n\nI hope you're doing well! 😊\n\nWe wanted to gently let you know that a few team members in ${orgName} have been inactive for a while:\n\n${lines}\n\nWhen you have a moment, you might want to check in with them to see if they need any assistance.\n\nYou can review your team's activity anytime by logging into TimeTracker.\n`;
     },
@@ -21,7 +21,7 @@ module.exports = {
         const rows = inactiveUsers.map(u => `
             <tr>
               <td style="padding:8px 12px;border-bottom:1px solid #eee">${esc(u.name)}</td>
-              <td style="padding:8px 12px;border-bottom:1px solid #eee;color:#d97706;font-weight:600">${esc(u.hoursInactive)}h inactive</td>
+              <td style="padding:8px 12px;border-bottom:1px solid #eee;color:#d97706;font-weight:600">${esc(u.hoursInactive)} inactive</td>
               <td style="padding:8px 12px;border-bottom:1px solid #eee;color:#999;font-size:13px">${esc(u.lastActivity)}</td>
             </tr>`).join('');
 

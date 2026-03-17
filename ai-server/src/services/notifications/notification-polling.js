@@ -150,6 +150,12 @@ class NotificationPollingService {
      * @returns {Promise<boolean>} True if sent successfully
      */
     async _sendLoginReminderToUser(user) {
+        // Respect user's work-day / work-hour preferences (no weekend emails)
+        const isWorkHours = await this._isWithinWorkHours(user.id);
+        if (!isWorkHours) {
+            return false;
+        }
+
         try {
             const result = await notificationService.sendLoginReminder(
                 user.id,
@@ -226,6 +232,12 @@ class NotificationPollingService {
      * @returns {Promise<boolean>} True if sent successfully
      */
     async _sendDownloadReminderToUser(user, downloadUrl = null) {
+        // Respect user's work-day / work-hour preferences (no weekend emails)
+        const isWorkHours = await this._isWithinWorkHours(user.id);
+        if (!isWorkHours) {
+            return false;
+        }
+
         try {
             const result = await notificationService.sendDownloadReminder(
                 user.id,
@@ -391,6 +403,12 @@ class NotificationPollingService {
     async _sendVersionNotificationToUser(user, releaseInfo) {
         // Only notify if user's version is actually older (not newer)
         if (!this._isVersionOlder(user.desktop_app_version, releaseInfo.version)) {
+            return false;
+        }
+
+        // Respect user's work-day / work-hour preferences (no weekend emails)
+        const isWorkHours = await this._isWithinWorkHours(user.id);
+        if (!isWorkHours) {
             return false;
         }
 

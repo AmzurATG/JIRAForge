@@ -441,9 +441,11 @@ async function syncSingleEntry(supabaseConfig, organizationId, userId, accountId
   // Uses formatStartedForJira to format the UTC timestamp from the DB into Jira's expected format
   const startedAt = formatStartedForJira(lastWorkedOn);
   let worklogResult;
+  let usedAsUser = false;
   if (accountId) {
     try {
       worklogResult = await createJiraWorklogAsUser(accountId, issueKey, timeTracked, startedAt, displayName);
+      usedAsUser = true;
     } catch (impersonationErr) {
       if (impersonationErr.message?.includes('AUTH_TYPE_UNAVAILABLE')) {
         console.warn(`[ScheduledSync] asUser unavailable for ${issueKey}, falling back to asApp`);
@@ -457,6 +459,15 @@ async function syncSingleEntry(supabaseConfig, organizationId, userId, accountId
   }
 
   if (worklogResult?.id) {
+    // Check if impersonation actually worked by comparing the worklog author
+    // to the intended user. Jira returns author.accountId in the response.
+    const actuallyCreatedAsUser = usedAsUser &&
+      worklogResult.author?.accountId === accountId;
+
+    if (usedAsUser && !actuallyCreatedAsUser) {
+      console.warn(`[ScheduledSync] Impersonation did not take effect for ${issueKey} — author is ${worklogResult.author?.accountId || 'unknown'}, expected ${accountId}`);
+    }
+
     const now = new Date().toISOString();
     // eslint-disable-next-line deprecation/deprecation
     await supabaseRequest(
@@ -471,13 +482,13 @@ async function syncSingleEntry(supabaseConfig, organizationId, userId, accountId
           jira_worklog_id: String(worklogResult.id),
           last_synced_seconds: timeTracked,
           started_at: startedAt,
-          created_as_user: false,  // Scheduled trigger context — will be migrated by syncMyWorklogs
+          created_as_user: actuallyCreatedAsUser,
           created_at: now,
           updated_at: now
         }
       }
     );
-    console.log(`[ScheduledSync] Created worklog for ${issueKey} user ${userId}: ${timeTracked}s`);
+    console.log(`[ScheduledSync] Created worklog for ${issueKey} user ${userId}: ${timeTracked}s (as_user: ${actuallyCreatedAsUser})`);
     return true;
   }
 
