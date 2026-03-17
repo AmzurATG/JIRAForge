@@ -37,7 +37,7 @@ export function registerFeedbackResolvers(resolver) {
    */
   resolver.define('submitFeedback', async (req) => {
     try {
-      const { category, title, description, images } = req.payload;
+      const { category, title, priority, description, images } = req.payload;
 
       // Validate required fields
       if (!category) {
@@ -55,6 +55,7 @@ export function registerFeedbackResolvers(resolver) {
       const result = await submitFeedback({
         category,
         title: title || '',
+        priority: priority || '',
         description: description.trim(),
         images: images || []
       });

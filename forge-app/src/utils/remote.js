@@ -515,6 +515,7 @@ export async function createFeedbackSession() {
  * @param {Object} feedbackData - Feedback form data
  * @param {string} feedbackData.category - Feedback category (required)
  * @param {string} feedbackData.title - Feedback title (optional)
+ * @param {string} feedbackData.priority - Priority level (optional - Highest/High/Medium/Low/Lowest)
  * @param {string} feedbackData.description - Feedback description (required)
  * @param {Array} feedbackData.images - Base64 image strings (optional, max 3)
  * @returns {Promise<Object>} Submit result with feedbackId
@@ -545,6 +546,7 @@ export async function submitFeedback(feedbackData) {
       session_id: sessionId,
       category: feedbackData.category,
       title: feedbackData.title || '',
+      priority: feedbackData.priority || undefined,
       description: feedbackData.description,
       images: feedbackData.images || [],
       app_version: 'forge-in-app'

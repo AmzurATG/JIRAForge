@@ -15,6 +15,7 @@ const logger = require('../../utils/logger');
  * @param {string} data.jira_cloud_id - Jira cloud ID
  * @param {string} data.category - Feedback category
  * @param {string} data.title - Feedback title (optional)
+ * @param {string} data.priority - User-selected priority (optional)
  * @param {string} data.description - Feedback description
  * @param {string[]} data.image_paths - Array of storage paths for uploaded images
  * @param {number} data.image_count - Number of images
@@ -33,6 +34,7 @@ async function createFeedback(data) {
         jira_cloud_id: data.jira_cloud_id,
         category: data.category,
         title: data.title || null,
+        user_priority: data.priority || null,
         description: data.description,
         image_paths: data.image_paths || [],
         image_count: data.image_count || 0,

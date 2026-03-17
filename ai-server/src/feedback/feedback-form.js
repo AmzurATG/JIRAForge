@@ -61,6 +61,25 @@
             handleFiles(e.target.files);
             fileInput.value = '';
         });
+
+        // Paste from clipboard (Ctrl+V / Cmd+V)
+        document.addEventListener('paste', function(e) {
+            var items = e.clipboardData && e.clipboardData.items;
+            if (!items) return;
+
+            var imageFiles = [];
+            for (var i = 0; i < items.length; i++) {
+                if (items[i].type.indexOf('image/') === 0) {
+                    var file = items[i].getAsFile();
+                    if (file) imageFiles.push(file);
+                }
+            }
+
+            if (imageFiles.length > 0) {
+                e.preventDefault();
+                handleFiles(imageFiles);
+            }
+        });
     }
 
     function handleFiles(files) {
@@ -161,6 +180,7 @@
     function submitFeedback() {
         var category = document.getElementById('category').value;
         var title = document.getElementById('title').value.trim();
+        var priority = document.getElementById('priority').value;
         var description = document.getElementById('description').value.trim();
 
         if (!category) {
@@ -184,6 +204,7 @@
             session_id: sessionId,
             category: category,
             title: title || undefined,
+            priority: priority || undefined,
             description: description,
             images: selectedImages.map(function(img) {
                 return {
