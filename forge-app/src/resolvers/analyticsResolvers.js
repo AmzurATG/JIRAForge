@@ -45,16 +45,17 @@ export function registerAnalyticsResolvers(resolver) {
    * Resolver for fetching all analytics (Admin only)
    */
   resolver.define('getAllAnalytics', async (req) => {
-    const { context } = req;
+    const { payload, context } = req;
     const accountId = context.accountId;
     const cloudId = context.cloudId;
+    const clientToday = payload?.clientToday;
 
     try {
       const adminCheck = await isJiraAdmin();
       if (!adminCheck) {
         return { success: false, error: 'Access denied: Jira Administrator required' };
       }
-      const data = await fetchAllAnalytics(accountId, cloudId);
+      const data = await fetchAllAnalytics(accountId, cloudId, clientToday);
       return { success: true, data };
     } catch (error) {
       console.error('Error fetching all analytics:', error);
@@ -92,7 +93,7 @@ export function registerAnalyticsResolvers(resolver) {
    */
   resolver.define('getProjectTeamAnalytics', async (req) => {
     const { payload, context } = req;
-    const { projectKey } = payload;
+    const { projectKey, clientToday } = payload;
     const accountId = context.accountId;
     const cloudId = context.cloudId;
 
@@ -105,7 +106,7 @@ export function registerAnalyticsResolvers(resolver) {
       if (!adminCheck && !isProjectAdmin) {
         return { success: false, error: 'Access denied: Project Admin or Jira Administrator required' };
       }
-      const data = await fetchProjectTeamAnalytics(accountId, cloudId, projectKey);
+      const data = await fetchProjectTeamAnalytics(accountId, cloudId, projectKey, clientToday);
       return { success: true, data };
     } catch (error) {
       console.error('Error fetching team analytics:', error);

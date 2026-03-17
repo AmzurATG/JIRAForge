@@ -66,6 +66,9 @@ export async function fetchTimeAnalyticsBatch(accountId, cloudId) {
     maxIssuesInAnalytics: MAX_ISSUES_IN_ANALYTICS
   });
 
+  // Enforce Forge-computed permission — never trust the AI server's canViewAllUsers
+  dashboardData.canViewAllUsers = canViewAllUsers;
+
   return dashboardData;
 }
 
@@ -100,12 +103,12 @@ export async function fetchTimeAnalytics(accountId, cloudId) {
   const permissions = await checkUserPermissions(['ADMINISTER_PROJECTS']);
   const isProjectAdmin = permissions.permissions?.ADMINISTER_PROJECTS?.havePermission;
 
-  // Also check organization-level permissions
+  // Get membership for reference but do NOT use can_view_team_analytics to widen access.
+  // Only Jira admins and project admins (verified via Jira API) should see team data.
   const membership = await getUserOrganizationMembership(userId, organization.id, supabaseConfig);
-  const canViewTeamAnalytics = membership?.can_view_team_analytics || false;
 
-  // User can view all users if Jira admin, project admin, OR has organization permission
-  const canViewAllUsers = isAdmin || isProjectAdmin || canViewTeamAnalytics;
+  // User can view all users only if Jira admin or project admin
+  const canViewAllUsers = isAdmin || isProjectAdmin;
 
   // Fetch daily summary - filter by organization_id, and by user if not admin
   const dailySummaryQuery = canViewAllUsers

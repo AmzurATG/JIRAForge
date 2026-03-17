@@ -881,7 +881,10 @@ exports.getDashboardData = async (req, res) => {
       .single();
 
     // Determine if user can view all data
-    const canViewTeamData = canViewAllUsers || membership?.can_view_team_analytics || false;
+    // IMPORTANT: Only trust the Forge-verified canViewAllUsers flag.
+    // Do NOT widen access via membership.can_view_team_analytics — that field
+    // is an org-level setting and must not override Jira permission checks.
+    const canViewTeamData = canViewAllUsers;
     const filterCtx = { canViewTeamData, shouldFilterByProjects, userId, projectKeys };
 
     // 4. Build all queries — visibility filters applied via helper to avoid repetition

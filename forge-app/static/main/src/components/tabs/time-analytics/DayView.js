@@ -216,9 +216,10 @@ function DayView({ loading, timeData }) {
 
       const leftPercent = timeToPercent(actualStart);
       const rightPercent = timeToPercent(endTime);
-      const MAX_BLOCK_MINUTES = 15; // Cap individual blocks at 15 minutes for visual clarity
-      const maxBlockPercent = (MAX_BLOCK_MINUTES / TIMELINE_TOTAL_MINUTES) * 100;
-      const widthPercent = Math.max(0.3, Math.min(maxBlockPercent, rightPercent - leftPercent));
+      // Use actual session duration for block width — no arbitrary cap.
+      // The width already represents tracked work time (durationSeconds),
+      // not wall-clock time, so it accurately reflects real activity.
+      const widthPercent = Math.max(0.3, rightPercent - leftPercent);
 
       return {
         left: leftPercent,
@@ -300,7 +301,7 @@ function DayView({ loading, timeData }) {
       };
     });
 
-    // Aggregate today's data by user
+    // Aggregate today's data by user from dailySummary
     todayData.forEach(item => {
       const userId = item.user_id || 'current_user';
       if (!tasksByUser[userId]) {
@@ -314,6 +315,32 @@ function DayView({ loading, timeData }) {
       tasksByUser[userId].tasks.push(item);
       tasksByUser[userId].totalSeconds += item.total_seconds || 0;
     });
+
+    // Reconcile with timeline data to ensure displayed totals match visible blocks.
+    // Timeline sessions come from activity_records (the same source as the blocks),
+    // so using these totals prevents visual mismatches between blocks and numbers.
+    if (timeData?.canViewAllUsers && timelineData) {
+      timelineData.usersWithActivity?.forEach(userTimeline => {
+        const timelineTotal = (userTimeline.sessions || []).reduce(
+          (sum, s) => sum + (s.durationSeconds || 0), 0
+        );
+        if (tasksByUser[userTimeline.userId]) {
+          // Use the higher value: dailySummary may lag behind real-time activity_records
+          tasksByUser[userTimeline.userId].totalSeconds = Math.max(
+            tasksByUser[userTimeline.userId].totalSeconds,
+            timelineTotal
+          );
+        }
+      });
+    } else if (myTimelineData && myTimelineData.sessions) {
+      const timelineTotal = myTimelineData.sessions.reduce(
+        (sum, s) => sum + (s.durationSeconds || 0), 0
+      );
+      // For non-admin view, reconcile the single user's total
+      Object.values(tasksByUser).forEach(user => {
+        user.totalSeconds = Math.max(user.totalSeconds, timelineTotal);
+      });
+    }
 
     return Object.values(tasksByUser).sort((a, b) => b.totalSeconds - a.totalSeconds);
   };
