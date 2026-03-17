@@ -146,9 +146,10 @@ export async function fetchProjectAnalytics(accountId, cloudId, projectKey) {
  * @param {string} accountId - Atlassian account ID
  * @param {string} cloudId - Jira Cloud ID for organization filtering
  * @param {string} projectKey - Jira Project Key
+ * @param {string} [clientToday] - Client's local date as YYYY-MM-DD (avoids UTC mismatch with work_date)
  * @returns {Promise<Object>} Team analytics data for the project
  */
-export async function fetchProjectTeamAnalytics(accountId, cloudId, projectKey) {
+export async function fetchProjectTeamAnalytics(accountId, cloudId, projectKey, clientToday) {
   // Validate project key format
   if (!isValidProjectKey(projectKey)) {
     throw new Error('Invalid project key format');
@@ -225,25 +226,30 @@ export async function fetchProjectTeamAnalytics(accountId, cloudId, projectKey) 
     .slice(0, MAX_ISSUES_IN_ANALYTICS);
 
   // === Calculate Team Summary KPIs ===
-  // Use UTC methods to ensure consistent date calculations regardless of server timezone
+  // Use client-provided date to avoid UTC vs local-date mismatch.
+  // work_date in daily_time_summary stores the user's local date, so server-side
+  // UTC calculations can be off by ±1 day near midnight.
   const now = new Date();
-  const formatDate = (d) => {
+  const formatDateUTC = (d) => {
     const y = d.getUTCFullYear();
     const m = String(d.getUTCMonth() + 1).padStart(2, '0');
     const day = String(d.getUTCDate()).padStart(2, '0');
     return `${y}-${m}-${day}`;
   };
 
-  const todayStr = formatDate(now);
-  const currentMonthStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
-  const currentMonthStr = formatDate(currentMonthStart);
+  // Prefer client-supplied date; fall back to UTC for backwards compatibility
+  const todayStr = (clientToday && /^\d{4}-\d{2}-\d{2}$/.test(clientToday))
+    ? clientToday
+    : formatDateUTC(now);
+  const todayDate = new Date(todayStr + 'T00:00:00');
+  const currentMonthStr = todayStr.substring(0, 7); // YYYY-MM
 
-  // Calculate week start (Monday)
-  const weekStart = new Date(now);
-  const dayOfWeek = weekStart.getUTCDay();
+  // Calculate week start (Monday) from todayStr
+  const dayOfWeek = todayDate.getDay();
   const daysToMonday = dayOfWeek === 0 ? 6 : dayOfWeek - 1;
-  weekStart.setUTCDate(weekStart.getUTCDate() - daysToMonday);
-  const weekStartStr = formatDate(weekStart);
+  const weekStart = new Date(todayDate);
+  weekStart.setDate(todayDate.getDate() - daysToMonday);
+  const weekStartStr = `${weekStart.getFullYear()}-${String(weekStart.getMonth() + 1).padStart(2, '0')}-${String(weekStart.getDate()).padStart(2, '0')}`;
 
   // Filter data for this month
   const thisMonthData = (teamDailySummary || []).filter(day => {
@@ -325,9 +331,9 @@ export async function fetchProjectTeamAnalytics(accountId, cloudId, projectKey) 
   const dayNames = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
   const trendData = [];
   for (let i = trendDays - 1; i >= 0; i--) {
-    const date = new Date(now);
-    date.setUTCDate(date.getUTCDate() - i);
-    const dateStr = formatDate(date);
+    const date = new Date(todayDate);
+    date.setDate(todayDate.getDate() - i);
+    const dateStr = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
 
     const dayData = (teamDailySummary || []).filter(d => {
       const workDate = typeof d.work_date === 'string' ? d.work_date.split('T')[0] : String(d.work_date);
@@ -338,8 +344,8 @@ export async function fetchProjectTeamAnalytics(accountId, cloudId, projectKey) 
 
     trendData.push({
       date: dateStr,
-      dayOfWeek: dayNames[date.getUTCDay()],
-      dayOfMonth: date.getUTCDate(),
+      dayOfWeek: dayNames[date.getDay()],
+      dayOfMonth: date.getDate(),
       totalHours
     });
   }

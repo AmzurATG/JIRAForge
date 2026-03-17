@@ -47,7 +47,10 @@ function TeamAnalyticsTab() {
     setError(null);
     setSelectedTrendDay(null); // Reset selected day when loading new data
     try {
-      const result = await invoke('getProjectTeamAnalytics', { projectKey: selectedProjectKey });
+      const result = await invoke('getProjectTeamAnalytics', {
+        projectKey: selectedProjectKey,
+        clientToday: new Date().toLocaleDateString('sv-SE') // YYYY-MM-DD in local timezone
+      });
       if (result.success) {
         setTeamAnalytics(result.data);
       } else {

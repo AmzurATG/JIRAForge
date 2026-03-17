@@ -24,9 +24,10 @@ import {
  * Fetch all analytics data (Admin only)
  * @param {string} accountId - Atlassian account ID
  * @param {string} cloudId - Jira Cloud ID for organization filtering
+ * @param {string} [clientToday] - Client's local date as YYYY-MM-DD (avoids UTC mismatch with work_date)
  * @returns {Promise<Object>} All analytics data
  */
-export async function fetchAllAnalytics(accountId, cloudId) {
+export async function fetchAllAnalytics(accountId, cloudId, clientToday) {
   // 1. Check Admin Permission
   const isAdmin = await isJiraAdmin();
   if (!isAdmin) {
@@ -60,15 +61,21 @@ export async function fetchAllAnalytics(accountId, cloudId) {
     `users?organization_id=eq.${organization.id}&select=id,display_name,email,is_active`
   );
 
-  // Calculate date ranges (UTC)
+  // Calculate date ranges
+  // Prefer client-supplied date to avoid UTC vs local-date mismatch.
+  // work_date stores the user's local date, so UTC can be ±1 day off near midnight.
   const now = new Date();
-  const currentMonthStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
-  const lastMonthStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 1, 1));
-  const lastMonthEnd = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 0));
+  const todayStr = (clientToday && /^\d{4}-\d{2}-\d{2}$/.test(clientToday))
+    ? clientToday
+    : formatDate(now);
+  const todayDate = new Date(todayStr + 'T00:00:00');
+  const currentMonthStart = new Date(todayDate.getFullYear(), todayDate.getMonth(), 1);
+  const lastMonthStart = new Date(todayDate.getFullYear(), todayDate.getMonth() - 1, 1);
+  const lastMonthEnd = new Date(todayDate.getFullYear(), todayDate.getMonth(), 0);
 
-  const currentMonthStr = formatDate(currentMonthStart);
-  const lastMonthStartStr = formatDate(lastMonthStart);
-  const lastMonthEndStr = formatDate(lastMonthEnd);
+  const currentMonthStr = `${currentMonthStart.getFullYear()}-${String(currentMonthStart.getMonth() + 1).padStart(2, '0')}-01`;
+  const lastMonthStartStr = `${lastMonthStart.getFullYear()}-${String(lastMonthStart.getMonth() + 1).padStart(2, '0')}-${String(lastMonthStart.getDate()).padStart(2, '0')}`;
+  const lastMonthEndStr = `${lastMonthEnd.getFullYear()}-${String(lastMonthEnd.getMonth() + 1).padStart(2, '0')}-${String(lastMonthEnd.getDate()).padStart(2, '0')}`;
 
   const thisMonthData = filterByDateFrom(dailySummary || [], currentMonthStr);
   const lastMonthData = filterByDateRange(dailySummary || [], lastMonthStartStr, lastMonthEndStr);
@@ -146,16 +153,21 @@ export async function fetchAllAnalytics(accountId, cloudId) {
     adoptionRate: adoptionRate
   };
 
-  const todayStr = formatDate(now);
-  const { weekStartStr } = getWeekStartUTC(now);
+  const todayStrForUser = todayStr;
+  // Compute week start (Monday) from client-aware todayDate
+  const dayOfWeek = todayDate.getDay();
+  const daysToMonday = dayOfWeek === 0 ? 6 : dayOfWeek - 1;
+  const weekStartDate = new Date(todayDate);
+  weekStartDate.setDate(todayDate.getDate() - daysToMonday);
+  const weekStartStr = `${weekStartDate.getFullYear()}-${String(weekStartDate.getMonth() + 1).padStart(2, '0')}-${String(weekStartDate.getDate()).padStart(2, '0')}`;
 
   const userActivity = (allUsers || [])
     .filter(user => user.is_active !== false)
     .map(user => {
       const userDailyData = (dailySummary || []).filter(d => d.user_id === user.id);
-      const todayHours = secondsToHours(sumTotalSeconds(filterByExactDate(userDailyData, todayStr)));
-      const weekHours = computeHoursInRange(userDailyData, weekStartStr, todayStr);
-      const monthHours = computeHoursInRange(userDailyData, currentMonthStr, todayStr);
+      const todayHours = secondsToHours(sumTotalSeconds(filterByExactDate(userDailyData, todayStrForUser)));
+      const weekHours = computeHoursInRange(userDailyData, weekStartStr, todayStrForUser);
+      const monthHours = computeHoursInRange(userDailyData, currentMonthStr, todayStrForUser);
 
       return {
         userId: user.id,

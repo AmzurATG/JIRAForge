@@ -4,9 +4,9 @@
 
 /**
  * Format seconds into a human-readable time string
- * Shows exact seconds for accuracy - individual times always add up to totals
+ * Always includes seconds when non-zero so individual times add up to totals
  * @param {number} seconds - Time in seconds
- * @returns {string} Formatted time string (e.g., "2m 30s", "1h 15m")
+ * @returns {string} Formatted time string (e.g., "2m 30s", "1h 8m 2s")
  */
 export const formatTime = (seconds) => {
   if (!seconds || seconds < 0) return '0s';
@@ -15,24 +15,13 @@ export const formatTime = (seconds) => {
   const minutes = Math.floor((seconds % 3600) / 60);
   const secs = Math.floor(seconds % 60);
 
-  // For durations >= 1 hour: show hours and minutes (seconds less relevant at this scale)
-  if (hours > 0) {
-    if (minutes > 0) {
-      return `${hours}h ${minutes}m`;
-    }
-    return `${hours}h`;
-  }
+  // Build parts array — always include non-zero components for consistency
+  const parts = [];
+  if (hours > 0) parts.push(`${hours}h`);
+  if (minutes > 0) parts.push(`${minutes}m`);
+  if (secs > 0) parts.push(`${secs}s`);
 
-  // For durations < 1 hour: show minutes and seconds for accuracy
-  if (minutes > 0) {
-    if (secs > 0) {
-      return `${minutes}m ${secs}s`;
-    }
-    return `${minutes}m`;
-  }
-
-  // Less than 1 minute: show seconds only
-  return `${secs}s`;
+  return parts.length > 0 ? parts.join(' ') : '0s';
 };
 
 /**

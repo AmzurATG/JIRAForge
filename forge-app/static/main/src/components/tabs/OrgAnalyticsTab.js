@@ -25,7 +25,9 @@ function OrgAnalyticsTab() {
     setLoading(true);
     setError(null);
     try {
-      const result = await invoke('getAllAnalytics');
+      const result = await invoke('getAllAnalytics', {
+        clientToday: new Date().toLocaleDateString('sv-SE') // YYYY-MM-DD in local timezone
+      });
       if (result.success) {
         setOrgAnalytics(result.data);
       } else {
