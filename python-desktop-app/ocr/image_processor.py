@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 SCREENSHOT_MAX_DIMENSION = 1920
 
 
-def preprocess_screenshot(img_input, max_dimension=SCREENSHOT_MAX_DIMENSION, engine_hint='paddle'):
+def preprocess_screenshot(img_input, max_dimension=SCREENSHOT_MAX_DIMENSION, engine_hint='rapidocr'):
     """
     Engine-aware lightweight preprocessing optimized for screen captures.
 
@@ -25,12 +25,12 @@ def preprocess_screenshot(img_input, max_dimension=SCREENSHOT_MAX_DIMENSION, eng
     pipeline used for scanned documents. But different OCR engines have different
     needs:
 
-      PaddleOCR: Has its own neural preprocessing; works best with RGB input.
+      RapidOCR / WinRTOCR: Neural engines with their own preprocessing; work
+        best with RGB input.
         → Just downscale, keep color.
 
-      Tesseract: A traditional engine that works best with high-contrast
-        grayscale input. Needs help with contrast but NOT denoising (clean
-        digital text has no noise to remove).
+      EasyOCR: Works best with high-contrast grayscale input. Needs help with
+        contrast but NOT denoising (clean digital text has no noise to remove).
         → Downscale → grayscale → CLAHE (fast contrast enhancement, ~15ms).
 
     In all cases, the expensive operations are skipped:
@@ -41,7 +41,7 @@ def preprocess_screenshot(img_input, max_dimension=SCREENSHOT_MAX_DIMENSION, eng
     Args:
         img_input: PIL Image or numpy array
         max_dimension: Maximum width/height in pixels
-        engine_hint: OCR engine name ('paddle', 'tesseract', etc.)
+        engine_hint: OCR engine name ('rapidocr', 'winrtocr', 'easyocr', etc.)
             Controls which preprocessing steps are applied.
 
     Returns:
@@ -64,14 +64,14 @@ def preprocess_screenshot(img_input, max_dimension=SCREENSHOT_MAX_DIMENSION, eng
             logger.debug(f"Screenshot downscaled {width}x{height} → {new_w}x{new_h}")
 
         # Engine-specific preprocessing
-        if engine_hint in ('tesseract', 'easyocr'):
-            # Tesseract/EasyOCR need grayscale + contrast enhancement
+        if engine_hint in ('easyocr',):
+            # EasyOCR needs grayscale + contrast enhancement
             if len(img.shape) == 3:
                 gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
             else:
                 gray = img
 
-            # CLAHE: fast adaptive contrast (~10-15ms). Critical for Tesseract
+            # CLAHE: fast adaptive contrast (~10-15ms). Improves EasyOCR
             # accuracy on screenshots with varying background colors (dark themes,
             # colored terminals, etc.)
             clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
@@ -79,7 +79,7 @@ def preprocess_screenshot(img_input, max_dimension=SCREENSHOT_MAX_DIMENSION, eng
 
             logger.debug(f"Screenshot preprocessed for {engine_hint}: grayscale + CLAHE")
 
-        # PaddleOCR (and other neural engines): keep RGB, no extra processing
+        # RapidOCR, WinRTOCR (and other neural engines): keep RGB, no extra processing
         return img
 
     except Exception as e:

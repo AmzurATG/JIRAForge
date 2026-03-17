@@ -28,14 +28,23 @@ MATCHING GUIDELINES:
 5. Browser activity on documentation, Stack Overflow, or technical sites related to an issue topic should be matched
 6. Code editors with file/folder names visible in title should be matched based on what the code likely relates to
 
+WHEN TO RETURN null (no match):
+- Generic system activities: Task Manager, File Explorer (browsing files), Windows Settings, Control Panel, system utilities
+- Generic browsing: download history, general search, social media, news sites (unless content clearly relates to an issue)
+- Activities with NO semantic connection to any assigned issue — do NOT force-match just because the user has issues assigned
+- When the only connection is that both are "technical" or "work-related" — that is NOT enough for a match
+
+CRITICAL RULES:
+- ONLY use task keys from the user's assigned issues list. NEVER invent or fabricate issue keys from OCR text, window titles, or any other source.
+- Return null when there is no clear semantic connection between the activity and a specific issue
+- A match requires a meaningful content relationship, not just both being work-related
+
 CONFIDENCE SCORING:
 - 0.8-1.0: Direct match (Jira key visible, explicit feature match)
 - 0.6-0.7: Strong contextual match (same project area, related functionality)
 - 0.4-0.5: Reasonable match (working in project, related to general area)
 - 0.2-0.3: Weak match (only project matches, specific task unclear)
-- 0.0-0.1: No match possible
-
-Be GENEROUS with matching when the user is clearly doing development work in a project they have issues for.`;
+- 0.0-0.1: No match possible`;
 
 const APP_CLASSIFICATION_SYSTEM_PROMPT = `You are an expert at classifying desktop applications and websites into work categories. You determine whether an application is productive (work-related), non_productive (entertainment/personal), or private (sensitive personal data like banking, healthcare, passwords). You base your classification on the application name, window title, and any visible text content.`;
 
@@ -69,6 +78,8 @@ IMPORTANT: When OCR text shows "(no text extracted)", you must rely on:
 For development tools with project/file names in the title, match to relevant "In Progress" issues.
 For browsers with technical sites in the title, match based on the topic being researched.
 
+CRITICAL: You must ONLY use task keys from the assigned issues list below. NEVER invent, fabricate, or extract issue keys from OCR text, window titles, or any other source. If no assigned issue is a clear semantic match, return taskKey as null. Generic activities (Task Manager, File Explorer, Windows Settings, system utilities, download history) should return null unless they clearly relate to a specific issue.
+
 User's Assigned Issues (from Jira):
 ${assignedIssuesText}
 
@@ -76,7 +87,7 @@ Activity Records:
 ${recordDescriptions}
 
 For EACH record, determine:
-1. Which Jira issue is the user most likely working on? (Be reasonably generous if context suggests project work)
+1. Which Jira issue is the user most likely working on? Return null if the activity has no clear connection to any specific issue.
 2. Is this office work or non-office?
 3. How confident are you in the match?
 

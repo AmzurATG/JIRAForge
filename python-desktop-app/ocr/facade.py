@@ -38,14 +38,14 @@ class OCRFacade:
         
         # Custom configuration
         config = OCRConfig()
-        config.primary_engine = 'tesseract'
+        config.primary_engine = 'rapidocr'
         facade = OCRFacade(config)
         result = facade.extract_text(image)
-    
+
     Configuration via environment:
-        OCR_PRIMARY_ENGINE=paddle
-        OCR_FALLBACK_ENGINES=tesseract,easyocr
-        OCR_PADDLE_MIN_CONFIDENCE=0.5
+        OCR_PRIMARY_ENGINE=rapidocr
+        OCR_FALLBACK_ENGINES=winrtocr
+        OCR_RAPIDOCR_MIN_CONFIDENCE=0.6
     """
     
     def __init__(self, config: Optional[OCRConfig] = None):
@@ -58,7 +58,7 @@ class OCRFacade:
         self.config = config or OCRConfig.from_env()
         self._primary_engine: Optional[BaseOCREngine] = None
         self._fallback_engines: List[BaseOCREngine] = []
-        # Auto-heal guardrails for unstable engines (e.g., intermittent Paddle CPU primitive failures).
+        # Auto-heal guardrails for unstable engines.
         self._engine_failure_counts: Dict[str, int] = {}
         self._engine_backoff_until: Dict[str, float] = {}
         self._engine_backoff_seconds: float = 120.0
@@ -150,7 +150,7 @@ class OCRFacade:
             logger.warning(
                 f"No OCR engines available! Text extraction will use metadata fallback only. "
                 f"Initialization errors: {init_errors_summary}. "
-                f"Install an OCR engine: pip install paddlepaddle paddleocr"
+                f"Install an OCR engine: pip install rapidocr_onnxruntime"
             )
     
     def _initialize_privacy_filter(self):
@@ -333,7 +333,7 @@ class OCRFacade:
                 'error': f"Engine '{self.config.primary_engine}' could not be created"
             }
             diagnostics['recommendations'].append(
-                f"Install {self.config.primary_engine}: pip install paddlepaddle paddleocr"
+                f"Install {self.config.primary_engine}: pip install rapidocr_onnxruntime"
             )
         
         # Check fallback engines
@@ -347,46 +347,7 @@ class OCRFacade:
         
         # Check for common deployment issues
         if diagnostics['is_frozen_exe']:
-            import os
-            base_path = diagnostics['bundled_path'] or os.path.dirname(sys.executable)
-            
-            # Check Tesseract bundling
-            tesseract_bundled = os.path.exists(os.path.join(base_path, 'tesseract', 'tesseract.exe'))
-            tessdata_bundled = os.path.exists(os.path.join(base_path, 'tesseract', 'tessdata', 'eng.traineddata'))
-            
-            diagnostics['bundled_dependencies'] = {
-                'tesseract_exe': tesseract_bundled,
-                'tesseract_tessdata': tessdata_bundled,
-                'tesseract_path_checked': os.path.join(base_path, 'tesseract', 'tesseract.exe'),
-            }
-            
-            # Check PaddleOCR models - bundled in exe
-            paddleocr_bundled = os.path.isdir(os.path.join(base_path, '.paddleocr'))
-            diagnostics['bundled_dependencies']['paddleocr_models_bundled'] = paddleocr_bundled
-            diagnostics['bundled_dependencies']['paddleocr_bundled_path'] = os.path.join(base_path, '.paddleocr')
-            
-            # Check PaddleOCR models - copied to user home (where PaddleOCR looks)
-            user_paddleocr = os.path.join(os.path.expanduser('~'), '.paddleocr', 'whl')
-            user_models_exist = os.path.isdir(user_paddleocr)
-            diagnostics['bundled_dependencies']['paddleocr_user_models'] = user_models_exist
-            diagnostics['bundled_dependencies']['paddleocr_user_path'] = user_paddleocr
-            
-            if not tesseract_bundled and 'tesseract' in self.config.fallback_engines:
-                diagnostics['recommendations'].append(
-                    "Tesseract binary not found in bundled exe. "
-                    "Ensure Tesseract is installed on the build machine at C:\\Program Files\\Tesseract-OCR\\"
-                )
-            
-            if not paddleocr_bundled and self.config.primary_engine == 'paddle':
-                diagnostics['recommendations'].append(
-                    "PaddleOCR models not found in bundled exe. "
-                    "Run PaddleOCR once on the build machine to download models to ~/.paddleocr/ before building."
-                )
-            elif paddleocr_bundled and not user_models_exist:
-                diagnostics['recommendations'].append(
-                    f"PaddleOCR models are bundled but NOT yet copied to user home ({user_paddleocr}). "
-                    "This should happen automatically on first OCR run."
-                )
+            diagnostics['bundled_dependencies'] = {}
         
         # Collect engine-specific initialization details
         diagnostics['engine_init_details'] = self._get_engine_init_details()
@@ -417,111 +378,18 @@ class OCRFacade:
         Get detailed initialization info for each OCR engine.
         Useful for diagnosing why engines are not available.
         """
-        import os
-        import sys
-        
         details = {}
-        
-        # PaddleOCR details
-        try:
-            from .engines.paddle_engine import _PADDLEOCR_AVAILABLE, _PADDLEOCR_VERSION
-            
-            paddle_details = {
-                'module_available': _PADDLEOCR_AVAILABLE,
-                'version': _PADDLEOCR_VERSION,
+
+        # Collect availability details for each active engine
+        for engine in [self._primary_engine] + self._fallback_engines:
+            if not engine:
+                continue
+            name = engine.get_name()
+            details[name] = {
+                'engine_available': engine.is_available(),
+                'initialization_error': getattr(engine, '_init_error', None),
             }
-            
-            # Check model paths
-            user_paddleocr = os.path.join(os.path.expanduser('~'), '.paddleocr')
-            user_whl = os.path.join(user_paddleocr, 'whl')
-            paddle_details['user_models_path'] = user_paddleocr
-            paddle_details['user_models_exist'] = os.path.isdir(user_whl)
-            
-            # List what's in the models directory (if exists)
-            if os.path.isdir(user_whl):
-                try:
-                    paddle_details['user_models_contents'] = os.listdir(user_whl)[:10]  # First 10
-                except Exception as e:
-                    paddle_details['user_models_contents_error'] = str(e)
-            
-            # Check bundled path (for frozen exe)
-            if getattr(sys, 'frozen', False):
-                base_path = getattr(sys, '_MEIPASS', os.path.dirname(sys.executable))
-                bundled_path = os.path.join(base_path, '.paddleocr')
-                bundled_whl = os.path.join(bundled_path, 'whl')
-                paddle_details['bundled_path'] = bundled_path
-                paddle_details['bundled_models_exist'] = os.path.isdir(bundled_whl)
-                
-                # Check paddle libs bundling
-                paddle_libs = os.path.join(base_path, 'paddle', 'libs')
-                paddle_details['bundled_paddle_libs'] = paddle_libs
-                paddle_details['bundled_paddle_libs_exist'] = os.path.isdir(paddle_libs)
-            
-            # Check if engine instance is working
-            paddle_engine = None
-            if self._primary_engine and self._primary_engine.get_name() == 'paddle':
-                paddle_engine = self._primary_engine
-            else:
-                # Check fallback engines
-                for e in self._fallback_engines:
-                    if e.get_name() == 'paddle':
-                        paddle_engine = e
-                        break
-            
-            if paddle_engine:
-                paddle_details['engine_available'] = paddle_engine.is_available()
-                paddle_details['initialization_error'] = getattr(paddle_engine, '_init_error', None)
-                paddle_details['initialization_traceback'] = getattr(paddle_engine, '_init_traceback', None)
-                
-                # Get detailed import diagnostics from engine
-                if hasattr(paddle_engine, 'get_import_diagnostics'):
-                    paddle_details['import_diagnostics'] = paddle_engine.get_import_diagnostics()
-            
-            details['paddle'] = paddle_details
-            
-        except Exception as e:
-            import traceback
-            details['paddle'] = {'error': str(e), 'traceback': traceback.format_exc()[:500]}
-        
-        # Tesseract details
-        try:
-            from .engines.tesseract_engine import _TESSERACT_AVAILABLE, _get_bundled_tesseract_paths
-            
-            tesseract_details = {
-                'module_available': _TESSERACT_AVAILABLE,
-            }
-            
-            # Try to get Tesseract version
-            if _TESSERACT_AVAILABLE:
-                try:
-                    import pytesseract
-                    tesseract_details['tesseract_version'] = str(pytesseract.get_tesseract_version())
-                    tesseract_details['tesseract_cmd'] = pytesseract.pytesseract.tesseract_cmd
-                except Exception as e:
-                    tesseract_details['version_error'] = str(e)
-            
-            # Check bundled paths
-            bundled_exe, bundled_tessdata = _get_bundled_tesseract_paths()
-            tesseract_details['bundled_exe'] = bundled_exe
-            tesseract_details['bundled_tessdata'] = bundled_tessdata
-            tesseract_details['bundled_exe_exists'] = bundled_exe and os.path.exists(bundled_exe)
-            tesseract_details['bundled_tessdata_exists'] = bundled_tessdata and os.path.isdir(bundled_tessdata)
-            
-            # Check TESSDATA_PREFIX env var
-            tesseract_details['tessdata_prefix_env'] = os.environ.get('TESSDATA_PREFIX')
-            
-            # Check if engine instance is working
-            for e in [self._primary_engine] + self._fallback_engines:
-                if e and e.get_name() == 'tesseract':
-                    tesseract_details['engine_available'] = e.is_available()
-                    tesseract_details['initialization_error'] = getattr(e, '_init_error', None)
-                    break
-            
-            details['tesseract'] = tesseract_details
-            
-        except Exception as e:
-            details['tesseract'] = {'error': str(e)}
-        
+
         return details
     
     def get_diagnostics_json(self) -> str:
@@ -569,42 +437,11 @@ class OCRFacade:
         if 'engine_init_details' in diag:
             logger.info("-" * 40)
             logger.info("ENGINE INITIALIZATION DETAILS:")
-            
-            paddle = diag['engine_init_details'].get('paddle', {})
-            logger.info(f"  [PaddleOCR]")
-            logger.info(f"    Module available: {paddle.get('module_available', 'N/A')}")
-            logger.info(f"    Version: {paddle.get('version', 'N/A')}")
-            logger.info(f"    Engine ready: {paddle.get('engine_available', 'N/A')}")
-            logger.info(f"    User models exist: {paddle.get('user_models_exist', 'N/A')}")
-            logger.info(f"    User models path: {paddle.get('user_models_path', 'N/A')}")
-            if diag['is_frozen_exe']:
-                logger.info(f"    Bundled models exist: {paddle.get('bundled_models_exist', 'N/A')}")
-            if paddle.get('initialization_error'):
-                logger.error(f"    Init error: {paddle.get('initialization_error')}")
-            
-            tesseract = diag['engine_init_details'].get('tesseract', {})
-            logger.info(f"  [Tesseract]")
-            logger.info(f"    Module available: {tesseract.get('module_available', 'N/A')}")
-            logger.info(f"    Version: {tesseract.get('tesseract_version', 'N/A')}")
-            logger.info(f"    Engine ready: {tesseract.get('engine_available', 'N/A')}")
-            logger.info(f"    Tesseract cmd: {tesseract.get('tesseract_cmd', 'N/A')}")
-            if diag['is_frozen_exe']:
-                logger.info(f"    Bundled exe exists: {tesseract.get('bundled_exe_exists', 'N/A')}")
-                logger.info(f"    Bundled tessdata exists: {tesseract.get('bundled_tessdata_exists', 'N/A')}")
-            if tesseract.get('initialization_error'):
-                logger.error(f"    Init error: {tesseract.get('initialization_error')}")
-        
-        # Bundled dependencies (for exe)
-        if 'bundled_dependencies' in diag:
-            bd = diag['bundled_dependencies']
-            logger.info("-" * 40)
-            logger.info("Bundled dependencies:")
-            logger.info(f"  Tesseract exe: {'FOUND' if bd.get('tesseract_exe') else 'MISSING'}")
-            logger.info(f"  Tesseract tessdata: {'FOUND' if bd.get('tesseract_tessdata') else 'MISSING'}")
-            logger.info(f"  PaddleOCR models (bundled): {'FOUND' if bd.get('paddleocr_models_bundled') else 'MISSING'}")
-            logger.info(f"  PaddleOCR models (user home): {'FOUND' if bd.get('paddleocr_user_models') else 'MISSING'}")
-            if bd.get('paddleocr_user_path'):
-                logger.info(f"    User models path: {bd['paddleocr_user_path']}")
+            for eng_name, eng_details in diag['engine_init_details'].items():
+                logger.info(f"  [{eng_name.upper()}]")
+                logger.info(f"    Engine ready: {eng_details.get('engine_available', 'N/A')}")
+                if eng_details.get('initialization_error'):
+                    logger.error(f"    Init error: {eng_details.get('initialization_error')}")
         
         # Overall
         logger.info("-" * 40)
@@ -681,8 +518,6 @@ class OCRFacade:
                 
                 logger.debug(f"Trying OCR engine: {engine_name}")
 
-                # Preprocess per-engine: Tesseract needs grayscale+CLAHE,
-                # PaddleOCR works best with raw RGB
                 prep_start = time.perf_counter()
                 img_array = self._prepare_image(
                     pil_image, use_preprocessing, screenshot_mode,
@@ -692,12 +527,7 @@ class OCRFacade:
                 
                 try:
                     infer_start = time.perf_counter()
-                    # Skip angle classification for screenshot-mode PaddleOCR.
-                    # This removes unnecessary per-line overhead for horizontal screen text.
-                    if screenshot_mode and engine_name == 'paddle':
-                        result = engine.extract_text(img_array, skip_angle_cls=True)
-                    else:
-                        result = engine.extract_text(img_array)
+                    result = engine.extract_text(img_array)
                     infer_ms = (time.perf_counter() - infer_start) * 1000.0
                     
                     if result.get('success') and result.get('confidence', 0) >= min_confidence:
@@ -754,19 +584,6 @@ class OCRFacade:
                     logger.warning(f"Engine {engine_name} failed: {error_str}")
                     engine_failures[engine_name] = f"Exception: {error_str}"
                     self._engine_failure_counts[engine_name] = self._engine_failure_counts.get(engine_name, 0) + 1
-                    err_text = str(e).lower()
-                    # Paddle-specific auto-heal: temporarily route to fallback engines
-                    # when low-level primitive execution repeatedly fails.
-                    if (
-                        engine_name == 'paddle' and
-                        'could not execute a primitive' in err_text and
-                        self._engine_failure_counts.get(engine_name, 0) >= 1
-                    ):
-                        self._engine_backoff_until[engine_name] = time.time() + self._engine_backoff_seconds
-                        logger.warning(
-                            f"Temporarily backing off Paddle OCR for "
-                            f"{int(self._engine_backoff_seconds)}s due to primitive execution failure"
-                        )
                     continue
             
             # Build detailed error message for metadata fallback
@@ -822,9 +639,7 @@ class OCRFacade:
         """
         Preprocess image for a specific OCR engine.
 
-        In screenshot_mode, applies engine-appropriate lightweight preprocessing:
-          - PaddleOCR: just downscale (has own neural preprocessing)
-          - Tesseract: downscale + grayscale + CLAHE (~15ms, no denoising)
+        In screenshot_mode, applies lightweight preprocessing (downscale only).
         
         In document mode (use_preprocessing=True), runs the full heavy pipeline
         regardless of engine (grayscale, CLAHE, denoise, sharpen).

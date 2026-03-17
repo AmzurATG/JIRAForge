@@ -212,8 +212,8 @@ class EngineFactory:
             Installation command suggestion
         """
         package_map = {
-            'paddle': 'pip install paddlepaddle paddleocr',
-            'tesseract': 'pip install pytesseract (also requires: apt install tesseract-ocr OR brew install tesseract)',
+            'rapidocr': 'pip install rapidocr_onnxruntime',
+            'winrtocr': 'pip install winrtocr (Windows only)',
             'easyocr': 'pip install easyocr',
             'suryaocr': 'pip install surya-ocr',
             'google_vision': 'pip install google-cloud-vision',

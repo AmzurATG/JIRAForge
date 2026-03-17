@@ -17,7 +17,7 @@ import sys
 import subprocess
 import logging
 import platform
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 from pathlib import Path
 
 # Load environment variables from .env file
@@ -86,32 +86,7 @@ def get_engine_dependencies(engine_name: str) -> List[str]:
     os_type = get_os_type()
     is_m1_mac = is_apple_silicon()
     
-    if engine_name == 'paddle':
-        deps = ['paddleocr>=2.8.1', 'opencv-python>=4.10.0']
-        
-        if os_type == 'windows':
-            # Windows: Standard PaddlePaddle
-            deps.insert(0, 'paddlepaddle>=3.0.0b1')
-        elif os_type == 'linux':
-            # Linux: Standard PaddlePaddle
-            deps.insert(0, 'paddlepaddle>=3.0.0b1')
-        elif os_type == 'macos':
-            if is_m1_mac:
-                # Apple Silicon: No official GPU support yet, use CPU version
-                logger.info("Apple Silicon detected - using CPU-only PaddlePaddle")
-                deps.insert(0, 'paddlepaddle>=3.0.0b1')
-            else:
-                # Intel Mac: Standard CPU version
-                deps.insert(0, 'paddlepaddle>=3.0.0b1')
-        
-        return deps
-    
-    elif engine_name == 'tesseract':
-        # pytesseract is cross-platform
-        # System tesseract binary must be installed separately on each OS
-        return ['pytesseract>=0.3.10']
-    
-    elif engine_name == 'easyocr':
+    if engine_name == 'easyocr':
         # EasyOCR dependencies vary by platform
         base_deps = [
             'scipy',
@@ -188,8 +163,6 @@ def get_engine_dependencies(engine_name: str) -> List[str]:
 # NOTE: Actual dependencies are resolved dynamically by get_engine_dependencies()
 # For unknown engines, set OCR_<ENGINE>_PACKAGE=<pip-package> in .env
 ENGINE_DEPENDENCIES: Dict[str, List[str]] = {
-    'paddle': [],  # Use get_engine_dependencies() instead
-    'tesseract': [],
     'easyocr': [],
     'mock': [],
     'demo': [],
@@ -245,11 +218,14 @@ def get_configured_engines() -> List[str]:
     engines = []
     
     # Primary engine from env (default: rapidocr)
+    # Strip inline comments (e.g. "rapidocr  # some comment" → "rapidocr")
     primary = os.getenv('OCR_PRIMARY_ENGINE', 'rapidocr')
+    primary = primary.split('#')[0].strip()
     engines.append(primary.lower())
-    
+
     # Fallback engines from env (default: winrtocr)
     fallbacks = os.getenv('OCR_FALLBACK_ENGINES', 'winrtocr')
+    fallbacks = fallbacks.split('#')[0].strip()
     if fallbacks:
         for engine in fallbacks.split(','):
             engine = engine.strip().lower()
@@ -408,36 +384,6 @@ def get_missing_dependencies(engine_name: str) -> List[str]:
     return missing
 
 
-def check_system_dependencies() -> Dict[str, Tuple[bool, str]]:
-    """
-    Check for system-level OCR dependencies (non-Python).
-    
-    Returns:
-        Dict mapping engine to (installed: bool, install_cmd: str)
-    """
-    os_type = get_os_type()
-    results = {}
-    
-    # Check Tesseract system binary
-    try:
-        subprocess.run(
-            ['tesseract', '--version'],
-            capture_output=True,
-            check=True
-        )
-        results['tesseract_binary'] = (True, '')
-    except (subprocess.CalledProcessError, FileNotFoundError):
-        if os_type == 'windows':
-            install_cmd = 'Download from: https://github.com/UB-Mannheim/tesseract/wiki'
-        elif os_type == 'linux':
-            install_cmd = 'sudo apt-get install tesseract-ocr'  # Debian/Ubuntu
-        elif os_type == 'macos':
-            install_cmd = 'brew install tesseract'
-        
-        results['tesseract_binary'] = (False, install_cmd)
-    
-    return results
-
 
 def check_and_install_dependencies(
     auto_install: bool = True,
@@ -480,15 +426,6 @@ def check_and_install_dependencies(
         print(f"OCR engines (from env config): {', '.join(engines)}\n")
     
     results = {}
-    
-    # Check system-level dependencies first
-    if 'tesseract' in engines and not silent:
-        sys_deps = check_system_dependencies()
-        if 'tesseract_binary' in sys_deps:
-            installed, install_cmd = sys_deps['tesseract_binary']
-            if not installed:
-                print(f"⚠️  Tesseract system binary not found")
-                print(f"   Install with: {install_cmd}\n")
     
     for engine in engines:
         if not silent:
@@ -561,22 +498,12 @@ def add_engine_to_env(engine_name: str, as_primary: bool = False) -> bool:
     
     if not dependencies and engine_name not in ['mock', 'demo']:
         print(f"⚠️  No known dependencies for engine: {engine_name}")
-        print(f"   Known engines: paddle, tesseract, easyocr, mock, demo")
+        print(f"   Known engines: rapidocr, winrtocr, easyocr, mock, demo")
         print(f"   For custom engines, set OCR_{engine_name.upper()}_PACKAGE in .env")
         print(f"   Proceeding anyway (engine may use dynamic adapter)...")
     
     print(f"\n🔧 Adding {engine_name} to .env file...")
     print(f"Platform: {os_type.upper()}  ({get_cpu_architecture()})")
-    
-    # Check system-level dependencies
-    if engine_name == 'tesseract':
-        sys_deps = check_system_dependencies()
-        if 'tesseract_binary' in sys_deps:
-            installed, install_cmd = sys_deps['tesseract_binary']
-            if not installed:
-                print(f"\n⚠️  Warning: Tesseract system binary not found")
-                print(f"   You need to install it separately:")
-                print(f"   {install_cmd}\n")
     
     # Install dependencies first
     missing = get_missing_dependencies(engine_name)
