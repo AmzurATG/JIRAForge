@@ -23,7 +23,7 @@ Hello ${displayName},
 
 I hope everything is going well! 😊
 
-We noticed you haven't been active in TimeTracker for about ${hoursInactive} hours.
+We noticed you haven't been active in TimeTracker for about ${hoursInactive}.
 
 Last activity: ${lastActivityTime}
 
@@ -168,7 +168,7 @@ You can update these preferences anytime in your settings.
             <h2>Hello ${displayName}! 👋</h2>
             
             <div class="alert-box">
-                <div class="time">${hoursInactive}h</div>
+                <div class="time">${hoursInactive}</div>
                 <div class="label">since last activity</div>
             </div>
             

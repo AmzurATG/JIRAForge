@@ -38,7 +38,9 @@ describe('NotificationPollingService', () => {
 
     beforeEach(() => {
         jest.clearAllMocks();
-        jest.useFakeTimers();
+        // Pin fake timers to a known weekday within work hours (Monday 12:00 UTC)
+        // so tests don't fail when the CI or dev machine runs on an actual weekend.
+        jest.useFakeTimers({ now: new Date('2025-03-10T12:00:00Z') });
         
         pollingService = new NotificationPollingService();
         
@@ -265,6 +267,8 @@ describe('NotificationPollingService', () => {
             ];
             
             mockSupabase.is.mockResolvedValue({ data: mockUsers, error: null });
+            // _getLatestAppRelease calls .single() — resolve it so destructuring doesn't throw
+            mockSupabase.single.mockResolvedValue({ data: null, error: { code: 'PGRST116' } });
 
             // Mock admin digest methods
             pollingService._getOrgAdmins = jest.fn().mockResolvedValue([]);
@@ -275,7 +279,8 @@ describe('NotificationPollingService', () => {
             expect(notificationService.sendDownloadReminder).toHaveBeenCalledWith(
                 'user-1',
                 'org-1',
-                'Windows'
+                'Windows',
+                null
             );
         });
 
@@ -293,6 +298,7 @@ describe('NotificationPollingService', () => {
             ];
             
             mockSupabase.is.mockResolvedValue({ data: mockUsers, error: null });
+            mockSupabase.single.mockResolvedValue({ data: null, error: { code: 'PGRST116' } });
 
             pollingService._getOrgAdmins = jest.fn().mockResolvedValue([{ id: 'admin1' }]);
             pollingService._getOrgName = jest.fn().mockResolvedValue('Test Org');
@@ -950,7 +956,8 @@ describe('NotificationPollingService', () => {
                 expect(notificationService.sendDownloadReminder).toHaveBeenCalledWith(
                     'user1',
                     'org1',
-                    'Windows'
+                    'Windows',
+                    null
                 );
             });
 
@@ -1697,6 +1704,7 @@ describe('NotificationPollingService', () => {
             const initialCount = pollingService.stats.notificationsSent.download_reminder;
             const mockUsers = [{ id: 'user1', organization_id: 'org1', email: 'test@test.com' }];
             mockSupabase.is.mockResolvedValue({ data: mockUsers, error: null });
+            mockSupabase.single.mockResolvedValue({ data: null, error: { code: 'PGRST116' } });
             notificationService.sendDownloadReminder.mockResolvedValue({ success: true });
 
             pollingService._getOrgAdmins = jest.fn().mockResolvedValue([]);
@@ -1711,6 +1719,7 @@ describe('NotificationPollingService', () => {
             const initialCount = pollingService.stats.notificationsSent.admin_download_digest;
             const mockUsers = [{ id: 'user1', organization_id: 'org1', email: 'test@test.com', display_name: 'User' }];
             mockSupabase.is.mockResolvedValue({ data: mockUsers, error: null });
+            mockSupabase.single.mockResolvedValue({ data: null, error: { code: 'PGRST116' } });
 
             pollingService._getOrgAdmins = jest.fn().mockResolvedValue([{ id: 'admin1' }]);
             pollingService._getOrgName = jest.fn().mockResolvedValue('Test');

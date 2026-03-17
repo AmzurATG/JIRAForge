@@ -38,12 +38,9 @@ class NotificationService {
      * @returns {Promise<string>} Settings URL
      */
     async _buildSettingsUrl(organizationId) {
-        const org = await getOrganizationById(organizationId);
-        if (org?.jira_instance_url) {
-            // Link to Jira settings where users can access the app settings
-            return `${org.jira_instance_url}/jira/settings/apps`;
-        }
-        logger.warn(`[Notification] No jira_instance_url for organization ${organizationId}`);
+        // No dedicated notification preferences page exists in the Forge app,
+        // so only return a URL if one is explicitly configured via env var.
+        // Templates gracefully handle null by showing plain-text instructions.
         return process.env.SETTINGS_URL || null;
     }
 
