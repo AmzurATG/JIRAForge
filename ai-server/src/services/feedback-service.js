@@ -156,7 +156,7 @@ async function createJiraTicketWithImages(feedbackId, feedback, aiResults) {
     description: feedback.description,
     aiSummary: aiResults.summary,
     issueType: aiResults.issueType,
-    priority: aiResults.priority,
+    priority: feedback.user_priority || aiResults.priority,
     labels: aiResults.labels,
     category: feedback.category,
     reporterName: feedback.user_display_name,

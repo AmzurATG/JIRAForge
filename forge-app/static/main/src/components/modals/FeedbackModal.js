@@ -4,10 +4,19 @@ import { invoke } from '@forge/bridge';
 const CATEGORIES = [
   { value: '', label: 'Select a category...' },
   { value: 'bug', label: 'Bug Report' },
-  { value: 'feature', label: 'Feature Request' },
+  { value: 'feature_request', label: 'Feature Request' },
   { value: 'improvement', label: 'Improvement' },
   { value: 'question', label: 'Question' },
   { value: 'other', label: 'Other' }
+];
+
+const PRIORITIES = [
+  { value: '', label: 'Let AI decide...' },
+  { value: 'Highest', label: 'Highest' },
+  { value: 'High', label: 'High' },
+  { value: 'Medium', label: 'Medium' },
+  { value: 'Low', label: 'Low' },
+  { value: 'Lowest', label: 'Lowest' }
 ];
 
 const MAX_IMAGES = 3;
@@ -19,6 +28,7 @@ const POLL_INTERVAL = 3000; // 3 seconds
 function FeedbackModal({ isOpen, onClose }) {
   const [category, setCategory] = useState('');
   const [title, setTitle] = useState('');
+  const [priority, setPriority] = useState('');
   const [description, setDescription] = useState('');
   const [images, setImages] = useState([]); // { name, type, base64, preview }
   const [submitting, setSubmitting] = useState(false);
@@ -62,6 +72,7 @@ function FeedbackModal({ isOpen, onClose }) {
   const resetForm = () => {
     setCategory('');
     setTitle('');
+    setPriority('');
     setDescription('');
     setImages([]);
     setError('');
@@ -138,10 +149,34 @@ function FeedbackModal({ isOpen, onClose }) {
     }
   };
 
-  const handleImageAdd = (e) => {
-    const files = Array.from(e.target.files);
-    if (!files.length) return;
+  // Handle paste from clipboard (Ctrl+V / Cmd+V)
+  useEffect(() => {
+    if (!isOpen || success) return;
 
+    const handlePaste = (e) => {
+      const items = e.clipboardData && e.clipboardData.items;
+      if (!items) return;
+
+      const imageFiles = [];
+      for (let i = 0; i < items.length; i++) {
+        if (items[i].type.startsWith('image/')) {
+          const file = items[i].getAsFile();
+          if (file) imageFiles.push(file);
+        }
+      }
+
+      if (imageFiles.length > 0) {
+        e.preventDefault();
+        handleImageFiles(imageFiles);
+      }
+    };
+
+    document.addEventListener('paste', handlePaste);
+    return () => document.removeEventListener('paste', handlePaste);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isOpen, success, images.length]);
+
+  const handleImageFiles = (files) => {
     setError('');
 
     const remaining = MAX_IMAGES - images.length;
@@ -170,6 +205,13 @@ function FeedbackModal({ isOpen, onClose }) {
       };
       reader.readAsDataURL(file);
     });
+  };
+
+  const handleImageAdd = (e) => {
+    const files = Array.from(e.target.files);
+    if (!files.length) return;
+
+    handleImageFiles(files);
 
     // Reset file input so same file can be re-selected
     if (fileInputRef.current) fileInputRef.current.value = '';
@@ -196,6 +238,7 @@ function FeedbackModal({ isOpen, onClose }) {
       const result = await invoke('submitFeedback', {
         category,
         title: title.trim(),
+        priority,
         description: description.trim(),
         images: images.map((img) => ({ data: img.base64, name: img.name, type: img.type }))
       });
@@ -324,7 +367,26 @@ function FeedbackModal({ isOpen, onClose }) {
               placeholder="Brief summary (optional)"
               disabled={submitting}
               maxLength={MAX_TITLE_LENGTH}
+              spellCheck="true"
             />
+          </div>
+
+          <div className="feedback-field">
+            <label className="feedback-label">
+              Priority <span style={{ color: '#999', fontWeight: 400, fontSize: '0.9em' }}>(optional - AI will suggest if not set)</span>
+            </label>
+            <select
+              className="feedback-select"
+              value={priority}
+              onChange={(e) => setPriority(e.target.value)}
+              disabled={submitting}
+            >
+              {PRIORITIES.map((p) => (
+                <option key={p.value} value={p.value}>
+                  {p.label}
+                </option>
+              ))}
+            </select>
           </div>
 
           <div className="feedback-field">
@@ -338,6 +400,7 @@ function FeedbackModal({ isOpen, onClose }) {
               placeholder="Describe your feedback in detail..."
               rows={5}
               disabled={submitting}
+              spellCheck="true"
             />
           </div>
 
@@ -388,7 +451,7 @@ function FeedbackModal({ isOpen, onClose }) {
                 </button>
               </>
             )}
-            <span className="feedback-hint">Max {MAX_IMAGES} images, 5MB each</span>
+            <span className="feedback-hint">Max {MAX_IMAGES} images, 5MB each. You can also paste (Ctrl+V)</span>
           </div>
         </div>
         <div className="modal-footer">

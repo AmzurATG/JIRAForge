@@ -253,7 +253,7 @@ exports.getFeedbackPage = (req, res) => {
  */
 exports.submitFeedback = async (req, res) => {
   try {
-    const { session_id, category, title, description, images, app_version } = req.body;
+    const { session_id, category, title, priority, description, images, app_version } = req.body;
 
     // Validate input
     const validationError = validateFeedbackSubmission(req.body);
@@ -281,6 +281,7 @@ exports.submitFeedback = async (req, res) => {
       jira_cloud_id: session.cloudId,
       category,
       title: title || null,
+      priority: priority || null,
       description: description.trim(),
       image_paths: imagePaths,
       image_count: imagePaths.length,
