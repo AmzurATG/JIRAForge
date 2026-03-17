@@ -58,8 +58,8 @@ class OCRConfig:
         Pattern: OCR_<ENGINE>_<SETTING>=value
         
         Examples:
-            OCR_PRIMARY_ENGINE=paddle
-            OCR_PADDLE_MIN_CONFIDENCE=0.5
+            OCR_PRIMARY_ENGINE=rapidocr
+            OCR_RAPIDOCR_MIN_CONFIDENCE=0.6
             OCR_GOOGLE_VISION_API_KEY=abc123  ← Automatically detected!
             OCR_MY_CUSTOM_ENGINE_USE_GPU=true  ← Any engine works!
         """
@@ -121,7 +121,7 @@ class OCRConfig:
         """
         prefix = f'OCR_{engine_name.upper()}_'
         
-        default_min_confidence = '0.4' if engine_name.lower() == 'paddle' else '0.5'
+        default_min_confidence = '0.5'
 
         # Standard configuration
         engine_config = OCREngineConfig(
@@ -159,10 +159,10 @@ class OCRConfig:
         
         Example:
             data = {
-                'primary_engine': 'paddle',
-                'fallback_engines': ['tesseract'],
+                'primary_engine': 'rapidocr',
+                'fallback_engines': ['winrtocr'],
                 'engines': {
-                    'paddle': {'min_confidence': 0.5, 'use_gpu': False, ...}
+                    'rapidocr': {'min_confidence': 0.6, 'use_gpu': False, ...}
                 }
             }
         """
@@ -176,7 +176,7 @@ class OCRConfig:
         for name, engine_data in data.get('engines', {}).items():
             extra = {k: v for k, v in engine_data.items() 
                     if k not in ['name', 'enabled', 'priority', 'min_confidence', 'use_gpu', 'language']}
-            default_min_confidence = 0.4 if str(name).lower() == 'paddle' else 0.5
+            default_min_confidence = 0.5
             config.engines[name] = OCREngineConfig(
                 name=name,
                 enabled=engine_data.get('enabled', True),

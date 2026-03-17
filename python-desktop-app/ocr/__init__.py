@@ -5,10 +5,10 @@ Engine-agnostic text extraction with swappable OCR backends.
 Implements Facade pattern for unified interface with fallback support.
 
 Configure via environment variables:
-    OCR_PRIMARY_ENGINE=paddle
-    OCR_FALLBACK_ENGINES=tesseract
-    OCR_PADDLE_MIN_CONFIDENCE=0.5
-    OCR_TESSERACT_MIN_CONFIDENCE=0.6
+    OCR_PRIMARY_ENGINE=rapidocr
+    OCR_FALLBACK_ENGINES=winrtocr
+    OCR_RAPIDOCR_MIN_CONFIDENCE=0.6
+    OCR_WINRT_MIN_CONFIDENCE=0.5
 
 Usage (Simple):
     from ocr import extract_text_from_image
@@ -18,7 +18,7 @@ Usage (Advanced):
     from ocr import get_facade, OCRConfig
     
     config = OCRConfig()
-    config.primary_engine = 'tesseract'
+    config.primary_engine = 'rapidocr'
     facade = get_facade(config)
     result = facade.extract_text(image)
 """
@@ -39,7 +39,7 @@ from .base_engine import BaseOCREngine
 from .image_processor import preprocess_image, preprocess_screenshot, resize_if_needed
 
 # Available engines (for direct access if needed — all optional)
-from .engines import PaddleOCREngine, TesseractEngine, MockOCREngine
+from .engines import MockOCREngine
 
 __all__ = [
     # Main API
@@ -65,6 +65,5 @@ __all__ = [
     '__version__',
 ]
 
-for _eng in ('PaddleOCREngine', 'TesseractEngine', 'MockOCREngine'):
-    if globals().get(_eng) is not None:
-        __all__.append(_eng)
+if globals().get('MockOCREngine') is not None:
+    __all__.append('MockOCREngine')

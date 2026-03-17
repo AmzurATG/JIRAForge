@@ -320,7 +320,7 @@ load_dotenv()
 
 # Application version - IMPORTANT: Update this when releasing new versions
 # This is used for update checking and notifications
-APP_VERSION = "1.2.1"
+APP_VERSION = "1.3.0"
 
 # Hard-disable screenshot monitoring/storage in desktop app.
 # OCR text extraction for activity records still runs via event-based flow.
@@ -384,10 +384,10 @@ def set_runtime_ocr_config(config_dict):
     Args:
         config_dict: Dict from AI server with structure:
             {
-                'primary_engine': 'paddle',
-                'fallback_engines': ['tesseract'],
+                'primary_engine': 'rapidocr',
+                'fallback_engines': ['winrtocr'],
                 'use_preprocessing': True,
-                'engines': {'paddle': {'min_confidence': 0.5, ...}, ...}
+                'engines': {'rapidocr': {'min_confidence': 0.6, ...}, ...}
             }
     """
     global RUNTIME_OCR_CONFIG
@@ -4065,7 +4065,7 @@ class LocalOCRProcessor:
         Returns:
             dict: OCR result with keys:
                 - text (str or None): Extracted text
-                - method (str): OCR engine used (e.g., 'paddle', 'tesseract', 'metadata')
+                - method (str): OCR engine used (e.g., 'rapidocr', 'winrtocr', 'metadata')
                 - confidence (float): Confidence score (0.0 to 1.0)
                 - error_message (str or None): Error message if OCR failed
                 - throttled (bool): True if OCR was skipped due to rate limiting
@@ -4420,111 +4420,30 @@ class TimeTracker:
 
     def _setup_ocr_engines(self):
         """
-        Setup OCR engines, downloading models if necessary.
-        
-        This is called during app initialization to ensure OCR is ready.
-        For distributed EXE files, this will:
-        1. Check if bundled models exist and copy them to user's home
-        2. Download missing PaddleOCR models from the internet
-        3. Optionally check/install Tesseract as fallback
-        
-        Shows progress messages to the user during setup.
+        Setup OCR engines and verify they are available.
+        Called during app initialization to ensure OCR is ready.
         """
         try:
-            from ocr.runtime_installer import (
-                ensure_ocr_ready,
-                check_paddleocr_models,
-                check_tesseract_installed,
-                get_ocr_status_summary
-            )
-            
-            # Check if we're running as frozen EXE (production) or development
-            is_frozen = getattr(sys, 'frozen', False)
-            
-            if is_frozen:
-                print("[OCR] Running as bundled EXE - checking OCR engine setup...")
-            else:
-                print("[OCR] Running in development mode - verifying OCR engines...")
-            
-            # Define a progress callback that prints to console
-            def progress_callback(message: str, current: int, total: int):
-                if total > 0:
-                    print(f"[OCR] [{current}/{total}] {message}")
-                else:
-                    print(f"[OCR] {message}")
-            
-            # Run the OCR setup
-            # - download_if_missing=True: Download models if not present
-            # - install_tesseract=False: Don't auto-install Tesseract (let user decide)
-            result = ensure_ocr_ready(
-                callback=progress_callback,
-                download_if_missing=True,
-                install_tesseract=False  # Can be enabled if you want auto-install
-            )
-            
-            # Log the results
-            configured = result.get('configured_engines', [])
-            if 'paddle' in configured:
-                if result['paddleocr_ready']:
-                    print("[OK] PaddleOCR models ready")
-                else:
-                    missing = [m for m, ok in result['paddleocr_models'].items() if not ok]
-                    print(f"[WARN] PaddleOCR models missing: {missing}")
-                    print("[WARN] OCR text extraction may not work properly")
-                    self.add_admin_log('WARNING', f'PaddleOCR models missing: {missing}')
+            from ocr.facade import get_facade
+            facade = get_facade()
+            diagnostics = facade.get_ocr_diagnostics()
 
-            if 'tesseract' in configured:
-                if result['tesseract_ready']:
-                    print(f"[OK] Tesseract fallback available at: {result['tesseract_path']}")
-                else:
-                    print("[INFO] Tesseract not installed (optional fallback engine)")
-            
-            if result['errors']:
-                for error in result['errors']:
-                    print(f"[WARN] OCR setup: {error}")
-                    self.add_admin_log('WARNING', f'OCR setup error: {error}')
-            
-            # In EXE mode, print detailed diagnostics if OCR is not fully ready
-            if is_frozen and (not result['paddleocr_ready'] or result['errors']):
-                print("[OCR] === Detailed OCR Diagnostics ===")
-                try:
-                    from ocr.facade import get_facade
-                    facade = get_facade()
-                    diagnostics = facade.get_ocr_diagnostics()
-                    
-                    # Print key diagnostic info
-                    print(f"[OCR] OCR Available: {diagnostics.get('ocr_available', False)}")
-                    print(f"[OCR] Status: {diagnostics.get('status', 'unknown')}")
-                    
-                    if diagnostics.get('engine_init_errors'):
-                        print("[OCR] Engine initialization errors:")
-                        for eng, err in diagnostics['engine_init_errors'].items():
-                            # Truncate long errors for console output
-                            err_short = err[:300] + '...' if len(err) > 300 else err
-                            print(f"[OCR]   - {eng}: {err_short}")
-                            self.add_admin_log('ERROR', f'OCR {eng} init error: {err_short}')
-                    
-                    if diagnostics.get('bundled_dependencies'):
-                        bd = diagnostics['bundled_dependencies']
-                        print(f"[OCR] Bundled PaddleOCR: {bd.get('paddleocr_models_bundled', False)}")
-                        print(f"[OCR] User PaddleOCR: {bd.get('paddleocr_user_models', False)}")
-                        print(f"[OCR] User path: {bd.get('paddleocr_user_path', 'N/A')}")
-                    
-                    if diagnostics.get('recommendations'):
-                        print("[OCR] Recommendations:")
-                        for rec in diagnostics['recommendations']:
-                            print(f"[OCR]   - {rec}")
-                    
-                except Exception as diag_error:
-                    print(f"[OCR] Could not get detailed diagnostics: {diag_error}")
-                print("[OCR] ================================")
-                    
-        except ImportError as e:
-            print(f"[WARN] OCR runtime installer not available: {e}")
-            print("[INFO] OCR will attempt to download models on first use")
+            if diagnostics.get('ocr_available'):
+                print(f"[OK] OCR ready — primary: {diagnostics['config']['primary_engine']}, "
+                      f"fallbacks: {diagnostics['config']['fallback_engines']}")
+            else:
+                print(f"[WARN] No OCR engines available: {diagnostics.get('status', 'unknown')}")
+                if diagnostics.get('engine_init_errors'):
+                    for eng, err in diagnostics['engine_init_errors'].items():
+                        err_short = err[:300] + '...' if len(err) > 300 else err
+                        print(f"[OCR]   - {eng}: {err_short}")
+                        self.add_admin_log('ERROR', f'OCR {eng} init error: {err_short}')
+                if diagnostics.get('recommendations'):
+                    for rec in diagnostics['recommendations']:
+                        print(f"[OCR] {rec}")
+
         except Exception as e:
             print(f"[WARN] OCR setup encountered an error: {e}")
-            print("[INFO] OCR may still work if models are already present")
             self.add_admin_log('WARNING', f'OCR setup error: {str(e)}')
 
     def check_for_app_updates(self, show_notification=True, force=False):
@@ -6973,7 +6892,7 @@ class TimeTracker:
             # so the OCR text matches the window the user was actually viewing.
             # Capped at 3 per batch to prevent CPU lag when many windows were rapidly switched
             # (e.g. switching between chat conversations every 2 seconds generates 10+ backfill jobs,
-            # each taking 8-15s of PaddleOCR — that blocks the main thread for 60-120 seconds).
+            # each taking several seconds of OCR — that blocks the main thread).
             MAX_BACKFILL_PER_BATCH = 3
             pending_entries = self.session_manager.get_pending_ocr_entries()
             backfill_count = 0
@@ -7510,6 +7429,8 @@ class TimeTracker:
             is_new_window = False
             if window_key != self.current_window_key:
                 is_new_window = True
+                # Window switch = user is active (reset idle timer even if pynput fails)
+                self.last_activity_time = time.time()
                 # Save previous window info before updating (for final screenshot with full duration)
                 # ALWAYS save the previous window info so we can track time properly
                 # The screenshot_id may be None if no screenshot was taken (rapid switching)

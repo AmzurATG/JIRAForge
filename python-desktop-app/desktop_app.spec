@@ -8,10 +8,6 @@ OCR engines are now DYNAMICALLY detected from .env configuration:
 - Only bundles engines that are configured and installed
 - Automatically discovers hidden imports for each engine
 
-MANUAL INSTALLATION (if auto-install fails):
-1. Tesseract OCR - Install from https://github.com/UB-Mannheim/tesseract/wiki
-2. PaddleOCR models - Run `python -c "from paddleocr import PaddleOCR; PaddleOCR(lang='en')"` 
-   to download models to ~/.paddleocr/
 """
 
 import sys
@@ -71,134 +67,9 @@ engine_datas = []
 engine_hiddenimports = []
 engine_excludes = []
 
-# ==============================================================================
-# PADDLE/PADDLEOCR DETECTION AND BUNDLING (only if configured)
-# ==============================================================================
-paddle_binaries = []
-paddle_datas = []
-paddleocr_pathex = []
-paddleocr_models = []
-use_paddle_rthook = False
-
-if 'paddle' in configured_engines:
-    print("[INFO] PaddleOCR engine configured - bundling Paddle dependencies...")
-    try:
-        import paddle
-        paddle_path = os.path.dirname(paddle.__file__)
-        paddle_libs = os.path.join(paddle_path, 'libs')
-        
-        if os.path.isdir(paddle_libs):
-            print(f"[INFO] Found Paddle libs at: {paddle_libs}")
-            for dll in glob.glob(os.path.join(paddle_libs, '*.dll')):
-                paddle_binaries.append((dll, 'paddle/libs'))
-                print(f"[INFO]   Bundling: {os.path.basename(dll)}")
-        
-        paddle_binaries += collect_dynamic_libs('paddle')
-        paddle_datas += collect_data_files('paddle')
-        
-    except ImportError:
-        print("[WARN] Paddle not installed - PaddleOCR engine will not work")
-
-    try:
-        import paddleocr
-        paddleocr_dir = os.path.dirname(paddleocr.__file__)
-        paddleocr_pathex.append(paddleocr_dir)
-        print(f"[INFO] PaddleOCR package dir added to pathex: {paddleocr_dir}")
-        paddle_datas += collect_data_files('paddleocr')
-    except ImportError:
-        print("[WARN] PaddleOCR not installed")
-
-    # PaddleOCR models
-    paddleocr_cache = os.path.join(os.path.expanduser('~'), '.paddleocr')
-    if os.path.exists(paddleocr_cache):
-        whl_dir = os.path.join(paddleocr_cache, 'whl')
-        if os.path.isdir(whl_dir):
-            print(f"[INFO] Found PaddleOCR models at: {paddleocr_cache}")
-            paddleocr_models.append((paddleocr_cache, '.paddleocr'))
-        else:
-            print(f"[WARN] PaddleOCR cache exists but whl/ folder missing at: {whl_dir}")
-    else:
-        print(f"[WARN] PaddleOCR models not found at: {paddleocr_cache}")
-
-    # Paddle hidden imports
-    engine_hiddenimports += [
-        'paddleocr',
-        'ppocr', 'ppocr.utils', 'ppocr.utils.utility', 'ppocr.utils.logging',
-        'ppocr.data', 'ppocr.data.imaug', 'ppocr.postprocess',
-        'tools', 'tools.infer', 'tools.infer.utility',
-        'tools.infer.predict_det', 'tools.infer.predict_rec',
-        'tools.infer.predict_cls', 'tools.infer.predict_system',
-        'ppstructure', 'ppstructure.predict_system', 'ppstructure.layout', 'ppstructure.table',
-        'paddle', 'paddle.base', 'paddle.base.core', 'paddle.base.framework',
-        'paddle.framework', 'paddle.inference', 'paddle.nn',
-        'paddle.nn.functional', 'paddle.vision', 'paddle.vision.transforms',
-        'paddle.utils', 'paddle.utils.cpp_extension', 'paddle.tensor',
-        'paddle.device', 'paddle.static', 'paddle.jit', 'paddle.amp',
-        'paddle.optimizer', 'paddle.io', 'paddle.distributed',
-        'ocr.engines.paddle_engine',
-    ]
-    engine_hiddenimports += collect_submodules('ppocr')
-    engine_hiddenimports += collect_submodules('ppstructure')
-    use_paddle_rthook = True
-
-    engine_binaries += paddle_binaries
-    engine_datas += paddle_datas + paddleocr_models
-else:
-    print("[INFO] PaddleOCR engine NOT configured - skipping Paddle bundling")
-    engine_excludes += ['paddleocr', 'paddle', 'ppocr', 'ppstructure',
-                        'ocr.engines.paddle_engine']
-
-# ==============================================================================
-# TESSERACT OCR DETECTION (only if configured)
-# ==============================================================================
-tesseract_binaries = []
-tesseract_datas = []
-tesseract_path = None
-
-if 'tesseract' in configured_engines:
-    print("[INFO] Tesseract engine configured - searching for binaries...")
-    TESSERACT_SEARCH_PATHS = [
-        r'C:\Program Files\Tesseract-OCR',
-        r'C:\Program Files (x86)\Tesseract-OCR',
-        r'C:\Tesseract-OCR',
-        os.path.join(os.path.expanduser('~'), 'AppData', 'Local', 'Programs', 'Tesseract-OCR'),
-        os.path.join(os.path.expanduser('~'), 'Tesseract-OCR'),
-    ]
-
-    for search_path in TESSERACT_SEARCH_PATHS:
-        tesseract_exe = os.path.join(search_path, 'tesseract.exe')
-        if os.path.exists(tesseract_exe):
-            tesseract_path = search_path
-            print(f"[INFO] Found Tesseract at: {search_path}")
-            break
-
-    if tesseract_path:
-        tesseract_binaries = [
-            (os.path.join(tesseract_path, 'tesseract.exe'), 'tesseract'),
-        ]
-        dll_pattern = os.path.join(tesseract_path, '*.dll')
-        for dll in glob.glob(dll_pattern):
-            tesseract_binaries.append((dll, 'tesseract'))
-        
-        tessdata_dir = os.path.join(tesseract_path, 'tessdata')
-        if os.path.isdir(tessdata_dir):
-            eng_traineddata = os.path.join(tessdata_dir, 'eng.traineddata')
-            if os.path.exists(eng_traineddata):
-                tesseract_datas.append((eng_traineddata, 'tesseract/tessdata'))
-                print(f"[INFO] Found eng.traineddata at: {eng_traineddata}")
-            else:
-                print(f"[WARN] eng.traineddata not found in {tessdata_dir}")
-        else:
-            print(f"[WARN] tessdata directory not found at: {tessdata_dir}")
-    else:
-        print("[WARN] Tesseract binary not found - OCR fallback will not work")
-
-    engine_binaries += tesseract_binaries
-    engine_datas += tesseract_datas
-    engine_hiddenimports += ['pytesseract', 'ocr.engines.tesseract_engine']
-else:
-    print("[INFO] Tesseract engine NOT configured - skipping Tesseract bundling")
-    engine_excludes += ['pytesseract', 'ocr.engines.tesseract_engine']
+engine_excludes += ['paddleocr', 'paddle', 'ppocr', 'ppstructure',
+                    'ocr.engines.paddle_engine',
+                    'pytesseract', 'ocr.engines.tesseract_engine']
 
 # ==============================================================================
 # EASYOCR DETECTION (only if configured)
@@ -287,7 +158,7 @@ else:
 # DYNAMIC ENGINE DETECTION (for any other configured engine)
 # Attempts to collect submodules/data for arbitrary OCR packages
 # ==============================================================================
-known_engines = {'paddle', 'tesseract', 'easyocr', 'winrtocr', 'winrt', 'mock', 'demo'}
+known_engines = {'easyocr', 'winrtocr', 'winrt', 'mock', 'demo'}
 dynamic_engines = [e for e in configured_engines if e not in known_engines]
 
 for engine_name in dynamic_engines:
@@ -323,11 +194,6 @@ if 'mock' not in configured_engines:
     engine_file_excludes.add('mock_engine.py')
 if 'demo' not in configured_engines:
     engine_file_excludes.add('demo_engine.py')
-if 'paddle' not in configured_engines:
-    engine_file_excludes.add('paddle_engine.py')
-if 'tesseract' not in configured_engines:
-    engine_file_excludes.add('tesseract_engine.py')
-
 if os.path.exists(ocr_dir):
     for root, dirs, files in os.walk(ocr_dir):
         for file in files:
@@ -353,13 +219,6 @@ dynamic_hiddenimports += collect_submodules('pystray')
 runtime_datas = []
 runtime_datas += collect_data_files('certifi')
 runtime_datas += collect_data_files('tzdata')
-# PaddleOCR data files (only if configured)
-if 'paddle' in configured_engines:
-    try:
-        runtime_datas += collect_data_files('paddleocr')
-    except Exception:
-        pass
-
 # ==============================================================================
 # BUILD SUMMARY
 # ==============================================================================
@@ -368,10 +227,6 @@ print("=" * 70)
 print("BUILD CONFIGURATION SUMMARY")
 print("=" * 70)
 print(f"  Configured engines: {', '.join(configured_engines)}")
-if 'tesseract' in configured_engines:
-    print(f"  Tesseract OCR:     {'FOUND - Will be bundled' if tesseract_path else 'NOT FOUND'}")
-if 'paddle' in configured_engines:
-    print(f"  PaddleOCR models:  {'FOUND - Will be bundled' if paddleocr_models else 'NOT FOUND'}")
 print(f"  OCR Python files:  {len(ocr_datas)} files")
 print(f"  Engine imports:    {len(engine_hiddenimports)} hidden imports")
 if engine_excludes:
@@ -379,14 +234,11 @@ if engine_excludes:
 print("=" * 70)
 print("")
 
-# Determine runtime hooks based on configured engines
 runtime_hooks_list = []
-if use_paddle_rthook:
-    runtime_hooks_list.append('rthook_paddle.py')
 
 a = Analysis(
     ['desktop_app.py'],
-    pathex=paddleocr_pathex,
+    pathex=[],
     binaries=engine_binaries,
     datas=[
         *engine_datas,
@@ -486,7 +338,7 @@ a = Analysis(
         # Legacy OCR modules (backward compatibility)
         'ocr.ocr_engine',
         'ocr.text_extractor',
-        # unittest (needed by paddle.utils.cpp_extension if paddle is bundled)
+        # unittest (needed by some engine build-time analysis)
         'unittest',
         'unittest.mock',
         'unittest.util',

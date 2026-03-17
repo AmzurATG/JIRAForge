@@ -33,33 +33,21 @@ pywin32==306; sys_platform == 'win32'
 winotify==1.1.0; sys_platform == 'win32'
 
 # =============================================================================
-# OCR Dependencies (Platform-aware)
+# OCR Dependencies
 # =============================================================================
-# These are installed automatically based on configured engines in .env
-# The auto_installer.py detects your platform and installs appropriate packages
-#
-# Supported engines:
-#   - paddle (PaddleOCR) - Primary engine (cross-platform)
-#   - tesseract (pytesseract) - Fallback engine (requires system binary)
-#   - easyocr (EasyOCR) - Alternative engine (cross-platform)
-#
 # Configuration in .env:
-#   OCR_PRIMARY_ENGINE=paddle
-#   OCR_FALLBACK_ENGINES=tesseract
+#   OCR_PRIMARY_ENGINE=rapidocr
+#   OCR_FALLBACK_ENGINES=winrtocr
 # =============================================================================
 
-# PaddleOCR - Primary OCR engine (all platforms)
-paddleocr==2.8.1
-paddlepaddle==3.0.0b1
-opencv-python==4.10.0.84
-numpy==1.26.4
+# RapidOCR - Primary OCR engine (PaddleOCR PP-OCRv4 via ONNX Runtime)
+rapidocr_onnxruntime
 
-# Tesseract - Fallback OCR engine (all platforms)
-# Note: Requires system tesseract binary installation:
-#   - Windows: Download from https://github.com/UB-Mannheim/tesseract/wiki
-#   - Linux: sudo apt-get install tesseract-ocr
-#   - macOS: brew install tesseract
-pytesseract==0.3.10
+# WinRTocr - Fallback OCR engine (Windows built-in OCR, Windows only)
+winrtocr; sys_platform == 'win32'
+
+numpy==1.26.4
+opencv-python==4.10.0.84
 
 # =============================================================================
 # Privacy & Security Dependencies
@@ -84,40 +72,11 @@ presidio-anonymizer>=2.2.0
 # Uncomment if needed: detect-secrets>=1.4.0
 
 # =============================================================================
-# Platform-Specific Notes
-# =============================================================================
-# 
-# Windows:
-#   - All packages work out of the box
-#   - Install Tesseract binary separately for tesseract engine
-#   - GPU support: pip install paddlepaddle-gpu (requires CUDA)
-#
-# Linux (Ubuntu/Debian):
-#   - Install tesseract-ocr: sudo apt-get install tesseract-ocr
-#   - GPU support: pip install paddlepaddle-gpu (requires CUDA + cuDNN)
-#   - Headless servers: sudo apt-get install xvfb
-#
-# macOS (Intel):
-#   - Install tesseract: brew install tesseract
-#   - CPU-only for PaddleOCR (no GPU support)
-#   - All packages compatible with x86_64 architecture
-#
-# macOS (Apple Silicon M1/M2/M3):
-#   - Install tesseract: brew install tesseract
-#   - Optimized packages for ARM64 architecture
-#   - PyTorch with MPS (Metal) acceleration support
-#   - Use: arch -arm64 pip install <package> if needed
-#
-# =============================================================================
 # Optional OCR Engines (not included by default)
 # =============================================================================
-# 
+#
 # EasyOCR (install if needed):
 #   pip install torch>=2.0.0 torchvision>=0.15.0
 #   pip install easyocr>=1.7.0
-#
-# Configuration:
-#   OCR_PRIMARY_ENGINE=easyocr
-#   OCR_FALLBACK_ENGINES=paddle,tesseract
 #
 # =============================================================================
