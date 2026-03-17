@@ -131,7 +131,7 @@ function logValidationFailure(token, error) {
   if (decoded) {
     logger.error('[FIT] Token validation failed. Expected one of:', FORGE_APP_IDS, '| Actual aud:', JSON.stringify(decoded.aud), '| iss:', decoded.iss);
   }
-  logger.error('[FIT] Token validation failed:', error.message);
+  logger.error('[FIT] Token validation failed: %s', error.message);
 }
 
 /**

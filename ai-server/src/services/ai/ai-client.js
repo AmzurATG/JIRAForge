@@ -37,6 +37,22 @@ const providerState = {
 // Configuration (with defaults)
 const getFailureThreshold = () => Number.parseInt(process.env.FAILURE_THRESHOLD) || 2;
 const getCooldownMinutes = () => Number.parseInt(process.env.COOLDOWN_MINUTES) || 30;
+const getPermanentFailureCooldownMinutes = () => Number.parseInt(process.env.PERMANENT_FAILURE_COOLDOWN_MINUTES) || 120;
+
+/**
+ * Check if an error is a permanent failure (e.g. 404 Model not found).
+ * Permanent failures won't recover on retry, so the provider should be
+ * demoted immediately instead of waiting for the normal failure threshold.
+ * @param {Error} error - The error that occurred
+ * @returns {boolean} True if this is a permanent/non-recoverable error
+ */
+function isPermanentFailure(error) {
+  const msg = (error.message || '').toLowerCase();
+  return (
+    (error.status === 404 || msg.includes('404')) &&
+    (msg.includes('model not found') || msg.includes('not found'))
+  );
+}
 
 /**
  * Check if Fireworks AI is enabled via environment variable
@@ -241,10 +257,13 @@ function getProviderDisplayName(providerId) {
  * Check and restore any demoted providers whose cooldown has expired
  */
 function checkAndRestoreDemotedProviders() {
-  const cooldownMs = getCooldownMinutes() * 60 * 1000;
   const now = Date.now();
 
   for (const [providerId, info] of Object.entries(providerState.demoted)) {
+    // Use per-provider cooldown if set (permanent failures get longer cooldown),
+    // otherwise fall back to global default
+    const cooldownMin = info.cooldownMinutes || getCooldownMinutes();
+    const cooldownMs = cooldownMin * 60 * 1000;
     const elapsed = now - info.demotedAt;
     if (elapsed >= cooldownMs) {
       // Cooldown complete, restore provider to its original position
@@ -261,7 +280,7 @@ function checkAndRestoreDemotedProviders() {
       delete providerState.demoted[providerId];
 
       logger.info('[AI] CIRCUIT BREAKER RESET - %s cooldown complete (%d min), restored to position %d',
-        getProviderDisplayName(providerId), getCooldownMinutes(), targetIndex + 1);
+        getProviderDisplayName(providerId), cooldownMin, targetIndex + 1);
       logger.info('[AI] Current provider order: %s', providerState.order.map(getProviderDisplayName).join(' -> '));
     }
   }
@@ -293,19 +312,35 @@ function getProviderOrder() {
  * @param {string} providerId - The provider ID (portkey-gemini, fireworks)
  */
 function handleProviderFailure(error, providerId) {
-  providerState.failures[providerId] = (providerState.failures[providerId] || 0) + 1;
+  const permanent = isPermanentFailure(error);
+
+  // For permanent failures (e.g. 404 Model not found), jump straight to threshold
+  // so the provider is demoted after just 1 attempt instead of waiting for 2
+  if (permanent && !isProviderDemoted(providerId)) {
+    providerState.failures[providerId] = getFailureThreshold();
+  } else {
+    providerState.failures[providerId] = (providerState.failures[providerId] || 0) + 1;
+  }
+
   const failures = providerState.failures[providerId];
   const threshold = getFailureThreshold();
 
-  logger.warn('[AI] %s failed (%d/%d): %s',
-    getProviderDisplayName(providerId), failures, threshold, error.message);
+  if (permanent) {
+    logger.warn('[AI] %s PERMANENT FAILURE (%s) — demoting immediately',
+      getProviderDisplayName(providerId), error.message);
+  } else {
+    logger.warn('[AI] %s failed (%d/%d): %s',
+      getProviderDisplayName(providerId), failures, threshold, error.message);
+  }
 
   if (failures >= threshold && !isProviderDemoted(providerId)) {
     // Demote this provider
     const currentIndex = providerState.order.indexOf(providerId);
+    const cooldown = permanent ? getPermanentFailureCooldownMinutes() : getCooldownMinutes();
     providerState.demoted[providerId] = {
       demotedAt: Date.now(),
-      originalIndex: currentIndex
+      originalIndex: currentIndex,
+      cooldownMinutes: cooldown
     };
 
     // Move provider to end of order
@@ -318,7 +353,7 @@ function handleProviderFailure(error, providerId) {
     logger.warn('[AI] CIRCUIT BREAKER ACTIVATED - %s demoted after %d failures',
       getProviderDisplayName(providerId), failures);
     logger.warn('[AI] %s is now PRIMARY for %d minutes',
-      newPrimary, getCooldownMinutes());
+      newPrimary, cooldown);
     logger.info('[AI] New provider order: %s', providerState.order.map(getProviderDisplayName).join(' -> '));
   }
 }
@@ -343,9 +378,11 @@ function handleProviderSuccess(providerId) {
  * @returns {number} Minutes remaining, or 0 if not demoted
  */
 function getRemainingCooldown(providerId) {
-  if (!providerState.demoted[providerId]) return 0;
-  const cooldownMs = getCooldownMinutes() * 60 * 1000;
-  const elapsed = Date.now() - providerState.demoted[providerId].demotedAt;
+  const info = providerState.demoted[providerId];
+  if (!info) return 0;
+  const cooldownMin = info.cooldownMinutes || getCooldownMinutes();
+  const cooldownMs = cooldownMin * 60 * 1000;
+  const elapsed = Date.now() - info.demotedAt;
   return Math.max(0, Math.ceil((cooldownMs - elapsed) / 60000));
 }
 
@@ -514,11 +551,25 @@ async function chatCompletionWithFallback({ messages, temperature = 0.3, max_tok
   // Log current provider order if any are demoted
   logDemotedProviders(providerOrder);
 
+  // If ALL providers are demoted, force-try the one demoted longest ago
+  // (most likely to have recovered) rather than failing immediately
+  const allDemoted = providerOrder.every(id => isProviderDemoted(id));
+  let forcedProviderId = null;
+  if (allDemoted && providerOrder.length > 0) {
+    // Find provider demoted earliest (closest to cooldown expiry)
+    forcedProviderId = providerOrder.reduce((oldest, id) => {
+      const oldestTime = providerState.demoted[oldest]?.demotedAt || Infinity;
+      const currentTime = providerState.demoted[id]?.demotedAt || Infinity;
+      return currentTime < oldestTime ? id : oldest;
+    }, providerOrder[0]);
+    logger.warn('[AI] All providers demoted — force-trying %s', getProviderDisplayName(forcedProviderId));
+  }
+
   // Try each provider in order
   for (const providerId of providerOrder) {
 
-    // Skip demoted providers (they're in the order but shouldn't be tried)
-    if (isProviderDemoted(providerId)) {
+    // Skip demoted providers (unless force-trying one)
+    if (isProviderDemoted(providerId) && providerId !== forcedProviderId) {
       continue;
     }
 
