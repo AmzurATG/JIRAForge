@@ -214,17 +214,17 @@ function parseAnalysisResponse(content) {
   try {
     return JSON.parse(content);
   } catch (error) {
-    logger.debug('[ActivityService] Direct JSON parse failed, trying markdown extraction:', error.message);
+    logger.debug('[ActivityService] Direct JSON parse failed, trying markdown extraction: %s', error.message);
     const jsonMatch = content.match(/\[[\s\S]*\]/);
     if (!jsonMatch) {
-      logger.error('[ActivityService] Failed to parse batch analysis response:', content.substring(0, 200));
+      logger.error('[ActivityService] Failed to parse batch analysis response: %s', content.substring(0, 200));
       throw new Error('Failed to parse AI response as JSON array');
     }
     try {
       return JSON.parse(jsonMatch[0]);
     } catch (error_) {
       // JSON may be truncated by max_tokens — try to salvage complete entries
-      logger.debug('[ActivityService] Markdown JSON parse failed, salvaging truncated response:', error_.message);
+      logger.debug('[ActivityService] Markdown JSON parse failed, salvaging truncated response: %s', error_.message);
       return salvageTruncatedJsonArray(jsonMatch[0]);
     }
   }
@@ -323,7 +323,7 @@ async function analyzeBatch(records, userAssignedIssues, userId, organizationId)
     return { analyses, recordsProcessed: records.length, provider, model };
 
   } catch (error) {
-    logger.error('[ActivityService] Batch analysis failed:', error.message);
+    logger.error('[ActivityService] Batch analysis failed: %s', error.message);
     throw error;
   }
 }
@@ -370,12 +370,12 @@ async function classifyUnknownApp(appName, windowTitle, ocrText, userId = null, 
     try {
       result = JSON.parse(content);
     } catch (error) {
-      logger.debug('[ActivityService] Direct JSON parse failed, trying regex extraction:', error.message);
+      logger.debug('[ActivityService] Direct JSON parse failed, trying regex extraction: %s', error.message);
       const jsonMatch = content.match(/\{[\s\S]*\}/);
       if (jsonMatch) {
         result = JSON.parse(jsonMatch[0]);
       } else {
-        logger.error('[ActivityService] Failed to parse classification response:', content.substring(0, 200));
+        logger.error('[ActivityService] Failed to parse classification response: %s', content.substring(0, 200));
         throw new Error('Failed to parse AI classification response');
       }
     }
@@ -397,7 +397,7 @@ async function classifyUnknownApp(appName, windowTitle, ocrText, userId = null, 
     };
 
   } catch (error) {
-    logger.error('[ActivityService] App classification failed:', error.message);
+    logger.error('[ActivityService] App classification failed: %s', error.message);
     // Default to productive on failure (safest — will trigger OCR + AI analysis)
     return {
       classification: 'productive',
@@ -434,7 +434,7 @@ async function identifyAppByName(searchTerm) {
   }
 
   const userPrompt = buildAppIdentificationPrompt(searchTerm);
-  logger.info('[ActivityService] Built user prompt:', userPrompt);
+  logger.info('[ActivityService] Built user prompt: %s', userPrompt);
 
   const messages = [
     { role: 'system', content: APP_IDENTIFICATION_SYSTEM_PROMPT },
@@ -461,15 +461,15 @@ async function identifyAppByName(searchTerm) {
     let result;
     try {
       result = JSON.parse(content);
-      logger.info('[ActivityService] Parsed JSON result:', JSON.stringify(result));
+      logger.info('[ActivityService] Parsed JSON result: %s', JSON.stringify(result));
     } catch (error) {
-      logger.warn('[ActivityService] Direct JSON parse failed, trying regex extraction:', error.message);
+      logger.warn('[ActivityService] Direct JSON parse failed, trying regex extraction: %s', error.message);
       const jsonMatch = content.match(/\{[\s\S]*\}/);
       if (jsonMatch) {
         result = JSON.parse(jsonMatch[0]);
-        logger.info('[ActivityService] Regex extracted JSON:', JSON.stringify(result));
+        logger.info('[ActivityService] Regex extracted JSON: %s', JSON.stringify(result));
       } else {
-        logger.error('[ActivityService] Failed to parse app identification response:', content.substring(0, 200));
+        logger.error('[ActivityService] Failed to parse app identification response: %s', content.substring(0, 200));
         throw new Error('Failed to parse AI response');
       }
     }
@@ -500,8 +500,8 @@ async function identifyAppByName(searchTerm) {
 
   } catch (error) {
     logger.error('[ActivityService] App identification FAILED');
-    logger.error('[ActivityService] Error message:', error.message);
-    logger.error('[ActivityService] Stack trace:', error.stack);
+    logger.error('[ActivityService] Error message: %s', error.message);
+    logger.error('[ActivityService] Stack trace: %s', error.stack);
     logger.info('[ActivityService] ========== identifyAppByName END (error) ==========');
     return {
       identified: false,

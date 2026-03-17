@@ -92,13 +92,13 @@ async function classifyApp(req, res, next) {
  */
 async function identifyApp(req, res, next) {
   logger.info('[ActivityController] ========== /api/identify-app REQUEST RECEIVED ==========');
-  logger.info('[ActivityController] Request body:', JSON.stringify(req.body));
+  logger.info('[ActivityController] Request body: %s', JSON.stringify(req.body));
   
   try {
     const { search_term } = req.body;
 
     if (!search_term || search_term.trim().length < 2) {
-      logger.warn('[ActivityController] Invalid search_term:', search_term);
+      logger.warn('[ActivityController] Invalid search_term: %s', search_term);
       return res.status(400).json({
         success: false,
         error: 'search_term is required and must be at least 2 characters'
@@ -109,14 +109,14 @@ async function identifyApp(req, res, next) {
 
     const result = await activityService.identifyAppByName(search_term.trim());
 
-    logger.info('[ActivityController] Service result:', JSON.stringify(result));
+    logger.info('[ActivityController] Service result: %s', JSON.stringify(result));
     logger.info('[ActivityController] ========== /api/identify-app RESPONSE SENT ==========');
     
     // Wrap result in 'data' field - Forge remoteRequest expects { success, data }
     res.json({ success: true, data: result });
   } catch (error) {
     logger.error('[ActivityController] Error in identifyApp:', error);
-    logger.error('[ActivityController] Stack:', error.stack);
+    logger.error('[ActivityController] Stack: %s', error.stack);
     next(error);
   }
 }

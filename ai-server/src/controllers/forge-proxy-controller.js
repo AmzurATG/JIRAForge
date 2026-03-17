@@ -32,6 +32,10 @@ function logSecurityWarnings(table, method, query, body, cloudId, accountId) {
 
   if (!SENSITIVE_TABLES.has(table) || hasOrgFilter) return;
 
+  // Skip warning for system-level queries (scheduled triggers have no accountId)
+  // e.g., worklog sync reads all tracking_settings to determine which orgs to sync
+  if (!accountId) return;
+
   const upperMethod = (method || 'GET').toUpperCase();
   if (upperMethod === 'GET' || upperMethod === 'SELECT') {
     logger.warn('[ForgeProxy] SECURITY: Query to sensitive table without organization filter', {

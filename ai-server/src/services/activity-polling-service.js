@@ -26,7 +26,7 @@ function parseUserAssignedIssues(userAssignedIssues) {
       : userAssignedIssues;
     return Array.isArray(parsed) ? parsed : [];
   } catch (error) {
-    logger.debug('Failed to parse user_assigned_issues:', error.message);
+    logger.debug('Failed to parse user_assigned_issues: %s', error.message);
     return [];
   }
 }
