@@ -95,6 +95,14 @@ async function processUserUnassignedWork(userId, organizationId) {
 
   logger.info(`[Clustering] User ${userId} has ${sessions.length} unassigned sessions, starting clustering...`);
 
+  // 1b. Skip LLM call if total time across all sessions is below Jira's 60s minimum —
+  // no possible grouping can produce a viable worklog, so we'd waste tokens.
+  const totalSessionSeconds = sessions.reduce((sum, s) => sum + (s.time_spent_seconds || 0), 0);
+  if (totalSessionSeconds < MIN_GROUP_TOTAL_SECONDS) {
+    logger.info(`[Clustering] User ${userId} total unassigned time is ${totalSessionSeconds}s (< ${MIN_GROUP_TOTAL_SECONDS}s), skipping LLM call`);
+    return;
+  }
+
   // 2. Get user's active Jira issues for better AI recommendations
   const userIssues = await supabaseService.getUserActiveIssues(userId, organizationId);
   logger.info(`[Clustering] Found ${userIssues.length} active issues for user ${userId}`);
