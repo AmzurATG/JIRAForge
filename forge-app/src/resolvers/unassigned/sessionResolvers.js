@@ -177,10 +177,16 @@ export async function getUnassignedGroups(req) {
 
     const { config: supabaseConfig, organization, userId } = ctx;
 
+    // Viability filters: exclude groups with 0 sessions (data inconsistency)
+    // and groups below Jira's 60-second worklog minimum (can never produce valid worklogs).
+    // Applied at the DB level so pagination counts are accurate.
+    const JIRA_MIN_WORKLOG_SECONDS = 60;
+    const viabilityFilter = `&session_count=gt.0&total_seconds=gte.${JIRA_MIN_WORKLOG_SECONDS}`;
+
     // First, get total count for pagination info
     const countResult = await supabaseRequest(
       supabaseConfig,
-      `unassigned_work_groups?user_id=eq.${userId}&organization_id=eq.${organization.id}&is_assigned=eq.false&is_dismissed=eq.false&select=id`,
+      `unassigned_work_groups?user_id=eq.${userId}&organization_id=eq.${organization.id}&is_assigned=eq.false&is_dismissed=eq.false${viabilityFilter}&select=id`,
       { headers: { 'Prefer': 'count=exact' } }
     );
     const totalCount = ensureArray(countResult).length;
@@ -189,7 +195,7 @@ export async function getUnassignedGroups(req) {
     // Session details loaded on-demand via getGroupDetails
     const groups = await supabaseRequest(
       supabaseConfig,
-      `unassigned_work_groups?user_id=eq.${userId}&organization_id=eq.${organization.id}&is_assigned=eq.false&is_dismissed=eq.false&order=created_at.desc&limit=${limit}&offset=${offset}&select=id,group_label,group_description,session_count,total_seconds,confidence_level,recommended_action,suggested_issue_key,recommendation_reason,created_at`
+      `unassigned_work_groups?user_id=eq.${userId}&organization_id=eq.${organization.id}&is_assigned=eq.false&is_dismissed=eq.false${viabilityFilter}&order=created_at.desc&limit=${limit}&offset=${offset}&select=id,group_label,group_description,session_count,total_seconds,confidence_level,recommended_action,suggested_issue_key,recommendation_reason,created_at`
     );
 
     if (!groups || groups.length === 0) {
@@ -226,8 +232,9 @@ export async function getUnassignedGroups(req) {
       };
     });
 
-    // Filter out groups with 0 sessions (data inconsistency)
-    const validGroups = enrichedGroups.filter(g => g.session_count > 0);
+    // Safety net: DB query already filters via viabilityFilter, but guard
+    // against null/0 values that passed through (e.g. column stored as NULL).
+    const validGroups = enrichedGroups.filter(g => g.session_count > 0 && g.total_seconds >= JIRA_MIN_WORKLOG_SECONDS);
 
     return {
       success: true,

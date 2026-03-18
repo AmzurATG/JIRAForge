@@ -115,13 +115,19 @@ async function aggregateUserTrackedTime(supabaseConfig, organizationId, userId) 
     if (totalFetched > 5000) break; // Safety limit per user
   }
 
+  // Round up sub-60s totals to Jira's minimum instead of discarding —
+  // prevents silent time loss. Aggregation already sums all records per issue,
+  // so this rounding applies only to the final total (max 59s inflation per issue).
   return Object.entries(timeByIssue)
-    .filter(([, seconds]) => seconds >= MIN_SYNC_SECONDS)
-    .map(([issueKey, seconds]) => ({
-      issueKey,
-      timeTracked: Math.round(seconds),
-      lastWorkedOn: lastWorkedByIssue[issueKey]
-    }));
+    .filter(([, seconds]) => seconds > 0)
+    .map(([issueKey, seconds]) => {
+      const rounded = Math.round(seconds);
+      return {
+        issueKey,
+        timeTracked: rounded < MIN_SYNC_SECONDS ? MIN_SYNC_SECONDS : rounded,
+        lastWorkedOn: lastWorkedByIssue[issueKey]
+      };
+    });
 }
 
 /**
