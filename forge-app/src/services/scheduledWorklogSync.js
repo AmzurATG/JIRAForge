@@ -281,14 +281,19 @@ async function syncOrganization(supabaseConfig, organizationId, orgConfig = { or
   const { timeByUserIssue, lastWorkedByUserIssue } = await aggregateTrackedTime(supabaseConfig, organizationId, projectFilter);
 
   // Build list of {userId, issueKey, timeTracked, lastWorkedOn}
+  // Build entries from aggregated time. Round up sub-60s totals to Jira's
+  // minimum instead of discarding — prevents silent time loss. The aggregation
+  // already sums all records per user+issue, so this rounding applies only to
+  // the final total (max 59s inflation per issue, not per record).
   const entries = Object.entries(timeByUserIssue)
-    .filter(([, seconds]) => seconds >= MIN_SYNC_SECONDS)
+    .filter(([, seconds]) => seconds > 0)
     .map(([key, seconds]) => {
       const [userId, issueKey] = key.split('::');
+      const rounded = Math.round(seconds);
       return {
         userId,
         issueKey,
-        timeTracked: Math.round(seconds),
+        timeTracked: rounded < MIN_SYNC_SECONDS ? MIN_SYNC_SECONDS : rounded,
         lastWorkedOn: lastWorkedByUserIssue[key]
       };
     });

@@ -12,6 +12,7 @@ const logger = require('../utils/logger');
 const CLUSTERING_SCHEDULE_HOUR = Number.parseInt(process.env.CLUSTERING_SCHEDULE_HOUR || '2', 10); // 2 AM
 const CLUSTERING_SCHEDULE_MINUTE = Number.parseInt(process.env.CLUSTERING_SCHEDULE_MINUTE || '0', 10); // 0 minutes
 const MIN_SESSIONS_FOR_CLUSTERING = 2; // Need at least 2 sessions to cluster
+const MIN_GROUP_TOTAL_SECONDS = 60; // Jira worklogs require at least 60 seconds
 
 let scheduledTimeoutId = null;
 let isRunning = false;
@@ -94,6 +95,14 @@ async function processUserUnassignedWork(userId, organizationId) {
 
   logger.info(`[Clustering] User ${userId} has ${sessions.length} unassigned sessions, starting clustering...`);
 
+  // 1b. Skip LLM call if total time across all sessions is below Jira's 60s minimum —
+  // no possible grouping can produce a viable worklog, so we'd waste tokens.
+  const totalSessionSeconds = sessions.reduce((sum, s) => sum + (s.time_spent_seconds || 0), 0);
+  if (totalSessionSeconds < MIN_GROUP_TOTAL_SECONDS) {
+    logger.info(`[Clustering] User ${userId} total unassigned time is ${totalSessionSeconds}s (< ${MIN_GROUP_TOTAL_SECONDS}s), skipping LLM call`);
+    return;
+  }
+
   // 2. Get user's active Jira issues for better AI recommendations
   const userIssues = await supabaseService.getUserActiveIssues(userId, organizationId);
   logger.info(`[Clustering] Found ${userIssues.length} active issues for user ${userId}`);
@@ -111,12 +120,28 @@ async function processUserUnassignedWork(userId, organizationId) {
   // 4. Deduplicate session_ids across all groups (prevent same activity in multiple groups)
   const deduplicatedGroups = deduplicateSessionsAcrossGroups(clusteringResult.groups);
 
-  // 5. Save each group to database
-  for (const group of deduplicatedGroups) {
+  // 5. Filter out groups whose total time is below Jira's 60-second worklog minimum.
+  // These groups can never become valid worklogs, so don't save them to the DB.
+  // Their sessions remain ungrouped and may be picked up in a future clustering run
+  // when combined with newer sessions.
+  const viableGroups = deduplicatedGroups.filter(group => {
+    if ((group.total_seconds || 0) < MIN_GROUP_TOTAL_SECONDS) {
+      logger.info(`[Clustering] Skipping group "${group.label}" (${group.total_seconds}s < ${MIN_GROUP_TOTAL_SECONDS}s minimum) — sessions returned to ungrouped pool`);
+      return false;
+    }
+    return true;
+  });
+
+  if (deduplicatedGroups.length > viableGroups.length) {
+    logger.info(`[Clustering] Filtered ${deduplicatedGroups.length - viableGroups.length} sub-60s groups for user ${userId}`);
+  }
+
+  // 6. Save each viable group to database
+  for (const group of viableGroups) {
     await saveGroupToDatabase(userId, organizationId, group);
   }
 
-  logger.info(`[Clustering] Successfully saved ${deduplicatedGroups.length} groups for user ${userId}`);
+  logger.info(`[Clustering] Successfully saved ${viableGroups.length} groups for user ${userId}`);
 }
 
 /**

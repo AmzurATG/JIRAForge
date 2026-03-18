@@ -7,6 +7,11 @@ const { getClient } = require('./supabase-client');
 const logger = require('../../utils/logger');
 const { toUTCISOString } = require('../../utils/datetime');
 
+// Minimum session duration (seconds) to include in clustering.
+// Sessions shorter than this are noise (brief window switches that slipped past
+// the desktop app's 5-second upload filter) and waste LLM tokens.
+const MIN_CLUSTERING_SESSION_SECONDS = 10;
+
 /**
  * Get all users who have UNGROUPED unassigned activities (grouped by user and organization)
  * Checks both legacy unassigned_activity table and new activity_records table.
@@ -197,7 +202,17 @@ async function getUnassignedActivities(userId, organizationId) {
       source: 'activity_records'
     }));
 
-    return [...enrichedLegacy, ...mappedAR];
+    const allSessions = [...enrichedLegacy, ...mappedAR];
+
+    // Filter out very short sessions that are noise and waste LLM tokens.
+    // Brief visits (< 10s) have no meaningful OCR content for clustering.
+    const before = allSessions.length;
+    const filtered = allSessions.filter(s => (s.time_spent_seconds || 0) >= MIN_CLUSTERING_SESSION_SECONDS);
+    if (before > filtered.length) {
+      logger.info(`[Clustering] Filtered ${before - filtered.length} short sessions (< ${MIN_CLUSTERING_SESSION_SECONDS}s) for user ${userId}`);
+    }
+
+    return filtered;
   } catch (error) {
     logger.error('Error fetching unassigned activities:', error);
     throw new Error(`Failed to fetch unassigned activities: ${error.message}`);

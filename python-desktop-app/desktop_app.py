@@ -329,10 +329,10 @@ SCREENSHOT_MONITORING_HARD_DISABLED = True
 # Embedded credentials (for production builds - no .env file needed)
 # SECURITY: All sensitive keys moved to AI Server - fetched at runtime after authentication
 EMBEDDED_CONFIG = {
-    'ATLASSIAN_CLIENT_ID': 'k2Xwzy8c1g3Wk6Xpbeev0x70CXEp9lJH',
+    'ATLASSIAN_CLIENT_ID': 'Q8HT4Jn205AuTiAarj088oWNDrOqwvM5',
     # REMOVED: ATLASSIAN_CLIENT_SECRET - now on AI Server only (security fix)
     # REMOVED: SUPABASE_URL, SUPABASE_ANON_KEY, SUPABASE_SERVICE_ROLE_KEY - fetched from AI Server
-    'AI_SERVER_URL': 'https://timetracker-forge.amzur.com',  # AI Server for secure token exchange & config
+    'AI_SERVER_URL': 'https://forgesync.amzur.com',  # AI Server for secure token exchange & config
     'CAPTURE_INTERVAL': '300',
     'WEB_PORT': '51777',
     'ADMIN_PASSWORD': 'admin123'
@@ -1373,7 +1373,7 @@ class AtlassianAuthManager:
         self.redirect_uri = f'http://localhost:{web_port}/auth/callback'
         self.authorization_url = 'https://auth.atlassian.com/authorize'
         # Token exchange now goes through AI Server
-        self.ai_server_url = get_env_var('AI_SERVER_URL', 'https://timetracker-forge.amzur.com')
+        self.ai_server_url = get_env_var('AI_SERVER_URL', 'https://forgesync.amzur.com')
         self.store_path = store_path or os.path.join(get_app_data_dir(), 'time_tracker_auth.json')
 
         # Prevents concurrent token refreshes from burning the same refresh_token twice.
@@ -6918,6 +6918,20 @@ class TimeTracker:
             sessions = self.session_manager.get_all_sessions()
             if not sessions:
                 print("[BATCH] No activity records to upload")
+                self.last_batch_upload_time = time.time()
+                return
+
+            # Filter out noise: sessions shorter than 5 seconds are accidental
+            # window switches (Alt-Tab, taskbar hover, notification popups).
+            MIN_SESSION_DURATION_SECONDS = 5
+            original_count = len(sessions)
+            sessions = [s for s in sessions if int(s.get('total_time_seconds') or 0) >= MIN_SESSION_DURATION_SECONDS]
+            filtered_count = original_count - len(sessions)
+            if filtered_count > 0:
+                print(f"[BATCH] Filtered {filtered_count} noise sessions (< {MIN_SESSION_DURATION_SECONDS}s)")
+            if not sessions:
+                print("[BATCH] All sessions were noise — nothing to upload")
+                self.session_manager.clear_all()
                 self.last_batch_upload_time = time.time()
                 return
 

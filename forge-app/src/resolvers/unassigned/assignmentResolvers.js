@@ -46,13 +46,22 @@ async function createWorklogIfNeeded({ issueKey, timeToLog, sessionCount, autoSy
     };
   }
   
-  if (timeToLog < JIRA_MIN_WORKLOG_SECONDS) {
-    console.log(`[worklog] Skipping worklog creation - time (${timeToLog}s) below minimum ${JIRA_MIN_WORKLOG_SECONDS}s`);
+  if (!timeToLog || timeToLog <= 0) {
+    console.log(`[worklog] Skipping worklog — no time to log (${timeToLog}s)`);
     return {
       worklog: null,
       worklogSkipped: true,
-      worklogSkippedReason: `Time (${timeToLog}s) is below Jira's minimum of ${JIRA_MIN_WORKLOG_SECONDS}s`
+      worklogSkippedReason: 'No time to log'
     };
+  }
+
+  if (timeToLog < JIRA_MIN_WORKLOG_SECONDS) {
+    // Round up to Jira's minimum instead of discarding — the user explicitly
+    // chose to assign this work, so losing it is worse than adding a few seconds.
+    // This only applies to the already-aggregated group total (not per-session),
+    // so maximum inflation is 59 seconds per issue.
+    console.log(`[worklog] Rounding up time from ${timeToLog}s to ${JIRA_MIN_WORKLOG_SECONDS}s (Jira minimum)`);
+    timeToLog = JIRA_MIN_WORKLOG_SECONDS;
   }
   
   try {
