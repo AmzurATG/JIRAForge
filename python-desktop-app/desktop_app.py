@@ -6925,7 +6925,7 @@ class TimeTracker:
             # window switches (Alt-Tab, taskbar hover, notification popups).
             MIN_SESSION_DURATION_SECONDS = 5
             original_count = len(sessions)
-            sessions = [s for s in sessions if int(s.get('total_time_seconds', 0)) >= MIN_SESSION_DURATION_SECONDS]
+            sessions = [s for s in sessions if int(s.get('total_time_seconds') or 0) >= MIN_SESSION_DURATION_SECONDS]
             filtered_count = original_count - len(sessions)
             if filtered_count > 0:
                 print(f"[BATCH] Filtered {filtered_count} noise sessions (< {MIN_SESSION_DURATION_SECONDS}s)")
