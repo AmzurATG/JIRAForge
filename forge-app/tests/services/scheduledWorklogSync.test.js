@@ -510,25 +510,36 @@ describe('scheduledWorklogSync — edge cases', () => {
     expect(result.message).toMatch(/not enabled/i);
   });
 
-  it('skips entries below MIN_SYNC_SECONDS (60s)', async () => {
+  it('rounds up entries below MIN_SYNC_SECONDS (60s) to Jira minimum', async () => {
     mockSupabaseRequest.mockImplementation(
       buildSupabaseRequestMock({
         activityRecords: [{
           user_id: USER_ID,
           user_assigned_issue_key: ISSUE_KEY,
-          duration_seconds: 30, // Below 60s minimum
+          duration_seconds: 30, // Below 60s minimum — should be rounded up to 60
           total_time_seconds: 30,
           end_time: '2026-03-12T10:00:00Z',
         }],
       })
     );
 
+    mockCreateJiraWorklogAsUser.mockResolvedValue({
+      id: 'worklog-roundup',
+      author: { accountId: ACCOUNT_ID, displayName: DISPLAY_NAME },
+    });
+
     const result = await runScheduledWorklogSync();
 
     expect(result.success).toBe(true);
-    expect(result.synced).toBe(0);
-    expect(mockCreateJiraWorklogAsUser).not.toHaveBeenCalled();
-    expect(mockCreateJiraWorklogAsApp).not.toHaveBeenCalled();
+    expect(result.synced).toBe(1);
+    // Verify worklog was created with rounded-up 60s, not the original 30s
+    expect(mockCreateJiraWorklogAsUser).toHaveBeenCalledWith(
+      ACCOUNT_ID,
+      ISSUE_KEY,
+      60,
+      expect.any(String),
+      DISPLAY_NAME
+    );
   });
 
   it('handles Jira error responses gracefully', async () => {
