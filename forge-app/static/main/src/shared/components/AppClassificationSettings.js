@@ -600,6 +600,34 @@ function AppClassificationSettings({ projectKey }) {
         throw new Error(result.error || 'Failed to save classification');
       }
 
+      // Also update the local settings and save them so the app appears
+      // in the corresponding "Current ... Apps" section immediately.
+      const classificationLists = ['productiveAppsSelected', 'nonProductiveAppsSelected', 'privateSites'];
+      const targetListMap = {
+        'productive': 'productiveAppsSelected',
+        'non_productive': 'nonProductiveAppsSelected',
+        'private': 'privateSites',
+      };
+      const targetList = targetListMap[classification];
+
+      if (targetList) {
+        setSettings(prev => {
+          const updated = { ...prev };
+          // Remove from all lists first (ensure app is only in one bucket)
+          for (const field of classificationLists) {
+            updated[field] = (updated[field] || []).filter(item => item !== appId);
+          }
+          // Add to the target list
+          if (!updated[targetList].includes(appId)) {
+            updated[targetList] = [...updated[targetList], appId];
+          }
+
+          // Save the updated settings
+          saveSettings(updated);
+          return updated;
+        });
+      }
+
       setMessage({
         type: 'success',
         text: `Saved classification for ${unknownApp.applicationName} as ${classification.replace('_', ' ')}. Updated ${result.updatedUnknownRecords ?? 0} unknown activity records.`,
