@@ -32,6 +32,15 @@ jaraco.context>=6.0.0
 pywin32==306; sys_platform == 'win32'
 winotify==1.1.0; sys_platform == 'win32'
 
+# Linux-specific dependencies
+ewmh==0.1.6; sys_platform == 'linux'
+python-xlib==0.33; sys_platform == 'linux'
+# dbus-python is a C extension that must be installed as a system package:
+#   Ubuntu/Debian: sudo apt install python3-dbus
+#   Fedora/RHEL:   sudo dnf install python3-dbus
+#   Arch:          sudo pacman -S python-dbus
+# Do NOT pip install dbus-python — it requires pkg-config + libdbus-1-dev to build.
+
 # =============================================================================
 # OCR Dependencies
 # =============================================================================

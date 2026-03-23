@@ -21,11 +21,12 @@ class ConfigManager:
     def __init__(self, app_name="JIRAForge"):
         self.app_name = app_name
         
-        # Store config in user's AppData (Windows) or ~/.config (Linux/Mac)
+        # Store config in user's AppData (Windows) or $XDG_CONFIG_HOME (Linux/Mac)
         if os.name == 'nt':  # Windows
             self.config_dir = Path(os.getenv('LOCALAPPDATA')) / app_name
-        else:  # Linux/Mac
-            self.config_dir = Path.home() / '.config' / app_name.lower()
+        else:  # Linux/Mac — respect XDG Base Directory Spec
+            xdg_config = os.environ.get('XDG_CONFIG_HOME', str(Path.home() / '.config'))
+            self.config_dir = Path(xdg_config) / app_name.lower()
         
         self.config_dir.mkdir(parents=True, exist_ok=True)
         self.config_file = self.config_dir / 'config.json'

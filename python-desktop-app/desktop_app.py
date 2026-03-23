@@ -22,7 +22,11 @@ from datetime import datetime, timezone, timedelta
 from io import BytesIO
 
 # Core dependencies
-from PIL import Image, ImageGrab, ImageDraw
+try:
+    from PIL import Image, ImageGrab, ImageDraw
+except ImportError:
+    from PIL import Image, ImageDraw
+    ImageGrab = None  # Not available on Linux/Wayland
 import psutil
 import requests
 from flask import Flask, render_template_string, jsonify, request, session, redirect, url_for
@@ -186,6 +190,10 @@ except ImportError:
     KEYRING_AVAILABLE = False
     print("[WARN] keyring module not available - tokens will be stored in plain text")
 
+# Platform detection
+IS_LINUX = sys.platform.startswith('linux')
+IS_WINDOWS = sys.platform == 'win32'
+
 # Windows-specific imports
 try:
     import win32gui
@@ -197,6 +205,27 @@ try:
     WIN32_AVAILABLE = True
 except ImportError:
     WIN32_AVAILABLE = False
+
+# Linux-specific imports
+LINUX_FUNCTIONS_AVAILABLE = False
+if IS_LINUX:
+    try:
+        from desktop_app_linux import (
+            capture_screenshot_linux,
+            get_active_window_linux,
+            get_idle_time_linux,
+            show_notification_linux,
+            acquire_single_instance_lock_linux,
+            release_single_instance_lock_linux,
+            add_to_startup_linux,
+            remove_from_startup_linux,
+            is_in_startup_linux,
+            get_app_data_dir_linux,
+        )
+        LINUX_FUNCTIONS_AVAILABLE = True
+        print("[OK] Linux platform functions loaded")
+    except ImportError as e:
+        print(f"[WARN] Linux functions not available: {e}")
 
 # Tkinter for pause popup window
 try:
@@ -220,6 +249,10 @@ def acquire_single_instance_lock():
     Returns False if another instance is already running.
     """
     global _instance_mutex
+
+    if IS_LINUX and LINUX_FUNCTIONS_AVAILABLE:
+        lock_path = os.path.join(get_app_data_dir(), '.lock')
+        return acquire_single_instance_lock_linux(lock_path)
 
     if not WIN32_AVAILABLE:
         # On non-Windows, use a lock file approach
@@ -283,6 +316,10 @@ def _acquire_lock_file():
 def release_single_instance_lock():
     """Release the single instance lock"""
     global _instance_mutex
+
+    if IS_LINUX and LINUX_FUNCTIONS_AVAILABLE:
+        release_single_instance_lock_linux()
+        return
 
     if _instance_mutex:
         try:
@@ -495,7 +532,8 @@ def check_for_updates(ai_server_url=None):
             print("[WARN] AI Server URL not configured, skipping update check")
             return None
         
-        url = f"{server_url}/api/app-version/check?platform=windows&current={APP_VERSION}"
+        platform_name = 'linux' if IS_LINUX else 'windows'
+        url = f"{server_url}/api/app-version/check?platform={platform_name}&current={APP_VERSION}"
         
         response = requests.get(url, timeout=10)
         
@@ -595,6 +633,11 @@ def show_update_notification(update_info, callback=None):
         update_info: Dict with update information from check_for_updates()
         callback: Optional callback function to call when notification is clicked
     """
+    if IS_LINUX and LINUX_FUNCTIONS_AVAILABLE:
+        msg = f"v{update_info.get('latest_version')} available"
+        show_notification_linux("Update Available", msg)
+        return
+
     if not WINOTIFY_AVAILABLE:
         print(f"[INFO] Update available: v{update_info.get('latest_version')} (notifications not available)")
         return
@@ -680,6 +723,9 @@ def get_local_timezone_name():
 
 def get_app_data_dir():
     """Get the application data directory in LocalAppData"""
+    if IS_LINUX and LINUX_FUNCTIONS_AVAILABLE:
+        return get_app_data_dir_linux()
+
     if sys.platform == 'win32':
         app_data = os.environ.get('LOCALAPPDATA', os.path.expanduser('~'))
     else:
@@ -1140,8 +1186,12 @@ REGISTRY_PATH = r"Software\Microsoft\Windows\CurrentVersion\Run"
 
 def add_to_startup():
     """Add application to Windows startup via registry"""
+    if IS_LINUX and LINUX_FUNCTIONS_AVAILABLE:
+        exe_path = get_app_executable_path()
+        return add_to_startup_linux(APP_NAME, exe_path)
+
     if sys.platform != 'win32':
-        print("[INFO] Auto-start only supported on Windows")
+        print("[INFO] Auto-start only supported on Windows and Linux")
         return False
 
     try:
@@ -1179,6 +1229,9 @@ def add_to_startup():
 
 def remove_from_startup():
     """Remove application from Windows startup"""
+    if IS_LINUX and LINUX_FUNCTIONS_AVAILABLE:
+        return remove_from_startup_linux()
+
     if sys.platform != 'win32':
         return False
 
@@ -1207,6 +1260,9 @@ def remove_from_startup():
 
 def is_in_startup():
     """Check if application is in Windows startup"""
+    if IS_LINUX and LINUX_FUNCTIONS_AVAILABLE:
+        return is_in_startup_linux()
+
     if sys.platform != 'win32':
         return False
 
@@ -4021,6 +4077,12 @@ class LocalOCRProcessor:
         """
         return self._ocr_done_event.wait(timeout=timeout)
 
+    def _grab_screenshot(self):
+        """Grab a screenshot using the appropriate method for the current platform."""
+        if IS_LINUX and LINUX_FUNCTIONS_AVAILABLE:
+            return capture_screenshot_linux()
+        return ImageGrab.grab()
+
     def capture_screenshot_only(self, force=False):
         """Capture screenshot without running OCR (for async dispatch).
 
@@ -4030,13 +4092,13 @@ class LocalOCRProcessor:
         now = time.time()
         if not force and (now - self._last_ocr_time) < self._min_interval:
             try:
-                screenshot = ImageGrab.grab()
+                screenshot = self._grab_screenshot()
             except Exception:
                 screenshot = None
             return {'screenshot': screenshot, 'throttled': True}
 
         try:
-            screenshot = ImageGrab.grab()
+            screenshot = self._grab_screenshot()
             return {'screenshot': screenshot, 'throttled': False}
         except Exception as e:
             print(f"[OCR] Screenshot capture failed: {e}")
@@ -4077,7 +4139,7 @@ class LocalOCRProcessor:
             # Throttled: still capture the screenshot so the caller can save it
             # for later backfill with the ORIGINAL image, not a new one
             try:
-                screenshot = ImageGrab.grab()
+                screenshot = self._grab_screenshot()
             except Exception:
                 screenshot = None
             return {
@@ -4087,7 +4149,7 @@ class LocalOCRProcessor:
             }
 
         try:
-            screenshot = ImageGrab.grab()
+            screenshot = self._grab_screenshot()
             ocr_start = time.perf_counter()
 
             ocr_result = extract_text_from_image(
@@ -6974,6 +7036,15 @@ class TimeTracker:
             for s in sessions:
                 classification = s.get('classification', 'unknown')
 
+                # Apply any AI-resolved classifications that arrived after the
+                # session was created but before this batch upload runs.
+                if classification == 'unknown' and hasattr(self, '_resolved_classifications'):
+                    app_lower = (s.get('application_name') or '').lower()
+                    if app_lower in self._resolved_classifications:
+                        classification = self._resolved_classifications[app_lower]
+                        print(f"[BATCH] Applying resolved classification for "
+                              f"{s.get('application_name')}: unknown → {classification}")
+
                 # Determine status based on classification
                 if classification in ('non_productive', 'private'):
                     status = 'analyzed'  # No AI needed
@@ -7137,7 +7208,7 @@ class TimeTracker:
             if classification == 'productive':
                 print(f"[PROD] {app_name} — {window_title[:50]}")
             elif classification == 'unknown':
-                print(f"[UNKNOWN] {app_name}")
+                print(f"[UNKNOWN] {app_name} — {window_title[:50]}")
 
         # CRITICAL: Create session FIRST so it exists when async OCR callback fires.
         # This fixes race condition where OCR completes before session is created.
@@ -7230,6 +7301,12 @@ class TimeTracker:
                 # Update the session's classification via thread-safe method
                 self.session_manager.update_classification(app_name, 'unknown', new_classification)
 
+                # Cache the resolved classification so batch upload uses it
+                # even if rows haven't been inserted into Supabase yet.
+                if not hasattr(self, '_resolved_classifications'):
+                    self._resolved_classifications = {}
+                self._resolved_classifications[app_name.lower()] = new_classification
+
                 # Also update already-uploaded activity_records that are still unknown
                 # for this app/user/org so DB reflects the latest AI classification.
                 try:
@@ -7248,10 +7325,16 @@ class TimeTracker:
 
                         update_result = update_query.execute()
                         updated_count = len(update_result.data) if getattr(update_result, 'data', None) else 0
-                        print(
-                            f"[AI] Updated {updated_count} activity_records rows for "
-                            f"{app_name}: unknown → {new_classification}"
-                        )
+                        if updated_count > 0:
+                            print(
+                                f"[AI] Updated {updated_count} activity_records rows for "
+                                f"{app_name}: unknown → {new_classification}"
+                            )
+                        else:
+                            print(
+                                f"[AI] No existing activity_records to update for {app_name} "
+                                f"(will apply '{new_classification}' on next batch upload)"
+                            )
                 except Exception as db_err:
                     print(f"[WARN] Failed to update unknown activity_records for {app_name}: {db_err}")
             else:
@@ -7408,7 +7491,10 @@ class TimeTracker:
     def capture_screenshot(self):
         """Capture screenshot and return PIL Image"""
         try:
-            screenshot = ImageGrab.grab()
+            if IS_LINUX and LINUX_FUNCTIONS_AVAILABLE:
+                screenshot = capture_screenshot_linux()
+            else:
+                screenshot = ImageGrab.grab()
             screenshot_bytes = screenshot.tobytes()
             current_hash = hashlib.md5(screenshot_bytes).hexdigest()
             
@@ -7424,6 +7510,44 @@ class TimeTracker:
     
     def get_active_window(self):
         """Get active window information and detect window switches for event-based tracking"""
+        if IS_LINUX and LINUX_FUNCTIONS_AVAILABLE:
+            result = get_active_window_linux()
+            window_key = result.get('window_key', 'unknown')
+            is_new_window = False
+            if window_key != self.current_window_key:
+                is_new_window = True
+                self.last_activity_time = time.time()
+                if self.current_window_key is not None:
+                    self.previous_window_key = self.current_window_key
+                    self.previous_window_start_time = self.current_window_start_time
+                    self.previous_window_db_start_time = self.current_window_db_start_time
+                    self.previous_window_screenshot_id = self.current_window_screenshot_id
+                    if '|||' in self.current_window_key:
+                        prev_app, prev_title = self.current_window_key.split('|||', 1)
+                    else:
+                        prev_app = 'Unknown'
+                        prev_title = 'Unknown'
+                    self.previous_window_info = {
+                        'title': prev_title,
+                        'app': prev_app,
+                        'window_key': self.current_window_key
+                    }
+                self.current_window_key = window_key
+                self.current_window_start_time = datetime.now(timezone.utc)
+                self.current_window_screenshot_id = None
+                self.current_window_record_created_at = None
+                if self.current_window_key and self.current_window_key != 'unknown':
+                    print(f"[INFO] Window switched at {self.current_window_start_time.strftime('%H:%M:%S')}:")
+                    print(f"     - App: {result.get('app', 'Unknown')}")
+                    print(f"     - Title: {result.get('title', 'Unknown')[:50]}")
+                    self.add_admin_log('INFO', f"Window switch: {result.get('app', 'Unknown')}", {
+                        'app': result.get('app', ''),
+                        'title': (result.get('title', '') or '')[:60],
+                        'time': self.current_window_start_time.strftime('%H:%M:%S')
+                    })
+            result['is_new_window'] = is_new_window
+            return result
+
         if not WIN32_AVAILABLE:
             return {'title': 'Unknown', 'app': 'Unknown', 'window_key': 'unknown', 'is_new_window': False}
         
@@ -7871,6 +7995,13 @@ class TimeTracker:
 
     def monitor_user_activity(self):
         """Monitor mouse and keyboard activity for idle detection"""
+        if IS_LINUX and LINUX_FUNCTIONS_AVAILABLE:
+            # On Linux, use D-Bus idle monitoring (Wayland-compatible)
+            # get_idle_time_linux() is polled in the tracking loop
+            print("[OK] Linux idle detection via D-Bus enabled")
+            # Still start pynput as a fallback for activity resume detection
+            pass
+
         try:
             from pynput import mouse, keyboard
         except ImportError:
@@ -8286,7 +8417,13 @@ class TimeTracker:
                         self.upload_activity_batch()
                 
                 # Check for idle timeout (use configurable threshold)
-                idle_duration = time.time() - self.last_activity_time
+                if IS_LINUX and LINUX_FUNCTIONS_AVAILABLE:
+                    try:
+                        idle_duration = get_idle_time_linux()
+                    except Exception:
+                        idle_duration = time.time() - self.last_activity_time
+                else:
+                    idle_duration = time.time() - self.last_activity_time
                 current_idle_timeout = self.tracking_settings.get('idle_threshold_seconds', self.idle_timeout)
                 if idle_duration > current_idle_timeout:
                     if not self.is_idle:
@@ -8377,7 +8514,12 @@ class TimeTracker:
                     # Activity records (session-based tracking) should work regardless of screenshot capture mode
                     # The tracking_mode/event_tracking_enabled settings control SCREENSHOT capture timing,
                     # not activity record creation. Activity records are batched and uploaded every 5 minutes.
-                    self.process_window_event(window_info)
+                    # Skip "Unknown" windows — these occur when no window has focus (desktop shown,
+                    # screen locked, modal dialogs, compositor lost focus, etc.)
+                    if window_info.get('window_key') == 'unknown' or window_info.get('app') == 'Unknown':
+                        pass  # don't create activity sessions for Unknown windows
+                    else:
+                        self.process_window_event(window_info)
                     
                     # Update existing record of previous window with actual time spent
                     # This ensures we update the screenshot record with the actual duration
@@ -8606,8 +8748,8 @@ class TimeTracker:
             )
             self._activity_monitor_thread.start()
 
-        # Start system event monitoring thread (sleep/lock detection)
-        if WIN32_AVAILABLE and (not self._system_event_thread or not self._system_event_thread.is_alive()):
+        # Start system event monitoring thread (sleep/lock detection) — Windows only
+        if not IS_LINUX and WIN32_AVAILABLE and (not self._system_event_thread or not self._system_event_thread.is_alive()):
             self._system_event_thread = threading.Thread(
                 target=self.monitor_system_events, daemon=True
             )
