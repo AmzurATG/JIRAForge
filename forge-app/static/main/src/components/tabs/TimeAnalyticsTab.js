@@ -21,6 +21,7 @@ function TimeAnalyticsTab() {
   const [timesheetView, setTimesheetView] = useState('day');
   const [selectedMonth, setSelectedMonth] = useState(new Date());
   const [downloadUrl, setDownloadUrl] = useState(FALLBACK_DOWNLOAD_URL);
+  const [reconciledTodayTotal, setReconciledTodayTotal] = useState(null);
 
   useEffect(() => {
     loadTimeAnalytics();
@@ -91,12 +92,13 @@ function TimeAnalyticsTab() {
         timeData={timeData} 
         activeView={timesheetView}
         onViewChange={setTimesheetView}
+        reconciledTodayTotal={reconciledTodayTotal}
       />
 
       {/* Timesheet Content */}
       <div className="timesheet-content">
         {timesheetView === 'day' && (
-          <DayView loading={loading} timeData={timeData} />
+          <DayView loading={loading} timeData={timeData} onTodayTotalReconciled={setReconciledTodayTotal} />
         )}
 
         {timesheetView === 'week' && (

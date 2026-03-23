@@ -7,7 +7,7 @@ import { normalizeDate, formatLocalDate, parseUTC } from './dateUtils';
  * Day View Component
  * Displays today's timesheet with team member cards and activity timeline
  */
-function DayView({ loading, timeData }) {
+function DayView({ loading, timeData, onTodayTotalReconciled }) {
   const [timelineData, setTimelineData] = useState(null);
   const [myTimelineData, setMyTimelineData] = useState(null);
   // Helper function to get user initials
@@ -345,6 +345,16 @@ function DayView({ loading, timeData }) {
     return Object.values(tasksByUser).sort((a, b) => b.totalSeconds - a.totalSeconds);
   };
 
+  // Report reconciled today total to parent so SummaryCards stays in sync
+  const users = getUsers();
+  const reconciledTotal = users.reduce((sum, u) => sum + u.totalSeconds, 0);
+
+  useEffect(() => {
+    if (onTodayTotalReconciled) {
+      onTodayTotalReconciled(reconciledTotal);
+    }
+  }, [reconciledTotal, onTodayTotalReconciled]);
+
   const formattedDate = today.toLocaleDateString('en-US', {
     weekday: 'long',
     year: 'numeric',
@@ -365,8 +375,6 @@ function DayView({ loading, timeData }) {
       ) : (
         <div className="team-members-list">
           {(() => {
-            const users = getUsers();
-
             if (users.length === 0) {
               return <p className="empty-state">No users found</p>;
             }
