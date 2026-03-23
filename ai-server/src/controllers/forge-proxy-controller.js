@@ -797,6 +797,48 @@ async function buildUsersQuery(supabase, { canViewTeamData, shouldFilterByProjec
 }
 
 /**
+ * Resolve organization, user, and membership from Forge context identifiers.
+ * Throws with a statusCode property on lookup failures so the caller can
+ * forward the correct HTTP status to the client.
+ */
+async function resolveDashboardEntities(supabase, cloudId, accountId) {
+  const { data: orgs, error: orgError } = await supabase
+    .from('organizations')
+    .select('*')
+    .eq('jira_cloud_id', cloudId);
+
+  if (orgError) throw orgError;
+  if (!orgs || orgs.length === 0) {
+    const err = new Error('Organization not found. Please reload the page.');
+    err.statusCode = 404;
+    throw err;
+  }
+  const organization = orgs[0];
+
+  const { data: users, error: userError } = await supabase
+    .from('users')
+    .select('id, organization_id, email, display_name')
+    .eq('atlassian_account_id', accountId);
+
+  if (userError) throw userError;
+  if (!users || users.length === 0) {
+    const err = new Error('User not found. Please reload the page.');
+    err.statusCode = 404;
+    throw err;
+  }
+  const user = users[0];
+
+  const { data: membership } = await supabase
+    .from('organization_members')
+    .select('*')
+    .eq('user_id', user.id)
+    .eq('organization_id', organization.id)
+    .single();
+
+  return { organization, user, membership };
+}
+
+/**
  * Batch Dashboard Endpoint
  * Fetches all data needed for the dashboard in a single request
  * Reduces 8+ API calls to 1, significantly improving performance
@@ -851,38 +893,9 @@ exports.getDashboardData = async (req, res) => {
       projectKeysCount: shouldFilterByProjects ? projectKeys.length : 'all'
     });
 
-    // 1. Get or verify organization
-    const { data: orgs, error: orgError } = await supabase
-      .from('organizations')
-      .select('*')
-      .eq('jira_cloud_id', cloudId);
-
-    if (orgError) throw orgError;
-    if (!orgs || orgs.length === 0) {
-      return res.status(404).json({ success: false, error: 'Organization not found. Please reload the page.' });
-    }
-    const organization = orgs[0];
-
-    // 2. Get or verify user
-    const { data: users, error: userError } = await supabase
-      .from('users')
-      .select('id, organization_id, email, display_name')
-      .eq('atlassian_account_id', accountId);
-
-    if (userError) throw userError;
-    if (!users || users.length === 0) {
-      return res.status(404).json({ success: false, error: 'User not found. Please reload the page.' });
-    }
-    const user = users[0];
+    // 1-3. Resolve organization, user, and membership from Forge context
+    const { organization, user, membership } = await resolveDashboardEntities(supabase, cloudId, accountId);
     const userId = user.id;
-
-    // 3. Get membership in a single query
-    const { data: membership } = await supabase
-      .from('organization_members')
-      .select('*')
-      .eq('user_id', userId)
-      .eq('organization_id', organization.id)
-      .single();
 
     // Determine if user can view all data
     // IMPORTANT: Only trust the Forge-verified canViewAllUsers flag.
@@ -973,7 +986,7 @@ exports.getDashboardData = async (req, res) => {
     });
   } catch (error) {
     logger.error('[ForgeProxy] Dashboard batch error:', error);
-    res.status(500).json({ success: false, error: error.message });
+    res.status(error.statusCode || 500).json({ success: false, error: error.message });
   }
 };
 
