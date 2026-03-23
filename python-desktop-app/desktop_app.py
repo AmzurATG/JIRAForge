@@ -6932,6 +6932,7 @@ class TimeTracker:
             if not sessions:
                 print("[BATCH] All sessions were noise — nothing to upload")
                 self.session_manager.clear_all()
+                self.current_window_key = None  # Force re-detection so next loop iteration creates a fresh session
                 self.last_batch_upload_time = time.time()
                 return
 
@@ -7059,6 +7060,7 @@ class TimeTracker:
 
                 # Success — clear local sessions and reset batch timer
                 self.session_manager.clear_all()
+                self.current_window_key = None  # Force re-detection so next loop iteration creates a fresh session
                 self.batch_start_time = datetime.now(timezone.utc)
             else:
                 # Log detailed response for debugging
