@@ -7615,6 +7615,36 @@ class TimeTracker:
             result = get_active_window_linux()
             window_key = result.get('window_key', 'unknown')
             is_new_window = False
+
+            # If current window is 'unknown' and a new poll returns a real window,
+            # treat it as a resolved identity (update session) rather than ignoring.
+            if self.current_window_key == 'unknown' and window_key != 'unknown':
+                # The Unknown window now has a real identity — update tracking
+                is_new_window = True
+                self.last_activity_time = time.time()
+                old_start = self.current_window_start_time  # preserve original start time
+                self.current_window_key = window_key
+                # Keep original start time so duration is accurate
+                self.current_window_screenshot_id = None
+                self.current_window_record_created_at = None
+                print(f"[INFO] Unknown window resolved at {datetime.now(timezone.utc).strftime('%H:%M:%S')}:")
+                print(f"     - App: {result.get('app', 'Unknown')}")
+                print(f"     - Title: {result.get('title', 'Unknown')[:50]}")
+                # Update the local session with the resolved app info
+                self.session_manager.update_app_info(
+                    'Unknown', 'Unknown',
+                    result.get('app', 'Unknown'),
+                    result.get('title', 'Unknown')
+                )
+                self.add_admin_log('INFO', f"Unknown resolved: {result.get('app', 'Unknown')}", {
+                    'app': result.get('app', ''),
+                    'title': (result.get('title', '') or '')[:60],
+                    'time': datetime.now(timezone.utc).strftime('%H:%M:%S')
+                })
+                # Process as a window event to update classification
+                result['is_new_window'] = True
+                return result
+
             if window_key != self.current_window_key:
                 is_new_window = True
                 self.last_activity_time = time.time()

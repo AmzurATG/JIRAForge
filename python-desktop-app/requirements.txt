@@ -40,6 +40,11 @@ python-xlib==0.33; sys_platform == 'linux'
 #   Fedora/RHEL:   sudo dnf install python3-dbus
 #   Arch:          sudo pacman -S python-dbus
 # Do NOT pip install dbus-python — it requires pkg-config + libdbus-1-dev to build.
+#
+# Screenshot tool for Wayland (required on GNOME/Wayland):
+#   Ubuntu/Debian: sudo apt-get install -y gnome-screenshot
+#   Fedora/RHEL:   sudo dnf install gnome-screenshot
+#   Arch:          sudo pacman -S gnome-screenshot
 
 # =============================================================================
 # OCR Dependencies
