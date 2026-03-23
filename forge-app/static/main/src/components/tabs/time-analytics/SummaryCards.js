@@ -7,7 +7,7 @@ import { normalizeDate, formatLocalDate, getMonthStr } from './dateUtils';
  * Displays Today's, Week's, and Month's total time
  * Cards are clickable to switch between Day/Week/Month views
  */
-function SummaryCards({ loading, timeData, activeView, onViewChange }) {
+function SummaryCards({ loading, timeData, activeView, onViewChange, reconciledTodayTotal }) {
   const calculateTodayTotal = () => {
     const today = new Date();
     const todayStr = formatLocalDate(today);
@@ -73,7 +73,7 @@ function SummaryCards({ loading, timeData, activeView, onViewChange }) {
             <p>Loading...</p>
           ) : (
             <div className="cumulative-stat">
-              <div className="stat-value">{formatTime(calculateTodayTotal())}</div>
+              <div className="stat-value">{formatTime(reconciledTodayTotal != null ? reconciledTodayTotal : calculateTodayTotal())}</div>
             </div>
           )}
         </div>
