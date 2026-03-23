@@ -3928,6 +3928,42 @@ class ActiveSessionManager:
             finally:
                 conn.close()
 
+    def update_app_info(self, old_app_name, old_title, new_app_name, new_title=None):
+        """Thread-safe update of application_name (and optionally window_title) for Unknown sessions.
+
+        Called after OCR-based app inference identifies what an 'Unknown' window actually is.
+        Also updates the internal _current_key if it matches so future operations use the new name.
+        """
+        with self._lock:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            try:
+                if new_title:
+                    cursor.execute(
+                        'UPDATE active_sessions SET application_name = ?, window_title = ? '
+                        'WHERE application_name = ? AND window_title = ?',
+                        (new_app_name, new_title, old_app_name, old_title)
+                    )
+                else:
+                    cursor.execute(
+                        'UPDATE active_sessions SET application_name = ? '
+                        'WHERE application_name = ? AND window_title = ?',
+                        (new_app_name, old_app_name, old_title)
+                    )
+                updated = cursor.rowcount
+                conn.commit()
+
+                # Update internal key if it matches
+                if self._current_key == (old_title, old_app_name):
+                    self._current_key = (new_title or old_title, new_app_name)
+
+                return updated
+            except Exception as e:
+                print(f"[WARN] Failed to update app info: {e}")
+                return 0
+            finally:
+                conn.close()
+
 
 class LocalOCRProcessor:
     """Handles local OCR processing using the dynamic OCR facade.
@@ -7036,15 +7072,6 @@ class TimeTracker:
             for s in sessions:
                 classification = s.get('classification', 'unknown')
 
-                # Apply any AI-resolved classifications that arrived after the
-                # session was created but before this batch upload runs.
-                if classification == 'unknown' and hasattr(self, '_resolved_classifications'):
-                    app_lower = (s.get('application_name') or '').lower()
-                    if app_lower in self._resolved_classifications:
-                        classification = self._resolved_classifications[app_lower]
-                        print(f"[BATCH] Applying resolved classification for "
-                              f"{s.get('application_name')}: unknown → {classification}")
-
                 # Determine status based on classification
                 if classification in ('non_productive', 'private'):
                     status = 'analyzed'  # No AI needed
@@ -7252,7 +7279,13 @@ class TimeTracker:
             return
 
         app_lower = app_name.lower()
-        if app_lower in BROWSER_PROCESSES:
+        if app_lower == 'unknown':
+            # For Unknown windows, use OCR text hash as dedup key so each distinct
+            # Unknown window gets its own AI classification attempt.
+            import hashlib
+            ocr_hash = hashlib.md5((ocr_text or '').encode()).hexdigest()[:12] if ocr_text else ''
+            app_key = f"unknown|{ocr_hash}" if ocr_hash else f"unknown|{window_title[:50]}"
+        elif app_lower in BROWSER_PROCESSES:
             domain = self._extract_domain_from_title(window_title)
             title_key = self._extract_title_key_for_classification(window_title, domain)
             app_key = f"{app_lower}|{domain}|{title_key}" if domain else f"{app_lower}|{title_key}"
@@ -7271,7 +7304,11 @@ class TimeTracker:
             print(f"[UNKNOWN] {app_name} — already sent to AI server, skipping (key: {app_key[:60]})")
 
     def _classify_unknown_app_async(self, app_name, window_title, ocr_text):
-        """Background thread: calls POST /api/classify-app on AI server."""
+        """Background thread: calls POST /api/classify-app on AI server.
+
+        After AI classification, also attempts to infer the real application name
+        from OCR text and updates both the local session and Supabase DB.
+        """
         try:
             ai_server_url = get_env_var('AI_SERVER_URL', '')
             if not ai_server_url:
@@ -7298,24 +7335,42 @@ class TimeTracker:
                 if reasoning:
                     print(f"     Reasoning: {reasoning[:80]}")
 
-                # Update the session's classification via thread-safe method
-                self.session_manager.update_classification(app_name, 'unknown', new_classification)
+                # Try to infer the real app name from OCR text
+                inferred_app, inferred_title = self._infer_app_from_ocr(ocr_text)
+                effective_app = inferred_app or app_name
+                effective_title = inferred_title or window_title
 
-                # Cache the resolved classification so batch upload uses it
-                # even if rows haven't been inserted into Supabase yet.
-                if not hasattr(self, '_resolved_classifications'):
-                    self._resolved_classifications = {}
-                self._resolved_classifications[app_name.lower()] = new_classification
+                if inferred_app and app_name == 'Unknown':
+                    print(f"[AI] Inferred app from OCR: {inferred_app} (title: {inferred_title})")
+                    # Update local session's application_name and window_title
+                    updated = self.session_manager.update_app_info(
+                        app_name, window_title, inferred_app, inferred_title
+                    )
+                    if updated:
+                        print(f"[AI] Updated {updated} local session(s): Unknown → {inferred_app}")
+
+                # Update the session's classification via thread-safe method
+                self.session_manager.update_classification(effective_app, 'unknown', new_classification)
 
                 # Also update already-uploaded activity_records that are still unknown
                 # for this app/user/org so DB reflects the latest AI classification.
                 try:
                     if self.supabase_service and self.current_user_id and self.organization_id:
                         new_status = 'pending' if new_classification == 'productive' else 'analyzed'
-                        update_query = self.supabase_service.table('activity_records').update({
+
+                        # Build the update payload — update classification and inferred app info
+                        update_payload = {
                             'classification': new_classification,
                             'status': new_status
-                        }).eq('user_id', self.current_user_id) \
+                        }
+                        if inferred_app and app_name == 'Unknown':
+                            update_payload['application_name'] = inferred_app
+                        if inferred_title and window_title == 'Unknown':
+                            update_payload['window_title'] = inferred_title
+
+                        update_query = self.supabase_service.table('activity_records').update(
+                            update_payload
+                        ).eq('user_id', self.current_user_id) \
                           .eq('organization_id', self.organization_id) \
                           .eq('application_name', app_name) \
                           .eq('classification', 'unknown')
@@ -7325,16 +7380,12 @@ class TimeTracker:
 
                         update_result = update_query.execute()
                         updated_count = len(update_result.data) if getattr(update_result, 'data', None) else 0
-                        if updated_count > 0:
-                            print(
-                                f"[AI] Updated {updated_count} activity_records rows for "
-                                f"{app_name}: unknown → {new_classification}"
-                            )
-                        else:
-                            print(
-                                f"[AI] No existing activity_records to update for {app_name} "
-                                f"(will apply '{new_classification}' on next batch upload)"
-                            )
+                        print(
+                            f"[AI] Updated {updated_count} activity_records rows for "
+                            f"{app_name}: unknown → {new_classification}"
+                        )
+                        if updated_count == 0:
+                            print(f"[AI] No DB rows updated (record may not be batch-uploaded yet — local session already updated)")
                 except Exception as db_err:
                     print(f"[WARN] Failed to update unknown activity_records for {app_name}: {db_err}")
             else:
@@ -7345,6 +7396,56 @@ class TimeTracker:
         except Exception as e:
             print(f"[WARN] Failed to classify unknown app {app_name}: {e}")
             print(f"[INFO] Keeping {app_name} as unknown for project admin classification")
+
+    def _infer_app_from_ocr(self, ocr_text):
+        """Attempt to identify the application from OCR-extracted screen text.
+
+        Returns (app_name, window_title) or (None, None) if inference fails.
+        """
+        if not ocr_text:
+            return None, None
+
+        text_lower = ocr_text.lower()
+
+        # Extract the first meaningful line from OCR for use as window title
+        first_line = ''
+        for line in ocr_text.split('\n'):
+            stripped = line.strip()
+            # Skip date/time-only lines, very short lines, and timestamp patterns
+            if not stripped or len(stripped) <= 3:
+                continue
+            if re.match(r'^[\d\s:/-]+$', stripped):
+                continue
+            if re.match(r'^[A-Za-z]{3}\s+\d{1,2}[\s,:]+\d', stripped):
+                continue
+            first_line = stripped
+            break
+
+        # Check for common app signatures in OCR text
+        # Each entry: (keywords_list, process_name, title_template)
+        app_signatures = [
+            (['chrome didn', 'google chrome', 'search google or type a url'], 'google-chrome', f'{first_line} - Google Chrome'),
+            (['firefox', 'mozilla firefox'], 'firefox', f'{first_line} - Firefox'),
+            (['microsoft edge', 'edge browser'], 'msedge', f'{first_line} - Microsoft Edge'),
+            (['slack —', 'slack |'], 'slack', f'{first_line} - Slack'),
+            (['microsoft teams', 'teams —'], 'teams', f'{first_line} - Teams'),
+            (['visual studio code', 'vscode'], 'code', f'{first_line} - VS Code'),
+            (['spotify'], 'spotify', f'{first_line} - Spotify'),
+            (['discord'], 'discord', f'{first_line} - Discord'),
+            (['zoom meeting'], 'zoom', f'{first_line} - Zoom'),
+            (['jira', 'atlassian'], 'google-chrome', f'{first_line} - Jira'),
+            (['github.com', 'github —'], 'google-chrome', f'{first_line} - GitHub'),
+            (['gmail', 'mail.google'], 'google-chrome', f'{first_line} - Gmail'),
+            (['youtube'], 'google-chrome', f'{first_line} - YouTube'),
+            (['stackoverflow', 'stack overflow'], 'google-chrome', f'{first_line} - Stack Overflow'),
+        ]
+
+        for keywords, proc_name, title_template in app_signatures:
+            for keyword in keywords:
+                if keyword in text_lower:
+                    return proc_name, title_template
+
+        return None, None
 
     def _extract_title_key_for_classification(self, window_title, domain=''):
         """Extract a normalized title key for per-page classification deduplication.
@@ -7545,6 +7646,8 @@ class TimeTracker:
                         'title': (result.get('title', '') or '')[:60],
                         'time': self.current_window_start_time.strftime('%H:%M:%S')
                     })
+                else:
+                    print(f"[INFO] Window switched at {self.current_window_start_time.strftime('%H:%M:%S')}: Unknown window (will identify via OCR)")
             result['is_new_window'] = is_new_window
             return result
 
@@ -8514,12 +8617,7 @@ class TimeTracker:
                     # Activity records (session-based tracking) should work regardless of screenshot capture mode
                     # The tracking_mode/event_tracking_enabled settings control SCREENSHOT capture timing,
                     # not activity record creation. Activity records are batched and uploaded every 5 minutes.
-                    # Skip "Unknown" windows — these occur when no window has focus (desktop shown,
-                    # screen locked, modal dialogs, compositor lost focus, etc.)
-                    if window_info.get('window_key') == 'unknown' or window_info.get('app') == 'Unknown':
-                        pass  # don't create activity sessions for Unknown windows
-                    else:
-                        self.process_window_event(window_info)
+                    self.process_window_event(window_info)
                     
                     # Update existing record of previous window with actual time spent
                     # This ensures we update the screenshot record with the actual duration

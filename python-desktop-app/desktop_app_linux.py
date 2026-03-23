@@ -121,30 +121,46 @@ def get_active_window_linux():
 
     On Wayland sessions, uses the GNOME Shell D-Bus eval interface to read
     ``global.display.focus_window``.  Falls back to EWMH (X11) and xdotool.
+
+    Retries once with a 300ms delay if the first attempt returns Unknown
+    (handles race conditions during window focus transitions).
     """
-    # Wayland: GNOME Shell D-Bus is the only reliable way
-    if _is_wayland() and _DBUS_AVAILABLE:
-        try:
-            result = _get_active_window_gnome_dbus()
-            if result and result.get('title') != 'Unknown':
-                return result
-        except Exception:
-            pass
+    import time as _time
 
-    # X11 primary: EWMH
-    if _EWMH_AVAILABLE:
-        try:
-            return _get_active_window_ewmh()
-        except Exception:
-            pass
+    for attempt in range(2):
+        # Wayland: GNOME Shell D-Bus is the only reliable way
+        if _is_wayland() and _DBUS_AVAILABLE:
+            try:
+                result = _get_active_window_gnome_dbus()
+                if result and result.get('app') != 'Unknown' and result.get('title') != 'Unknown':
+                    return result
+            except Exception:
+                pass
 
-    # X11 fallback: xdotool
-    result = _get_active_window_xdotool()
-    if result and result.get('title') != 'Unknown':
-        return result
+        # X11 primary: EWMH
+        if _EWMH_AVAILABLE:
+            try:
+                result = _get_active_window_ewmh()
+                if result and result.get('title') != 'Unknown':
+                    return result
+            except Exception:
+                pass
 
-    # Last resort: try gdbus call for non-GNOME Wayland (KDE, Sway, etc.)
-    return _get_active_window_gdbus_fallback()
+        # X11 fallback: xdotool (also works via XWayland for apps like Chrome)
+        result = _get_active_window_xdotool()
+        if result and result.get('title') != 'Unknown':
+            return result
+
+        # gdbus fallback for non-GNOME Wayland
+        result = _get_active_window_gdbus_fallback()
+        if result and result.get('app') != 'Unknown' and result.get('title') != 'Unknown':
+            return result
+
+        # First attempt failed — wait 300ms for window to fully focus, then retry
+        if attempt == 0:
+            _time.sleep(0.3)
+
+    return _unknown_window()
 
 
 def _get_active_window_gnome_dbus():
