@@ -234,47 +234,56 @@ def _capture_frame():
     fd = _session['pipewire_fd']
     node_id = _session['pipewire_node_id']
 
+    # Use do-timestamp=true and always-copy=true to ensure fresh frames.
+    # Remove num-buffers=1 — instead we pull one sample manually for reliability.
     pipeline_str = (
-        f"pipewiresrc fd={fd} path={node_id} num-buffers=1 ! "
+        f"pipewiresrc fd={fd} path={node_id} do-timestamp=true always-copy=true ! "
         "videoconvert ! "
         "video/x-raw,format=RGB ! "
-        "appsink name=sink emit-signals=true max-buffers=1 drop=true"
+        "appsink name=sink emit-signals=true max-buffers=1 drop=true sync=false"
     )
     pipeline = _Gst.parse_launch(pipeline_str)
-
     appsink = pipeline.get_by_name('sink')
-    captured = {'image': None}
-
-    def on_new_sample(sink):
-        sample = sink.emit('pull-sample')
-        if sample is None:
-            return _Gst.FlowReturn.ERROR
-        buf = sample.get_buffer()
-        caps = sample.get_caps()
-        struct = caps.get_structure(0)
-        width = struct.get_int('width')[1]
-        height = struct.get_int('height')[1]
-        success, mapinfo = buf.map(_Gst.MapFlags.READ)
-        if success:
-            from PIL import Image
-            captured['image'] = Image.frombytes('RGB', (width, height), bytes(mapinfo.data))
-            buf.unmap(mapinfo)
-        return _Gst.FlowReturn.OK
-
-    appsink.connect('new-sample', on_new_sample)
 
     pipeline.set_state(_Gst.State.PLAYING)
 
-    # Wait up to 5 seconds for EOS
-    bus = pipeline.get_bus()
-    bus.timed_pop_filtered(5 * _Gst.SECOND, _Gst.MessageType.EOS | _Gst.MessageType.ERROR)
+    image = None
+    # Try to pull a sample with increasing timeouts (stream may need time to start)
+    for wait_ns in [3 * _Gst.SECOND, 5 * _Gst.SECOND]:
+        sample = appsink.emit('try-pull-sample', wait_ns)
+        if sample is not None:
+            image = _sample_to_image(sample)
+            break
+        # Check for pipeline errors
+        bus = pipeline.get_bus()
+        msg = bus.pop_filtered(_Gst.MessageType.ERROR)
+        if msg:
+            err, _ = msg.parse_error()
+            pipeline.set_state(_Gst.State.NULL)
+            raise RuntimeError(f"GStreamer error: {err.message}")
 
     pipeline.set_state(_Gst.State.NULL)
 
-    if captured['image'] is None:
+    if image is None:
         raise RuntimeError("GStreamer pipeline did not produce a frame")
 
-    return captured['image']
+    return image
+
+
+def _sample_to_image(sample):
+    """Convert a GStreamer sample to a PIL Image."""
+    buf = sample.get_buffer()
+    caps = sample.get_caps()
+    struct = caps.get_structure(0)
+    width = struct.get_int('width')[1]
+    height = struct.get_int('height')[1]
+    success, mapinfo = buf.map(_Gst.MapFlags.READ)
+    if not success:
+        return None
+    from PIL import Image
+    img = Image.frombytes('RGB', (width, height), bytes(mapinfo.data))
+    buf.unmap(mapinfo)
+    return img
 
 
 # ---------------------------------------------------------------------------
@@ -286,22 +295,27 @@ def capture_screenshot():
 
     Initialises the portal session on first call (may trigger a permission dialog).
     Subsequent calls reuse the session or the persisted restore token.
+    On failure, resets the session and retries once with a fresh session.
 
     Returns a ``PIL.Image`` or ``None`` on failure.
     """
     with _session['lock']:
-        try:
-            if not _session['initialized']:
-                _init_screencast_session()
-            return _capture_frame()
-        except Exception as exc:
-            logger.warning("Wayland screenshot failed: %s", exc)
-            # Reset session so next call retries initialization
-            _session['initialized'] = False
-            _session['pipewire_fd'] = None
-            _session['pipewire_node_id'] = None
-            _session['session_handle'] = None
-            return None
+        for attempt in range(2):
+            try:
+                if not _session['initialized']:
+                    _init_screencast_session()
+                return _capture_frame()
+            except Exception as exc:
+                logger.warning("Wayland screenshot failed (attempt %d): %s", attempt + 1, exc)
+                # Reset session so next attempt retries initialization
+                _session['initialized'] = False
+                _session['pipewire_fd'] = None
+                _session['pipewire_node_id'] = None
+                _session['session_handle'] = None
+                if attempt == 0:
+                    # First failure — retry with a fresh session
+                    continue
+        return None
 
 
 def reset_session():

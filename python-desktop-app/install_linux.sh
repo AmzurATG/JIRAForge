@@ -65,6 +65,7 @@ install_apt() {
         xprintidle \
         libdbus-1-dev \
         libglib2.0-dev \
+        gnome-screenshot \
         scrot
 }
 

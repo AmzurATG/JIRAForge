@@ -491,12 +491,13 @@ def capture_screenshot_linux():
 
     Tries in order:
     1. Wayland ScreenCast daemon (via wayland_screenshot module)
-    2. ``gnome-screenshot`` / ``grim`` subprocess
-    3. ``scrot`` as last resort (X11)
+    2. GNOME Screenshot D-Bus interface (no subprocess needed)
+    3. ``gnome-screenshot`` / ``grim`` subprocess
+    4. ``scrot`` as last resort (X11)
 
     Returns a PIL.Image or raises RuntimeError.
     """
-    # 1. Try Wayland daemon/module
+    # 1. Try Wayland daemon/module (PipeWire-based)
     try:
         from wayland_screenshot import capture_screenshot as _wayland_capture
         img = _wayland_capture()
@@ -504,25 +505,66 @@ def capture_screenshot_linux():
             return img
     except ImportError:
         pass
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"[SCREENSHOT] Wayland ScreenCast failed: {e}")
 
-    # 2. gnome-screenshot (GNOME/Wayland)
+    # 2. GNOME Screenshot D-Bus (works on Wayland without subprocess)
+    if _DBUS_AVAILABLE and _is_wayland():
+        img = _capture_gnome_dbus_screenshot()
+        if img is not None:
+            return img
+
+    # 3. gnome-screenshot (GNOME/Wayland)
     img = _capture_subprocess(['gnome-screenshot', '-f'])
     if img is not None:
         return img
 
-    # 3. grim (wlroots/Sway Wayland)
+    # 4. grim (wlroots/Sway Wayland)
     img = _capture_subprocess(['grim'])
     if img is not None:
         return img
 
-    # 4. scrot (X11 fallback)
+    # 5. scrot (X11 fallback)
     img = _capture_subprocess(['scrot', '--overwrite'])
     if img is not None:
         return img
 
     raise RuntimeError("No screenshot tool available on this Linux system")
+
+
+def _capture_gnome_dbus_screenshot():
+    """Capture screenshot using GNOME Shell Screenshot D-Bus interface.
+
+    Uses org.gnome.Shell.Screenshot.Screenshot() which works on Wayland
+    without needing gnome-screenshot binary installed.
+    """
+    import tempfile
+    try:
+        bus = dbus.SessionBus()
+        proxy = bus.get_object('org.gnome.Shell.Screenshot', '/org/gnome/Shell/Screenshot')
+        iface = dbus.Interface(proxy, 'org.gnome.Shell.Screenshot')
+
+        tmp = tempfile.NamedTemporaryFile(suffix='.png', delete=False)
+        tmp_path = tmp.name
+        tmp.close()
+
+        # Screenshot(include_cursor, flash, filename) -> (success, filename)
+        success, saved_path = iface.Screenshot(False, False, tmp_path)
+        if success:
+            img = Image.open(str(saved_path)).copy()
+            try:
+                os.unlink(str(saved_path))
+            except OSError:
+                pass
+            return img
+    except Exception as e:
+        print(f"[SCREENSHOT] GNOME D-Bus Screenshot failed: {e}")
+    finally:
+        try:
+            os.unlink(tmp_path)
+        except (OSError, NameError):
+            pass
+    return None
 
 
 def _capture_subprocess(cmd_prefix):
