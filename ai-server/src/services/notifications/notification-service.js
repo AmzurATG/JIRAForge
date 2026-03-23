@@ -33,18 +33,6 @@ class NotificationService {
     }
 
     /**
-     * Build settings URL for a user based on their organization's Jira instance
-     * @param {string} organizationId - Organization ID
-     * @returns {Promise<string>} Settings URL
-     */
-    async _buildSettingsUrl(organizationId) {
-        // No dedicated notification preferences page exists in the Forge app,
-        // so only return a URL if one is explicitly configured via env var.
-        // Templates gracefully handle null by showing plain-text instructions.
-        return process.env.SETTINGS_URL || null;
-    }
-
-    /**
      * Get download URL from app_releases table or environment
      * @param {string} [platform='windows'] - Platform
      * @returns {Promise<string>} Download URL
@@ -201,12 +189,9 @@ class NotificationService {
     async sendLoginReminder(userId, organizationId, options = {}) {
         // Build dynamic login URL based on organization's Jira instance
         const loginUrl = options.loginUrl || await this._buildLoginUrl(organizationId);
-        // Build dynamic settings URL for notification preferences
-        const settingsUrl = await this._buildSettingsUrl(organizationId);
         return this.sendNotification(userId, organizationId, 'login_reminder', { 
             loginUrl,
-            lastLoginDate: options.lastLoginDate,
-            settingsUrl
+            lastLoginDate: options.lastLoginDate
         });
     }
 
@@ -220,12 +205,9 @@ class NotificationService {
     async sendDownloadReminder(userId, organizationId, platform = 'Windows', downloadUrl = null) {
         // Get download URL from app_releases table or fallback
         const resolvedUrl = downloadUrl || await this._getDownloadUrl(platform.toLowerCase());
-        // Build dynamic settings URL for notification preferences
-        const settingsUrl = await this._buildSettingsUrl(organizationId);
         return this.sendNotification(userId, organizationId, 'download_reminder', {
             downloadUrl: resolvedUrl,
-            platform,
-            settingsUrl
+            platform
         });
     }
 
@@ -244,15 +226,12 @@ class NotificationService {
     async sendNewVersionNotification(userId, organizationId, versionInfo) {
         // Get download URL from app_releases or use provided one
         const downloadUrl = versionInfo.downloadUrl || await this._getDownloadUrl();
-        // Build dynamic settings URL for notification preferences
-        const settingsUrl = await this._buildSettingsUrl(organizationId);
         return this.sendNotification(userId, organizationId, 'new_version', {
             version: versionInfo.version,
             currentVersion: versionInfo.currentVersion,
             releaseNotes: versionInfo.releaseNotes || 'Bug fixes and performance improvements',
             downloadUrl,
-            isMandatory: versionInfo.isMandatory || false,
-            settingsUrl
+            isMandatory: versionInfo.isMandatory || false
         });
     }
 
@@ -266,12 +245,9 @@ class NotificationService {
      * @returns {Promise<Object>} Send result
      */
     async sendInactivityAlert(userId, organizationId, activityInfo) {
-        // Build dynamic settings URL based on organization's Jira instance
-        const settingsUrl = await this._buildSettingsUrl(organizationId);
         return this.sendNotification(userId, organizationId, 'inactivity_alert', {
             lastActivityTime: activityInfo.lastActivityTime,
-            hoursInactive: activityInfo.hoursInactive,
-            settingsUrl
+            hoursInactive: activityInfo.hoursInactive
         });
     }
 
