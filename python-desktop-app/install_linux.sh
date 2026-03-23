@@ -53,6 +53,7 @@ install_apt() {
         python3-gi-cairo \
         python3-dbus \
         gir1.2-gstreamer-1.0 \
+        gir1.2-atspi-2.0 \
         gir1.2-ayatanaappindicator3-0.1 \
         gstreamer1.0-pipewire \
         gstreamer1.0-plugins-base \
@@ -75,6 +76,7 @@ install_dnf() {
         python3-gobject \
         python3-cairo \
         python3-dbus \
+        at-spi2-core \
         gstreamer1-plugins-base \
         pipewire-gstreamer \
         libnotify \
@@ -91,6 +93,7 @@ install_pacman() {
         python-gobject \
         python-cairo \
         python-dbus \
+        at-spi2-core \
         gst-plugins-base \
         gst-plugin-pipewire \
         gst-plugins-good \

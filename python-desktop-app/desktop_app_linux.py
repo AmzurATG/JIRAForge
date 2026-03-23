@@ -46,6 +46,16 @@ try:
 except ImportError:
     pass
 
+_ATSPI_AVAILABLE = False
+try:
+    import gi
+    gi.require_version('Atspi', '2.0')
+    from gi.repository import Atspi as _Atspi
+    _Atspi.init()
+    _ATSPI_AVAILABLE = True
+except (ImportError, ValueError):
+    pass
+
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
@@ -119,8 +129,12 @@ def _is_wayland():
 def get_active_window_linux():
     """Return active window info dict compatible with the Windows version.
 
-    On Wayland sessions, uses the GNOME Shell D-Bus eval interface to read
-    ``global.display.focus_window``.  Falls back to EWMH (X11) and xdotool.
+    Detection order:
+    1. AT-SPI accessibility interface (works natively on Wayland)
+    2. GNOME Shell D-Bus Eval (legacy, disabled on GNOME ≥46)
+    3. EWMH (X11)
+    4. xdotool (X11 / XWayland)
+    5. gdbus fallback
 
     Retries once with a 300ms delay if the first attempt returns Unknown
     (handles race conditions during window focus transitions).
@@ -128,7 +142,16 @@ def get_active_window_linux():
     import time as _time
 
     for attempt in range(2):
-        # Wayland: GNOME Shell D-Bus is the only reliable way
+        # AT-SPI: works on Wayland without needing GNOME Shell Eval/Introspect
+        if _ATSPI_AVAILABLE:
+            try:
+                result = _get_active_window_atspi()
+                if result:
+                    return result
+            except Exception:
+                pass
+
+        # Wayland: GNOME Shell D-Bus (fallback for older GNOME versions)
         if _is_wayland() and _DBUS_AVAILABLE:
             try:
                 result = _get_active_window_gnome_dbus()
@@ -161,6 +184,63 @@ def get_active_window_linux():
             _time.sleep(0.3)
 
     return _unknown_window()
+
+
+# System/desktop processes to ignore when scanning AT-SPI for active windows
+_ATSPI_IGNORE_APPS = frozenset({
+    'gnome-shell', 'gsd-keyboard', 'gsd-color', 'gsd-media-keys',
+    'gsd-power', 'gsd-wacom', 'gsd-xsettings', 'ibus-extension-gtk3',
+    'ibus-x11', 'evolution-alarm-notify', 'xdg-desktop-portal-gtk',
+    'xdg-desktop-portal-gnome', 'update-notifier', 'gjs',
+})
+
+
+def _get_active_window_atspi():
+    """Get the active window via the AT-SPI accessibility interface.
+
+    Works natively on Wayland without requiring GNOME Shell Eval or Introspect.
+    Iterates over all accessible applications to find the one with an ACTIVE
+    top-level window.
+    """
+    desktop = _Atspi.get_desktop(0)
+    child_count = desktop.get_child_count()
+
+    for i in range(child_count):
+        try:
+            app = desktop.get_child_at_index(i)
+            if not app:
+                continue
+            app_name = app.get_name() or ''
+            if app_name.lower() in _ATSPI_IGNORE_APPS:
+                continue
+
+            win_count = app.get_child_count()
+            for j in range(win_count):
+                try:
+                    win = app.get_child_at_index(j)
+                    if not win:
+                        continue
+                    states = win.get_state_set()
+                    if not states.contains(_Atspi.StateType.ACTIVE):
+                        continue
+
+                    title = win.get_name() or ''
+                    if not title:
+                        continue
+
+                    window_key = f"{app_name}|||{title}"
+                    return {
+                        'title': title,
+                        'app': app_name,
+                        'window_key': window_key,
+                        'is_new_window': False,
+                    }
+                except Exception:
+                    continue
+        except Exception:
+            continue
+
+    return None
 
 
 def _get_active_window_gnome_dbus():

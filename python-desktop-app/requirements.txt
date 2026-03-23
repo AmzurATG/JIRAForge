@@ -45,6 +45,11 @@ python-xlib==0.33; sys_platform == 'linux'
 #   Ubuntu/Debian: sudo apt-get install -y gnome-screenshot
 #   Fedora/RHEL:   sudo dnf install gnome-screenshot
 #   Arch:          sudo pacman -S gnome-screenshot
+#
+# AT-SPI accessibility (used for Wayland window detection on GNOME ≥46):
+#   Ubuntu/Debian: sudo apt-get install -y gir1.2-atspi-2.0
+#   Fedora/RHEL:   sudo dnf install at-spi2-core
+#   Arch:          sudo pacman -S at-spi2-core
 
 # =============================================================================
 # OCR Dependencies
