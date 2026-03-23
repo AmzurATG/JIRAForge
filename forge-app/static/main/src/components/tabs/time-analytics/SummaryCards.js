@@ -8,15 +8,19 @@ import { normalizeDate, formatLocalDate, getMonthStr } from './dateUtils';
  * Cards are clickable to switch between Day/Week/Month views
  */
 function SummaryCards({ loading, timeData, activeView, onViewChange, reconciledTodayTotal }) {
-  const calculateTodayTotal = () => {
+  // Get the dailySummary total for today (before reconciliation) so we can
+  // compute the delta and apply it to week/month totals as well.
+  const rawTodayTotal = (() => {
     const today = new Date();
     const todayStr = formatLocalDate(today);
-
     return timeData?.dailySummary?.filter(day => {
       const workDateStr = normalizeDate(day.work_date);
       return workDateStr === todayStr;
     }).reduce((sum, day) => sum + (day.total_seconds || 0), 0) || 0;
-  };
+  })();
+
+  // Difference between reconciled (timeline-accurate) and raw (dailySummary) today value
+  const todayDelta = (reconciledTodayTotal != null) ? reconciledTodayTotal - rawTodayTotal : 0;
 
   const calculateWeekTotal = () => {
     const today = new Date();
@@ -37,19 +41,23 @@ function SummaryCards({ loading, timeData, activeView, onViewChange, reconciledT
       return formatLocalDate(weekDate);
     }).filter(dateStr => dateStr <= todayStr);
 
-    return timeData?.dailySummary?.filter(day => {
+    const rawTotal = timeData?.dailySummary?.filter(day => {
       const workDateStr = normalizeDate(day.work_date);
       return weekDates.includes(workDateStr);
     }).reduce((sum, day) => sum + (day.total_seconds || 0), 0) || 0;
+
+    return rawTotal + todayDelta;
   };
 
   const calculateMonthTotal = () => {
     const currentMonth = getMonthStr();
 
-    return timeData?.dailySummary?.filter(day => {
+    const rawTotal = timeData?.dailySummary?.filter(day => {
       const workDateStr = normalizeDate(day.work_date);
       return workDateStr.startsWith(currentMonth);
     }).reduce((sum, day) => sum + (day.total_seconds || 0), 0) || 0;
+
+    return rawTotal + todayDelta;
   };
 
   return (
@@ -73,7 +81,7 @@ function SummaryCards({ loading, timeData, activeView, onViewChange, reconciledT
             <p>Loading...</p>
           ) : (
             <div className="cumulative-stat">
-              <div className="stat-value">{formatTime(reconciledTodayTotal != null ? reconciledTodayTotal : calculateTodayTotal())}</div>
+              <div className="stat-value">{formatTime(reconciledTodayTotal != null ? reconciledTodayTotal : rawTodayTotal)}</div>
             </div>
           )}
         </div>
