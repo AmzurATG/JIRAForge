@@ -634,6 +634,82 @@ exports.verifyToken = async (req, res) => {
  *   diagnostics: object 
  * }
  */
+/**
+ * Log OCR-specific diagnostics (engine status, bundled deps, recommendations)
+ */
+function logOcrDiagnostics(logPrefix, diagnostics) {
+  const ocrStatus = diagnostics?.status || 'unknown';
+  const primaryEngine = diagnostics?.config?.primary_engine || 'unknown';
+  const engineDetails = diagnostics?.engine_init_details || {};
+
+  logger.info(`${logPrefix} OCR Status: ${ocrStatus}`);
+  logger.info(`${logPrefix} Primary Engine: ${primaryEngine}`);
+
+  // PaddleOCR details
+  const paddle = engineDetails.paddle || {};
+  logger.info(`${logPrefix} PaddleOCR: module=${paddle.module_available}, engine=${paddle.engine_available}, user_models=${paddle.user_models_exist}, version=${paddle.version || 'N/A'}`);
+  if (paddle.initialization_error) {
+    logger.error(`${logPrefix} PaddleOCR Init Error: ${paddle.initialization_error}`);
+  }
+
+  // Tesseract details
+  const tesseract = engineDetails.tesseract || {};
+  logger.info(`${logPrefix} Tesseract: module=${tesseract.module_available}, engine=${tesseract.engine_available}, version=${tesseract.tesseract_version || 'N/A'}`);
+  if (tesseract.initialization_error) {
+    logger.error(`${logPrefix} Tesseract Init Error: ${tesseract.initialization_error}`);
+  }
+
+  // Bundled dependency status for exe deployments
+  const bundled = diagnostics?.bundled_dependencies;
+  if (bundled) {
+    logger.info(`${logPrefix} Bundled: tesseract=${bundled.tesseract_exe ? 'YES' : 'NO'}, paddle_bundled=${bundled.paddleocr_models_bundled ? 'YES' : 'NO'}, paddle_user=${bundled.paddleocr_user_models ? 'YES' : 'NO'}`);
+  }
+
+  // Recommendations
+  const recommendations = diagnostics?.recommendations || [];
+  if (recommendations.length > 0) {
+    logger.warn(`${logPrefix} Recommendations: ${recommendations.join(' | ')}`);
+  }
+}
+
+/**
+ * Log login-specific diagnostics (status, step, errors)
+ */
+function logLoginDiagnostics(logPrefix, diagnostics) {
+  const loginStatus = diagnostics?.status || 'unknown';
+  const loginStep = diagnostics?.step || 'unknown';
+  const errorMessage = diagnostics?.error || null;
+
+  logger.info(`${logPrefix} Login Status: ${loginStatus} | Step: ${loginStep}`);
+  if (errorMessage) {
+    logger.error(`${logPrefix} Login Error: ${errorMessage}`);
+    if (diagnostics?.error_details) {
+      logger.error(`${logPrefix} Error Details: ${JSON.stringify(diagnostics.error_details)}`);
+    }
+  }
+}
+
+/**
+ * Log general error diagnostics (category, message, stack trace)
+ */
+function logErrorDiagnostics(logPrefix, diagnostics) {
+  const errorCategory = diagnostics?.category || 'general';
+  const errorMessage = diagnostics?.message || 'Unknown error';
+  const stackTrace = diagnostics?.stack_trace || null;
+
+  logger.error(`${logPrefix} Category: ${errorCategory} | Error: ${errorMessage}`);
+  if (stackTrace) {
+    logger.error(`${logPrefix} Stack: ${stackTrace.substring(0, 500)}`);
+  }
+}
+
+/** Dispatch table for type-specific diagnostic logging */
+const diagnosticLoggers = {
+  ocr: logOcrDiagnostics,
+  login: logLoginDiagnostics,
+  error: logErrorDiagnostics
+};
+
 exports.submitDiagnostics = async (req, res) => {
   try {
     const { atlassian_token, type, diagnostics, app_version } = req.body;
@@ -646,77 +722,21 @@ exports.submitDiagnostics = async (req, res) => {
     const atlassianUser = await verifyAtlassianTokenOrRespond(atlassian_token, res, 'diagnostics');
     if (!atlassianUser) return;
 
-    const atlassianAccountId = atlassianUser.account_id;
     const userEmail = atlassianUser.email;
 
     // Log the diagnostics to server logs with structured format for easy searching
     const logPrefix = `[DIAG:${type.toUpperCase()}]`;
     const hostname = diagnostics?.system_info?.hostname || 'unknown';
     const platform = diagnostics?.system_info?.platform || 'unknown';
-    
+
     logger.info(`${logPrefix} User: ${userEmail} | Host: ${hostname} | Platform: ${platform} | App: ${app_version || 'unknown'}`);
-    
-    if (type === 'ocr') {
-      // Log OCR-specific diagnostics
-      const ocrStatus = diagnostics?.status || 'unknown';
-      const primaryEngine = diagnostics?.config?.primary_engine || 'unknown';
-      const engineDetails = diagnostics?.engine_init_details || {};
-      
-      logger.info(`${logPrefix} OCR Status: ${ocrStatus}`);
-      logger.info(`${logPrefix} Primary Engine: ${primaryEngine}`);
-      
-      // Log PaddleOCR details
-      const paddle = engineDetails.paddle || {};
-      logger.info(`${logPrefix} PaddleOCR: module=${paddle.module_available}, engine=${paddle.engine_available}, user_models=${paddle.user_models_exist}, version=${paddle.version || 'N/A'}`);
-      if (paddle.initialization_error) {
-        logger.error(`${logPrefix} PaddleOCR Init Error: ${paddle.initialization_error}`);
-      }
-      
-      // Log Tesseract details
-      const tesseract = engineDetails.tesseract || {};
-      logger.info(`${logPrefix} Tesseract: module=${tesseract.module_available}, engine=${tesseract.engine_available}, version=${tesseract.tesseract_version || 'N/A'}`);
-      if (tesseract.initialization_error) {
-        logger.error(`${logPrefix} Tesseract Init Error: ${tesseract.initialization_error}`);
-      }
-      
-      // Log bundled dependency status for exe deployments
-      const bundled = diagnostics?.bundled_dependencies;
-      if (bundled) {
-        logger.info(`${logPrefix} Bundled: tesseract=${bundled.tesseract_exe ? 'YES' : 'NO'}, paddle_bundled=${bundled.paddleocr_models_bundled ? 'YES' : 'NO'}, paddle_user=${bundled.paddleocr_user_models ? 'YES' : 'NO'}`);
-      }
-      
-      // Log recommendations
-      const recommendations = diagnostics?.recommendations || [];
-      if (recommendations.length > 0) {
-        logger.warn(`${logPrefix} Recommendations: ${recommendations.join(' | ')}`);
-      }
-      
-    } else if (type === 'login') {
-      // Log login-specific diagnostics
-      const loginStatus = diagnostics?.status || 'unknown';
-      const loginStep = diagnostics?.step || 'unknown';
-      const errorMessage = diagnostics?.error || null;
-      
-      logger.info(`${logPrefix} Login Status: ${loginStatus} | Step: ${loginStep}`);
-      if (errorMessage) {
-        logger.error(`${logPrefix} Login Error: ${errorMessage}`);
-        if (diagnostics?.error_details) {
-          logger.error(`${logPrefix} Error Details: ${JSON.stringify(diagnostics.error_details)}`);
-        }
-      }
-      
-    } else if (type === 'error') {
-      // Log general error diagnostics
-      const errorCategory = diagnostics?.category || 'general';
-      const errorMessage = diagnostics?.message || 'Unknown error';
-      const stackTrace = diagnostics?.stack_trace || null;
-      
-      logger.error(`${logPrefix} Category: ${errorCategory} | Error: ${errorMessage}`);
-      if (stackTrace) {
-        logger.error(`${logPrefix} Stack: ${stackTrace.substring(0, 500)}`);
-      }
+
+    // Dispatch to type-specific logger (no-op for unknown types)
+    const typeLogger = diagnosticLoggers[type];
+    if (typeLogger) {
+      typeLogger(logPrefix, diagnostics);
     }
-    
+
     // Log the full diagnostics as JSON for detailed analysis (at debug level)
     logger.debug(`${logPrefix} Full diagnostics: ${JSON.stringify(diagnostics)}`);
 
