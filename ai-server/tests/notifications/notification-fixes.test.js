@@ -60,47 +60,16 @@ const newVersionTemplate = require('../../src/services/notifications/templates/n
 const inactivityAlertTemplate = require('../../src/services/notifications/templates/inactivity-alert');
 
 // =====================================================================
-// FIX 1 — Notification preferences link must not produce a 404
+// FIX 1 — Email templates must not reference notification preferences
+// (no notification preferences page exists)
 // =====================================================================
-describe('Fix: Notification preferences link should not produce a 404', () => {
+describe('Fix: Email templates should not reference notification preferences', () => {
 
     beforeEach(() => {
         jest.clearAllMocks();
-        delete process.env.SETTINGS_URL;
     });
 
-    afterEach(() => {
-        delete process.env.SETTINGS_URL;
-    });
-
-    describe('_buildSettingsUrl', () => {
-        it('should return null when SETTINGS_URL env is not set', async () => {
-            const url = await notificationService._buildSettingsUrl('org-1');
-            expect(url).toBeNull();
-        });
-
-        it('should return SETTINGS_URL env value when set', async () => {
-            process.env.SETTINGS_URL = 'https://my-app.example.com/settings';
-            const url = await notificationService._buildSettingsUrl('org-1');
-            expect(url).toBe('https://my-app.example.com/settings');
-        });
-
-        it('should NOT generate a /jira/settings/apps URL (the 404 path)', async () => {
-            userDbService.getOrganizationById.mockResolvedValue({
-                id: 'org-1',
-                jira_instance_url: 'https://test.atlassian.net'
-            });
-            const url = await notificationService._buildSettingsUrl('org-1');
-            // Must be null (no link) or a string that doesn't contain the broken path
-            if (url !== null) {
-                expect(url).not.toMatch(/\/jira\/settings\/apps/);
-            } else {
-                expect(url).toBeNull();
-            }
-        });
-    });
-
-    describe('Email templates render correctly when settingsUrl is null', () => {
+    describe('Email templates do not mention notification preferences', () => {
         const baseData = {
             displayName: 'Test User',
             loginUrl: 'https://test.atlassian.net/jira',
@@ -112,81 +81,47 @@ describe('Fix: Notification preferences link should not produce a 404', () => {
             releaseNotes: 'Bug fixes',
             isMandatory: false,
             lastActivityTime: '2025-02-01 10:00',
-            hoursInactive: 5,
-            settingsUrl: null
+            hoursInactive: 5
         };
 
-        it('login-reminder text should NOT contain an <a> tag when settingsUrl is null', () => {
+        it('login-reminder text should not mention notification preferences', () => {
             const text = loginReminderTemplate.text(baseData);
-            expect(text).not.toContain('<a');
-            expect(text).toContain('notification preferences in the app settings');
+            expect(text).not.toContain('notification preferences');
         });
 
-        it('login-reminder HTML should show plain text fallback when settingsUrl is null', () => {
+        it('login-reminder HTML should not mention notification preferences', () => {
             const html = loginReminderTemplate.html(baseData);
-            expect(html).not.toContain('href="null"');
-            expect(html).toContain('notification preferences in the app settings');
+            expect(html).not.toContain('notification preferences');
         });
 
-        it('download-reminder text should not link to a broken URL', () => {
+        it('download-reminder text should not mention notification preferences', () => {
             const text = downloadReminderTemplate.text(baseData);
-            expect(text).not.toContain('/jira/settings/apps');
-            expect(text).toContain('notification preferences in the app settings');
+            expect(text).not.toContain('notification preferences');
         });
 
-        it('download-reminder HTML should show plain text fallback', () => {
+        it('download-reminder HTML should not mention notification preferences', () => {
             const html = downloadReminderTemplate.html(baseData);
-            expect(html).not.toContain('href="null"');
-            expect(html).toContain('notification preferences in the app settings');
+            expect(html).not.toContain('notification preferences');
         });
 
-        it('new-version text should not link to a broken URL', () => {
+        it('new-version text should not mention notification preferences', () => {
             const text = newVersionTemplate.text(baseData);
-            expect(text).not.toContain('/jira/settings/apps');
-            expect(text).toContain('notification preferences in the app settings');
+            expect(text).not.toContain('notification preferences');
         });
 
-        it('new-version HTML should show plain text fallback', () => {
+        it('new-version HTML should not mention notification preferences', () => {
             const html = newVersionTemplate.html(baseData);
-            expect(html).not.toContain('href="null"');
-            expect(html).toContain('notification preferences in the app settings');
+            expect(html).not.toContain('notification preferences');
         });
 
-        it('inactivity-alert text should not link to a broken URL', () => {
+        it('inactivity-alert text should not mention notification preferences', () => {
             const text = inactivityAlertTemplate.text(baseData);
-            expect(text).not.toContain('/jira/settings/apps');
+            expect(text).not.toContain('notification preferences');
         });
 
-        it('inactivity-alert HTML should not contain broken link', () => {
+        it('inactivity-alert HTML should not mention notification preferences', () => {
             const html = inactivityAlertTemplate.html(baseData);
-            expect(html).not.toContain('href="null"');
-        });
-    });
-
-    describe('Email templates render link correctly when settingsUrl is provided', () => {
-        const dataWithUrl = {
-            displayName: 'Test User',
-            loginUrl: 'https://test.atlassian.net/jira',
-            lastLoginDate: '2025-02-01',
-            downloadUrl: 'https://example.com/download',
-            platform: 'Windows',
-            version: '2.0.0',
-            currentVersion: '1.0.0',
-            releaseNotes: 'Bug fixes',
-            isMandatory: false,
-            lastActivityTime: '2025-02-01 10:00',
-            hoursInactive: 5,
-            settingsUrl: 'https://my-app.example.com/settings'
-        };
-
-        it('login-reminder HTML should contain the settings link', () => {
-            const html = loginReminderTemplate.html(dataWithUrl);
-            expect(html).toContain('href="https://my-app.example.com/settings"');
-        });
-
-        it('new-version text should contain the settings URL', () => {
-            const text = newVersionTemplate.text(dataWithUrl);
-            expect(text).toContain('https://my-app.example.com/settings');
+            expect(html).not.toContain('notification preferences');
         });
     });
 });

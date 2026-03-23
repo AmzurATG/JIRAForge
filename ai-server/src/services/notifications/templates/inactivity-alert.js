@@ -15,10 +15,9 @@ module.exports = {
      * @param {string} data.displayName - User's display name
      * @param {string} data.lastActivityTime - Last activity timestamp
      * @param {number} data.hoursInactive - Hours since last activity
-     * @param {string} [data.settingsUrl] - URL to notification settings
      * @returns {string} Plain text email body
      */
-    text: ({ displayName, lastActivityTime, hoursInactive, settingsUrl }) => `
+    text: ({ displayName, lastActivityTime, hoursInactive }) => `
 Hello ${displayName},
 
 I hope everything is going well! 😊
@@ -31,14 +30,11 @@ If you're enjoying a well-deserved break, that's wonderful! We just wanted to re
 
 If you'd like to resume tracking, simply open the Desktop App whenever you're ready - it will automatically pick up where you left off.
 
-${settingsUrl ? `Feel free to adjust these reminders anytime: ${settingsUrl}` : ''}
-
 Warm regards,
 The TimeTracker Team
 
 ---
 You're receiving this friendly check-in because you have inactivity alerts enabled.
-You can update these preferences anytime in your settings.
     `.trim(),
     
     /**
@@ -46,7 +42,7 @@ You can update these preferences anytime in your settings.
      * @param {Object} data - Template data
      * @returns {string} HTML email body
      */
-    html: ({ displayName, lastActivityTime, hoursInactive, settingsUrl }) => `
+    html: ({ displayName, lastActivityTime, hoursInactive }) => `
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -202,7 +198,6 @@ You can update these preferences anytime in your settings.
             
             <div class="footer">
                 <p>You're receiving this friendly check-in because you have inactivity alerts enabled.</p>
-                ${settingsUrl ? `<p><a href="${settingsUrl}">Update your notification preferences</a></p>` : ''}
             </div>
         </div>
     </div>
