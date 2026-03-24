@@ -46,6 +46,11 @@ _session = {
     'session_handle': None,
     'restore_token': None,
     'lock': threading.Lock(),
+    # Persistent pipeline kept in PAUSED state to hold the PipeWire stream
+    # alive between captures.  Without this, GNOME Shell may tear down the
+    # ScreenCast session when pipewiresrc disconnects at pipeline NULL.
+    'pipeline': None,
+    'appsink': None,
 }
 
 # ---------------------------------------------------------------------------
@@ -228,27 +233,41 @@ def _capture_frame():
     """Grab a single frame from the PipeWire stream via GStreamer.
 
     Returns a PIL.Image.
+
+    The GStreamer pipeline is kept alive in PAUSED state between captures to
+    hold the PipeWire stream open.  This prevents GNOME Shell from tearing
+    down the ScreenCast portal session between captures (which would cause
+    "target not found" on the next attempt).
     """
     _ensure_gi()
 
-    fd = _session['pipewire_fd']
-    node_id = _session['pipewire_node_id']
+    pipeline = _session.get('pipeline')
+    appsink = _session.get('appsink')
 
-    # Use do-timestamp=true and always-copy=true to ensure fresh frames.
-    # Remove num-buffers=1 — instead we pull one sample manually for reliability.
-    pipeline_str = (
-        f"pipewiresrc fd={fd} path={node_id} do-timestamp=true always-copy=true ! "
-        "videoconvert ! "
-        "video/x-raw,format=RGB ! "
-        "appsink name=sink emit-signals=true max-buffers=1 drop=true sync=false"
-    )
-    pipeline = _Gst.parse_launch(pipeline_str)
-    appsink = pipeline.get_by_name('sink')
+    if pipeline is None:
+        # First capture or after a reset — build a new pipeline
+        fd = _session['pipewire_fd']
+        node_id = _session['pipewire_node_id']
 
+        # dup() the fd — pipewiresrc takes ownership and will close its copy
+        # when the pipeline is destroyed; the original stays open.
+        dup_fd = os.dup(fd)
+
+        pipeline_str = (
+            f"pipewiresrc fd={dup_fd} path={node_id} do-timestamp=true always-copy=true ! "
+            "videoconvert ! "
+            "video/x-raw,format=RGB ! "
+            "appsink name=sink emit-signals=true max-buffers=1 drop=true sync=false"
+        )
+        pipeline = _Gst.parse_launch(pipeline_str)
+        appsink = pipeline.get_by_name('sink')
+        _session['pipeline'] = pipeline
+        _session['appsink'] = appsink
+
+    # Transition to PLAYING to pull a fresh frame
     pipeline.set_state(_Gst.State.PLAYING)
 
     image = None
-    # Try to pull a sample with increasing timeouts (stream may need time to start)
     for wait_ns in [3 * _Gst.SECOND, 5 * _Gst.SECOND]:
         sample = appsink.emit('try-pull-sample', wait_ns)
         if sample is not None:
@@ -259,15 +278,27 @@ def _capture_frame():
         msg = bus.pop_filtered(_Gst.MessageType.ERROR)
         if msg:
             err, _ = msg.parse_error()
-            pipeline.set_state(_Gst.State.NULL)
+            # Pipeline is broken — tear it down; next call will rebuild
+            _destroy_pipeline()
             raise RuntimeError(f"GStreamer error: {err.message}")
 
-    pipeline.set_state(_Gst.State.NULL)
+    # Park the pipeline in PAUSED so the PipeWire stream stays connected
+    # but no frames are buffered.
+    pipeline.set_state(_Gst.State.PAUSED)
 
     if image is None:
         raise RuntimeError("GStreamer pipeline did not produce a frame")
 
     return image
+
+
+def _destroy_pipeline():
+    """Tear down the persistent GStreamer pipeline."""
+    pipeline = _session.get('pipeline')
+    if pipeline is not None:
+        pipeline.set_state(_Gst.State.NULL)
+    _session['pipeline'] = None
+    _session['appsink'] = None
 
 
 def _sample_to_image(sample):
@@ -302,14 +333,30 @@ def capture_screenshot():
     with _session['lock']:
         for attempt in range(2):
             try:
+                if _session['initialized']:
+                    # Validate that the stored PipeWire fd is still open;
+                    # if the portal session was closed (e.g. compositor
+                    # recycled it), the fd will be dead → force re-init.
+                    fd = _session['pipewire_fd']
+                    if fd is None or fd < 0:
+                        _session['initialized'] = False
+                    else:
+                        try:
+                            os.fstat(fd)
+                        except OSError:
+                            logger.info("PipeWire fd is stale — re-initialising session")
+                            _session['initialized'] = False
+                            _session['pipewire_fd'] = None
+
                 if not _session['initialized']:
                     _init_screencast_session()
                 return _capture_frame()
             except Exception as exc:
                 logger.warning("Wayland screenshot failed (attempt %d): %s", attempt + 1, exc)
-                # Reset session so next attempt retries initialization
+                # Tear down pipeline + close fd before re-init
+                _destroy_pipeline()
+                _close_pipewire_fd()
                 _session['initialized'] = False
-                _session['pipewire_fd'] = None
                 _session['pipewire_node_id'] = None
                 _session['session_handle'] = None
                 if attempt == 0:
@@ -318,11 +365,23 @@ def capture_screenshot():
         return None
 
 
+def _close_pipewire_fd():
+    """Close the stored PipeWire fd if still open."""
+    fd = _session.get('pipewire_fd')
+    if fd is not None and fd >= 0:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+    _session['pipewire_fd'] = None
+
+
 def reset_session():
     """Force re-initialisation of the ScreenCast session."""
     with _session['lock']:
+        _destroy_pipeline()
+        _close_pipewire_fd()
         _session['initialized'] = False
-        _session['pipewire_fd'] = None
         _session['pipewire_node_id'] = None
         _session['session_handle'] = None
         logger.info("ScreenCast session reset — will re-initialise on next capture")

@@ -3933,29 +3933,69 @@ class ActiveSessionManager:
 
         Called after OCR-based app inference identifies what an 'Unknown' window actually is.
         Also updates the internal _current_key if it matches so future operations use the new name.
+
+        If a session with the target (new_title, new_app_name) already exists, the Unknown
+        session's accumulated time and visit_count are merged into it and the Unknown row
+        is deleted (avoids UNIQUE constraint violation).
         """
+        effective_title = new_title or old_title
         with self._lock:
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
             try:
-                if new_title:
+                # Check if the target session already exists (UNIQUE constraint)
+                cursor.execute(
+                    'SELECT id, total_time_seconds, visit_count FROM active_sessions '
+                    'WHERE window_title = ? AND application_name = ?',
+                    (effective_title, new_app_name)
+                )
+                existing = cursor.fetchone()
+
+                if existing:
+                    # Merge: accumulate time/visits from Unknown into existing session
                     cursor.execute(
-                        'UPDATE active_sessions SET application_name = ?, window_title = ? '
+                        'SELECT total_time_seconds, visit_count FROM active_sessions '
                         'WHERE application_name = ? AND window_title = ?',
-                        (new_app_name, new_title, old_app_name, old_title)
+                        (old_app_name, old_title)
                     )
+                    unknown_row = cursor.fetchone()
+                    if unknown_row:
+                        add_time = unknown_row[0] or 0
+                        add_visits = unknown_row[1] or 0
+                        cursor.execute(
+                            'UPDATE active_sessions '
+                            'SET total_time_seconds = total_time_seconds + ?, '
+                            '    visit_count = visit_count + ? '
+                            'WHERE id = ?',
+                            (add_time, add_visits, existing[0])
+                        )
+                        cursor.execute(
+                            'DELETE FROM active_sessions '
+                            'WHERE application_name = ? AND window_title = ?',
+                            (old_app_name, old_title)
+                        )
+                    updated = 1
                 else:
-                    cursor.execute(
-                        'UPDATE active_sessions SET application_name = ? '
-                        'WHERE application_name = ? AND window_title = ?',
-                        (new_app_name, old_app_name, old_title)
-                    )
-                updated = cursor.rowcount
+                    # No conflict — simple rename
+                    if new_title:
+                        cursor.execute(
+                            'UPDATE active_sessions SET application_name = ?, window_title = ? '
+                            'WHERE application_name = ? AND window_title = ?',
+                            (new_app_name, new_title, old_app_name, old_title)
+                        )
+                    else:
+                        cursor.execute(
+                            'UPDATE active_sessions SET application_name = ? '
+                            'WHERE application_name = ? AND window_title = ?',
+                            (new_app_name, old_app_name, old_title)
+                        )
+                    updated = cursor.rowcount
+
                 conn.commit()
 
                 # Update internal key if it matches
                 if self._current_key == (old_title, old_app_name):
-                    self._current_key = (new_title or old_title, new_app_name)
+                    self._current_key = (effective_title, new_app_name)
 
                 return updated
             except Exception as e:
@@ -7401,6 +7441,10 @@ class TimeTracker:
         """Attempt to identify the application from OCR-extracted screen text.
 
         Returns (app_name, window_title) or (None, None) if inference fails.
+
+        Desktop apps are checked FIRST (they have distinctive UI signatures).
+        Browser-based sites are only matched if no desktop app matched AND the
+        OCR text does not contain desktop-app indicators.
         """
         if not ocr_text:
             return None, None
@@ -7421,30 +7465,77 @@ class TimeTracker:
             first_line = stripped
             break
 
-        # Check for common app signatures in OCR text
-        # Each entry: (keywords_list, process_name, title_template)
-        app_signatures = [
-            (['chrome didn', 'google chrome', 'search google or type a url'], 'google-chrome', f'{first_line} - Google Chrome'),
-            (['firefox', 'mozilla firefox'], 'firefox', f'{first_line} - Firefox'),
-            (['microsoft edge', 'edge browser'], 'msedge', f'{first_line} - Microsoft Edge'),
-            (['slack —', 'slack |'], 'slack', f'{first_line} - Slack'),
-            (['microsoft teams', 'teams —'], 'teams', f'{first_line} - Teams'),
-            (['visual studio code', 'vscode'], 'code', f'{first_line} - VS Code'),
+        # ---------- Phase 1: desktop app signatures (high confidence) ----------
+        # These have UI elements that uniquely identify the app.
+        desktop_signatures = [
+            # VS Code: menu bar is distinctive
+            (['file edit selection view go run terminal help'], 'code', f'{first_line} - VS Code'),
+            (['visual studio code', 'vscode', '.vscode', 'extension host'], 'code', f'{first_line} - VS Code'),
+            # Terminals
+            (['iswaryak@', 'root@', '$ ', '# '], 'gnome-terminal', f'{first_line} - Terminal'),
+            # Slack
+            (['slack —', 'slack |', 'slack workspace'], 'slack', f'{first_line} - Slack'),
+            # Microsoft Teams
+            (['microsoft teams', 'teams —', 'teams |'], 'teams', f'{first_line} - Teams'),
+            # Spotify
             (['spotify'], 'spotify', f'{first_line} - Spotify'),
+            # Discord
             (['discord'], 'discord', f'{first_line} - Discord'),
+            # Zoom
             (['zoom meeting'], 'zoom', f'{first_line} - Zoom'),
-            (['jira', 'atlassian'], 'google-chrome', f'{first_line} - Jira'),
-            (['github.com', 'github —'], 'google-chrome', f'{first_line} - GitHub'),
-            (['gmail', 'mail.google'], 'google-chrome', f'{first_line} - Gmail'),
-            (['youtube'], 'google-chrome', f'{first_line} - YouTube'),
-            (['stackoverflow', 'stack overflow'], 'google-chrome', f'{first_line} - Stack Overflow'),
+            # LibreOffice
+            (['libreoffice', 'soffice'], 'libreoffice', f'{first_line} - LibreOffice'),
+            # Nautilus / Files
+            (['nautilus', 'org.gnome.nautilus'], 'nautilus', f'{first_line} - Files'),
         ]
 
-        for keywords, proc_name, title_template in app_signatures:
+        for keywords, proc_name, title_template in desktop_signatures:
             for keyword in keywords:
                 if keyword in text_lower:
                     return proc_name, title_template
 
+        # ---------- Phase 2: browser detection ----------
+        # Only if no desktop app matched. Check if this looks like a browser
+        # before assigning website-specific names.
+        browser_indicators = [
+            'chrome didn', 'google chrome', 'search google or type a url',
+            'search or enter address', 'new tab',
+        ]
+        is_browser = any(ind in text_lower for ind in browser_indicators)
+
+        # Detect specific browser first
+        browser_name = 'google-chrome'  # default browser assumption
+        if 'firefox' in text_lower or 'mozilla firefox' in text_lower:
+            browser_name = 'firefox'
+        elif 'microsoft edge' in text_lower or 'edge browser' in text_lower:
+            browser_name = 'msedge'
+
+        if browser_name == 'firefox':
+            return 'firefox', f'{first_line} - Firefox'
+        if browser_name == 'msedge':
+            return 'msedge', f'{first_line} - Microsoft Edge'
+
+        # ---------- Phase 3: browser-based sites ----------
+        # Only if we have positive browser evidence OR the text clearly shows
+        # a website URL/domain pattern.
+        site_signatures = [
+            (['jira', 'atlassian'], f'{first_line} - Jira'),
+            (['github.com', 'github —', 'github.com/'], f'{first_line} - GitHub'),
+            (['gmail', 'mail.google'], f'{first_line} - Gmail'),
+            (['youtube.com', 'youtube'], f'{first_line} - YouTube'),
+            (['stackoverflow.com', 'stack overflow'], f'{first_line} - Stack Overflow'),
+        ]
+
+        if is_browser:
+            # Confirmed browser — check for specific sites
+            for keywords, title_template in site_signatures:
+                for keyword in keywords:
+                    if keyword in text_lower:
+                        return browser_name, title_template
+            # Generic browser, no specific site
+            return browser_name, f'{first_line} - Google Chrome'
+
+        # No desktop app matched and no browser evidence — cannot infer
         return None, None
 
     def _extract_title_key_for_classification(self, window_title, domain=''):
