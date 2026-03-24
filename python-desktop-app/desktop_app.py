@@ -3564,6 +3564,37 @@ class AppClassificationManager:
         except Exception as e:
             print(f"[WARN] Failed to load classifications from cache: {e}")
 
+    def learn_classification(self, process_name, classification, display_name=''):
+        """Persist a newly-learned classification from AI so the app is recognized next time.
+
+        Writes to both the local SQLite cache and the in-memory dict so the
+        classification takes effect immediately without a full sync.
+        """
+        key = (process_name or '').lower().strip()
+        if not key or key == 'unknown':
+            return
+
+        # Update in-memory lookup
+        self.process_classifications[key] = classification
+        canonical = self._canonical_process_key(process_name)
+        if canonical:
+            self.normalized_process_classifications[canonical] = classification
+
+        # Persist to SQLite cache
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            cursor.execute('''
+                INSERT OR REPLACE INTO app_classifications_cache
+                (organization_id, identifier, display_name, classification, match_by, cached_at)
+                VALUES (?, ?, ?, ?, 'process', datetime('now'))
+            ''', (None, process_name, display_name or process_name, classification))
+            conn.commit()
+            conn.close()
+            print(f"[OK] Learned classification: {process_name} → {classification}")
+        except Exception as e:
+            print(f"[WARN] Failed to persist learned classification for {process_name}: {e}")
+
     def classify(self, app_name, window_title=''):
         """Classify an application based on process name and window title.
 
@@ -7396,6 +7427,65 @@ class TimeTracker:
                 # Update the session's classification via thread-safe method
                 self.session_manager.update_classification(effective_app, 'unknown', new_classification)
 
+                # Persist the classification so this app is recognized immediately next time
+                # (avoids re-running OCR + AI for the same app on every encounter)
+                if effective_app and effective_app != 'Unknown' and new_classification != 'unknown':
+                    self.classification_manager.learn_classification(
+                        effective_app, new_classification, effective_title
+                    )
+
+                    # Also persist to Supabase application_classifications table
+                    # so the classification survives across devices and is visible to admins.
+                    try:
+                        if self.supabase_service and self.organization_id:
+                            # Use a friendly display name for the app, not the window title
+                            _display_names = {
+                                'firefox': 'Firefox', 'google-chrome': 'Google Chrome',
+                                'msedge': 'Microsoft Edge', 'web-browser': 'Web Browser',
+                                'code': 'VS Code', 'gnome-terminal': 'Terminal',
+                                'slack': 'Slack', 'teams': 'Microsoft Teams',
+                                'spotify': 'Spotify', 'discord': 'Discord',
+                                'zoom': 'Zoom', 'libreoffice': 'LibreOffice',
+                                'nautilus': 'Files',
+                            }
+                            friendly_name = _display_names.get(effective_app.lower(), effective_app)
+
+                            print(f"[DEBUG] Saving to application_classifications: identifier={effective_app}, org={self.organization_id[:8]}...")
+                            # Check if classification already exists for this org + identifier
+                            existing = self.supabase_service.table('application_classifications').select('id').eq(
+                                'organization_id', self.organization_id
+                            ).eq('identifier', effective_app).eq('match_by', 'process').is_('project_key', 'null').execute()
+
+                            print(f"[DEBUG] Existing rows found: {len(existing.data) if existing.data else 0}")
+
+                            if existing.data:
+                                # Update existing row
+                                update_result = self.supabase_service.table('application_classifications').update({
+                                    'display_name': friendly_name,
+                                    'classification': new_classification,
+                                    'created_by': self.current_user_id or 'ai-auto',
+                                }).eq('id', existing.data[0]['id']).execute()
+                                print(f"[OK] Updated classification in Supabase: {effective_app} → {new_classification}")
+                            else:
+                                # Insert new row
+                                insert_result = self.supabase_service.table('application_classifications').insert({
+                                    'organization_id': self.organization_id,
+                                    'identifier': effective_app,
+                                    'display_name': friendly_name,
+                                    'classification': new_classification,
+                                    'match_by': 'process',
+                                    'is_default': False,
+                                    'created_by': self.current_user_id or 'ai-auto',
+                                }).execute()
+                                inserted_id = insert_result.data[0]['id'] if insert_result.data else 'unknown'
+                                print(f"[OK] Inserted classification in Supabase: {effective_app} → {new_classification} (id: {str(inserted_id)[:8]})")
+                        else:
+                            print(f"[WARN] Cannot save classification to Supabase: supabase_service={'yes' if self.supabase_service else 'NO'}, org_id={'yes' if self.organization_id else 'NO'}")
+                    except Exception as supa_err:
+                        print(f"[WARN] Failed to save classification to Supabase: {supa_err}")
+                        import traceback
+                        traceback.print_exc()
+
                 # Also update already-uploaded activity_records that are still unknown
                 # for this app/user/org so DB reflects the latest AI classification.
                 try:
@@ -7501,18 +7591,41 @@ class TimeTracker:
         # ---------- Phase 2: browser detection ----------
         # Only if no desktop app matched. Check if this looks like a browser
         # before assigning website-specific names.
-        browser_indicators = [
-            'chrome didn', 'google chrome', 'search google or type a url',
-            'search or enter address', 'new tab',
-        ]
-        is_browser = any(ind in text_lower for ind in browser_indicators)
 
-        # Detect specific browser first
-        browser_name = 'google-chrome'  # default browser assumption
-        if 'firefox' in text_lower or 'mozilla firefox' in text_lower:
+        # Chrome-specific indicators (only Chrome shows these)
+        chrome_indicators = [
+            'chrome didn', 'google chrome', 'search google or type a url',
+            'chrome web store', 'chrome://', 'chromecast',
+        ]
+        # Firefox-specific indicators (only Firefox shows these)
+        firefox_indicators = [
+            'firefox', 'mozilla firefox',
+        ]
+        # Edge-specific indicators
+        edge_indicators = [
+            'microsoft edge', 'edge browser', 'edge://',
+        ]
+        # Generic browser indicators (could be any browser)
+        generic_browser_indicators = [
+            'search or enter address', 'new tab', 'bookmark', 'extensions',
+            'incognito', 'private browsing', 'downloads',
+        ]
+
+        is_chrome = any(ind in text_lower for ind in chrome_indicators)
+        is_firefox = any(ind in text_lower for ind in firefox_indicators)
+        is_edge = any(ind in text_lower for ind in edge_indicators)
+        is_browser = is_chrome or is_firefox or is_edge or any(ind in text_lower for ind in generic_browser_indicators)
+
+        # Determine browser name — only assign a specific browser if we have evidence
+        if is_firefox:
             browser_name = 'firefox'
-        elif 'microsoft edge' in text_lower or 'edge browser' in text_lower:
+        elif is_edge:
             browser_name = 'msedge'
+        elif is_chrome:
+            browser_name = 'google-chrome'
+        else:
+            # Generic browser detected but can't tell which one — use neutral name
+            browser_name = 'web-browser'
 
         if browser_name == 'firefox':
             return 'firefox', f'{first_line} - Firefox'
@@ -7528,6 +7641,26 @@ class TimeTracker:
             (['gmail', 'mail.google'], f'{first_line} - Gmail'),
             (['youtube.com', 'youtube'], f'{first_line} - YouTube'),
             (['stackoverflow.com', 'stack overflow'], f'{first_line} - Stack Overflow'),
+            (['skyscanner'], f'{first_line} - Skyscanner'),
+            (['espn', 'espn.com'], f'{first_line} - ESPN'),
+            (['reddit.com', 'reddit'], f'{first_line} - Reddit'),
+            (['twitter.com', 'x.com'], f'{first_line} - X'),
+            (['linkedin.com', 'linkedin'], f'{first_line} - LinkedIn'),
+            (['amazon.com', 'amazon'], f'{first_line} - Amazon'),
+            (['netflix.com', 'netflix'], f'{first_line} - Netflix'),
+            (['facebook.com', 'facebook', 'meta.com'], f'{first_line} - Facebook'),
+            (['instagram.com', 'instagram'], f'{first_line} - Instagram'),
+            (['whatsapp web', 'web.whatsapp'], f'{first_line} - WhatsApp'),
+            (['google docs', 'docs.google'], f'{first_line} - Google Docs'),
+            (['google sheets', 'sheets.google'], f'{first_line} - Google Sheets'),
+            (['google drive', 'drive.google'], f'{first_line} - Google Drive'),
+            (['confluence', 'wiki.atlassian'], f'{first_line} - Confluence'),
+            (['bitbucket', 'bitbucket.org'], f'{first_line} - Bitbucket'),
+            (['notion.so', 'notion'], f'{first_line} - Notion'),
+            (['figma.com', 'figma'], f'{first_line} - Figma'),
+            (['trello.com', 'trello'], f'{first_line} - Trello'),
+            (['chatgpt', 'chat.openai'], f'{first_line} - ChatGPT'),
+            (['google search', 'google.com/search'], f'{first_line} - Google Search'),
         ]
 
         if is_browser:
@@ -7536,8 +7669,14 @@ class TimeTracker:
                 for keyword in keywords:
                     if keyword in text_lower:
                         return browser_name, title_template
-            # Generic browser, no specific site
-            return browser_name, f'{first_line} - Google Chrome'
+            # Generic browser, no specific site matched
+            browser_display = {
+                'google-chrome': 'Google Chrome',
+                'firefox': 'Firefox',
+                'msedge': 'Microsoft Edge',
+                'web-browser': 'Browser',
+            }
+            return browser_name, f'{first_line} - {browser_display.get(browser_name, "Browser")}'
 
         # No desktop app matched and no browser evidence — cannot infer
         return None, None
@@ -7732,7 +7871,9 @@ class TimeTracker:
             # If current window is 'unknown' and a new poll returns a real window,
             # treat it as a resolved identity (update session) rather than ignoring.
             if self.current_window_key == 'unknown' and window_key != 'unknown':
-                # The Unknown window now has a real identity — update tracking
+                # User left the Unknown window and switched to a known window.
+                # The Unknown session was already classified via OCR+AI earlier.
+                # Now we just need to track the transition to the new known window.
                 is_new_window = True
                 self.last_activity_time = time.time()
                 old_start = self.current_window_start_time  # preserve original start time
@@ -7740,18 +7881,21 @@ class TimeTracker:
                 # Keep original start time so duration is accurate
                 self.current_window_screenshot_id = None
                 self.current_window_record_created_at = None
-                print(f"[INFO] Unknown window resolved at {datetime.now(timezone.utc).strftime('%H:%M:%S')}:")
-                print(f"     - App: {result.get('app', 'Unknown')}")
-                print(f"     - Title: {result.get('title', 'Unknown')[:50]}")
-                # Update the local session with the resolved app info
-                self.session_manager.update_app_info(
-                    'Unknown', 'Unknown',
-                    result.get('app', 'Unknown'),
-                    result.get('title', 'Unknown')
+                new_app = result.get('app', 'Unknown')
+                new_title = result.get('title', 'Unknown')
+                print(f"[INFO] Left Unknown window at {datetime.now(timezone.utc).strftime('%H:%M:%S')}, switched to:")
+                print(f"     - App: {new_app}")
+                print(f"     - Title: {new_title[:50]}")
+                # Try to update any remaining Unknown session with the new window's info.
+                # This is a fallback — usually the AI already renamed it via _classify_unknown_app_async.
+                updated = self.session_manager.update_app_info(
+                    'Unknown', 'Unknown', new_app, new_title
                 )
-                self.add_admin_log('INFO', f"Unknown resolved: {result.get('app', 'Unknown')}", {
-                    'app': result.get('app', ''),
-                    'title': (result.get('title', '') or '')[:60],
+                if updated:
+                    print(f"     - Also renamed remaining Unknown session → {new_app}")
+                self.add_admin_log('INFO', f"Left Unknown → {new_app}", {
+                    'app': new_app,
+                    'title': (new_title or '')[:60],
                     'time': datetime.now(timezone.utc).strftime('%H:%M:%S')
                 })
                 # Process as a window event to update classification
