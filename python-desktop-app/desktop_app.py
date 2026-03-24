@@ -7270,12 +7270,14 @@ class TimeTracker:
                 }
             elif not screenshot:
                 if classification == 'unknown':
+                    print(f"[WARN] Screenshot capture failed for Unknown app — classifying without OCR")
                     self._maybe_classify_unknown_app(app_name, window_title, None)
 
             if classification == 'productive':
                 print(f"[PROD] {app_name} — {window_title[:50]}")
             elif classification == 'unknown':
-                print(f"[UNKNOWN] {app_name} — {window_title[:50]}")
+                has_shot = '✓ screenshot' if screenshot else '✗ no screenshot'
+                print(f"[UNKNOWN] {app_name} — {window_title[:50]} ({has_shot})")
 
         # CRITICAL: Create session FIRST so it exists when async OCR callback fires.
         # This fixes race condition where OCR completes before session is created.
@@ -7298,6 +7300,8 @@ class TimeTracker:
                     # If unknown app, trigger AI classification now that we have OCR text
                     if _cls == 'unknown':
                         ocr_text = ocr_res.get('text') if ocr_res else None
+                        ocr_len = len(ocr_text) if ocr_text else 0
+                        print(f"[OCR-DONE] Unknown app OCR complete: {ocr_len} chars extracted")
                         self._maybe_classify_unknown_app(_app, _wtitle, ocr_text)
 
                 submitted = self.ocr_processor.submit_ocr_async(screenshot, _ocr_callback)
@@ -7706,6 +7710,24 @@ class TimeTracker:
             result = get_active_window_linux()
             window_key = result.get('window_key', 'unknown')
             is_new_window = False
+
+            # If current window stays 'unknown' for a while, periodically force a
+            # re-capture so that tab switches within the unknown app are detected
+            # via OCR content changes (each distinct OCR hash triggers a separate
+            # AI classification in _maybe_classify_unknown_app).
+            _UNKNOWN_RECHECK_INTERVAL = 10  # seconds between re-checks
+            if (window_key == 'unknown' and self.current_window_key == 'unknown'
+                    and self.current_window_start_time is not None):
+                elapsed = (datetime.now(timezone.utc) - self.current_window_start_time).total_seconds()
+                if elapsed >= _UNKNOWN_RECHECK_INTERVAL:
+                    # Treat as a new window event to trigger OCR + AI classification
+                    is_new_window = True
+                    self.current_window_start_time = datetime.now(timezone.utc)
+                    self.current_window_screenshot_id = None
+                    self.current_window_record_created_at = None
+                    print(f"[INFO] Unknown app re-check at {self.current_window_start_time.strftime('%H:%M:%S')}: capturing new screenshot for tab detection")
+                    result['is_new_window'] = True
+                    return result
 
             # If current window is 'unknown' and a new poll returns a real window,
             # treat it as a resolved identity (update session) rather than ignoring.
