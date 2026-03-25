@@ -100,7 +100,7 @@ class PrivacyConfig:
         Environment Variables:
             PRIVACY_FILTER_ENABLED: true/false (default: true)
             PRIVACY_MIN_CONFIDENCE: 0.0-1.0 (default: 0.7)
-            PRIVACY_DETECT_PII: true/false (default: false) - Presidio PII detection
+            PRIVACY_DETECT_PII: true/false (default: true) - Presidio PII detection
             PRIVACY_DETECT_SECRETS: true/false (default: false) - detect-secrets library
             PRIVACY_DETECT_CUSTOM_PATTERNS: true/false (default: true) - passwords/API keys
             PRIVACY_REDACTION_STRATEGY: mask/entity_type/hash/remove (default: mask)
@@ -119,7 +119,7 @@ class PrivacyConfig:
         
         # Detection settings
         config.min_confidence = float(os.getenv('PRIVACY_MIN_CONFIDENCE', '0.7'))
-        config.detect_pii = os.getenv('PRIVACY_DETECT_PII', 'false').lower() == 'true'
+        config.detect_pii = os.getenv('PRIVACY_DETECT_PII', 'true').lower() == 'true'
         config.detect_secrets = os.getenv('PRIVACY_DETECT_SECRETS', 'false').lower() == 'true'
         config.detect_custom_patterns = os.getenv('PRIVACY_DETECT_CUSTOM_PATTERNS', 'true').lower() == 'true'
         

@@ -565,11 +565,25 @@ exports.getOcrConfig = async (req, res) => {
       ocrConfig.engines[engineName] = engineConfig;
     });
 
-    logger.info(`[Auth] Providing OCR config to authenticated user (engines: ${Array.from(discoveredEngines).join(', ')})`);
+    // Privacy filter configuration (delivered to desktop app alongside OCR config)
+    const privacyConfig = {
+      enabled: (process.env.PRIVACY_FILTER_ENABLED || 'true').toLowerCase() === 'true',
+      min_confidence: Number.parseFloat(process.env.PRIVACY_MIN_CONFIDENCE || '0.7'),
+      detect_pii: (process.env.PRIVACY_DETECT_PII || 'true').toLowerCase() === 'true',
+      detect_secrets: (process.env.PRIVACY_DETECT_SECRETS || 'false').toLowerCase() === 'true',
+      detect_custom_patterns: (process.env.PRIVACY_DETECT_CUSTOM_PATTERNS || 'true').toLowerCase() === 'true',
+      redaction_strategy: process.env.PRIVACY_REDACTION_STRATEGY || 'mask',
+      mask_char: (process.env.PRIVACY_MASK_CHAR || '*').charAt(0) || '*',
+      mask_length: Number.parseInt(process.env.PRIVACY_MASK_LENGTH || '8', 10),
+      fail_open: (process.env.PRIVACY_FAIL_OPEN || 'false').toLowerCase() === 'true',
+    };
+
+    logger.info(`[Auth] Providing OCR config to authenticated user (engines: ${Array.from(discoveredEngines).join(', ')}, privacy: ${privacyConfig.enabled ? 'enabled' : 'disabled'})`);
 
     res.json({
       success: true,
-      config: ocrConfig
+      config: ocrConfig,
+      privacy: privacyConfig
     });
 
   } catch (error) {

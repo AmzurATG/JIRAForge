@@ -399,16 +399,25 @@ async function syncSingleEntryAsCurrentUser(supabaseConfig, organizationId, user
   const startedAt = formatJiraDate(lastWorkedOn ? new Date(lastWorkedOn) : new Date());
 
   if (existingMapping) {
-    // Worklog was created by the app (scheduled trigger) — delete and recreate as user
+    // Pending record (scheduled trigger saved without creating Jira worklog) or
+    // app-created worklog — either way, create/recreate as the real user.
     if (existingMapping.created_as_user === false) {
-      const migrated = await migrateAppWorklogToUser(
-        issueKey,
-        existingMapping.jira_worklog_id,
-        existingMapping.id,
-        supabaseConfig
-      );
-      if (!migrated) {
-        return false; // Migration failed, retry next session
+      if (existingMapping.jira_worklog_id) {
+        // App-created worklog exists in Jira — delete it first
+        const migrated = await migrateAppWorklogToUser(
+          issueKey,
+          existingMapping.jira_worklog_id,
+          existingMapping.id,
+          supabaseConfig
+        );
+        if (!migrated) {
+          return false; // Migration failed, retry next session
+        }
+      } else {
+        // Pending record — no Jira worklog to delete, just remove the DB mapping
+        console.log(`[UserSync] Converting pending record for ${issueKey} to user worklog`);
+        // eslint-disable-next-line deprecation/deprecation
+        await supabaseRequest(supabaseConfig, `worklog_sync?id=eq.${existingMapping.id}`, { method: 'DELETE' });
       }
       // Fall through to create fresh worklog as user
     } else if (existingMapping.last_synced_seconds === timeTracked) {

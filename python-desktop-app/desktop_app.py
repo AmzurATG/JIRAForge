@@ -445,6 +445,51 @@ def set_runtime_ocr_config(config_dict):
     print(f"[OK] OCR config loaded from AI server (engines: {primary}, {fallbacks})")
 
 
+def set_runtime_privacy_config(config_dict):
+    """
+    Set privacy filter config fetched from AI server.
+
+    Converts the privacy config dict into PRIVACY_* environment variables
+    so PrivacyConfig.from_env() picks them up when the OCR facade reinitialises.
+
+    Args:
+        config_dict: Dict from AI server with structure:
+            {
+                'enabled': True,
+                'min_confidence': 0.7,
+                'detect_pii': True,
+                'detect_custom_patterns': True,
+                'detect_secrets': False,
+                'redaction_strategy': 'mask',
+                'mask_char': '*',
+                'mask_length': 8,
+                'fail_open': False,
+            }
+    """
+    env_mapping = {
+        'enabled': 'PRIVACY_FILTER_ENABLED',
+        'min_confidence': 'PRIVACY_MIN_CONFIDENCE',
+        'detect_pii': 'PRIVACY_DETECT_PII',
+        'detect_secrets': 'PRIVACY_DETECT_SECRETS',
+        'detect_custom_patterns': 'PRIVACY_DETECT_CUSTOM_PATTERNS',
+        'redaction_strategy': 'PRIVACY_REDACTION_STRATEGY',
+        'mask_char': 'PRIVACY_MASK_CHAR',
+        'mask_length': 'PRIVACY_MASK_LENGTH',
+        'fail_open': 'PRIVACY_FAIL_OPEN',
+    }
+
+    for key, env_var in env_mapping.items():
+        if key in config_dict:
+            value = config_dict[key]
+            # Convert booleans to lowercase strings for env var compatibility
+            if isinstance(value, bool):
+                value = str(value).lower()
+            os.environ[env_var] = str(value)
+
+    detect_pii = config_dict.get('detect_pii', True)
+    print(f"[OK] Privacy config loaded from AI server (PII detection: {'enabled' if detect_pii else 'disabled'})")
+
+
 # ============================================================================
 # VERSION CHECKING UTILITIES
 # ============================================================================
@@ -1909,6 +1954,12 @@ class AtlassianAuthManager:
             # Store the OCR config in runtime config
             ocr_config = result.get('config', {})
             set_runtime_ocr_config(ocr_config)
+
+            # Apply privacy filter config from server (delivered alongside OCR config)
+            privacy_config = result.get('privacy', {})
+            if privacy_config:
+                set_runtime_privacy_config(privacy_config)
+
             return True
         
         except Exception as e:

@@ -3,8 +3,10 @@
  * Runs on a Forge scheduled trigger to sync all users' tracked time to Jira worklogs.
  *
  * Uses api.asUser(accountId) (offline impersonation) so worklogs appear with each user's
- * name (e.g. "Gayatri Alluri") instead of the app. Falls back to api.asApp() if
- * atlassian_account_id is missing for a user.
+ * name. When impersonation fails or doesn't take effect, saves a pending record
+ * (jira_worklog_id = NULL, created_as_user = false) instead of falling back to asApp().
+ * The user-context sync (syncMyWorklogs) picks up pending records and creates the
+ * worklog under the user's real name when they next open the app.
  */
 
 import {
@@ -400,6 +402,18 @@ async function syncSingleEntry(supabaseConfig, organizationId, userId, accountId
       return false; // No change
     }
 
+    // Pending record (no Jira worklog yet) — just update tracked time in DB
+    if (!existingMapping.jira_worklog_id) {
+      // eslint-disable-next-line deprecation/deprecation
+      await supabaseRequest(
+        supabaseConfig,
+        `worklog_sync?id=eq.${existingMapping.id}`,
+        { method: 'PATCH', body: { last_synced_seconds: timeTracked, updated_at: new Date().toISOString() } }
+      );
+      console.log(`[ScheduledSync] Updated pending record ${issueKey} for user ${userId}: ${timeTracked}s`);
+      return true;
+    }
+
     // Try to update existing worklog (as user when possible, else as app)
     let updateResponse;
     if (accountId) {
@@ -407,7 +421,7 @@ async function syncSingleEntry(supabaseConfig, organizationId, userId, accountId
         updateResponse = await updateJiraWorklogAsUser(accountId, issueKey, existingMapping.jira_worklog_id, timeTracked);
       } catch (impersonationErr) {
         if (impersonationErr.message?.includes('AUTH_TYPE_UNAVAILABLE')) {
-          console.warn(`[ScheduledSync] asUser unavailable for ${issueKey}, falling back to asApp`);
+          console.warn(`[ScheduledSync] asUser unavailable for update ${issueKey}, falling back to asApp`);
           updateResponse = await updateJiraWorklogAsApp(issueKey, existingMapping.jira_worklog_id, timeTracked);
         } else {
           throw impersonationErr;
@@ -453,14 +467,60 @@ async function syncSingleEntry(supabaseConfig, organizationId, userId, accountId
       usedAsUser = true;
     } catch (impersonationErr) {
       if (impersonationErr.message?.includes('AUTH_TYPE_UNAVAILABLE')) {
-        console.warn(`[ScheduledSync] asUser unavailable for ${issueKey}, falling back to asApp`);
-        worklogResult = await createJiraWorklogAsApp(issueKey, timeTracked, startedAt, displayName);
+        // Impersonation not available — save a pending record instead of falling back
+        // to asApp(). The user-context sync (syncMyWorklogs) will create the worklog
+        // under the user's real name when they next open the app.
+        console.warn(`[ScheduledSync] asUser unavailable for ${issueKey}, saving pending record for user-context sync`);
+        const now = new Date().toISOString();
+        // eslint-disable-next-line deprecation/deprecation
+        await supabaseRequest(
+          supabaseConfig,
+          'worklog_sync',
+          {
+            method: 'POST',
+            body: {
+              organization_id: organizationId,
+              user_id: userId,
+              issue_key: issueKey,
+              jira_worklog_id: null,
+              last_synced_seconds: timeTracked,
+              started_at: startedAt,
+              created_as_user: false,
+              created_at: now,
+              updated_at: now
+            }
+          }
+        );
+        console.log(`[ScheduledSync] Saved pending worklog for ${issueKey} user ${userId}: ${timeTracked}s`);
+        return true;
       } else {
         throw impersonationErr;
       }
     }
   } else {
-    worklogResult = await createJiraWorklogAsApp(issueKey, timeTracked, startedAt, displayName);
+    // No accountId — save a pending record for user-context sync instead of creating as app
+    console.warn(`[ScheduledSync] No accountId for ${issueKey}, saving pending record for user-context sync`);
+    const now = new Date().toISOString();
+    // eslint-disable-next-line deprecation/deprecation
+    await supabaseRequest(
+      supabaseConfig,
+      'worklog_sync',
+      {
+        method: 'POST',
+        body: {
+          organization_id: organizationId,
+          user_id: userId,
+          issue_key: issueKey,
+          jira_worklog_id: null,
+          last_synced_seconds: timeTracked,
+          started_at: startedAt,
+          created_as_user: false,
+          created_at: now,
+          updated_at: now
+        }
+      }
+    );
+    return true;
   }
 
   if (worklogResult?.id) {
@@ -470,7 +530,36 @@ async function syncSingleEntry(supabaseConfig, organizationId, userId, accountId
       worklogResult.author?.accountId === accountId;
 
     if (usedAsUser && !actuallyCreatedAsUser) {
-      console.warn(`[ScheduledSync] Impersonation did not take effect for ${issueKey} — author is ${worklogResult.author?.accountId || 'unknown'}, expected ${accountId}`);
+      // Impersonation didn't take effect — delete the app-authored worklog and save
+      // a pending record instead, so the user-context sync creates it properly.
+      console.warn(`[ScheduledSync] Impersonation did not take effect for ${issueKey} — deleting app worklog and saving pending record`);
+      try {
+        await deleteJiraWorklogAsApp(issueKey, String(worklogResult.id));
+      } catch (deleteErr) {
+        console.warn(`[ScheduledSync] Failed to delete app worklog for ${issueKey}: ${deleteErr.message}`);
+      }
+      const now = new Date().toISOString();
+      // eslint-disable-next-line deprecation/deprecation
+      await supabaseRequest(
+        supabaseConfig,
+        'worklog_sync',
+        {
+          method: 'POST',
+          body: {
+            organization_id: organizationId,
+            user_id: userId,
+            issue_key: issueKey,
+            jira_worklog_id: null,
+            last_synced_seconds: timeTracked,
+            started_at: startedAt,
+            created_as_user: false,
+            created_at: now,
+            updated_at: now
+          }
+        }
+      );
+      console.log(`[ScheduledSync] Saved pending worklog for ${issueKey} user ${userId}: ${timeTracked}s`);
+      return true;
     }
 
     const now = new Date().toISOString();
@@ -487,13 +576,13 @@ async function syncSingleEntry(supabaseConfig, organizationId, userId, accountId
           jira_worklog_id: String(worklogResult.id),
           last_synced_seconds: timeTracked,
           started_at: startedAt,
-          created_as_user: actuallyCreatedAsUser,
+          created_as_user: true,
           created_at: now,
           updated_at: now
         }
       }
     );
-    console.log(`[ScheduledSync] Created worklog for ${issueKey} user ${userId}: ${timeTracked}s (as_user: ${actuallyCreatedAsUser})`);
+    console.log(`[ScheduledSync] Created worklog for ${issueKey} user ${userId}: ${timeTracked}s (as_user: true)`);
     return true;
   }
 
@@ -550,6 +639,18 @@ async function cleanupOrphanedWorklogs(supabaseConfig, organizationId, activeEnt
 
   for (const mapping of orphaned) {
     try {
+      // Pending records (no Jira worklog created yet) — just delete the DB mapping
+      if (!mapping.jira_worklog_id) {
+        // eslint-disable-next-line deprecation/deprecation
+        await supabaseRequest(
+          supabaseConfig,
+          `worklog_sync?id=eq.${mapping.id}`,
+          { method: 'DELETE' }
+        );
+        console.log(`[ScheduledSync] Cleaned up pending mapping for ${mapping.issue_key} (user ${mapping.user_id})`);
+        continue;
+      }
+
       const accountId = accountIdByUserId[mapping.user_id];
       let deleteResponse;
       if (accountId) {

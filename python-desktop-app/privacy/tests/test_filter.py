@@ -23,7 +23,7 @@ class TestPrivacyConfig(unittest.TestCase):
         
         self.assertTrue(config.enabled)
         self.assertEqual(config.min_confidence, 0.7)
-        self.assertFalse(config.detect_pii)  # Disabled by default (too aggressive)
+        self.assertTrue(config.detect_pii)  # Enabled by default for PII protection
         self.assertFalse(config.detect_secrets)  # Disabled by default (too aggressive)
         self.assertTrue(config.detect_custom_patterns)  # Passwords/API keys always enabled
         self.assertEqual(config.redaction_strategy.value, 'mask')
