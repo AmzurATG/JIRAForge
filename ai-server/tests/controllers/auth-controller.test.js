@@ -739,6 +739,11 @@ describe('Auth Controller', () => {
           use_preprocessing: true,
           max_image_dimension: 4096,
           engines: expect.any(Object)
+        }),
+        privacy: expect.objectContaining({
+          enabled: true,
+          detect_pii: true,
+          detect_custom_patterns: true,
         })
       });
     });
@@ -782,13 +787,13 @@ describe('Auth Controller', () => {
 
       await authController.getOcrConfig(req, res);
 
-      expect(res.json).toHaveBeenCalledWith({
+      expect(res.json).toHaveBeenCalledWith(expect.objectContaining({
         success: true,
         config: expect.objectContaining({
-          primary_engine: 'paddle',
-          fallback_engines: ['tesseract']
+          primary_engine: 'rapidocr',
+          fallback_engines: ['winrtocr']
         })
-      });
+      }));
     });
 
     it('should parse OCR engine priorities from env', async () => {
@@ -829,7 +834,7 @@ describe('Auth Controller', () => {
 
       await authController.getOcrConfig(req, res);
 
-      expect(res.json).toHaveBeenCalledWith({
+      expect(res.json).toHaveBeenCalledWith(expect.objectContaining({
         success: true,
         config: expect.objectContaining({
           engines: expect.objectContaining({
@@ -841,7 +846,7 @@ describe('Auth Controller', () => {
             })
           })
         })
-      });
+      }));
 
       delete process.env.OCR_PADDLE_CUSTOM_PARAM;
       delete process.env.OCR_PADDLE_MODEL_PATH;
@@ -863,12 +868,12 @@ describe('Auth Controller', () => {
 
       await authController.getOcrConfig(req, res);
 
-      expect(res.json).toHaveBeenCalledWith({
+      expect(res.json).toHaveBeenCalledWith(expect.objectContaining({
         success: true,
         config: expect.objectContaining({
           preprocessing_target_dpi: 600
         })
-      });
+      }));
 
       delete process.env.OCR_PREPROCESSING_TARGET_DPI;
     });
@@ -889,7 +894,7 @@ describe('Auth Controller', () => {
 
       await authController.getOcrConfig(req, res);
 
-      expect(res.json).toHaveBeenCalledWith({
+      expect(res.json).toHaveBeenCalledWith(expect.objectContaining({
         success: true,
         config: expect.objectContaining({
           engines: expect.objectContaining({
@@ -898,7 +903,7 @@ describe('Auth Controller', () => {
             })
           })
         })
-      });
+      }));
     });
 
     it('should handle getOcrConfig internal errors', async () => {
@@ -928,6 +933,115 @@ describe('Auth Controller', () => {
         success: false,
         error: expect.stringContaining('Internal error')
       });
+    });
+
+    // ================================================================
+    // Privacy config delivery tests
+    // ================================================================
+
+    it('should include privacy config with defaults in OCR config response', async () => {
+      req.body = { atlassian_token: 'atlassian-123' };
+
+      axios.get.mockResolvedValue({
+        data: { account_id: 'acc-123', email: 'test@example.com' }
+      });
+
+      await authController.getOcrConfig(req, res);
+
+      const response = res.json.mock.calls[0][0];
+      expect(response.privacy).toBeDefined();
+      expect(response.privacy).toEqual({
+        enabled: true,
+        min_confidence: 0.7,
+        detect_pii: true,
+        detect_secrets: false,
+        detect_custom_patterns: true,
+        redaction_strategy: 'mask',
+        mask_char: '*',
+        mask_length: 8,
+        fail_open: false,
+      });
+    });
+
+    it('should read privacy config from environment variables', async () => {
+      process.env.PRIVACY_FILTER_ENABLED = 'false';
+      process.env.PRIVACY_DETECT_PII = 'false';
+      process.env.PRIVACY_MIN_CONFIDENCE = '0.9';
+      process.env.PRIVACY_REDACTION_STRATEGY = 'entity_type';
+      process.env.PRIVACY_FAIL_OPEN = 'true';
+
+      req.body = { atlassian_token: 'atlassian-123' };
+
+      axios.get.mockResolvedValue({
+        data: { account_id: 'acc-123', email: 'test@example.com' }
+      });
+
+      await authController.getOcrConfig(req, res);
+
+      const response = res.json.mock.calls[0][0];
+      expect(response.privacy.enabled).toBe(false);
+      expect(response.privacy.detect_pii).toBe(false);
+      expect(response.privacy.min_confidence).toBe(0.9);
+      expect(response.privacy.redaction_strategy).toBe('entity_type');
+      expect(response.privacy.fail_open).toBe(true);
+
+      delete process.env.PRIVACY_FILTER_ENABLED;
+      delete process.env.PRIVACY_DETECT_PII;
+      delete process.env.PRIVACY_MIN_CONFIDENCE;
+      delete process.env.PRIVACY_REDACTION_STRATEGY;
+      delete process.env.PRIVACY_FAIL_OPEN;
+    });
+
+    it('should default PRIVACY_DETECT_PII to true when env var not set', async () => {
+      // Ensure it's not set
+      delete process.env.PRIVACY_DETECT_PII;
+
+      req.body = { atlassian_token: 'atlassian-123' };
+
+      axios.get.mockResolvedValue({
+        data: { account_id: 'acc-123', email: 'test@example.com' }
+      });
+
+      await authController.getOcrConfig(req, res);
+
+      const response = res.json.mock.calls[0][0];
+      expect(response.privacy.detect_pii).toBe(true);
+    });
+
+    it('should parse PRIVACY_MASK_LENGTH as integer', async () => {
+      process.env.PRIVACY_MASK_LENGTH = '16';
+
+      req.body = { atlassian_token: 'atlassian-123' };
+
+      axios.get.mockResolvedValue({
+        data: { account_id: 'acc-123', email: 'test@example.com' }
+      });
+
+      await authController.getOcrConfig(req, res);
+
+      const response = res.json.mock.calls[0][0];
+      expect(response.privacy.mask_length).toBe(16);
+      expect(typeof response.privacy.mask_length).toBe('number');
+
+      delete process.env.PRIVACY_MASK_LENGTH;
+    });
+
+    it('should parse PRIVACY_MIN_CONFIDENCE as float', async () => {
+      process.env.PRIVACY_MIN_CONFIDENCE = '0.85';
+
+      req.body = { atlassian_token: 'atlassian-123' };
+
+      axios.get.mockResolvedValue({
+        data: { account_id: 'acc-123', email: 'test@example.com' }
+      });
+
+      await authController.getOcrConfig(req, res);
+
+      const response = res.json.mock.calls[0][0];
+      expect(response.privacy.min_confidence).toBe(0.85);
+      expect(typeof response.privacy.min_confidence).toBe('number');
+
+      delete process.env.PRIVACY_MIN_CONFIDENCE;
     });
   });
 

@@ -15,6 +15,58 @@ const activityDbService = require('./db/activity-db-service');
 const logger = require('../utils/logger');
 
 // ============================================================================
+// SERVER-SIDE OCR TEXT SANITIZATION (Defense-in-depth)
+// ============================================================================
+// Desktop app applies privacy filtering before upload, but we add a second
+// layer here to catch anything that slipped through before sending to the LLM.
+
+/**
+ * Regex patterns for sensitive data that should never reach the LLM.
+ * These match common formats for passwords, API keys, tokens, and PII.
+ */
+const SANITIZATION_PATTERNS = [
+  // Passwords in URLs or config strings: password=xxx, pwd=xxx, passwd=xxx
+  { pattern: /(?:password|passwd|pwd|secret|token)\s*[=:]\s*\S+/gi, replacement: '[REDACTED_CREDENTIAL]' },
+  // AWS access keys (AKIA...)
+  { pattern: /\bAKIA[0-9A-Z]{16}\b/g, replacement: '[REDACTED_AWS_KEY]' },
+  // AWS secret keys (40 char base64)
+  { pattern: /\b[A-Za-z0-9/+=]{40}\b(?=\s|$|[,;])/g, replacement: '[REDACTED_SECRET]' },
+  // GitHub tokens (ghp_, gho_, ghs_, ghr_)
+  { pattern: /\bgh[posru]_[A-Za-z0-9_]{36,255}\b/g, replacement: '[REDACTED_GITHUB_TOKEN]' },
+  // Generic API keys (api_key=..., apikey=...)
+  { pattern: /(?:api[_-]?key|apikey)\s*[=:]\s*\S+/gi, replacement: '[REDACTED_API_KEY]' },
+  // Bearer tokens
+  { pattern: /\bBearer\s+[A-Za-z0-9\-._~+/]+=*\b/gi, replacement: 'Bearer [REDACTED_TOKEN]' },
+  // Credit card numbers (13-19 digits, optionally separated by spaces/dashes)
+  { pattern: /\b(?:\d[ -]*?){13,19}\b/g, replacement: '[REDACTED_CARD]' },
+  // SSN (US format: XXX-XX-XXXX)
+  { pattern: /\b\d{3}-\d{2}-\d{4}\b/g, replacement: '[REDACTED_SSN]' },
+  // Private keys
+  { pattern: /-----BEGIN\s+(?:RSA\s+)?PRIVATE\s+KEY-----[\s\S]*?-----END\s+(?:RSA\s+)?PRIVATE\s+KEY-----/g, replacement: '[REDACTED_PRIVATE_KEY]' },
+  // Connection strings with embedded passwords
+  { pattern: /(?:mongodb|postgres|mysql|redis|amqp):\/\/[^\s]+:[^\s@]+@[^\s]+/gi, replacement: '[REDACTED_CONNECTION_STRING]' },
+];
+
+/**
+ * Sanitize OCR text server-side before sending to LLM.
+ * This is a defense-in-depth measure — the desktop app's privacy filter
+ * should have already redacted sensitive data, but we catch stragglers here.
+ *
+ * @param {string} text - OCR text to sanitize
+ * @returns {string} Sanitized text
+ */
+function sanitizeOcrText(text) {
+  if (!text) return text;
+  let sanitized = text;
+  for (const { pattern, replacement } of SANITIZATION_PATTERNS) {
+    // Reset lastIndex for global regexes reused across calls
+    pattern.lastIndex = 0;
+    sanitized = sanitized.replace(pattern, replacement);
+  }
+  return sanitized;
+}
+
+// ============================================================================
 // PROMPTS
 // ============================================================================
 
@@ -59,7 +111,7 @@ const APP_CLASSIFICATION_SYSTEM_PROMPT = `You are an expert at classifying deskt
 function buildBatchAnalysisPrompt(records, assignedIssuesText) {
   const recordDescriptions = records.map((record, index) => {
     const ocrSnippet = record.ocr_text
-      ? record.ocr_text.substring(0, 500)
+      ? sanitizeOcrText(record.ocr_text.substring(0, 500))
       : '(no text extracted)';
 
     return `Record ${index}: [${record.application_name}] ${record.window_title}
@@ -115,7 +167,7 @@ Include one entry per record, in order.`;
  */
 function buildClassificationPrompt(appName, windowTitle, ocrText) {
   const textSnippet = ocrText
-    ? ocrText.substring(0, 800)
+    ? sanitizeOcrText(ocrText.substring(0, 800))
     : '(no text available)';
 
   return `Classify this application into one of three categories:
@@ -514,5 +566,9 @@ async function identifyAppByName(searchTerm) {
 module.exports = {
   analyzeBatch,
   classifyUnknownApp,
-  identifyAppByName
+  identifyAppByName,
+  // Exported for testing
+  sanitizeOcrText,
+  _buildBatchAnalysisPrompt: buildBatchAnalysisPrompt,
+  _buildClassificationPrompt: buildClassificationPrompt,
 };

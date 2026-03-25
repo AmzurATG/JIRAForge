@@ -166,6 +166,7 @@ class OCRFacade:
         
         Configure via environment variables:
             PRIVACY_FILTER_ENABLED=true (default)
+            PRIVACY_DETECT_PII=true (default - Presidio credit card/SSN/phone detection)
             PRIVACY_MIN_CONFIDENCE=0.7
             PRIVACY_REDACTION_STRATEGY=mask|entity_type|hash|remove
         """
