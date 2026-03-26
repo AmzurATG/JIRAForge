@@ -320,7 +320,7 @@ load_dotenv()
 
 # Application version - IMPORTANT: Update this when releasing new versions
 # This is used for update checking and notifications
-APP_VERSION = "1.3.0"
+APP_VERSION = "1.3.2"
 
 # Hard-disable screenshot monitoring/storage in desktop app.
 # OCR text extraction for activity records still runs via event-based flow.
@@ -6352,6 +6352,21 @@ class TimeTracker:
 
         return (time.time() - self.projects_cache_time) > self.projects_cache_ttl
 
+    def _get_known_project_keys(self):
+        """Build set of all known project keys from issues + projects."""
+        known = set()
+        if self.user_issues:
+            for issue in self.user_issues:
+                proj = issue.get('project')
+                if proj:
+                    known.add(proj)
+        if self.user_projects:
+            for proj in self.user_projects:
+                key = proj.get('key')
+                if key:
+                    known.add(key)
+        return known
+
     def _resolve_record_project_key(self, window_title, default_project_key):
         """Determine the project key for an individual activity record.
 
@@ -6360,38 +6375,47 @@ class TimeTracker:
 
         Strategy:
         1. Extract Jira issue keys from the window title (e.g., PROJ-123 → PROJ)
-        2. Validate against user's known projects/issues
+        2. Extract VS Code workspace/folder name and match against known projects
         3. Fall back to batch-level default_project_key
         """
         if not window_title:
             return default_project_key
 
-        # Look for Jira issue keys in window title (pattern: PROJ-123)
-        matches = re.findall(r'\b([A-Z][A-Z0-9]+)-\d+\b', window_title)
-        if not matches:
-            return default_project_key
+        known_projects = self._get_known_project_keys()
 
-        # Build set of known project keys from issues + projects
-        known_projects = set()
-        if self.user_issues:
-            for issue in self.user_issues:
-                proj = issue.get('project')
-                if proj:
-                    known_projects.add(proj)
-        if self.user_projects:
-            for proj in self.user_projects:
-                key = proj.get('key')
-                if key:
-                    known_projects.add(key)
+        # Strategy 1: Look for Jira issue keys in window title (PROJ-123 → PROJ)
+        issue_matches = re.findall(r'\b([A-Z][A-Z0-9]+)-\d+\b', window_title)
+        if issue_matches:
+            for match in issue_matches:
+                if match in known_projects:
+                    return match
+            # Use first extracted key even if not in known projects cache
+            return issue_matches[0]
 
-        # Prefer matches that are validated against known projects
-        for match in matches:
-            if match in known_projects:
-                return match
+        # Strategy 2: Extract workspace/folder name from VS Code or IDE titles
+        # VS Code: "filename - workspace_name - Visual Studio Code"
+        # IntelliJ: "filename – project_name"
+        if known_projects:
+            workspace_name = None
+            vscode_match = re.search(r'\s[-–—]\s(.+?)\s[-–—]\s(?:Visual Studio Code|Code - OSS|VSCodium)', window_title)
+            if vscode_match:
+                workspace_name = vscode_match.group(1).strip()
+            else:
+                # IntelliJ/PyCharm: "file – project"
+                ide_match = re.search(r'\s[-–—]\s(.+?)(?:\s[-–—]\s|$)', window_title)
+                if ide_match:
+                    workspace_name = ide_match.group(1).strip()
 
-        # Use first extracted key even if not in known projects cache
-        # (the user may have access to projects not yet cached)
-        return matches[0]
+            if workspace_name:
+                # Try case-insensitive match of workspace name against project keys
+                ws_upper = workspace_name.upper().replace('-', '').replace('_', '').replace(' ', '')
+                for pk in known_projects:
+                    pk_normalized = pk.upper().replace('-', '').replace('_', '').replace(' ', '')
+                    # Match if workspace contains the project key or vice versa
+                    if pk_normalized in ws_upper or ws_upper.startswith(pk_normalized):
+                        return pk
+
+        return default_project_key
 
     def get_user_project_key(self):
         """Get project key from user's issues or projects
@@ -7123,7 +7147,8 @@ class TimeTracker:
                     'status': status,
                     'metadata': {
                         'tracking_mode': 'event_based',
-                        'app_version': self.app_version
+                        'app_version': self.app_version,
+                        'user_projects': list(self._get_known_project_keys()) or None
                     }
                 }
                 records.append(record)

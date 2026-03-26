@@ -31,10 +31,14 @@ if not exist "desktop_app.py" (
     exit /b 1
 )
 
-REM Check for virtual environment
+REM Check for virtual environment and set Python/pip paths
+set "VENV_PYTHON=python"
+set "VENV_PIP=pip"
 if exist "venv\Scripts\activate.bat" (
     echo [INFO] Activating virtual environment...
     call venv\Scripts\activate.bat
+    set "VENV_PYTHON=%~dp0venv\Scripts\python.exe"
+    set "VENV_PIP=%~dp0venv\Scripts\pip.exe"
 ) else (
     echo [INFO] No virtual environment found, using system Python
 )
@@ -42,7 +46,7 @@ if exist "venv\Scripts\activate.bat" (
 REM Install/update dependencies
 echo.
 echo [STEP 1/6] Installing Python dependencies...
-pip install -r requirements.txt --quiet
+"%VENV_PIP%" install -r requirements.txt --quiet
 if errorlevel 1 (
     echo [ERROR] Failed to install dependencies
     pause
@@ -102,7 +106,7 @@ echo [INFO] Fallback engines: %OCR_FALLBACK_ENGINES%
 REM Use Python auto_installer to install all configured engines dynamically
 echo.
 echo [STEP 3/6] Installing OCR engine dependencies (dynamic)...
-python -c "from ocr.auto_installer import check_and_install_dependencies; check_and_install_dependencies(auto_install=True, silent=False)"
+"%VENV_PYTHON%" -c "from ocr.auto_installer import check_and_install_dependencies; check_and_install_dependencies(auto_install=True, silent=False)"
 if errorlevel 1 (
     echo [WARN] Some OCR dependencies may have failed to install.
     echo [WARN] The exe will still build - check output above for details.
@@ -196,7 +200,7 @@ if not errorlevel 1 (
     ) else (
         echo [INFO] PaddleOCR models not found - downloading...
         echo [INFO] This may take a few minutes on first run...
-        python -c "from paddleocr import PaddleOCR; ocr = PaddleOCR(lang='en', use_angle_cls=True, show_log=False); print('Models downloaded successfully')"
+        "%VENV_PYTHON%" -c "from paddleocr import PaddleOCR; ocr = PaddleOCR(lang='en', use_angle_cls=True, show_log=False); print('Models downloaded successfully')"
         if errorlevel 1 (
             echo [WARN] Failed to download PaddleOCR models.
         ) else (
@@ -251,7 +255,7 @@ echo [STEP 6/6] Building executable...
 
 REM Remove problematic packages that conflict with PyInstaller
 echo [INFO] Removing packages incompatible with PyInstaller...
-pip uninstall -y pathlib >nul 2>&1
+"%VENV_PIP%" uninstall -y pathlib >nul 2>&1
 
 if exist "dist" rmdir /s /q dist
 if exist "build" rmdir /s /q build
@@ -264,7 +268,7 @@ echo.
 REM CRITICAL: Disable user site-packages to prevent PyInstaller from picking up
 REM system-wide paddle/paddleocr installations that conflict with the venv versions
 set PYTHONNOUSERSITE=1
-pyinstaller desktop_app.spec
+"%VENV_PYTHON%" -m PyInstaller desktop_app.spec
 
 if errorlevel 1 (
     echo.

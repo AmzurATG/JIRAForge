@@ -96,7 +96,8 @@ function transformRecordForAnalysis(record) {
     total_time_seconds: record.total_time_seconds,
     start_time: record.start_time,
     end_time: record.end_time,
-    classification: record.classification
+    classification: record.classification,
+    metadata: record.metadata
   };
 }
 
