@@ -4,7 +4,7 @@
  */
 
 import { fetchTimeAnalytics, fetchTimeAnalyticsBatch, fetchAllAnalytics, fetchProjectAnalytics, fetchProjectTeamAnalytics, fetchTeamDayTimeline, fetchMyDayTimeline, convertIdleToWorklog } from '../services/analyticsService.js';
-import { isJiraAdmin, checkUserPermissions, createJiraIssue } from '../utils/jira.js';
+import { isJiraAdmin, checkUserPermissions, createJiraIssue, getIssueTransitions, transitionIssue, createJiraWorklog } from '../utils/jira.js';
 
 // Feature flag for using batch API (set to true for production)
 const USE_BATCH_API = true;
@@ -200,6 +200,19 @@ export function registerAnalyticsResolvers(resolver) {
           throw new Error('Failed to create Jira issue');
         }
         issueKey = newIssue.key;
+
+        // Transition the new issue to "In Progress"
+        try {
+          const transitions = await getIssueTransitions(issueKey);
+          const inProgressTransition = transitions.find(t =>
+            t.to?.name?.toLowerCase() === 'in progress'
+          );
+          if (inProgressTransition) {
+            await transitionIssue(issueKey, inProgressTransition.id);
+          }
+        } catch (transErr) {
+          console.warn(`[IdleConvert] Could not transition ${issueKey} to In Progress:`, transErr.message);
+        }
       }
 
       if (!issueKey) {
@@ -207,6 +220,17 @@ export function registerAnalyticsResolvers(resolver) {
       }
 
       const data = await convertIdleToWorklog(accountId, cloudId, idleRecordId, issueKey, reason);
+
+      // Add a Jira worklog to the issue so the time appears on the board
+      try {
+        if (data.durationSeconds && data.durationSeconds > 0) {
+          const startedAt = data.idleStartTime || new Date().toISOString();
+          await createJiraWorklog(issueKey, data.durationSeconds, startedAt);
+        }
+      } catch (wlErr) {
+        console.warn(`[IdleConvert] Worklog created in DB but Jira worklog failed for ${issueKey}:`, wlErr.message);
+      }
+
       return { success: true, data };
     } catch (error) {
       console.error('Error converting idle to worklog:', error);

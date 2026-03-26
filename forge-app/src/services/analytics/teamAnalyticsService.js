@@ -1013,6 +1013,7 @@ export async function convertIdleToWorklog(accountId, cloudId, idleRecordId, iss
     id: idleRecordId,
     issueKey,
     durationSeconds: record.duration_seconds,
+    idleStartTime: record.idle_start_time || null,
     convertedAt: now
   };
 }
