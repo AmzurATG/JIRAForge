@@ -6,7 +6,7 @@ import './components/modals/Modals.css';
 import UnassignedWork from './components/UnassignedWork';
 import TimesheetSettings from './shared/components/TimesheetSettings';
 import { DashboardTab, TimeAnalyticsTab, TeamAnalyticsTab, OrgAnalyticsTab, ScreenshotsTab, BRDUploadTab, ProjectSettingsTab } from './components/tabs';
-import { SessionReassignModal, ScreenshotPreviewModal, FullscreenViewer, FeedbackModal } from './components/modals';
+import { SessionReassignModal, WorklogReassignModal, ScreenshotPreviewModal, FullscreenViewer, FeedbackModal } from './components/modals';
 import { DesktopAppStatusBanner } from './components/common';
 import { AppProvider, useApp } from './context';
 import { getInitialTab } from './utils';
@@ -28,6 +28,11 @@ function AppContent() {
 
   // Feedback State
   const [feedbackModalOpen, setFeedbackModalOpen] = useState(false);
+
+  // Worklog Reassignment State
+  const [worklogReassignModalOpen, setWorklogReassignModalOpen] = useState(false);
+  const [worklogToReassign, setWorklogToReassign] = useState(null);
+  const [reassigningWorklog, setReassigningWorklog] = useState(false);
 
   // Screenshot Preview State
   const [screenshotPreviewOpen, setScreenshotPreviewOpen] = useState(false);
@@ -71,6 +76,41 @@ function AppContent() {
       alert(`Error reassigning session: ${err.message}`);
     } finally {
       setReassigning(false);
+    }
+  };
+
+  // Worklog Reassignment Handlers
+  const openWorklogReassignModal = (worklogInfo) => {
+    setWorklogToReassign(worklogInfo);
+    setWorklogReassignModalOpen(true);
+  };
+
+  const closeWorklogReassignModal = () => {
+    setWorklogReassignModalOpen(false);
+    setWorklogToReassign(null);
+  };
+
+  const handleReassignWorklog = async (toIssueKey) => {
+    if (!worklogToReassign || reassigningWorklog) return;
+
+    setReassigningWorklog(true);
+    try {
+      const result = await invoke('reassignWorklog', {
+        fromIssueKey: worklogToReassign.fromIssueKey,
+        toIssueKey: toIssueKey
+      });
+
+      if (result.success) {
+        await loadActiveIssues();
+        closeWorklogReassignModal();
+      } else {
+        alert(`Failed to reassign worklog: ${result.error}`);
+      }
+    } catch (err) {
+      console.error('Error reassigning worklog:', err);
+      alert(`Error reassigning worklog: ${err.message}`);
+    } finally {
+      setReassigningWorklog(false);
     }
   };
 
@@ -289,7 +329,7 @@ function AppContent() {
               onOpenReassignModal={openReassignModal}
             />
           )}
-          {activeTab === 'time-analytics' && <TimeAnalyticsTab />}
+          {activeTab === 'time-analytics' && <TimeAnalyticsTab onOpenWorklogReassignModal={openWorklogReassignModal} />}
           {activeTab === 'screenshots' && <ScreenshotsTab />}
           {activeTab === 'team-analytics' && (userPermissions.isJiraAdmin || userPermissions.projectAdminProjects?.length > 0) && <TeamAnalyticsTab />}
           {activeTab === 'org-analytics' && <OrgAnalyticsTab />}
@@ -311,6 +351,15 @@ function AppContent() {
         reassigning={reassigning}
         onClose={closeReassignModal}
         onReassign={handleReassignSession}
+      />
+
+      <WorklogReassignModal
+        isOpen={worklogReassignModalOpen}
+        worklogToReassign={worklogToReassign}
+        activeIssues={activeIssues}
+        reassigning={reassigningWorklog}
+        onClose={closeWorklogReassignModal}
+        onReassign={handleReassignWorklog}
       />
 
       <ScreenshotPreviewModal

@@ -7,12 +7,13 @@ import { normalizeDate, formatLocalDate, parseUTC } from './dateUtils';
  * Day View Component
  * Displays today's timesheet with team member cards and activity timeline
  */
-function DayView({ loading, timeData, onTodayTotalReconciled }) {
+function DayView({ loading, timeData, onTodayTotalReconciled, onOpenWorklogReassignModal }) {
   const [timelineData, setTimelineData] = useState(null);
   const [myTimelineData, setMyTimelineData] = useState(null);
   const [convertingIdle, setConvertingIdle] = useState(null); // { id, startTime, endTime, durationSeconds }
   const [convertForm, setConvertForm] = useState({ issueKey: '', reason: '', mode: 'existing' }); // mode: 'existing' | 'new'
   const [convertLoading, setConvertLoading] = useState(false);
+  const [expandedUsers, setExpandedUsers] = useState({}); // { [userId]: true } for showing issue breakdown
   const popoverRef = useRef(null);
   // Helper function to get user initials
   const getInitials = (name) => {
@@ -747,8 +748,46 @@ function DayView({ loading, timeData, onTodayTotalReconciled }) {
                         {/* Time total */}
                         <div className="member-total-section">
                           <span className="member-total">{formatTime(user.totalSeconds)}</span>
+                          {isOwnUser && user.tasks.length > 0 && (
+                            <button
+                              className="expand-issues-btn"
+                              onClick={() => setExpandedUsers(prev => ({ ...prev, [user.userId]: !prev[user.userId] }))}
+                              title={expandedUsers[user.userId] ? 'Hide issue breakdown' : 'Show issue breakdown'}
+                            >
+                              {expandedUsers[user.userId] ? '▲' : '▼'}
+                            </button>
+                          )}
                         </div>
                       </div>
+
+                      {/* Expandable issue breakdown with worklog reassign button */}
+                      {isOwnUser && expandedUsers[user.userId] && user.tasks.length > 0 && (
+                        <div className="issue-breakdown">
+                          {user.tasks.map((task, taskIdx) => (
+                            <div key={taskIdx} className="issue-row">
+                              <span className="issue-row-key">{task.issue_key || task.active_task_key || 'Unassigned'}</span>
+                              <span className="issue-row-summary">{task.issue_summary || ''}</span>
+                              <span className="issue-row-time">{formatTime(task.total_seconds || 0)}</span>
+                              {onOpenWorklogReassignModal && (task.issue_key || task.active_task_key) && (
+                                <button
+                                  className="reassign-worklog-btn"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    onOpenWorklogReassignModal({
+                                      fromIssueKey: task.issue_key || task.active_task_key,
+                                      timeSpentSeconds: task.total_seconds || 0,
+                                      issueSummary: task.issue_summary || ''
+                                    });
+                                  }}
+                                  title="Reassign worklog to another issue"
+                                >
+                                  ⇄
+                                </button>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      )}
                     </div>
                   );
                 })}

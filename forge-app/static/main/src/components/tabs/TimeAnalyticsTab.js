@@ -11,7 +11,7 @@ const FALLBACK_DOWNLOAD_URL = 'https://jvijitdewbypqbatfboi.supabase.co/storage/
  * Time Analytics Tab Component
  * Orchestrates the different timesheet views (Day, Week, Month)
  */
-function TimeAnalyticsTab() {
+function TimeAnalyticsTab({ onOpenWorklogReassignModal }) {
   const { userPermissions } = useApp();
 
   const [loading, setLoading] = useState(true);
@@ -98,7 +98,7 @@ function TimeAnalyticsTab() {
       {/* Timesheet Content */}
       <div className="timesheet-content">
         {timesheetView === 'day' && (
-          <DayView loading={loading} timeData={timeData} onTodayTotalReconciled={setReconciledTodayTotal} />
+          <DayView loading={loading} timeData={timeData} onTodayTotalReconciled={setReconciledTodayTotal} onOpenWorklogReassignModal={onOpenWorklogReassignModal} />
         )}
 
         {timesheetView === 'week' && (

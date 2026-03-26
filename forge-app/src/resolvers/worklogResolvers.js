@@ -5,6 +5,7 @@
 
 import { createWorklog, syncCurrentUserWorklogs } from '../services/worklogService.js';
 import { runScheduledWorklogSync } from '../services/scheduledWorklogSync.js';
+import { reassignWorklog } from '../services/worklogReassignmentService.js';
 import { isJiraAdmin } from '../utils/jira.js';
 import api, { route } from '@forge/api';
 
@@ -164,6 +165,39 @@ export function registerWorklogResolvers(resolver) {
     } catch (error) {
       console.error('[TestWorklogFix] Error:', error);
       return { success: false, error: error.message, steps: results.steps };
+    }
+  });
+
+  /**
+   * Resolver for reassigning a synced Jira worklog from one issue to another.
+   * Deletes the worklog on the old issue and creates it on the new issue.
+   */
+  resolver.define('reassignWorklog', async (req) => {
+    const { context, payload } = req;
+    const accountId = context.accountId;
+    const cloudId = context.cloudId;
+    const { fromIssueKey, toIssueKey } = payload;
+
+    if (!fromIssueKey || !toIssueKey) {
+      return { success: false, error: 'Both fromIssueKey and toIssueKey are required' };
+    }
+
+    if (fromIssueKey === toIssueKey) {
+      return { success: false, error: 'Cannot reassign to the same issue' };
+    }
+
+    try {
+      const result = await reassignWorklog(accountId, cloudId, fromIssueKey, toIssueKey);
+      return {
+        success: true,
+        fromIssueKey: result.fromIssueKey,
+        toIssueKey: result.toIssueKey,
+        timeSpentSeconds: result.timeSpentSeconds,
+        message: result.message
+      };
+    } catch (error) {
+      console.error(`[reassignWorklog] Error: ${error.message}`);
+      return { success: false, error: error.message };
     }
   });
 }
