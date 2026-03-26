@@ -88,8 +88,15 @@ WHEN TO RETURN null (no match):
 
 CRITICAL RULES:
 - ONLY use task keys from the user's assigned issues list. NEVER invent or fabricate issue keys from OCR text, window titles, or any other source.
-- Return null when there is no clear semantic connection between the activity and a specific issue
+- Return null for taskKey when there is no clear semantic connection between the activity and a specific issue
 - A match requires a meaningful content relationship, not just both being work-related
+
+PROJECT DETECTION (independent of issue matching):
+- projectKey should ALWAYS be set when you can identify which project the user is working on, even when taskKey is null
+- Detect project from: VS Code workspace name, folder paths in window title, Jira keys in OCR text, project names in file paths
+- VS Code titles follow the pattern: "filename - workspace_name - Visual Studio Code" — extract workspace_name and match to known projects
+- If the user's accessible projects list is provided, match workspace names against it (case-insensitive, ignore hyphens/underscores)
+- projectKey and taskKey are INDEPENDENT — you can return a projectKey with a null taskKey
 
 CONFIDENCE SCORING:
 - 0.8-1.0: Direct match (Jira key visible, explicit feature match)
@@ -108,7 +115,7 @@ const APP_CLASSIFICATION_SYSTEM_PROMPT = `You are an expert at classifying deskt
  * @param {string} assignedIssuesText - Formatted list of user's Jira issues
  * @returns {string} Complete user prompt
  */
-function buildBatchAnalysisPrompt(records, assignedIssuesText) {
+function buildBatchAnalysisPrompt(records, assignedIssuesText, userProjects) {
   const recordDescriptions = records.map((record, index) => {
     const ocrSnippet = record.ocr_text
       ? sanitizeOcrText(record.ocr_text.substring(0, 500))
@@ -118,6 +125,11 @@ function buildBatchAnalysisPrompt(records, assignedIssuesText) {
   Time: ${record.total_time_seconds}s | ${record.start_time} → ${record.end_time}
   OCR Text: ${ocrSnippet}`;
   }).join('\n\n');
+
+  // Build user projects context if available
+  const projectsContext = userProjects && userProjects.length > 0
+    ? `\nUser's Accessible Projects (for project detection):\n${userProjects.join(', ')}\n`
+    : '';
 
   return `Analyze these activity records and match each to the most relevant Jira issue.
 Match based on MEANING, not just keywords. If a window title contains a Jira key, use it. If OCR text references specific features or code related to an issue, match it.
@@ -130,18 +142,26 @@ IMPORTANT: When OCR text shows "(no text extracted)", you must rely on:
 For development tools with project/file names in the title, match to relevant "In Progress" issues.
 For browsers with technical sites in the title, match based on the topic being researched.
 
-CRITICAL: You must ONLY use task keys from the assigned issues list below. NEVER invent, fabricate, or extract issue keys from OCR text, window titles, or any other source. If no assigned issue is a clear semantic match, return taskKey as null. Generic activities (Task Manager, File Explorer, Windows Settings, system utilities, download history) should return null unless they clearly relate to a specific issue.
+CRITICAL TASK KEY RULE: You must ONLY use task keys from the assigned issues list below. NEVER invent, fabricate, or extract issue keys from OCR text, window titles, or any other source. If no assigned issue is a clear semantic match, return taskKey as null. Generic activities (Task Manager, File Explorer, Windows Settings, system utilities, download history) should return null unless they clearly relate to a specific issue.
+
+CRITICAL PROJECT KEY RULE: projectKey is INDEPENDENT of taskKey. Even when taskKey is null (no issue match), you MUST still detect the correct projectKey from context:
+- VS Code titles: "filename - workspace_name - Visual Studio Code" → extract workspace_name, match to accessible projects
+- Jira keys in OCR text or window title (e.g., PROJ-123 → projectKey is "PROJ")
+- Folder paths, repository names, or project names visible in the activity
+- Match workspace/folder names against the accessible projects list (case-insensitive, ignore hyphens/underscores)
+- Only return null for projectKey if you truly cannot determine which project this activity belongs to
 
 User's Assigned Issues (from Jira):
 ${assignedIssuesText}
-
+${projectsContext}
 Activity Records:
 ${recordDescriptions}
 
 For EACH record, determine:
 1. Which Jira issue is the user most likely working on? Return null if the activity has no clear connection to any specific issue.
-2. Is this office work or non-office?
-3. How confident are you in the match?
+2. Which project does this activity belong to? Detect from workspace name, folder paths, or issue keys.
+3. Is this office work or non-office?
+4. How confident are you in the match?
 
 Return ONLY valid JSON (no markdown code blocks, no extra text). Your response must be exactly one JSON array:
 [
@@ -259,6 +279,46 @@ function salvageTruncatedJsonArray(truncatedJson) {
 // ============================================================================
 
 /**
+ * Extract user's accessible project keys from record metadata and assigned issues.
+ * Desktop app stores user_projects in record metadata since v2.2.0.
+ * Falls back to extracting unique project keys from assigned issues.
+ *
+ * @param {Array} records - Raw activity records (may contain metadata with user_projects)
+ * @param {Array} userAssignedIssues - Parsed assigned issues
+ * @returns {Array<string>} Unique project keys
+ */
+function extractUserProjects(records, userAssignedIssues) {
+  const projects = new Set();
+
+  // Try to extract from record metadata (desktop app >= v2.2.0)
+  for (const record of records) {
+    let metadata = record.metadata;
+    if (typeof metadata === 'string') {
+      try { metadata = JSON.parse(metadata); } catch { continue; }
+    }
+    if (metadata && Array.isArray(metadata.user_projects)) {
+      for (const pk of metadata.user_projects) {
+        if (pk) projects.add(pk);
+      }
+    }
+  }
+
+  // Also extract from assigned issues
+  if (Array.isArray(userAssignedIssues)) {
+    for (const issue of userAssignedIssues) {
+      if (issue.project) projects.add(issue.project);
+      // Also derive from issue key (PROJ-123 → PROJ)
+      if (issue.key) {
+        const match = issue.key.match(/^([A-Z][A-Z0-9]+)-\d+$/);
+        if (match) projects.add(match[1]);
+      }
+    }
+  }
+
+  return [...projects];
+}
+
+/**
  * Parses the raw AI batch response into a JSON array.
  * Handles direct JSON, markdown code blocks, and truncated responses.
  */
@@ -291,7 +351,8 @@ function validateAnalysisKeys(analyses, userAssignedIssues) {
     if (analysis.taskKey && !validKeys.has(analysis.taskKey)) {
       logger.warn(`[ActivityService] AI returned invalid task key: ${analysis.taskKey}`);
       analysis.taskKey = null;
-      analysis.projectKey = null;
+      // Do NOT wipe projectKey — it is detected independently from context
+      // (workspace name, folder paths, etc.) and is valid even without an issue match
       analysis.confidenceScore = Math.min(analysis.confidenceScore || 0, 0.3);
     }
   }
@@ -339,8 +400,11 @@ async function analyzeBatch(records, userAssignedIssues, userId, organizationId)
     throw new Error('AI client not initialized - check API keys');
   }
 
+  // Extract user's accessible projects from record metadata (sent by desktop app)
+  const userProjects = extractUserProjects(records, userAssignedIssues);
+
   const assignedIssuesText = formatAssignedIssues(userAssignedIssues);
-  const userPrompt = buildBatchAnalysisPrompt(records, assignedIssuesText);
+  const userPrompt = buildBatchAnalysisPrompt(records, assignedIssuesText, userProjects);
   const messages = [
     { role: 'system', content: BATCH_ANALYSIS_SYSTEM_PROMPT },
     { role: 'user', content: userPrompt }
