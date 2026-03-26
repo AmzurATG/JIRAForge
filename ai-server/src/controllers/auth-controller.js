@@ -16,6 +16,7 @@ const { getClient } = require('../services/db/supabase-client');
 // Atlassian OAuth configuration
 const ATLASSIAN_TOKEN_URL = 'https://auth.atlassian.com/oauth/token';
 const ATLASSIAN_ME_URL = 'https://api.atlassian.com/me';
+const ATLASSIAN_RESOURCES_URL = 'https://api.atlassian.com/oauth/token/accessible-resources';
 
 // ============================================================================
 // Helper Functions (extracted to reduce duplication)
@@ -117,13 +118,20 @@ async function lookupUserByAtlassianId(atlassianAccountId) {
 }
 
 /**
- * Lookup user and send appropriate error response if not found
+ * Lookup user and send appropriate error response if not found.
+ * If atlassianToken is provided, auto-provisions the user when not found
+ * by fetching their Jira cloud resources and creating org + user records.
+ *
  * @param {string} atlassianAccountId - Atlassian account ID
  * @param {Object} res - Express response object
  * @param {string} context - Context for logging
+ * @param {Object} [provisionInfo] - Info needed for auto-provisioning
+ * @param {string} [provisionInfo.atlassianToken] - Atlassian bearer token
+ * @param {string} [provisionInfo.email] - User email
+ * @param {string} [provisionInfo.displayName] - User display name
  * @returns {Promise<Object|null>} User object or null if error response sent
  */
-async function lookupUserOrRespond(atlassianAccountId, res, context = '') {
+async function lookupUserOrRespond(atlassianAccountId, res, context = '', provisionInfo = null) {
   const { user, error } = await lookupUserByAtlassianId(atlassianAccountId);
   const logSuffix = context ? ` for ${context}` : '';
 
@@ -137,6 +145,21 @@ async function lookupUserOrRespond(atlassianAccountId, res, context = '') {
   }
 
   if (error?.type === 'not_found') {
+    // Auto-provision user if we have an Atlassian token
+    if (provisionInfo?.atlassianToken) {
+      logger.info(`[Auth] User not found${logSuffix}, attempting auto-provisioning: %s`, atlassianAccountId);
+      const provisioned = await autoProvisionUser(
+        atlassianAccountId,
+        provisionInfo.atlassianToken,
+        provisionInfo.email,
+        provisionInfo.displayName
+      );
+      if (provisioned) {
+        logger.info(`[Auth] Auto-provisioned user${logSuffix}: %s (org: %s)`, atlassianAccountId, provisioned.organization_id);
+        return provisioned;
+      }
+    }
+
     logger.warn(`[Auth] User not found in system${logSuffix}: %s`, atlassianAccountId);
     res.status(403).json({
       success: false,
@@ -146,6 +169,20 @@ async function lookupUserOrRespond(atlassianAccountId, res, context = '') {
   }
 
   if (error?.type === 'no_org') {
+    // Try to fix missing org via auto-provisioning
+    if (provisionInfo?.atlassianToken) {
+      logger.info(`[Auth] User has no org${logSuffix}, attempting auto-provisioning: %s`, atlassianAccountId);
+      const provisioned = await autoProvisionUser(
+        atlassianAccountId,
+        provisionInfo.atlassianToken,
+        provisionInfo.email,
+        provisionInfo.displayName
+      );
+      if (provisioned) {
+        return provisioned;
+      }
+    }
+
     logger.warn(`[Auth] User has no organization${logSuffix}: %s`, atlassianAccountId);
     res.status(403).json({
       success: false,
@@ -156,6 +193,161 @@ async function lookupUserOrRespond(atlassianAccountId, res, context = '') {
 
   logger.info(`[Auth] User validated in system${logSuffix}: %s (org: %s)`, atlassianAccountId, user.organization_id);
   return user;
+}
+
+/**
+ * Auto-provision a user by fetching their Jira cloud resources,
+ * finding or creating the organization, and creating the user record.
+ *
+ * @param {string} atlassianAccountId - Atlassian account ID
+ * @param {string} atlassianToken - Valid Atlassian bearer token
+ * @param {string} [email] - User email
+ * @param {string} [displayName] - User display name
+ * @returns {Promise<Object|null>} User object with id and organization_id, or null on failure
+ */
+async function autoProvisionUser(atlassianAccountId, atlassianToken, email, displayName) {
+  try {
+    const supabase = getClient();
+    if (!supabase) return null;
+
+    // Fetch accessible Jira cloud resources to get cloud ID and site name
+    const resourcesResponse = await axios.get(ATLASSIAN_RESOURCES_URL, {
+      headers: {
+        'Authorization': `Bearer ${atlassianToken}`,
+        'Accept': 'application/json'
+      },
+      timeout: 10000
+    });
+
+    const resources = resourcesResponse.data;
+    if (!resources || resources.length === 0) {
+      logger.warn('[Auth] No accessible Jira resources for auto-provisioning');
+      return null;
+    }
+
+    // Use the first Jira cloud resource
+    const resource = resources[0];
+    const cloudId = resource.id;
+    const orgName = resource.name || 'Unknown Organization';
+    const jiraUrl = resource.url || `https://${cloudId}.atlassian.net`;
+
+    logger.info('[Auth] Auto-provisioning with cloud resource: %s (%s)', orgName, cloudId);
+
+    // Find or create organization
+    const { data: existingOrgs, error: findOrgError } = await supabase
+      .from('organizations')
+      .select('*')
+      .eq('jira_cloud_id', cloudId);
+
+    if (findOrgError) throw findOrgError;
+
+    let organization;
+    if (existingOrgs && existingOrgs.length > 0) {
+      organization = existingOrgs[0];
+      logger.info('[Auth] Found existing organization for auto-provisioning', { id: organization.id });
+    } else {
+      // Create new organization
+      const { data: newOrg, error: createOrgError } = await supabase
+        .from('organizations')
+        .insert({
+          jira_cloud_id: cloudId,
+          org_name: orgName,
+          jira_instance_url: jiraUrl,
+          subscription_status: 'active',
+          subscription_tier: 'free'
+        })
+        .select()
+        .single();
+
+      if (createOrgError) throw createOrgError;
+
+      // Create default organization settings
+      await supabase
+        .from('organization_settings')
+        .insert({
+          organization_id: newOrg.id,
+          screenshot_interval: 300,
+          auto_worklog_enabled: true
+        });
+
+      organization = newOrg;
+      logger.info('[Auth] Created new organization via auto-provisioning', { id: organization.id });
+    }
+
+    // Find or create user
+    const { data: existingUsers, error: findUserError } = await supabase
+      .from('users')
+      .select('id, organization_id')
+      .eq('atlassian_account_id', atlassianAccountId);
+
+    if (findUserError) throw findUserError;
+
+    let dbUser;
+    if (existingUsers && existingUsers.length > 0) {
+      dbUser = existingUsers[0];
+      // Update org if missing
+      if (!dbUser.organization_id) {
+        await supabase.from('users')
+          .update({ organization_id: organization.id })
+          .eq('id', dbUser.id);
+        dbUser.organization_id = organization.id;
+      }
+    } else {
+      // Create new user
+      const { data: newUser, error: createUserError } = await supabase
+        .from('users')
+        .insert({
+          atlassian_account_id: atlassianAccountId,
+          organization_id: organization.id,
+          email: email || null,
+          display_name: displayName || null
+        })
+        .select()
+        .single();
+
+      if (createUserError) throw createUserError;
+      dbUser = newUser;
+    }
+
+    // Ensure organization membership
+    const { data: existingMembership } = await supabase
+      .from('organization_members')
+      .select('id')
+      .eq('user_id', dbUser.id)
+      .eq('organization_id', organization.id);
+
+    if (!existingMembership || existingMembership.length === 0) {
+      const { data: allMembers } = await supabase
+        .from('organization_members')
+        .select('id')
+        .eq('organization_id', organization.id);
+
+      const isFirstUser = !allMembers || allMembers.length === 0;
+      const role = isFirstUser ? 'owner' : 'member';
+      const ADMIN_ROLES = new Set(['owner', 'admin']);
+      const ANALYTICS_ROLES = new Set(['owner', 'admin', 'manager']);
+
+      await supabase
+        .from('organization_members')
+        .insert({
+          user_id: dbUser.id,
+          organization_id: organization.id,
+          role,
+          can_manage_settings: ADMIN_ROLES.has(role),
+          can_view_team_analytics: ANALYTICS_ROLES.has(role),
+          can_manage_members: ADMIN_ROLES.has(role),
+          can_delete_screenshots: ADMIN_ROLES.has(role),
+          can_manage_billing: role === 'owner'
+        });
+
+      logger.info('[Auth] Created organization membership via auto-provisioning', { userId: dbUser.id, role });
+    }
+
+    return { id: dbUser.id, organization_id: organization.id };
+  } catch (error) {
+    logger.error('[Auth] Auto-provisioning failed:', error.message);
+    return null;
+  }
 }
 
 /**
@@ -366,8 +558,12 @@ exports.exchangeToken = async (req, res) => {
 
     logger.info('[Auth] Atlassian user verified: %s', atlassianAccountId);
 
-    // Verify user exists in our system (registered via Forge app)
-    const dbUser = await lookupUserOrRespond(atlassianAccountId, res);
+    // Verify user exists in our system (auto-provision if needed)
+    const dbUser = await lookupUserOrRespond(atlassianAccountId, res, '', {
+      atlassianToken: atlassian_token,
+      email,
+      displayName: atlassianUser.name || atlassianUser.display_name
+    });
     if (!dbUser) return;
 
     // Extract Supabase reference from URL (e.g., jvijitdewbypqbatfboi from https://jvijitdewbypqbatfboi.supabase.co)
@@ -454,9 +650,13 @@ exports.getSupabaseConfig = async (req, res) => {
     const atlassianUser = await verifyAtlassianTokenOrRespond(atlassian_token, res, 'Supabase config');
     if (!atlassianUser) return;
 
-    // Verify user exists in our system (registered via Forge app)
+    // Verify user exists in our system (auto-provision if needed)
     const atlassianAccountId = atlassianUser.account_id;
-    const dbUser = await lookupUserOrRespond(atlassianAccountId, res, 'Supabase config');
+    const dbUser = await lookupUserOrRespond(atlassianAccountId, res, 'Supabase config', {
+      atlassianToken: atlassian_token,
+      email: atlassianUser.email,
+      displayName: atlassianUser.name || atlassianUser.display_name
+    });
     if (!dbUser) return;
 
     // Get Supabase credentials from environment

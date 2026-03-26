@@ -289,6 +289,12 @@ class NotificationPollingService {
         let sentCount = 0;
         for (const admin of admins) {
             try {
+                // Respect admin's work-day / work-hour preferences (no weekend emails)
+                const isWorkHours = await this._isWithinWorkHours(admin.id);
+                if (!isWorkHours) {
+                    continue;
+                }
+
                 const result = await notificationService.sendAdminDownloadDigest(
                     admin.id, orgId, { orgName, users: digestUsers, downloadUrl }
                 );
@@ -631,6 +637,12 @@ class NotificationPollingService {
         let sentCount = 0;
         for (const admin of admins) {
             try {
+                // Respect admin's work-day / work-hour preferences (no weekend emails)
+                const isWorkHours = await this._isWithinWorkHours(admin.id);
+                if (!isWorkHours) {
+                    continue;
+                }
+
                 const result = await notificationService.sendAdminInactivityDigest(
                     admin.id, orgId, { orgName, inactiveUsers: digestUsers }
                 );

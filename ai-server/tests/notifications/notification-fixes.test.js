@@ -417,4 +417,90 @@ describe('Fix: Notifications must not be sent on weekends', () => {
             expect(result).toBe(false);
         });
     });
+
+    // ── 2g. Admin digests must also respect weekends ─────────────────
+    describe('should block admin digest notifications on weekends', () => {
+        beforeEach(() => {
+            // Saturday 12:00 UTC — within work "hours" but NOT a work day
+            jest.useFakeTimers({ now: new Date('2025-03-08T12:00:00Z') });
+
+            // Mock _getOrgAdmins and _getOrgName
+            pollingService._getOrgAdmins = jest.fn().mockResolvedValue([
+                { id: 'admin-1', email: 'admin@t.com', display_name: 'Admin' }
+            ]);
+            pollingService._getOrgName = jest.fn().mockResolvedValue('Test Org');
+        });
+
+        afterEach(() => jest.useRealTimers());
+
+        it('_sendAdminDownloadDigestForOrg returns 0 on Saturday', async () => {
+            const orgUsers = [{ display_name: 'U', email: 'u@t.com' }];
+            const result = await pollingService._sendAdminDownloadDigestForOrg('org-1', orgUsers);
+            expect(result).toBe(0);
+        });
+
+        it('_sendAdminInactivityDigestForOrg returns 0 on Saturday', async () => {
+            const orgUsers = [{ ...mockUser, desktop_last_heartbeat: '2025-03-07T10:00:00Z' }];
+            const result = await pollingService._sendAdminInactivityDigestForOrg('org-1', orgUsers, {});
+            expect(result).toBe(0);
+        });
+    });
+
+    describe('should block admin digest notifications on Sundays', () => {
+        beforeEach(() => {
+            // Sunday 14:00 UTC
+            jest.useFakeTimers({ now: new Date('2025-03-09T14:00:00Z') });
+
+            pollingService._getOrgAdmins = jest.fn().mockResolvedValue([
+                { id: 'admin-1', email: 'admin@t.com', display_name: 'Admin' }
+            ]);
+            pollingService._getOrgName = jest.fn().mockResolvedValue('Test Org');
+        });
+
+        afterEach(() => jest.useRealTimers());
+
+        it('_sendAdminDownloadDigestForOrg returns 0 on Sunday', async () => {
+            const orgUsers = [{ display_name: 'U', email: 'u@t.com' }];
+            const result = await pollingService._sendAdminDownloadDigestForOrg('org-1', orgUsers);
+            expect(result).toBe(0);
+        });
+
+        it('_sendAdminInactivityDigestForOrg returns 0 on Sunday', async () => {
+            const orgUsers = [{ ...mockUser, desktop_last_heartbeat: '2025-03-08T10:00:00Z' }];
+            const result = await pollingService._sendAdminInactivityDigestForOrg('org-1', orgUsers, {});
+            expect(result).toBe(0);
+        });
+    });
+
+    describe('should ALLOW admin digest notifications during work hours on weekdays', () => {
+        let mockNotifService;
+
+        beforeEach(() => {
+            // Monday 12:00 UTC — within work hours on a work day
+            jest.useFakeTimers({ now: new Date('2025-03-10T12:00:00Z') });
+
+            pollingService._getOrgAdmins = jest.fn().mockResolvedValue([
+                { id: 'admin-1', email: 'admin@t.com', display_name: 'Admin' }
+            ]);
+            pollingService._getOrgName = jest.fn().mockResolvedValue('Test Org');
+
+            mockNotifService = require('../../src/services/notifications/notification-service');
+        });
+
+        afterEach(() => jest.useRealTimers());
+
+        it('_sendAdminDownloadDigestForOrg sends on weekday work hours', async () => {
+            jest.spyOn(mockNotifService, 'sendAdminDownloadDigest').mockResolvedValue({ success: true });
+            const orgUsers = [{ display_name: 'U', email: 'u@t.com' }];
+            const result = await pollingService._sendAdminDownloadDigestForOrg('org-1', orgUsers);
+            expect(result).toBe(1);
+        });
+
+        it('_sendAdminInactivityDigestForOrg sends on weekday work hours', async () => {
+            jest.spyOn(mockNotifService, 'sendAdminInactivityDigest').mockResolvedValue({ success: true });
+            const orgUsers = [{ ...mockUser, desktop_last_heartbeat: '2025-03-09T10:00:00Z' }];
+            const result = await pollingService._sendAdminInactivityDigestForOrg('org-1', orgUsers, {});
+            expect(result).toBe(1);
+        });
+    });
 });
