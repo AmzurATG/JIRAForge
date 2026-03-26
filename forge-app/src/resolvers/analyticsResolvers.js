@@ -4,7 +4,7 @@
  */
 
 import { fetchTimeAnalytics, fetchTimeAnalyticsBatch, fetchAllAnalytics, fetchProjectAnalytics, fetchProjectTeamAnalytics, fetchTeamDayTimeline, fetchMyDayTimeline, convertIdleToWorklog } from '../services/analyticsService.js';
-import { isJiraAdmin, checkUserPermissions } from '../utils/jira.js';
+import { isJiraAdmin, checkUserPermissions, createJiraIssue } from '../utils/jira.js';
 
 // Feature flag for using batch API (set to true for production)
 const USE_BATCH_API = true;
@@ -174,11 +174,38 @@ export function registerAnalyticsResolvers(resolver) {
    */
   resolver.define('convertIdleToWorklog', async (req) => {
     const { payload, context } = req;
-    const { idleRecordId, issueKey, reason } = payload;
+    const { idleRecordId, issueKey: existingIssueKey, reason, createNewIssue, issueSummary } = payload;
     const accountId = context.accountId;
     const cloudId = context.cloudId;
 
     try {
+      let issueKey = existingIssueKey;
+
+      // If creating a new issue, do it here (Forge API must run in resolver context)
+      if (createNewIssue && !issueKey) {
+        // Determine project key from the idle record's project or fall back
+        const { getIdleRecordProjectKey } = await import('../services/analyticsService.js');
+        const projectKey = await getIdleRecordProjectKey(accountId, cloudId, idleRecordId);
+        if (!projectKey) {
+          throw new Error('Cannot determine project for new issue. Please use "Existing Issue" instead.');
+        }
+
+        const newIssue = await createJiraIssue(projectKey, {
+          summary: issueSummary || reason || 'Idle time worklog',
+          issuetype: { name: 'Task' },
+          assignee: { accountId },
+          labels: ['idle-time-converted']
+        });
+        if (!newIssue || !newIssue.key) {
+          throw new Error('Failed to create Jira issue');
+        }
+        issueKey = newIssue.key;
+      }
+
+      if (!issueKey) {
+        throw new Error('Issue key is required');
+      }
+
       const data = await convertIdleToWorklog(accountId, cloudId, idleRecordId, issueKey, reason);
       return { success: true, data };
     } catch (error) {

@@ -749,7 +749,19 @@
   background: #0065FF;
 }
 
-/* Convert popover */
+/* Convert popover — rendered outside timeline */
+.idle-convert-popover-outer {
+  background: white;
+  border-radius: 8px;
+  box-shadow: 0 4px 16px rgba(9, 30, 66, 0.25);
+  padding: 16px;
+  margin: 8px 24px 0 24px;
+  z-index: 100;
+  pointer-events: auto;
+  border: 1px solid #DFE1E6;
+}
+
+/* Legacy: in-timeline popover (kept for backward compat) */
 .idle-convert-popover {
   position: absolute;
   top: calc(100% + 6px);
@@ -797,6 +809,57 @@
 
 .popover-input:focus {
   border-color: #0052CC;
+}
+
+.popover-label {
+  display: block;
+  font-size: 11px;
+  font-weight: 600;
+  color: #6B778C;
+  margin-bottom: 4px;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+}
+
+.popover-mode-tabs {
+  display: flex;
+  gap: 0;
+  margin-bottom: 8px;
+  border: 1px solid #DFE1E6;
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.popover-mode-tab {
+  flex: 1;
+  padding: 5px 8px;
+  font-size: 11px;
+  font-weight: 500;
+  border: none;
+  background: #F4F5F7;
+  color: #42526E;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.popover-mode-tab:not(:last-child) {
+  border-right: 1px solid #DFE1E6;
+}
+
+.popover-mode-tab.active {
+  background: #0052CC;
+  color: white;
+}
+
+.popover-mode-tab:hover:not(.active) {
+  background: #EBECF0;
+}
+
+.popover-hint {
+  font-size: 11px;
+  color: #6B778C;
+  margin: 0 0 6px 0;
+  line-height: 1.4;
 }
 
 .popover-actions {

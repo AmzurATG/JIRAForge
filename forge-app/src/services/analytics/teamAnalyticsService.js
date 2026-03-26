@@ -961,11 +961,6 @@ export async function convertIdleToWorklog(accountId, cloudId, idleRecordId, iss
     throw new Error('idleRecordId, issueKey, and reason are required');
   }
 
-  // Validate issue key format
-  if (!isValidProjectKey(issueKey.split('-')[0])) {
-    throw new Error('Invalid issue key format');
-  }
-
   const { supabaseConfig, organization } = await initializeContext(accountId, cloudId);
 
   // Get the current user's Supabase ID
@@ -1020,4 +1015,16 @@ export async function convertIdleToWorklog(accountId, cloudId, idleRecordId, iss
     durationSeconds: record.duration_seconds,
     convertedAt: now
   };
+}
+
+/**
+ * Get the project_key of an idle record so the resolver can create an issue in the right project.
+ */
+export async function getIdleRecordProjectKey(accountId, cloudId, idleRecordId) {
+  const { supabaseConfig } = await initializeContext(accountId, cloudId);
+  const records = await supabaseRequest(
+    supabaseConfig,
+    `activity_records?id=eq.${idleRecordId}&select=project_key&limit=1`
+  );
+  return records?.[0]?.project_key || null;
 }
