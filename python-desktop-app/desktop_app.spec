@@ -155,10 +155,37 @@ else:
     engine_excludes += ['winrtocr']
 
 # ==============================================================================
+# RAPIDOCR DETECTION (only if configured)
+# RapidOCR uses the pip package 'rapidocr_onnxruntime' (not 'rapidocr').
+# ==============================================================================
+if 'rapidocr' in configured_engines:
+    print("[INFO] RapidOCR engine configured - bundling RapidOCR dependencies...")
+    try:
+        import rapidocr_onnxruntime
+        engine_hiddenimports += collect_submodules('rapidocr_onnxruntime')
+        engine_datas += collect_data_files('rapidocr_onnxruntime')
+        engine_hiddenimports += ['ocr.engines.rapidocr_engine']
+        print("[INFO] rapidocr_onnxruntime bundled successfully")
+    except ImportError:
+        print("[WARN] rapidocr_onnxruntime not installed - RapidOCR engine will not work")
+    # onnxruntime is a runtime dependency of rapidocr_onnxruntime
+    try:
+        import onnxruntime
+        engine_hiddenimports += collect_submodules('onnxruntime')
+        engine_datas += collect_data_files('onnxruntime')
+        print("[INFO] onnxruntime bundled successfully")
+    except ImportError:
+        print("[WARN] onnxruntime not installed - RapidOCR may not work")
+else:
+    print("[INFO] RapidOCR engine NOT configured - skipping RapidOCR bundling")
+    engine_excludes += ['rapidocr_onnxruntime', 'onnxruntime',
+                        'ocr.engines.rapidocr_engine']
+
+# ==============================================================================
 # DYNAMIC ENGINE DETECTION (for any other configured engine)
 # Attempts to collect submodules/data for arbitrary OCR packages
 # ==============================================================================
-known_engines = {'easyocr', 'winrtocr', 'winrt', 'mock', 'demo'}
+known_engines = {'easyocr', 'winrtocr', 'winrt', 'rapidocr', 'mock', 'demo'}
 dynamic_engines = [e for e in configured_engines if e not in known_engines]
 
 for engine_name in dynamic_engines:
@@ -214,6 +241,26 @@ dynamic_hiddenimports += collect_submodules('supabase')
 dynamic_hiddenimports += collect_submodules('keyring')
 dynamic_hiddenimports += collect_submodules('pynput')
 dynamic_hiddenimports += collect_submodules('pystray')
+
+# Linux local modules (conditionally imported in desktop_app.py)
+# PyInstaller cannot trace imports inside if IS_LINUX / try-except blocks.
+is_linux_build = sys.platform.startswith('linux')
+if is_linux_build:
+    dynamic_hiddenimports += ['desktop_app_linux', 'wayland_screenshot']
+    # Linux third-party deps used by desktop_app_linux / wayland_screenshot
+    for linux_pkg in ['ewmh', 'Xlib', 'dbus']:
+        try:
+            dynamic_hiddenimports += collect_submodules(linux_pkg)
+        except Exception:
+            dynamic_hiddenimports.append(linux_pkg)
+    # PyGObject (gi) and GObject Introspection modules
+    try:
+        dynamic_hiddenimports += collect_submodules('gi')
+    except Exception:
+        dynamic_hiddenimports += [
+            'gi', 'gi.repository', 'gi.repository.Atspi',
+            'gi.repository.Gst', 'gi.repository.GLib', 'gi.repository.Gio',
+        ]
 
 # Runtime data files needed by some dependencies
 runtime_datas = []
@@ -279,6 +326,9 @@ a = Analysis(
         # System tray
         'pystray',
         'pystray._win32',
+        # System tray — Linux backends (picked up by collect_submodules too)
+        'pystray._xorg',
+        'pystray._appindicator',
         # Windows APIs
         'win32gui',
         'win32process',
@@ -294,12 +344,16 @@ a = Analysis(
         'pynput.keyboard',
         'pynput.mouse._win32',
         'pynput.keyboard._win32',
+        # Input monitoring — Linux backends
+        'pynput.mouse._xorg',
+        'pynput.keyboard._xorg',
         # Desktop notifications
         'winotify',
         # Secure storage
         'keyring',
         'keyring.backends',
         'keyring.backends.Windows',
+        'keyring.backends.SecretService',  # Linux (D-Bus Secret Service)
         # Timezone
         'tzlocal',
         'tzdata',

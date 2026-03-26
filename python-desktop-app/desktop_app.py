@@ -11,6 +11,15 @@ import json
 import queue
 import atexit
 import threading
+
+# Fix GSettings schema crash on Linux when launched from .desktop / menu.
+# PyInstaller bundles may carry stale GLib schemas that conflict with the host.
+# Pointing GSETTINGS_SCHEMA_DIR at the system-compiled schemas avoids the
+# "does not contain a key named 'antialiasing'" fatal GLib error.
+if sys.platform.startswith('linux') and 'GSETTINGS_SCHEMA_DIR' not in os.environ:
+    _sys_schema = '/usr/share/glib-2.0/schemas'
+    if os.path.isfile(os.path.join(_sys_schema, 'gschemas.compiled')):
+        os.environ['GSETTINGS_SCHEMA_DIR'] = _sys_schema
 import webbrowser
 import tempfile
 import traceback
@@ -758,6 +767,8 @@ def get_app_executable_path():
 
 def get_installed_exe_path():
     """Get the path where the exe should be installed"""
+    if IS_LINUX:
+        return os.path.join(get_app_data_dir(), 'timetracker')
     return os.path.join(get_app_data_dir(), 'TimeTracker.exe')
 
 def get_shutdown_signal_path():
@@ -928,11 +939,17 @@ def is_running_from_install_location():
     current_path = os.path.normpath(get_app_executable_path()).lower()
     install_path = os.path.normpath(get_installed_exe_path()).lower()
 
+    # Also recognise the .deb system-wide install location
+    if IS_LINUX and current_path == '/opt/timetracker/timetracker':
+        return True
+
     return current_path == install_path
 
 def install_application():
     """
-    Self-install the application to %LOCALAPPDATA%\TimeTracker\
+    Self-install the application to the platform-specific install directory.
+    Windows: %LOCALAPPDATA%\TimeTracker\
+    Linux:   ~/.local/share/timetracker/
     Handles both fresh installation and updates (replacing old version).
 
     Returns:
@@ -995,7 +1012,8 @@ def install_application():
                 if not terminate_old_version(running_processes, timeout=10):
                     print("[ERROR] Could not close old version")
                     print("[INFO] Please close Time Tracker manually and try again")
-                    input("Press Enter to exit...")
+                    if not IS_LINUX:
+                        input("Press Enter to exit...")
                     return False
 
                 # Clean up shutdown signal
@@ -1006,7 +1024,8 @@ def install_application():
                 print("[ERROR] Could not access the installation file")
                 print("[INFO] The old version may still be running")
                 print("[INFO] Please close it manually and try again")
-                input("Press Enter to exit...")
+                if not IS_LINUX:
+                    input("Press Enter to exit...")
                 return False
 
         # Step 5: Copy the executable to install location
@@ -1021,6 +1040,11 @@ def install_application():
 
             # Rename temp to final
             os.rename(temp_exe, installed_exe)
+
+            # On Linux, ensure the installed binary is executable
+            if IS_LINUX:
+                os.chmod(installed_exe, 0o755)
+
             print(f"[OK] Application {'updated' if is_update else 'installed'}: {installed_exe}")
 
         except Exception as copy_error:
@@ -1032,15 +1056,33 @@ def install_application():
                     pass
             raise copy_error
 
-        # Generate/update uninstaller in install location
-        uninstall_path = os.path.join(install_dir, 'uninstall.bat')
-        _generate_uninstaller_at_path(uninstall_path, install_dir)
-        if not is_update:
-            print(f"[OK] Uninstaller created: {uninstall_path}")
+        # Platform-specific post-install steps
+        if IS_LINUX:
+            # Create .desktop launcher in applications menu
+            _create_linux_desktop_entry(installed_exe, install_dir)
+            # Generate uninstall script
+            uninstall_path = os.path.join(install_dir, 'uninstall.sh')
+            _generate_linux_uninstaller(uninstall_path, install_dir)
+            if not is_update:
+                print(f"[OK] Uninstaller created: {uninstall_path}")
+        else:
+            # Windows: Generate/update uninstaller in install location
+            uninstall_path = os.path.join(install_dir, 'uninstall.bat')
+            _generate_uninstaller_at_path(uninstall_path, install_dir)
+            if not is_update:
+                print(f"[OK] Uninstaller created: {uninstall_path}")
 
         # Start the installed version
         print("[INFO] Starting application...")
-        subprocess.Popen([installed_exe], creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP)
+        if IS_LINUX:
+            subprocess.Popen(
+                [installed_exe],
+                start_new_session=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        else:
+            subprocess.Popen([installed_exe], creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP)
 
         # Show message to user
         print("")
@@ -1053,6 +1095,10 @@ def install_application():
         print("")
         print(f"  Application {'updated' if is_update else 'installed'} at:")
         print(f"  {install_dir}")
+        if IS_LINUX and not is_update:
+            print("")
+            print("  A launcher has been added to your application menu.")
+            print("  You can search for 'TimeTracker' in your app launcher.")
         print("")
         print("  The application is now starting.")
         print("  You can delete the downloaded file if you wish.")
@@ -1068,7 +1114,8 @@ def install_application():
         print("[INFO] Please close Time Tracker and try again")
         import traceback
         traceback.print_exc()
-        input("Press Enter to exit...")
+        if not IS_LINUX:
+            input("Press Enter to exit...")
         return False
 
     except Exception as e:
@@ -1077,6 +1124,210 @@ def install_application():
         import traceback
         traceback.print_exc()
         return True
+
+
+def _ensure_appindicator_extension():
+    """Enable the GNOME AppIndicator extension so the system tray icon is visible.
+
+    The extension is pre-installed on Ubuntu but may be disabled.  Enabling it is
+    a per-user gsettings change — no root required.  The change takes effect
+    immediately on GNOME 40+ without restarting the shell.
+    """
+    # Well-known extension IDs shipped by Ubuntu / Fedora
+    EXTENSION_IDS = [
+        'ubuntu-appindicators@ubuntu.com',          # Ubuntu default
+        'appindicatorsupport@rgcjonas.gmail.com',   # upstream / Fedora
+    ]
+    try:
+        # Check if gnome-extensions CLI is available
+        result = subprocess.run(
+            ['gnome-extensions', 'list'],
+            capture_output=True, text=True, timeout=5,
+        )
+        if result.returncode != 0:
+            return  # Not a GNOME desktop or command missing
+
+        installed = result.stdout.strip().splitlines()
+
+        for ext_id in EXTENSION_IDS:
+            if ext_id not in installed:
+                continue
+            # Check if already enabled
+            info = subprocess.run(
+                ['gnome-extensions', 'show', ext_id],
+                capture_output=True, text=True, timeout=5,
+            )
+            if 'Enabled: Yes' in info.stdout:
+                print(f"[OK] GNOME tray extension already enabled ({ext_id})")
+                return
+            # Enable it
+            subprocess.run(
+                ['gnome-extensions', 'enable', ext_id],
+                capture_output=True, timeout=5,
+            )
+            print(f"[OK] Enabled GNOME tray extension: {ext_id}")
+            return
+
+        print("[INFO] No AppIndicator GNOME extension found — tray icon may not be visible")
+    except FileNotFoundError:
+        # gnome-extensions binary not installed (non-GNOME desktop)
+        pass
+    except Exception as e:
+        print(f"[WARN] Could not check/enable GNOME AppIndicator extension: {e}")
+
+
+def _uninstall_application_linux():
+    """Uninstall Time Tracker on Linux.
+
+    Handles both .deb installs (uses pkexec for graphical sudo prompt) and
+    self-installed copies (~/.local/share/timetracker/).
+    Returns (success: bool, message: str).
+    """
+    current_exe = os.path.normpath(get_app_executable_path())
+    is_deb = current_exe.startswith('/opt/timetracker')
+
+    try:
+        if is_deb:
+            # .deb package — needs root via pkexec (graphical password dialog)
+            result = subprocess.run(
+                ['pkexec', 'dpkg', '--purge', 'timetracker'],
+                capture_output=True, text=True, timeout=60,
+            )
+            if result.returncode != 0:
+                stderr = result.stderr.strip()
+                if 'dismissed' in stderr.lower() or 'not authorized' in stderr.lower():
+                    return False, 'Authorization was cancelled.'
+                return False, f'Uninstall failed: {stderr or result.stdout}'
+        else:
+            # Self-installed copy — remove user-local files (no root needed)
+            install_dir = get_app_data_dir()
+            desktop_file = os.path.join(
+                os.environ.get('XDG_DATA_HOME', os.path.expanduser('~/.local/share')),
+                'applications', 'timetracker.desktop',
+            )
+            autostart_file = os.path.join(
+                os.environ.get('XDG_CONFIG_HOME', os.path.expanduser('~/.config')),
+                'autostart', 'timetracker.desktop',
+            )
+            for f in [desktop_file, autostart_file]:
+                if os.path.exists(f):
+                    os.remove(f)
+            # Remove from startup
+            if LINUX_FUNCTIONS_AVAILABLE:
+                remove_from_startup_linux()
+            # Delete the install directory (binary + data)
+            if os.path.isdir(install_dir):
+                shutil.rmtree(install_dir, ignore_errors=True)
+
+        return True, 'Time Tracker has been uninstalled successfully.'
+    except FileNotFoundError:
+        return False, 'pkexec not found. Please uninstall via terminal: sudo apt remove timetracker'
+    except subprocess.TimeoutExpired:
+        return False, 'Uninstall timed out. Please try again.'
+    except Exception as e:
+        return False, f'Uninstall failed: {e}'
+
+
+def _create_linux_desktop_entry(exe_path, install_dir):
+    """Create a .desktop launcher file in ~/.local/share/applications/ for the app menu."""
+    applications_dir = os.path.join(
+        os.environ.get('XDG_DATA_HOME', os.path.expanduser('~/.local/share')),
+        'applications'
+    )
+    os.makedirs(applications_dir, exist_ok=True)
+
+    # Generate a simple icon using Pillow (already a dependency)
+    icon_path = os.path.join(install_dir, 'timetracker.png')
+    if not os.path.exists(icon_path):
+        try:
+            img = PILImage.new('RGB', (64, 64), color=(52, 120, 246))
+            draw = ImageDraw.Draw(img)
+            draw.text((16, 16), 'TT', fill='white')
+            img.save(icon_path)
+        except Exception:
+            icon_path = ''  # Skip icon if generation fails
+
+    desktop_entry = (
+        "[Desktop Entry]\n"
+        "Type=Application\n"
+        "Name=Time Tracker\n"
+        "Comment=Automatic time tracking with Jira integration\n"
+        f"Exec={exe_path}\n"
+        f"Icon={icon_path}\n"
+        "Terminal=false\n"
+        "Categories=Utility;Office;\n"
+        "StartupNotify=true\n"
+    )
+
+    desktop_path = os.path.join(applications_dir, 'timetracker.desktop')
+    with open(desktop_path, 'w') as f:
+        f.write(desktop_entry)
+    os.chmod(desktop_path, 0o755)
+
+    print(f"[OK] Desktop launcher created: {desktop_path}")
+
+
+def _generate_linux_uninstaller(uninstall_path, install_dir):
+    """Generate an uninstall.sh script at the specified path."""
+    script = f"""#!/usr/bin/env bash
+# ============================================================================
+# Time Tracker — Linux Uninstall Script
+# Removes the application, launcher, autostart entry, and data.
+# ============================================================================
+
+set -e
+
+INSTALL_DIR="{install_dir}"
+DESKTOP_FILE="$HOME/.local/share/applications/timetracker.desktop"
+AUTOSTART_FILE="${{XDG_CONFIG_HOME:-$HOME/.config}}/autostart/timetracker.desktop"
+
+echo ""
+echo "============================================"
+echo "  Time Tracker — Uninstaller"
+echo "============================================"
+echo ""
+echo "This will remove Time Tracker and all associated data."
+echo ""
+echo "The following will be deleted:"
+echo "  - Application binary ($INSTALL_DIR/timetracker)"
+echo "  - Desktop launcher ($DESKTOP_FILE)"
+echo "  - Autostart entry ($AUTOSTART_FILE)"
+echo "  - Application data ($INSTALL_DIR)"
+echo ""
+read -rp "Are you sure you want to uninstall? (y/N): " CONFIRM
+if [[ ! "$CONFIRM" =~ ^[Yy]$ ]]; then
+    echo "Uninstall cancelled."
+    exit 0
+fi
+
+echo ""
+echo "[STEP 1/4] Stopping application if running..."
+pkill -f "$INSTALL_DIR/timetracker" 2>/dev/null && echo "  Application stopped." || echo "  Application was not running."
+
+echo ""
+echo "[STEP 2/4] Removing desktop launcher..."
+rm -f "$DESKTOP_FILE" && echo "  Removed desktop launcher." || true
+
+echo ""
+echo "[STEP 3/4] Removing autostart entry..."
+rm -f "$AUTOSTART_FILE" && echo "  Removed autostart entry." || true
+
+echo ""
+echo "[STEP 4/4] Removing application files..."
+rm -rf "$INSTALL_DIR"
+echo "  Removed: $INSTALL_DIR"
+
+echo ""
+echo "============================================"
+echo "  Uninstall Complete!"
+echo "============================================"
+echo ""
+echo "Time Tracker has been removed from your system."
+"""
+
+    with open(uninstall_path, 'w') as f:
+        f.write(script)
+    os.chmod(uninstall_path, 0o755)
 
 def _generate_uninstaller_at_path(uninstall_path, install_dir):
     """Generate uninstall.bat at the specified path"""
@@ -5566,6 +5817,33 @@ class TimeTracker:
                 }), 500
 
         # ============================================================================
+        # UNINSTALL API (Linux only — called from Settings page)
+        # ============================================================================
+
+        @self.app.route('/api/uninstall', methods=['POST'])
+        def uninstall_api():
+            """Uninstall the application (Linux: .deb or self-install)"""
+            if not IS_LINUX:
+                return jsonify({'success': False, 'error': 'Uninstall via Settings is only supported on Linux'}), 400
+            if not getattr(sys, 'frozen', False):
+                return jsonify({'success': False, 'error': 'Cannot uninstall in development mode'}), 400
+
+            # Run uninstall in a background thread with a short delay so
+            # this JSON response reaches the browser before dpkg kills us.
+            def _deferred_uninstall():
+                time.sleep(1.5)  # Let the HTTP response flush
+                success, message = _uninstall_application_linux()
+                if not success:
+                    print(f"[ERROR] Uninstall failed: {message}")
+                # If dpkg --purge succeeded the process may already be dead
+                # (the .deb prerm script runs pkill). Force exit just in case.
+                time.sleep(1)
+                os._exit(0)
+
+            threading.Thread(target=_deferred_uninstall, daemon=True).start()
+            return jsonify({'success': True, 'message': 'Uninstalling... the application will close shortly.'})
+
+        # ============================================================================
         # USER SETTINGS PAGE (Accessible to all users via system tray)
         # ============================================================================
 
@@ -9883,6 +10161,12 @@ class TimeTracker:
             print("[INFO] ANONYMOUS MODE - Login to associate screenshots with your account")
         print("[OK] Check system tray for application icon")
         
+        # On Linux, ensure the GNOME AppIndicator extension is enabled so
+        # the system tray icon is visible.  This is a per-user setting and
+        # does not require root.
+        if IS_LINUX:
+            _ensure_appindicator_extension()
+
         # Setup system tray (blocking)
         try:
             self.setup_system_tray()
@@ -10905,12 +11189,91 @@ class TimeTracker:
                 -->
 
                 <div id="status-message" class="status-message"></div>
+
+                <!-- Uninstall Section (Linux only — rendered server-side) -->
+                ''' + ('''
+                <div class="setting-section" style="border-bottom: none;">
+                    <h3 style="color: #dc2626;">&#128465; Uninstall Application</h3>
+                    <div class="setting-info">
+                        <div class="setting-description" style="margin-bottom: 16px;">
+                            Completely remove Time Tracker from your system. This will delete the application, desktop launcher, autostart entry, and all local data.
+                        </div>
+                    </div>
+                    <button id="uninstall-btn" onclick="showUninstallConfirm()" style="
+                        background: #dc2626; color: white; border: none; padding: 10px 24px;
+                        border-radius: 8px; cursor: pointer; font-size: 14px; font-weight: 600;
+                        transition: background 0.2s;
+                    " onmouseover="this.style.background=\'#b91c1c\'" onmouseout="this.style.background=\'#dc2626\'">Uninstall Time Tracker</button>
+                </div>
+
+                <!-- Uninstall Confirmation Modal -->
+                <div id="uninstall-modal" style="
+                    display:none; position:fixed; top:0; left:0; width:100%; height:100%;
+                    background:rgba(0,0,0,0.5); z-index:1000; align-items:center; justify-content:center;
+                ">
+                    <div style="
+                        background:white; border-radius:16px; padding:32px; max-width:420px; width:90%;
+                        box-shadow:0 20px 60px rgba(0,0,0,0.3); text-align:center;
+                    ">
+                        <div style="font-size:48px; margin-bottom:16px;">&#9888;&#65039;</div>
+                        <h2 style="color:#1f2937; margin-bottom:12px; font-size:20px;">Uninstall Time Tracker?</h2>
+                        <p style="color:#6b7280; margin-bottom:24px; font-size:14px; line-height:1.5;">
+                            This will permanently remove the application and all local data from your system. This action cannot be undone.
+                        </p>
+                        <div style="display:flex; gap:12px; justify-content:center;">
+                            <button onclick="hideUninstallConfirm()" style="
+                                background:#f3f4f6; color:#374151; border:none; padding:10px 24px;
+                                border-radius:8px; cursor:pointer; font-size:14px; font-weight:500;
+                            ">Cancel</button>
+                            <button id="confirm-uninstall-btn" onclick="performUninstall()" style="
+                                background:#dc2626; color:white; border:none; padding:10px 24px;
+                                border-radius:8px; cursor:pointer; font-size:14px; font-weight:600;
+                            ">Yes, Uninstall</button>
+                        </div>
+                        <div id="uninstall-status" style="margin-top:16px; font-size:13px; display:none;"></div>
+                    </div>
+                </div>
+                ''' if IS_LINUX and getattr(sys, 'frozen', False) else '') + '''
+
             </div>
         </div>
         <a href="/" class="back-link">&#8592; Back to Time Tracker</a>
     </div>
 
     <script>
+        // Uninstall functions
+        function showUninstallConfirm() {
+            var modal = document.getElementById('uninstall-modal');
+            if (modal) modal.style.display = 'flex';
+        }
+        function hideUninstallConfirm() {
+            var modal = document.getElementById('uninstall-modal');
+            if (modal) modal.style.display = 'none';
+            var status = document.getElementById('uninstall-status');
+            if (status) { status.style.display = 'none'; status.textContent = ''; }
+        }
+        function performUninstall() {
+            var btn = document.getElementById('confirm-uninstall-btn');
+            var status = document.getElementById('uninstall-status');
+            if (btn) { btn.disabled = true; btn.textContent = 'Uninstalling...'; }
+            if (status) { status.style.display = 'block'; status.style.color = '#6b7280'; status.textContent = 'Removing application... A password prompt may appear.'; }
+            fetch('/api/uninstall', { method: 'POST' })
+                .then(function(r) { return r.json(); })
+                .then(function(data) {
+                    if (data.success) {
+                        if (status) { status.style.color = '#065f46'; status.textContent = data.message + ' This window will close shortly.'; }
+                        setTimeout(function() { window.close(); }, 3000);
+                    } else {
+                        if (status) { status.style.color = '#991b1b'; status.textContent = data.message || 'Uninstall failed.'; }
+                        if (btn) { btn.disabled = false; btn.textContent = 'Yes, Uninstall'; }
+                    }
+                })
+                .catch(function(err) {
+                    if (status) { status.style.color = '#991b1b'; status.textContent = 'Request failed: ' + err; }
+                    if (btn) { btn.disabled = false; btn.textContent = 'Yes, Uninstall'; }
+                });
+        }
+
         // Load settings on page load
         function loadSettings() {
             fetch('/api/pause-settings')
