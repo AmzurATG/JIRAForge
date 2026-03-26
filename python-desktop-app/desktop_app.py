@@ -6352,6 +6352,47 @@ class TimeTracker:
 
         return (time.time() - self.projects_cache_time) > self.projects_cache_ttl
 
+    def _resolve_record_project_key(self, window_title, default_project_key):
+        """Determine the project key for an individual activity record.
+
+        When a user works on multiple projects simultaneously, each record
+        should carry the project key most relevant to its content.
+
+        Strategy:
+        1. Extract Jira issue keys from the window title (e.g., PROJ-123 → PROJ)
+        2. Validate against user's known projects/issues
+        3. Fall back to batch-level default_project_key
+        """
+        if not window_title:
+            return default_project_key
+
+        # Look for Jira issue keys in window title (pattern: PROJ-123)
+        matches = re.findall(r'\b([A-Z][A-Z0-9]+)-\d+\b', window_title)
+        if not matches:
+            return default_project_key
+
+        # Build set of known project keys from issues + projects
+        known_projects = set()
+        if self.user_issues:
+            for issue in self.user_issues:
+                proj = issue.get('project')
+                if proj:
+                    known_projects.add(proj)
+        if self.user_projects:
+            for proj in self.user_projects:
+                key = proj.get('key')
+                if key:
+                    known_projects.add(key)
+
+        # Prefer matches that are validated against known projects
+        for match in matches:
+            if match in known_projects:
+                return match
+
+        # Use first extracted key even if not in known projects cache
+        # (the user may have access to projects not yet cached)
+        return matches[0]
+
     def get_user_project_key(self):
         """Get project key from user's issues or projects
 
@@ -7019,9 +7060,10 @@ class TimeTracker:
             records = []
             # Prefer the already-resolved current project used by tracking settings/classifications.
             # Falling back to get_user_project_key() can drift when issue ordering/cache changes.
-            project_key = self.current_project_key or self.get_user_project_key()
+            # This serves as the DEFAULT project key — per-record resolution may override it.
+            default_project_key = self.current_project_key or self.get_user_project_key()
             project_key_source = "current_project_key" if self.current_project_key else "derived_from_issues_or_projects"
-            print(f"[BATCH] Using project_key: {project_key} (source: {project_key_source})")
+            print(f"[BATCH] Default project_key: {default_project_key} (source: {project_key_source})")
 
             for s in sessions:
                 classification = s.get('classification', 'unknown')
@@ -7049,6 +7091,13 @@ class TimeTracker:
                         ocr_confidence = 0.0
                         ocr_error_message = 'OCR skipped (throttled, not backfilled)'
 
+                # Resolve project key per-record from window title context.
+                # This allows records from different projects in the same batch
+                # to carry their correct project_key.
+                record_project_key = self._resolve_record_project_key(
+                    s.get('window_title', ''), default_project_key
+                )
+
                 record = {
                     'user_id': self.current_user_id,
                     'organization_id': self.organization_id,
@@ -7069,7 +7118,7 @@ class TimeTracker:
                     'batch_end': batch_end.isoformat(),
                     'work_date': _utc_ts_to_local_date(s.get('first_seen')),
                     'user_timezone': get_local_timezone_name(),
-                    'project_key': project_key,
+                    'project_key': record_project_key,
                     'user_assigned_issues': json.dumps(self.user_issues) if self.user_issues else None,
                     'status': status,
                     'metadata': {
@@ -7680,8 +7729,11 @@ class TimeTracker:
 
             # Get project_key from user's issues or accessible projects
             # This is used as a fallback when AI fails to detect the project
-            # Priority: assigned issues > accessible projects
-            project_key = self.get_user_project_key()
+            # Priority: window title issue key > assigned issues > accessible projects
+            fallback_project_key = self.get_user_project_key()
+            project_key = self._resolve_record_project_key(
+                window_info.get('title', ''), fallback_project_key
+            )
 
             screenshot_data = {
                 'user_id': self.current_user_id,
