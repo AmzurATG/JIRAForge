@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { invoke } from '@forge/bridge';
 import { formatTime } from '../../../utils';
 import { normalizeDate, formatLocalDate, parseUTC } from './dateUtils';
@@ -10,6 +10,10 @@ import { normalizeDate, formatLocalDate, parseUTC } from './dateUtils';
 function DayView({ loading, timeData, onTodayTotalReconciled }) {
   const [timelineData, setTimelineData] = useState(null);
   const [myTimelineData, setMyTimelineData] = useState(null);
+  const [convertingIdle, setConvertingIdle] = useState(null); // { id, startTime, endTime, durationSeconds }
+  const [convertForm, setConvertForm] = useState({ issueKey: '', reason: '' });
+  const [convertLoading, setConvertLoading] = useState(false);
+  const popoverRef = useRef(null);
   // Helper function to get user initials
   const getInitials = (name) => {
     if (!name) return '?';
@@ -52,6 +56,12 @@ function DayView({ loading, timeData, onTodayTotalReconciled }) {
             date: todayStr 
           });
           if (result.success) {
+            console.log('[DayView] Team timeline API success:',
+              'usersWithActivity:', result.data?.usersWithActivity?.length || 0,
+              'users:', result.data?.usersWithActivity?.map(u => ({
+                id: u.userId, name: u.displayName, sessions: u.sessions?.length || 0
+              }))
+            );
             setTimelineData(result.data);
           } else {
             console.warn('Failed to fetch team timeline:', result.error);
@@ -96,9 +106,24 @@ function DayView({ loading, timeData, onTodayTotalReconciled }) {
         if (user.sessions) {
           allSessions = allSessions.concat(user.sessions);
         }
+        // Include idle blocks in range calculation
+        if (user.idleBlocks) {
+          allSessions = allSessions.concat(user.idleBlocks.map(b => ({
+            endTime: b.endTime,
+            durationSeconds: b.durationSeconds
+          })));
+        }
       });
-    } else if (myTimelineData?.sessions) {
-      allSessions = myTimelineData.sessions;
+    } else if (myTimelineData) {
+      if (myTimelineData.sessions) {
+        allSessions = myTimelineData.sessions;
+      }
+      if (myTimelineData.idleBlocks) {
+        allSessions = allSessions.concat(myTimelineData.idleBlocks.map(b => ({
+          endTime: b.endTime,
+          durationSeconds: b.durationSeconds
+        })));
+      }
     }
 
     if (allSessions.length === 0) {
@@ -184,6 +209,31 @@ function DayView({ loading, timeData, onTodayTotalReconciled }) {
     return Math.max(0, Math.min(100, (minutesFromStart / TIMELINE_TOTAL_MINUTES) * 100));
   };
 
+  // Work hours boundary lines
+  const getWorkHourBoundaries = () => {
+    const wh = (timeData?.canViewAllUsers ? timelineData?.workHours : myTimelineData?.workHours) || null;
+    if (!wh) return [];
+    const todayMidnight = new Date(today);
+    todayMidnight.setHours(0, 0, 0, 0);
+    const parseHM = (str) => {
+      const parts = (str || '').split(':').map(Number);
+      return { h: parts[0] || 0, m: parts[1] || 0 };
+    };
+    const boundaries = [];
+    const start = parseHM(wh.workHoursStart);
+    const end = parseHM(wh.workHoursEnd);
+    const startDate = new Date(todayMidnight);
+    startDate.setHours(start.h, start.m, 0, 0);
+    const endDate = new Date(todayMidnight);
+    endDate.setHours(end.h, end.m, 0, 0);
+    const sp = timeToPercent(startDate);
+    const ep = timeToPercent(endDate);
+    if (sp > 0 && sp < 100) boundaries.push({ percent: sp, label: wh.workHoursStart });
+    if (ep > 0 && ep < 100) boundaries.push({ percent: ep, label: wh.workHoursEnd });
+    return boundaries;
+  };
+  const workHourBoundaries = getWorkHourBoundaries();
+
   // Get user's sessions as time blocks for timeline rendering
   const getUserTimeBlocks = (userId) => {
     let sessions = [];
@@ -192,9 +242,25 @@ function DayView({ loading, timeData, onTodayTotalReconciled }) {
     if (timeData?.canViewAllUsers && timelineData) {
       const userTimeline = timelineData.usersWithActivity?.find(u => u.userId === userId);
       sessions = userTimeline?.sessions || [];
+      if (sessions.length === 0) {
+        console.warn('[DayView] No sessions for user:', userId,
+          'canViewAll:', true,
+          'timelineData null?', timelineData === null,
+          'usersWithActivity count:', timelineData?.usersWithActivity?.length,
+          'usersWithActivity IDs:', timelineData?.usersWithActivity?.map(u => u.userId),
+          'match found?', !!userTimeline,
+          'sessions in match:', userTimeline?.sessions?.length
+        );
+      }
     } else if (myTimelineData && myTimelineData.sessions) {
       // For regular users, use their own timeline data
       sessions = myTimelineData.sessions;
+    } else {
+      console.warn('[DayView] No timeline source for user:', userId,
+        'canViewAll:', timeData?.canViewAllUsers,
+        'timelineData null?', timelineData === null,
+        'myTimelineData null?', myTimelineData === null
+      );
     }
 
     if (!sessions || sessions.length === 0) return [];
@@ -204,7 +270,7 @@ function DayView({ loading, timeData, onTodayTotalReconciled }) {
     // The wall-clock span (startTime to endTime) can include idle/sleep time,
     // but durationSeconds represents actual tracked work time.
     // Block is positioned as: (endTime - durationSeconds) to endTime
-    return sessions.map(session => {
+    const rawBlocks = sessions.map(session => {
       const endTime = parseUTC(session.endTime || session.timestamp);
       if (!endTime) return null;
 
@@ -214,22 +280,127 @@ function DayView({ loading, timeData, onTodayTotalReconciled }) {
         ? new Date(endTime.getTime() - (durationSeconds * 1000))
         : endTime;
 
-      const leftPercent = timeToPercent(actualStart);
-      const rightPercent = timeToPercent(endTime);
-      // Use actual session duration for block width — no arbitrary cap.
-      // The width already represents tracked work time (durationSeconds),
-      // not wall-clock time, so it accurately reflects real activity.
+      return {
+        startTime: actualStart,
+        endTime: endTime,
+        durationSeconds: durationSeconds
+      };
+    }).filter(Boolean);
+
+    // Sort by start time for merging
+    rawBlocks.sort((a, b) => a.startTime - b.startTime);
+
+    // Coalesce adjacent/overlapping blocks within a 10-minute gap into continuous bars.
+    // Individual 5-minute activity records are too thin to see on a multi-hour timeline,
+    // so we merge nearby blocks into larger visible segments.
+    const GAP_THRESHOLD_MS = 10 * 60 * 1000; // 10 minutes
+    const merged = [];
+    for (const block of rawBlocks) {
+      const prev = merged[merged.length - 1];
+      if (prev && (block.startTime - prev.endTime) <= GAP_THRESHOLD_MS) {
+        // Extend previous block
+        prev.endTime = new Date(Math.max(prev.endTime.getTime(), block.endTime.getTime()));
+        prev.durationSeconds += block.durationSeconds;
+      } else {
+        merged.push({ ...block });
+      }
+    }
+
+    // Convert merged blocks to percentage positions
+    return merged.map(block => {
+      const leftPercent = timeToPercent(block.startTime);
+      const rightPercent = timeToPercent(block.endTime);
       const widthPercent = Math.max(0.3, rightPercent - leftPercent);
 
       return {
         left: leftPercent,
         width: widthPercent,
-        startTime: actualStart,
-        endTime: endTime,
-        durationSeconds: durationSeconds
+        startTime: block.startTime,
+        endTime: block.endTime,
+        durationSeconds: block.durationSeconds
       };
-    }).filter(block => block && block.left < 100 && (block.left + block.width) > 0); // Filter out nulls and blocks outside visible range
+    }).filter(block => block.left < 100 && (block.left + block.width) > 0);
   };
+
+  // Get idle blocks for a user's timeline
+  const getIdleTimeBlocks = (userId) => {
+    let idleBlocks = [];
+
+    if (timeData?.canViewAllUsers && timelineData) {
+      const userTimeline = timelineData.usersWithActivity?.find(u => u.userId === userId);
+      idleBlocks = userTimeline?.idleBlocks || [];
+    } else if (myTimelineData?.idleBlocks) {
+      idleBlocks = myTimelineData.idleBlocks;
+    }
+
+    if (!idleBlocks || idleBlocks.length === 0) return [];
+
+    return idleBlocks.map(block => {
+      const startTime = parseUTC(block.startTime);
+      const endTime = parseUTC(block.endTime);
+      if (!startTime || !endTime) return null;
+
+      const leftPercent = timeToPercent(startTime);
+      const rightPercent = timeToPercent(endTime);
+      const widthPercent = Math.max(0.3, rightPercent - leftPercent);
+
+      return {
+        id: block.id,
+        left: leftPercent,
+        width: widthPercent,
+        startTime,
+        endTime,
+        durationSeconds: block.durationSeconds || 0,
+        converted: !!block.reclassifiedFrom,
+        convertedIssueKey: block.convertedIssueKey
+      };
+    }).filter(block => block && block.left < 100 && (block.left + block.width) > 0);
+  };
+
+  // Handle idle block conversion
+  const handleConvertIdle = async () => {
+    if (!convertingIdle || !convertForm.issueKey || !convertForm.reason) return;
+    setConvertLoading(true);
+    try {
+      const result = await invoke('convertIdleToWorklog', {
+        idleRecordId: convertingIdle.id,
+        issueKey: convertForm.issueKey.trim(),
+        reason: convertForm.reason.trim()
+      });
+      if (result.success) {
+        // Refresh timeline data
+        setConvertingIdle(null);
+        setConvertForm({ issueKey: '', reason: '' });
+        // Re-fetch timeline to show updated state
+        if (timeData?.canViewAllUsers) {
+          const refreshResult = await invoke('getTeamDayTimeline', { projectKey: null, date: todayStr });
+          if (refreshResult.success) setTimelineData(refreshResult.data);
+        } else {
+          const refreshResult = await invoke('getMyDayTimeline', { date: todayStr });
+          if (refreshResult.success) setMyTimelineData(refreshResult.data);
+        }
+      } else {
+        console.error('Failed to convert idle block:', result.error);
+      }
+    } catch (err) {
+      console.error('Error converting idle block:', err);
+    } finally {
+      setConvertLoading(false);
+    }
+  };
+
+  // Close popover on outside click
+  useEffect(() => {
+    if (!convertingIdle) return;
+    const handleClickOutside = (e) => {
+      if (popoverRef.current && !popoverRef.current.contains(e.target)) {
+        setConvertingIdle(null);
+        setConvertForm({ issueKey: '', reason: '' });
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, [convertingIdle]);
 
   // Get last activity info for a user
   const getUserLastActivity = (userId) => {
@@ -254,6 +425,15 @@ function DayView({ loading, timeData, onTodayTotalReconciled }) {
       minute: '2-digit',
       hour12: true
     });
+  };
+
+  // Get tooltip text for an idle block
+  const getIdleBlockTooltip = (block) => {
+    const start = block.startTime.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true });
+    const end = block.endTime.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true });
+    const mins = Math.round(block.durationSeconds / 60);
+    if (block.converted) return `Converted to worklog (${block.convertedIssueKey}) ${start} – ${end}`;
+    return `Idle ${start} – ${end} (${mins}m)`;
   };
 
   // Check if timeline is available (for admins or regular user)
@@ -398,10 +578,12 @@ function DayView({ loading, timeData, onTodayTotalReconciled }) {
 
                 {users.map((user, idx) => {
                   const timeBlocks = getUserTimeBlocks(user.userId);
+                  const idleBlocks = getIdleTimeBlocks(user.userId);
                   const lastActivity = getUserLastActivity(user.userId);
                   const timeAgo = lastActivity ? getTimeAgo(lastActivity) : null;
                   const hasActivity = user.totalSeconds > 0;
                   const showTimeline = hasTimelineData();
+                  const isOwnUser = !timeData?.canViewAllUsers || (myTimelineData && myTimelineData.userId === user.userId);
 
                   return (
                     <div key={idx} className={`team-member-card ${showTimeline ? 'with-timeline' : ''}`}>
@@ -446,9 +628,18 @@ function DayView({ loading, timeData, onTodayTotalReconciled }) {
                               </div>
                               {/* Actual time blocks positioned based on start_time and end_time */}
                               <div className="timeline-blocks">
+                                {/* Work hours boundary lines */}
+                                {workHourBoundaries.map((b, i) => (
+                                  <div
+                                    key={`wh-${i}`}
+                                    className="work-hour-boundary"
+                                    style={{ left: `${b.percent}%` }}
+                                    title={`Work hours: ${b.label}`}
+                                  />
+                                ))}
                                 {timeBlocks.map((block, blockIdx) => (
                                   <div
-                                    key={blockIdx}
+                                    key={`work-${blockIdx}`}
                                     className="timeline-block active"
                                     style={{
                                       left: `${block.left}%`,
@@ -456,6 +647,66 @@ function DayView({ loading, timeData, onTodayTotalReconciled }) {
                                     }}
                                     title={getBlockTooltip(block)}
                                   ></div>
+                                ))}
+                                {/* Idle blocks with striped pattern */}
+                                {idleBlocks.map((block, blockIdx) => (
+                                  <div
+                                    key={`idle-${blockIdx}`}
+                                    className={`timeline-block idle${block.converted ? ' converted' : ''}`}
+                                    style={{
+                                      left: `${block.left}%`,
+                                      width: `${block.width}%`
+                                    }}
+                                    title={getIdleBlockTooltip(block)}
+                                  >
+                                    {/* Show ➕ button on hover for own unconverted idle blocks */}
+                                    {isOwnUser && !block.converted && (
+                                      <button
+                                        className="idle-convert-btn"
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          setConvertingIdle(block);
+                                          setConvertForm({ issueKey: '', reason: '' });
+                                        }}
+                                        title="Convert to worklog"
+                                      >+</button>
+                                    )}
+                                    {/* Convert popover */}
+                                    {convertingIdle && convertingIdle.id === block.id && (
+                                      <div className="idle-convert-popover" ref={popoverRef} onClick={(e) => e.stopPropagation()}>
+                                        <div className="popover-header">
+                                          <span className="popover-title">Convert idle to worklog</span>
+                                          <span className="popover-duration">{Math.round(block.durationSeconds / 60)}m</span>
+                                        </div>
+                                        <input
+                                          type="text"
+                                          className="popover-input"
+                                          placeholder="Issue key (e.g. PROJ-123)"
+                                          value={convertForm.issueKey}
+                                          onChange={(e) => setConvertForm(f => ({ ...f, issueKey: e.target.value }))}
+                                          autoFocus
+                                        />
+                                        <input
+                                          type="text"
+                                          className="popover-input"
+                                          placeholder="What were you working on?"
+                                          value={convertForm.reason}
+                                          onChange={(e) => setConvertForm(f => ({ ...f, reason: e.target.value }))}
+                                        />
+                                        <div className="popover-actions">
+                                          <button
+                                            className="popover-btn cancel"
+                                            onClick={() => { setConvertingIdle(null); setConvertForm({ issueKey: '', reason: '' }); }}
+                                          >Cancel</button>
+                                          <button
+                                            className="popover-btn confirm"
+                                            disabled={!convertForm.issueKey.trim() || !convertForm.reason.trim() || convertLoading}
+                                            onClick={handleConvertIdle}
+                                          >{convertLoading ? 'Saving...' : 'Convert'}</button>
+                                        </div>
+                                      </div>
+                                    )}
+                                  </div>
                                 ))}
                               </div>
                             </div>

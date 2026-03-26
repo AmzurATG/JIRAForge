@@ -3,7 +3,7 @@
  * Resolver definitions for time analytics endpoints
  */
 
-import { fetchTimeAnalytics, fetchTimeAnalyticsBatch, fetchAllAnalytics, fetchProjectAnalytics, fetchProjectTeamAnalytics, fetchTeamDayTimeline, fetchMyDayTimeline } from '../services/analyticsService.js';
+import { fetchTimeAnalytics, fetchTimeAnalyticsBatch, fetchAllAnalytics, fetchProjectAnalytics, fetchProjectTeamAnalytics, fetchTeamDayTimeline, fetchMyDayTimeline, convertIdleToWorklog } from '../services/analyticsService.js';
 import { isJiraAdmin, checkUserPermissions } from '../utils/jira.js';
 
 // Feature flag for using batch API (set to true for production)
@@ -165,6 +165,25 @@ export function registerAnalyticsResolvers(resolver) {
         success: false,
         error: error.message
       };
+    }
+  });
+
+  /**
+   * Resolver for converting an idle block to a worklog
+   * Available to ALL users - converts only the user's own idle blocks
+   */
+  resolver.define('convertIdleToWorklog', async (req) => {
+    const { payload, context } = req;
+    const { idleRecordId, issueKey, reason } = payload;
+    const accountId = context.accountId;
+    const cloudId = context.cloudId;
+
+    try {
+      const data = await convertIdleToWorklog(accountId, cloudId, idleRecordId, issueKey, reason);
+      return { success: true, data };
+    } catch (error) {
+      console.error('Error converting idle to worklog:', error);
+      return { success: false, error: error.message };
     }
   });
 }

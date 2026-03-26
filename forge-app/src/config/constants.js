@@ -65,7 +65,11 @@ export const DEFAULT_TRACKING_SETTINGS = {
   flagExcessiveNonWork: true,
   privateSitesEnabled: true,
   privateSites: [],
-  jiraWorklogSyncEnabled: false
+  jiraWorklogSyncEnabled: false,
+  showIdleInTimeline: true,
+  workHoursStart: '09:00',
+  workHoursEnd: '18:00',
+  workDays: [1, 2, 3, 4, 5] // Monday=1 ... Sunday=7 (ISO weekday)
 };
 
 // Application Classification Types

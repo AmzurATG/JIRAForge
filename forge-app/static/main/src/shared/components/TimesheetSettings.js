@@ -32,7 +32,12 @@ function TimesheetSettings() {
     idleThresholdSeconds: 300,
 
     // Jira Worklog Sync
-    jiraWorklogSyncEnabled: false
+    jiraWorklogSyncEnabled: false,
+
+    // Working Hours
+    workHoursStart: '09:00',
+    workHoursEnd: '18:00',
+    workDays: [1, 2, 3, 4, 5]
   });
 
   const [loading, setLoading] = useState(true);
@@ -360,6 +365,86 @@ function TimesheetSettings() {
             )}
           </div>
         )}
+      </section>
+
+      {/* Working Hours Section */}
+      <section className="settings-section">
+        <div className="section-header">
+          <div className="section-icon">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="2"/>
+              <path d="M12 6V12L16 14" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+            </svg>
+          </div>
+          <h2>Working Hours</h2>
+        </div>
+        <div className="section-content">
+          <p className="field-description">
+            Define the standard working hours for your organization. Idle time is only captured within these hours.
+            Supports night shifts (e.g. 22:00 – 06:00).
+          </p>
+
+          <div className="form-group work-hours-range">
+            <label>Work Hours</label>
+            <div className="time-range-group">
+              <div className="time-input-wrapper">
+                <span className="time-label">Start</span>
+                <input
+                  type="time"
+                  value={settings.workHoursStart}
+                  onChange={(e) => handleChange('workHoursStart', e.target.value)}
+                  className="time-input"
+                />
+              </div>
+              <span className="time-separator">to</span>
+              <div className="time-input-wrapper">
+                <span className="time-label">End</span>
+                <input
+                  type="time"
+                  value={settings.workHoursEnd}
+                  onChange={(e) => handleChange('workHoursEnd', e.target.value)}
+                  className="time-input"
+                />
+              </div>
+            </div>
+            {settings.workHoursStart > settings.workHoursEnd && (
+              <p className="field-hint" style={{ color: '#FF991F' }}>
+                Cross-midnight schedule detected (e.g. night shift). Idle time will be captured from {settings.workHoursStart} to midnight and midnight to {settings.workHoursEnd}.
+              </p>
+            )}
+          </div>
+
+          <div className="form-group">
+            <label>Work Days</label>
+            <div className="work-days-group">
+              {[
+                { value: 1, label: 'Mon' },
+                { value: 2, label: 'Tue' },
+                { value: 3, label: 'Wed' },
+                { value: 4, label: 'Thu' },
+                { value: 5, label: 'Fri' },
+                { value: 6, label: 'Sat' },
+                { value: 7, label: 'Sun' }
+              ].map(day => (
+                <label key={day.value} className={`day-checkbox${(settings.workDays || []).includes(day.value) ? ' active' : ''}`}>
+                  <input
+                    type="checkbox"
+                    checked={(settings.workDays || []).includes(day.value)}
+                    onChange={() => {
+                      const current = settings.workDays || [];
+                      const updated = current.includes(day.value)
+                        ? current.filter(d => d !== day.value)
+                        : [...current, day.value].sort();
+                      handleChange('workDays', updated);
+                    }}
+                  />
+                  <span>{day.label}</span>
+                </label>
+              ))}
+            </div>
+            <p className="field-hint">Idle time will only be recorded on the selected days.</p>
+          </div>
+        </div>
       </section>
 
       {/* Jira Worklog Auto-Sync Section */}
