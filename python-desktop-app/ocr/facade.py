@@ -265,15 +265,30 @@ class OCRFacade:
             }
             
         except Exception as e:
-            logger.error(f"[PRIVACY] Privacy filter error: {e}. Returning original text.")
-            return {
-                'text': text,
-                'privacy_applied': False,
-                'privacy_redactions': 0,
-                'privacy_ms': 0.0,
-                'privacy_detectors': [],
-                'privacy_error': str(e)
-            }
+            logger.error(f"[PRIVACY] Privacy filter error: {e}")
+            # Respect fail_open setting: if False, do NOT return original text
+            privacy_config = getattr(self._privacy_filter, 'config', None)
+            fail_open = getattr(privacy_config, 'fail_open', False) if privacy_config else False
+            if fail_open:
+                logger.warning("[PRIVACY] fail_open=True — returning original text despite error")
+                return {
+                    'text': text,
+                    'privacy_applied': False,
+                    'privacy_redactions': 0,
+                    'privacy_ms': 0.0,
+                    'privacy_detectors': [],
+                    'privacy_error': str(e)
+                }
+            else:
+                logger.warning("[PRIVACY] fail_open=False — redacting all text for safety")
+                return {
+                    'text': '[PRIVACY_FILTER_ERROR - Content redacted for safety]',
+                    'privacy_applied': False,
+                    'privacy_redactions': 0,
+                    'privacy_ms': 0.0,
+                    'privacy_detectors': [],
+                    'privacy_error': str(e)
+                }
     
     def get_ocr_diagnostics(self) -> Dict[str, Any]:
         """

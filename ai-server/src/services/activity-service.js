@@ -45,6 +45,14 @@ const SANITIZATION_PATTERNS = [
   { pattern: /-----BEGIN\s+(?:RSA\s+)?PRIVATE\s+KEY-----[\s\S]*?-----END\s+(?:RSA\s+)?PRIVATE\s+KEY-----/g, replacement: '[REDACTED_PRIVATE_KEY]' },
   // Connection strings with embedded passwords
   { pattern: /(?:mongodb|postgres|mysql|redis|amqp):\/\/[^\s]+:[^\s@]+@[^\s]+/gi, replacement: '[REDACTED_CONNECTION_STRING]' },
+  // Email addresses
+  { pattern: /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/gi, replacement: '[REDACTED_EMAIL]' },
+  // Atlassian Account IDs (format: 712020:xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx)
+  { pattern: /\b\d{6}:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi, replacement: '[REDACTED_ATLASSIAN_ID]' },
+  // Atlassian ARIs (ari:cloud:<product>::<resource>/<uuid>)
+  { pattern: /ari:cloud:[a-z]+::[a-z]+\/[a-f0-9-]+/gi, replacement: '[REDACTED_ARI]' },
+  // UUIDs (user IDs, cloud IDs, org IDs)
+  { pattern: /\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi, replacement: '[REDACTED_UUID]' },
 ];
 
 /**

@@ -203,11 +203,9 @@ class PrivacyFilter:
             # Apply redactions
             redacted_text = self._redactor.redact(text_to_scan, detection_dicts)
             
-            # Add back any truncated text (unfiltered for safety)
+            # If text was truncated, do NOT include the unfiltered tail — redact it entirely
             if len(text) > self.config.max_text_length:
-                # Note: We don't filter the truncated portion - this is a security tradeoff
-                # To be fully secure, we should redact it entirely or not include it
-                redacted_text += "\n[TRUNCATED - Text exceeded max length for privacy filtering]"
+                redacted_text += "\n[TRUNCATED - Remaining text redacted (exceeded max length for privacy filtering)]"
             
             # Audit log if enabled
             if self._audit_logger and merged_detections:

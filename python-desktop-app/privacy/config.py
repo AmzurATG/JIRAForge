@@ -64,6 +64,9 @@ class PrivacyConfig:
         'CRYPTO',               # Cryptocurrency wallet addresses
         'NRP',                  # National Registration Numbers
         'MEDICAL_LICENSE',      # Medical license numbers
+        'EMAIL_ADDRESS',        # Email addresses (PII)
+        'US_SSN',               # US Social Security Numbers
+        'US_ITIN',              # US Individual Taxpayer Identification Numbers
         # Custom types added by our recognizers (in custom_patterns.py)
         'PASSWORD',
         'API_KEY',
@@ -74,6 +77,9 @@ class PrivacyConfig:
         'INTERNAL_IP',
         'DATABASE_PASSWORD',
         'ENCRYPTION_KEY',
+        'ATLASSIAN_ACCOUNT_ID',
+        'ATLASSIAN_ARI',
+        'UUID',
     ])
     
     # Redaction settings

@@ -338,6 +338,52 @@ class CustomPatternDetector(BaseDetector):
             'INTERNAL_IP',
             0.75
         ),
+        
+        # ============================================
+        # Email Addresses (fallback when Presidio unavailable)
+        # ============================================
+        (
+            r'\b([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})\b',
+            'EMAIL_ADDRESS',
+            0.9
+        ),
+        
+        # ============================================
+        # SSN without dashes (OCR may strip dashes)
+        # ============================================
+        (
+            r'(?i)(?:ssn|social.?security)\s*[=:]+\s*["\']?(\d{9})["\']?',
+            'US_SSN',
+            0.85
+        ),
+        
+        # ============================================
+        # Atlassian / Platform IDs
+        # ============================================
+        
+        # Atlassian Account IDs (format: 712020:xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx)
+        # Must come before UUID pattern to match the more specific format first
+        (
+            r'\b(\d{6}:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\b',
+            'ATLASSIAN_ACCOUNT_ID',
+            0.95
+        ),
+        
+        # Atlassian ARIs (app IDs, installation IDs)
+        # Format: ari:cloud:<product>::<resource>/<uuid>
+        (
+            r'(ari:cloud:[a-z]+::[a-z]+/[a-f0-9-]+)',
+            'ATLASSIAN_ARI',
+            0.95
+        ),
+        
+        # UUIDs (user IDs, org IDs, cloud IDs, tenant IDs)
+        # Standalone UUIDs that may appear in OCR text from admin/config screens
+        (
+            r'\b([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\b',
+            'UUID',
+            0.75
+        ),
     ]
     
     def __init__(self, config=None):
@@ -445,8 +491,9 @@ class CustomPatternDetector(BaseDetector):
         if len(matched_text) > 30:
             confidence = min(1.0, confidence + 0.05)
         
-        # Decrease confidence for very short matches
-        if len(matched_text) < 8:
+        # Decrease confidence for very short matches, but not for credentials/passwords
+        # Credentials must always be redacted regardless of length
+        if len(matched_text) < 8 and entity_type not in ('PASSWORD', 'DATABASE_PASSWORD', 'API_KEY', 'OAUTH_SECRET', 'ENCRYPTION_KEY'):
             confidence = max(0.0, confidence - 0.1)
         
         # Password-specific adjustments
@@ -460,8 +507,8 @@ class CustomPatternDetector(BaseDetector):
             complexity_score = sum([has_upper, has_lower, has_digit, has_special])
             if complexity_score >= 3:
                 confidence = min(1.0, confidence + 0.1)
-            elif complexity_score <= 1:
-                confidence = max(0.0, confidence - 0.1)
+            # Don't penalize low-complexity passwords — they are still credentials
+            # that must be redacted regardless of strength
         
         # API key specific - check for expected format
         if entity_type == 'API_KEY':
