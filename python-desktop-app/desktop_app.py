@@ -37,7 +37,10 @@ if sys.platform.startswith('linux') and getattr(sys, 'frozen', False):
             if os.path.exists(_prev):
                 os.remove(_prev)
             os.rename(_crash_log, _prev)
-        _crash_fd = open(_crash_log, 'a')
+        # Use line buffering (buffering=1) so every print() is immediately
+        # flushed to disk.  Without this, output sits in a memory buffer and
+        # crash.log appears truncated when you `cat` it while the app runs.
+        _crash_fd = open(_crash_log, 'a', buffering=1)
         _crash_fd.write(f'\n=== Time Tracker start {__import__("datetime").datetime.now().isoformat()} ===\n')
         _crash_fd.flush()
         sys.stdout = _crash_fd
