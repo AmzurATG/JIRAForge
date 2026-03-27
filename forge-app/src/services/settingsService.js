@@ -120,6 +120,9 @@ function transformSettingsToApiFormat(settings, settingsSource) {
     privateSitesEnabled: settings.private_sites_enabled,
     privateSites: settings.private_sites || [],
     jiraWorklogSyncEnabled: settings.jira_worklog_sync_enabled ?? false,
+    workHoursStart: settings.work_hours_start || '09:00',
+    workHoursEnd: settings.work_hours_end || '18:00',
+    workDays: settings.work_days || [1, 2, 3, 4, 5],
     projectKey: settings.project_key || null,
     settingsSource: settingsSource
   };
@@ -444,6 +447,20 @@ function validateTrackingSettings(settings) {
   if (settings.nonWorkThresholdPercent < 0 || settings.nonWorkThresholdPercent > 100) {
     throw new Error('Non-work threshold must be between 0 and 100 percent');
   }
+
+  // Validate work hours if provided
+  const timePattern = /^([01]\d|2[0-3]):[0-5]\d$/;
+  if (settings.workHoursStart && !timePattern.test(settings.workHoursStart)) {
+    throw new Error('Work hours start must be in HH:MM format (00:00–23:59)');
+  }
+  if (settings.workHoursEnd && !timePattern.test(settings.workHoursEnd)) {
+    throw new Error('Work hours end must be in HH:MM format (00:00–23:59)');
+  }
+  if (settings.workDays) {
+    if (!Array.isArray(settings.workDays) || settings.workDays.some(d => d < 1 || d > 7)) {
+      throw new Error('Work days must be an array of integers 1 (Mon) through 7 (Sun)');
+    }
+  }
 }
 
 /**
@@ -560,6 +577,9 @@ export async function saveTrackingSettings(accountId, cloudId, settings, project
     private_sites_enabled: settings.privateSitesEnabled,
     private_sites: settings.privateSites || [],
     jira_worklog_sync_enabled: settings.jiraWorklogSyncEnabled ?? false,
+    work_hours_start: settings.workHoursStart || '09:00',
+    work_hours_end: settings.workHoursEnd || '18:00',
+    work_days: settings.workDays || [1, 2, 3, 4, 5],
     updated_by: userId,
     updated_at: new Date().toISOString()
   };

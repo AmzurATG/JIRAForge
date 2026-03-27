@@ -460,4 +460,106 @@
     width: 100%;
     order: -1;
   }
+
+  .time-range-group {
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .work-days-group {
+    gap: 6px;
+  }
+
+  .day-checkbox span {
+    min-width: 36px;
+    font-size: 12px;
+    padding: 6px 8px;
+  }
+}
+
+/* Working Hours */
+.time-range-group {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.time-input-wrapper {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.time-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: #6B778C;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.time-input {
+  padding: 10px 12px;
+  font-size: 14px;
+  border: 2px solid #DFE1E6;
+  border-radius: 4px;
+  background: #FAFBFC;
+  transition: all 0.2s ease;
+  font-family: inherit;
+}
+
+.time-input:focus {
+  outline: none;
+  border-color: #6656fc;
+  background: #FFFFFF;
+  box-shadow: 0 0 0 3px rgba(102, 86, 252, 0.15);
+}
+
+.time-separator {
+  font-size: 14px;
+  color: #6B778C;
+  font-weight: 500;
+  padding-top: 18px;
+}
+
+.work-days-group {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.day-checkbox {
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+}
+
+.day-checkbox input[type="checkbox"] {
+  display: none;
+}
+
+.day-checkbox span {
+  display: inline-block;
+  min-width: 44px;
+  text-align: center;
+  padding: 8px 12px;
+  font-size: 13px;
+  font-weight: 600;
+  border: 2px solid #DFE1E6;
+  border-radius: 6px;
+  background: #FAFBFC;
+  color: #6B778C;
+  transition: all 0.2s ease;
+  user-select: none;
+}
+
+.day-checkbox:hover span {
+  border-color: #B3D4FF;
+  background: #F4F5F7;
+}
+
+.day-checkbox.active span {
+  border-color: #6656fc;
+  background: #EDF4FF;
+  color: #6656fc;
 }

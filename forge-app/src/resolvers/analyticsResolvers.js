@@ -3,8 +3,8 @@
  * Resolver definitions for time analytics endpoints
  */
 
-import { fetchTimeAnalytics, fetchTimeAnalyticsBatch, fetchAllAnalytics, fetchProjectAnalytics, fetchProjectTeamAnalytics, fetchTeamDayTimeline, fetchMyDayTimeline } from '../services/analyticsService.js';
-import { isJiraAdmin, checkUserPermissions } from '../utils/jira.js';
+import { fetchTimeAnalytics, fetchTimeAnalyticsBatch, fetchAllAnalytics, fetchProjectAnalytics, fetchProjectTeamAnalytics, fetchTeamDayTimeline, fetchMyDayTimeline, convertIdleToWorklog } from '../services/analyticsService.js';
+import { isJiraAdmin, checkUserPermissions, createJiraIssue, getIssueTransitions, transitionIssue, createJiraWorklog } from '../utils/jira.js';
 
 // Feature flag for using batch API (set to true for production)
 const USE_BATCH_API = true;
@@ -165,6 +165,76 @@ export function registerAnalyticsResolvers(resolver) {
         success: false,
         error: error.message
       };
+    }
+  });
+
+  /**
+   * Resolver for converting an idle block to a worklog
+   * Available to ALL users - converts only the user's own idle blocks
+   */
+  resolver.define('convertIdleToWorklog', async (req) => {
+    const { payload, context } = req;
+    const { idleRecordId, issueKey: existingIssueKey, reason, createNewIssue, issueSummary } = payload;
+    const accountId = context.accountId;
+    const cloudId = context.cloudId;
+
+    try {
+      let issueKey = existingIssueKey;
+
+      // If creating a new issue, do it here (Forge API must run in resolver context)
+      if (createNewIssue && !issueKey) {
+        // Determine project key from the idle record's project or fall back
+        const { getIdleRecordProjectKey } = await import('../services/analyticsService.js');
+        const projectKey = await getIdleRecordProjectKey(accountId, cloudId, idleRecordId);
+        if (!projectKey) {
+          throw new Error('Cannot determine project for new issue. Please use "Existing Issue" instead.');
+        }
+
+        const newIssue = await createJiraIssue(projectKey, {
+          summary: issueSummary || reason || 'Idle time worklog',
+          issuetype: { name: 'Task' },
+          assignee: { accountId },
+          labels: ['idle-time-converted']
+        });
+        if (!newIssue || !newIssue.key) {
+          throw new Error('Failed to create Jira issue');
+        }
+        issueKey = newIssue.key;
+
+        // Transition the new issue to "In Progress"
+        try {
+          const transitions = await getIssueTransitions(issueKey);
+          const inProgressTransition = transitions.find(t =>
+            t.to?.name?.toLowerCase() === 'in progress'
+          );
+          if (inProgressTransition) {
+            await transitionIssue(issueKey, inProgressTransition.id);
+          }
+        } catch (transErr) {
+          console.warn(`[IdleConvert] Could not transition ${issueKey} to In Progress:`, transErr.message);
+        }
+      }
+
+      if (!issueKey) {
+        throw new Error('Issue key is required');
+      }
+
+      const data = await convertIdleToWorklog(accountId, cloudId, idleRecordId, issueKey, reason);
+
+      // Add a Jira worklog to the issue so the time appears on the board
+      try {
+        if (data.durationSeconds && data.durationSeconds > 0) {
+          const startedAt = data.idleStartTime || new Date().toISOString();
+          await createJiraWorklog(issueKey, data.durationSeconds, startedAt);
+        }
+      } catch (wlErr) {
+        console.warn(`[IdleConvert] Worklog created in DB but Jira worklog failed for ${issueKey}:`, wlErr.message);
+      }
+
+      return { success: true, data };
+    } catch (error) {
+      console.error('Error converting idle to worklog:', error);
+      return { success: false, error: error.message };
     }
   });
 }

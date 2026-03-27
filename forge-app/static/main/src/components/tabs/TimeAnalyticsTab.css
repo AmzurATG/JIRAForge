@@ -477,8 +477,8 @@
 }
 
 .timeline-header-name {
-  width: 180px;
-  min-width: 180px;
+  width: 198px;
+  min-width: 198px;
   font-size: 11px;
   font-weight: 600;
   text-transform: uppercase;
@@ -494,7 +494,7 @@
 
 .timeline-header-hours .timeline-hour-label {
   flex: 1;
-  text-align: center;
+  text-align: left;
   font-size: 10px;
   color: #97A0AF;
   font-weight: 500;
@@ -671,6 +671,234 @@
 
 .timeline-block:hover {
   background: #00875A;
+}
+
+/* Idle blocks - amber striped pattern */
+
+/* Work hour boundary lines */
+.work-hour-boundary {
+  position: absolute;
+  top: -2px;
+  bottom: -2px;
+  width: 0;
+  border-left: 2px dashed rgba(102, 86, 252, 0.5);
+  z-index: 3;
+  pointer-events: none;
+}
+
+.timeline-block.idle {
+  background: repeating-linear-gradient(
+    45deg,
+    #FF991F,
+    #FF991F 3px,
+    #FFE380 3px,
+    #FFE380 6px
+  );
+  cursor: default;
+  overflow: visible;
+  z-index: 1;
+}
+
+.timeline-block.idle:hover {
+  background: repeating-linear-gradient(
+    45deg,
+    #E68A00,
+    #E68A00 3px,
+    #FFD54F 3px,
+    #FFD54F 6px
+  );
+}
+
+/* Converted idle block - green solid */
+.timeline-block.idle.converted {
+  background: #ABF5D1;
+  cursor: default;
+}
+
+.timeline-block.idle.converted:hover {
+  background: #79E2AB;
+}
+
+/* ➕ button on idle blocks - visible only on hover */
+.idle-convert-btn {
+  display: none;
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 16px;
+  height: 16px;
+  border: none;
+  border-radius: 50%;
+  background: #0052CC;
+  color: white;
+  font-size: 12px;
+  line-height: 16px;
+  text-align: center;
+  padding: 0;
+  cursor: pointer;
+  z-index: 2;
+  pointer-events: auto;
+}
+
+.timeline-block.idle:hover .idle-convert-btn {
+  display: block;
+}
+
+.idle-convert-btn:hover {
+  background: #0065FF;
+}
+
+/* Convert popover — rendered outside timeline */
+.idle-convert-popover-outer {
+  background: white;
+  border-radius: 8px;
+  box-shadow: 0 4px 16px rgba(9, 30, 66, 0.25);
+  padding: 16px;
+  margin: 8px 24px 0 24px;
+  z-index: 100;
+  pointer-events: auto;
+  border: 1px solid #DFE1E6;
+}
+
+/* Legacy: in-timeline popover (kept for backward compat) */
+.idle-convert-popover {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  width: 260px;
+  background: white;
+  border-radius: 8px;
+  box-shadow: 0 4px 16px rgba(9, 30, 66, 0.25);
+  padding: 12px;
+  z-index: 100;
+  pointer-events: auto;
+}
+
+.popover-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.popover-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: #172B4D;
+}
+
+.popover-duration {
+  font-size: 11px;
+  color: #6B778C;
+  background: #F4F5F7;
+  padding: 2px 6px;
+  border-radius: 3px;
+}
+
+.popover-input {
+  width: 100%;
+  padding: 6px 8px;
+  border: 1px solid #DFE1E6;
+  border-radius: 4px;
+  font-size: 12px;
+  margin-bottom: 6px;
+  box-sizing: border-box;
+  outline: none;
+}
+
+.popover-input:focus {
+  border-color: #0052CC;
+}
+
+.popover-label {
+  display: block;
+  font-size: 11px;
+  font-weight: 600;
+  color: #6B778C;
+  margin-bottom: 4px;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+}
+
+.popover-mode-tabs {
+  display: flex;
+  gap: 0;
+  margin-bottom: 8px;
+  border: 1px solid #DFE1E6;
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.popover-mode-tab {
+  flex: 1;
+  padding: 5px 8px;
+  font-size: 11px;
+  font-weight: 500;
+  border: none;
+  background: #F4F5F7;
+  color: #42526E;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.popover-mode-tab:not(:last-child) {
+  border-right: 1px solid #DFE1E6;
+}
+
+.popover-mode-tab.active {
+  background: #0052CC;
+  color: white;
+}
+
+.popover-mode-tab:hover:not(.active) {
+  background: #EBECF0;
+}
+
+.popover-hint {
+  font-size: 11px;
+  color: #6B778C;
+  margin: 0 0 6px 0;
+  line-height: 1.4;
+}
+
+.popover-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.popover-btn {
+  padding: 4px 12px;
+  border-radius: 4px;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  border: none;
+}
+
+.popover-btn.cancel {
+  background: #F4F5F7;
+  color: #42526E;
+}
+
+.popover-btn.cancel:hover {
+  background: #EBECF0;
+}
+
+.popover-btn.confirm {
+  background: #0052CC;
+  color: white;
+}
+
+.popover-btn.confirm:hover {
+  background: #0065FF;
+}
+
+.popover-btn.confirm:disabled {
+  background: #B3D4FF;
+  cursor: not-allowed;
 }
 
 /* Total section */

@@ -5,7 +5,7 @@
 
 import { getSupabaseConfig, getOrCreateOrganization, supabaseRequest } from '../../utils/supabase.js';
 import { checkUserPermissions, isJiraAdmin, getProjectsUserAdmins } from '../../utils/jira.js';
-import { MAX_DAILY_SUMMARY_DAYS, MAX_ISSUES_IN_ANALYTICS } from '../../config/constants.js';
+import { MAX_DAILY_SUMMARY_DAYS, MAX_ISSUES_IN_ANALYTICS, DEFAULT_TRACKING_SETTINGS } from '../../config/constants.js';
 import { isValidProjectKey } from '../../utils/validators.js';
 
 // ============================================================================
@@ -30,6 +30,70 @@ async function initializeContext(accountId, cloudId) {
   }
 
   return { supabaseConfig, organization };
+}
+
+/**
+ * Fetch work hours config from tracking_settings for an organization
+ * Returns defaults if not found.
+ */
+async function fetchWorkHoursConfig(supabaseConfig, organizationId) {
+  try {
+    const rows = await supabaseRequest(
+      supabaseConfig,
+      `tracking_settings?organization_id=eq.${organizationId}&project_key=is.null&select=work_hours_start,work_hours_end,work_days&limit=1`
+    );
+    if (rows && rows.length > 0) {
+      return {
+        workHoursStart: rows[0].work_hours_start || DEFAULT_TRACKING_SETTINGS.workHoursStart,
+        workHoursEnd: rows[0].work_hours_end || DEFAULT_TRACKING_SETTINGS.workHoursEnd,
+        workDays: rows[0].work_days || DEFAULT_TRACKING_SETTINGS.workDays
+      };
+    }
+  } catch (err) {
+    console.log('[WorkHours] Could not fetch work hours config:', err.message);
+  }
+  return {
+    workHoursStart: DEFAULT_TRACKING_SETTINGS.workHoursStart,
+    workHoursEnd: DEFAULT_TRACKING_SETTINGS.workHoursEnd,
+    workDays: DEFAULT_TRACKING_SETTINGS.workDays
+  };
+}
+
+/**
+ * Filter idle blocks to only include those that started within configured work hours.
+ * Defense-in-depth: desktop app also filters, but this ensures consistency on the server side.
+ */
+function filterIdleBlocksByWorkHours(idleBlocks, workHoursConfig) {
+  const { workHoursStart, workHoursEnd, workDays } = workHoursConfig;
+  if (!workHoursStart || !workHoursEnd || !workDays) return idleBlocks;
+
+  const parseTime = (str) => {
+    const parts = (str || '').split(':').map(Number);
+    return parts[0] * 60 + (parts[1] || 0);
+  };
+  const startMin = parseTime(workHoursStart);
+  const endMin = parseTime(workHoursEnd);
+
+  return idleBlocks.filter(block => {
+    const dt = new Date(block.startTime);
+    if (isNaN(dt.getTime())) return true; // keep if unparseable
+    const dayOfWeek = dt.getDay(); // 0=Sun ... 6=Sat
+    const isoDay = dayOfWeek === 0 ? 7 : dayOfWeek; // convert to ISO: 1=Mon ... 7=Sun
+    const blockMin = dt.getHours() * 60 + dt.getMinutes();
+
+    if (startMin <= endMin) {
+      // Normal schedule
+      return workDays.includes(isoDay) && blockMin >= startMin && blockMin <= endMin;
+    } else {
+      // Cross-midnight
+      if (blockMin >= startMin) return workDays.includes(isoDay);
+      if (blockMin <= endMin) {
+        const prevDay = isoDay > 1 ? isoDay - 1 : 7;
+        return workDays.includes(prevDay);
+      }
+      return false;
+    }
+  });
 }
 
 /**
@@ -396,12 +460,20 @@ async function resolveTeamPermissions(isAdmin, projectKey) {
   return { hasPermission, projectAdminProjects };
 }
 
+// Columns from the idle-time migration (20260325) — may not exist in older databases
+const IDLE_COLUMNS = ',is_idle,idle_start_time,idle_end_time,reclassified_from,converted_issue_key';
+const BASE_ACTIVITY_SELECT = 'id,user_id,start_time,end_time,duration_seconds,project_key,classification';
+
 /**
  * Build the activity_records query string, including project/user OR-filter
  * for project admins who need to see their own data plus their admin projects.
+ * @param {boolean} [includeIdleColumns=true] - Include idle-time columns in select
  */
-function buildActivityQuery(orgId, date, filterByProjects, projectsToFilter, currentUserId) {
-  let query = `activity_records?organization_id=eq.${orgId}&work_date=eq.${date}&select=user_id,start_time,end_time,duration_seconds,project_key&order=user_id,start_time.asc&limit=5000`;
+function buildActivityQuery(orgId, date, filterByProjects, projectsToFilter, currentUserId, includeIdleColumns = true) {
+  const selectClause = includeIdleColumns
+    ? `${BASE_ACTIVITY_SELECT}${IDLE_COLUMNS}`
+    : BASE_ACTIVITY_SELECT;
+  let query = `activity_records?organization_id=eq.${orgId}&work_date=eq.${date}&select=${selectClause}&order=user_id,start_time.asc&limit=5000`;
 
   if (filterByProjects && projectsToFilter.length > 0) {
     if (currentUserId) {
@@ -515,8 +587,19 @@ export async function fetchTeamDayTimeline(accountId, cloudId, projectKey, date)
   // during active tracking (vs desktop_last_heartbeat every 4h) — used to compute a more
   // accurate effectiveLastActive signal for status dots.
   const activityThreshold = new Date(Date.now() - 270 * 60 * 1000).toISOString();
-  const [activityRecords, legacyScreenshots, allUsers, recentActivity] = await Promise.all([
-    supabaseRequest(supabaseConfig, activityQuery),
+
+  // Fetch activity records with fallback: if idle-time columns don't exist yet
+  // (migration 20260325 not applied), retry with base columns only.
+  let activityRecords;
+  try {
+    activityRecords = await supabaseRequest(supabaseConfig, activityQuery);
+  } catch (err) {
+    console.warn('[TeamTimeline] Activity query failed (idle columns may not exist), retrying with base columns:', err.message);
+    const fallbackQuery = buildActivityQuery(organization.id, date, filterByProjects, projectsToFilter, currentUserId, false);
+    activityRecords = await supabaseRequest(supabaseConfig, fallbackQuery).catch(() => []);
+  }
+
+  const [legacyScreenshots, allUsers, recentActivity] = await Promise.all([
     supabaseRequest(supabaseConfig, legacyQuery),
     supabaseRequest(
       supabaseConfig,
@@ -557,17 +640,31 @@ export async function fetchTeamDayTimeline(accountId, cloudId, projectKey, date)
         desktopLoggedIn: userInfo?.desktop_logged_in || false,
         lastHeartbeat: userInfo?.desktop_last_heartbeat,
         effectiveLastActive: getEffectiveLastActive(userId, userInfo?.desktop_last_heartbeat),
-        sessions: []
+        sessions: [],
+        idleBlocks: []
       };
     }
 
-    // Add session with start_time, end_time for accurate timeline rendering
-    // duration_seconds = accumulated real work time (not simply end_time - start_time)
-    userTimelineMap[userId].sessions.push({
-      startTime: record.start_time,
-      endTime: record.end_time,
-      durationSeconds: record.duration_seconds || 0
-    });
+    // Separate idle blocks from work sessions
+    if (record.is_idle) {
+      userTimelineMap[userId].idleBlocks.push({
+        id: record.id,
+        startTime: record.idle_start_time || record.start_time,
+        endTime: record.idle_end_time || record.end_time,
+        durationSeconds: record.duration_seconds || 0,
+        classification: record.classification,
+        convertedIssueKey: record.converted_issue_key || null,
+        reclassifiedFrom: record.reclassified_from || null
+      });
+    } else {
+      // Add session with start_time, end_time for accurate timeline rendering
+      // duration_seconds = accumulated real work time (not simply end_time - start_time)
+      userTimelineMap[userId].sessions.push({
+        startTime: record.start_time,
+        endTime: record.end_time,
+        durationSeconds: record.duration_seconds || 0
+      });
+    }
   });
 
   // Also process legacy data from analysis_results (with embedded screenshots)
@@ -609,7 +706,8 @@ export async function fetchTeamDayTimeline(accountId, cloudId, projectKey, date)
         desktopLoggedIn: userInfo?.desktop_logged_in || false,
         lastHeartbeat: userInfo?.desktop_last_heartbeat,
         effectiveLastActive: getEffectiveLastActive(userId, userInfo?.desktop_last_heartbeat),
-        sessions: []
+        sessions: [],
+        idleBlocks: []
       };
     }
 
@@ -674,10 +772,19 @@ export async function fetchTeamDayTimeline(accountId, cloudId, projectKey, date)
 
   console.log('[TeamTimeline] Users without activity:', inactiveUsers.length);
 
+  // Fetch work hours config for the timeline response and server-side filtering
+  const workHoursConfig = await fetchWorkHoursConfig(supabaseConfig, organization.id);
+
+  // Filter idle blocks by work hours (defense-in-depth)
+  userTimelines.forEach(user => {
+    user.idleBlocks = filterIdleBlocksByWorkHours(user.idleBlocks || [], workHoursConfig);
+  });
+
   return {
     date,
     projectKey: projectKey || null,
     organizationId: organization.id,
+    workHours: workHoursConfig,
     usersWithActivity: userTimelines,
     usersWithoutActivity: inactiveUsers,
     totalUsers: userTimelines.length + inactiveUsers.length,
@@ -712,6 +819,7 @@ export async function fetchMyDayTimeline(accountId, cloudId, date) {
       userId: null,
       displayName: 'Unknown User',
       sessions: [],
+      idleBlocks: [],
       totalHours: 0,
       totalSessions: 0,
       firstActivity: null,
@@ -724,26 +832,51 @@ export async function fetchMyDayTimeline(accountId, cloudId, date) {
 
   // Fetch activity records for current user on the specified date
   // All classifications included — timeline shows all activity to indicate user presence
-  const activityQuery = `activity_records?organization_id=eq.${organization.id}&user_id=eq.${userId}&work_date=eq.${date}&select=start_time,end_time,duration_seconds&order=start_time.asc&limit=500`;
+  const idleSelect = `${BASE_ACTIVITY_SELECT}${IDLE_COLUMNS}`.replace('user_id,', '');
+  const baseSelect = BASE_ACTIVITY_SELECT.replace('user_id,', '');
+  const activityQuery = `activity_records?organization_id=eq.${organization.id}&user_id=eq.${userId}&work_date=eq.${date}&select=${idleSelect}&order=start_time.asc&limit=500`;
+  const activityFallbackQuery = `activity_records?organization_id=eq.${organization.id}&user_id=eq.${userId}&work_date=eq.${date}&select=${baseSelect}&order=start_time.asc&limit=500`;
 
   // Also fetch legacy data from analysis_results (work_type='office' only)
   // Query analysis_results and embed screenshot data - filter by date in code
   const legacyQuery = `analysis_results?organization_id=eq.${organization.id}&user_id=eq.${userId}&work_type=eq.office&select=time_spent_seconds,screenshots(start_time,end_time,duration_seconds,timestamp,work_date,deleted_at)&order=created_at.desc&limit=500`;
 
-  const [activityRecords, legacyRecords] = await Promise.all([
-    supabaseRequest(supabaseConfig, activityQuery),
+  // Fetch activity records with fallback: if idle-time columns don't exist yet
+  // (migration 20260325 not applied), retry with base columns only.
+  let activityRecords;
+  try {
+    activityRecords = await supabaseRequest(supabaseConfig, activityQuery);
+  } catch (err) {
+    console.warn('[MyTimeline] Activity query failed (idle columns may not exist), retrying with base columns:', err.message);
+    activityRecords = await supabaseRequest(supabaseConfig, activityFallbackQuery).catch(() => []);
+  }
+
+  const [legacyRecords] = await Promise.all([
     supabaseRequest(supabaseConfig, legacyQuery)
   ]);
 
-  // Build sessions from activity records
+  // Build sessions and idle blocks from activity records
   const sessions = [];
+  const idleBlocks = [];
   
   (activityRecords || []).forEach(record => {
-    sessions.push({
-      startTime: record.start_time,
-      endTime: record.end_time,
-      durationSeconds: record.duration_seconds || 0
-    });
+    if (record.is_idle) {
+      idleBlocks.push({
+        id: record.id,
+        startTime: record.idle_start_time || record.start_time,
+        endTime: record.idle_end_time || record.end_time,
+        durationSeconds: record.duration_seconds || 0,
+        classification: record.classification,
+        convertedIssueKey: record.converted_issue_key || null,
+        reclassifiedFrom: record.reclassified_from || null
+      });
+    } else {
+      sessions.push({
+        startTime: record.start_time,
+        endTime: record.end_time,
+        durationSeconds: record.duration_seconds || 0
+      });
+    }
   });
 
   // Add legacy sessions from analysis_results (with embedded screenshots)
@@ -776,12 +909,15 @@ export async function fetchMyDayTimeline(accountId, cloudId, date) {
   // Sort sessions by start time
   sortSessionsByStartTime(sessions);
 
-  if (sessions.length === 0) {
+  if (sessions.length === 0 && idleBlocks.length === 0) {
+    const workHoursConfig = await fetchWorkHoursConfig(supabaseConfig, organization.id);
     return {
       date,
       userId,
       displayName,
       sessions: [],
+      idleBlocks: [],
+      workHours: workHoursConfig,
       totalHours: 0,
       totalSessions: 0,
       firstActivity: null,
@@ -792,14 +928,104 @@ export async function fetchMyDayTimeline(accountId, cloudId, date) {
   // Calculate stats
   const { totalHours } = calculateSessionStats(sessions);
 
+  // Fetch work hours config and filter idle blocks (defense-in-depth)
+  const workHoursConfig = await fetchWorkHoursConfig(supabaseConfig, organization.id);
+  const filteredIdleBlocks = filterIdleBlocksByWorkHours(idleBlocks, workHoursConfig);
+
   return {
     date,
     userId,
     displayName,
     sessions,
+    idleBlocks: filteredIdleBlocks,
+    workHours: workHoursConfig,
     totalHours,
     totalSessions: sessions.length,
     firstActivity: sessions[0]?.startTime || null,
     lastActivity: sessions[sessions.length - 1]?.endTime || null
   };
+}
+
+/**
+ * Convert an idle block into a worklog by updating the activity record
+ * and optionally syncing to Jira.
+ * @param {string} accountId - Atlassian account ID (must own the record)
+ * @param {string} cloudId - Jira Cloud ID
+ * @param {string} idleRecordId - UUID of the idle activity_record
+ * @param {string} issueKey - Jira issue key to assign the worklog to
+ * @param {string} reason - User-provided reason / work description
+ * @returns {Promise<Object>} Updated record info
+ */
+export async function convertIdleToWorklog(accountId, cloudId, idleRecordId, issueKey, reason) {
+  if (!idleRecordId || !issueKey || !reason) {
+    throw new Error('idleRecordId, issueKey, and reason are required');
+  }
+
+  const { supabaseConfig, organization } = await initializeContext(accountId, cloudId);
+
+  // Get the current user's Supabase ID
+  const currentUser = await supabaseRequest(
+    supabaseConfig,
+    `users?organization_id=eq.${organization.id}&atlassian_account_id=eq.${accountId}&select=id&limit=1`
+  );
+  if (!currentUser || currentUser.length === 0) {
+    throw new Error('User not found');
+  }
+  const userId = currentUser[0].id;
+
+  // Fetch the idle record and verify ownership
+  const records = await supabaseRequest(
+    supabaseConfig,
+    `activity_records?id=eq.${idleRecordId}&select=id,user_id,is_idle,classification,duration_seconds,idle_start_time,idle_end_time,reclassified_from`
+  );
+  if (!records || records.length === 0) {
+    throw new Error('Idle record not found');
+  }
+  const record = records[0];
+  if (record.user_id !== userId) {
+    throw new Error('Access denied: you can only convert your own idle blocks');
+  }
+  if (!record.is_idle) {
+    throw new Error('Record is not an idle block');
+  }
+  if (record.reclassified_from) {
+    throw new Error('This idle block has already been converted');
+  }
+
+  // Update the activity record
+  const now = new Date().toISOString();
+  const updatePayload = {
+    classification: 'productive',
+    reclassified_from: record.classification,
+    reclassified_at: now,
+    reclassified_by: accountId,
+    reclassification_reason: reason,
+    converted_issue_key: issueKey
+  };
+
+  const updateResult = await supabaseRequest(
+    supabaseConfig,
+    `activity_records?id=eq.${idleRecordId}`,
+    { method: 'PATCH', body: updatePayload }
+  );
+
+  return {
+    id: idleRecordId,
+    issueKey,
+    durationSeconds: record.duration_seconds,
+    idleStartTime: record.idle_start_time || null,
+    convertedAt: now
+  };
+}
+
+/**
+ * Get the project_key of an idle record so the resolver can create an issue in the right project.
+ */
+export async function getIdleRecordProjectKey(accountId, cloudId, idleRecordId) {
+  const { supabaseConfig } = await initializeContext(accountId, cloudId);
+  const records = await supabaseRequest(
+    supabaseConfig,
+    `activity_records?id=eq.${idleRecordId}&select=project_key&limit=1`
+  );
+  return records?.[0]?.project_key || null;
 }

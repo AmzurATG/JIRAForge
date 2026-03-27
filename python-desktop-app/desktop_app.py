@@ -4369,6 +4369,8 @@ class TimeTracker:
         self.needs_idle_resume = False  # Flag set by pynput when activity detected during idle
         self.last_activity_time = time.time()  # Last mouse/keyboard activity
         self.idle_timeout = 300  # 5 minutes idle timeout (in seconds)
+        self.idle_start_time = None  # When the current idle period began (UTC datetime)
+        self._pending_idle_records = []  # Idle records waiting to be uploaded in next batch
         self._tracking_thread = None
         self._activity_monitor_thread = None  # Activity monitoring thread
         self._system_event_thread = None  # Windows sleep/lock event listener
@@ -6615,6 +6617,9 @@ class TimeTracker:
                     'track_window_changes': _nvl(settings.get('track_window_changes'), True),
                     'track_idle_time': _nvl(settings.get('track_idle_time'), True),
                     'idle_threshold_seconds': _nvl(settings.get('idle_threshold_seconds'), 300),
+                    'work_hours_start': _nvl(settings.get('work_hours_start'), '09:00:00'),
+                    'work_hours_end': _nvl(settings.get('work_hours_end'), '18:00:00'),
+                    'work_days': _nvl(settings.get('work_days'), [1, 2, 3, 4, 5]),
                 }
 
                 if SCREENSHOT_MONITORING_HARD_DISABLED:
@@ -7032,7 +7037,7 @@ class TimeTracker:
 
             # Harvest all sessions
             sessions = self.session_manager.get_all_sessions()
-            if not sessions:
+            if not sessions and not self._pending_idle_records:
                 print("[BATCH] No activity records to upload")
                 self.last_batch_upload_time = time.time()
                 return
@@ -7046,11 +7051,14 @@ class TimeTracker:
             if filtered_count > 0:
                 print(f"[BATCH] Filtered {filtered_count} noise sessions (< {MIN_SESSION_DURATION_SECONDS}s)")
             if not sessions:
-                print("[BATCH] All sessions were noise — nothing to upload")
-                self.session_manager.clear_all()
-                self.current_window_key = None  # Force re-detection so next loop iteration creates a fresh session
-                self.last_batch_upload_time = time.time()
-                return
+                if self._pending_idle_records:
+                    print("[BATCH] All work sessions were noise — but idle records exist, continuing")
+                else:
+                    print("[BATCH] All sessions were noise — nothing to upload")
+                    self.session_manager.clear_all()
+                    self.current_window_key = None  # Force re-detection so next loop iteration creates a fresh session
+                    self.last_batch_upload_time = time.time()
+                    return
 
             # Must use service role client — anon client is blocked by RLS
             # because desktop users don't have supabase_user_id linked
@@ -7152,6 +7160,18 @@ class TimeTracker:
                     }
                 }
                 records.append(record)
+
+            # Append any pending idle records
+            idle_records = list(self._pending_idle_records)
+            self._pending_idle_records.clear()
+            for idle_rec in idle_records:
+                # Add batch metadata
+                idle_rec['batch_timestamp'] = batch_timestamp
+                idle_rec['batch_start'] = batch_start.isoformat()
+                idle_rec['batch_end'] = batch_end.isoformat()
+                records.append(idle_rec)
+            if idle_records:
+                print(f"[BATCH] Including {len(idle_records)} idle records in batch")
 
             # Single batch insert to Supabase using service role client
             print(f"[BATCH] Inserting {len(records)} activity records...")
@@ -7999,6 +8019,94 @@ class TimeTracker:
         except Exception as e:
             print(f"[ERROR] Error finalizing session ({reason}): {e}")
 
+    def _is_within_work_hours(self, utc_dt):
+        """Check if a UTC datetime falls within configured working hours (local time).
+        Supports cross-midnight schedules (e.g. 22:00–06:00 for night shifts).
+        Returns True if work hours are not configured (fail-open).
+        """
+        try:
+            settings = self.tracking_settings or {}
+            start_str = settings.get('work_hours_start', '09:00:00')
+            end_str = settings.get('work_hours_end', '18:00:00')
+            work_days = settings.get('work_days', [1, 2, 3, 4, 5])
+
+            # Convert UTC datetime to local time
+            local_dt = utc_dt.astimezone()
+            local_time = local_dt.time()
+            # Python isoweekday(): Monday=1 ... Sunday=7
+            iso_weekday = local_dt.isoweekday()
+
+            # Parse start/end as time objects (handle HH:MM and HH:MM:SS)
+            start_parts = [int(p) for p in start_str.split(':')]
+            end_parts = [int(p) for p in end_str.split(':')]
+            from datetime import time as dt_time
+            work_start = dt_time(*start_parts)
+            work_end = dt_time(*end_parts)
+
+            if work_start <= work_end:
+                # Normal schedule (e.g. 09:00–18:00)
+                if iso_weekday not in work_days:
+                    return False
+                return work_start <= local_time <= work_end
+            else:
+                # Cross-midnight schedule (e.g. 22:00–06:00)
+                # Before midnight: check today is a work day
+                if local_time >= work_start:
+                    return iso_weekday in work_days
+                # After midnight: the shift started the previous day
+                if local_time <= work_end:
+                    prev_day = iso_weekday - 1 if iso_weekday > 1 else 7
+                    return prev_day in work_days
+                return False
+        except Exception as e:
+            print(f"[WARN] Work hours check failed, allowing idle record: {e}")
+            return True  # Fail-open: record idle if check fails
+
+    def _create_idle_record(self, reason="idle timeout"):
+        """Create an idle record from idle_start_time to now and queue it for upload."""
+        if self.idle_start_time is None:
+            return
+        idle_end = datetime.now(timezone.utc)
+        idle_duration = int((idle_end - self.idle_start_time).total_seconds())
+        if idle_duration < 60:
+            # Skip very short idle periods (< 1 minute)
+            self.idle_start_time = None
+            return
+
+        # Only record idle within configured working hours
+        if not self._is_within_work_hours(self.idle_start_time):
+            print(f"[IDLE] Skipping idle record outside work hours: {self.idle_start_time.strftime('%H:%M:%S')} ({reason})")
+            self.idle_start_time = None
+            return
+
+        project_key = self.current_project_key or self.get_user_project_key()
+        record = {
+            'user_id': self.current_user_id,
+            'organization_id': self.organization_id,
+            'window_title': f'[Idle: {reason}]',
+            'application_name': 'System',
+            'classification': 'idle',
+            'is_idle': True,
+            'idle_start_time': self.idle_start_time.isoformat(),
+            'idle_end_time': idle_end.isoformat(),
+            'start_time': self.idle_start_time.isoformat(),
+            'end_time': idle_end.isoformat(),
+            'duration_seconds': idle_duration,
+            'total_time_seconds': idle_duration,
+            'work_date': _utc_ts_to_local_date(self.idle_start_time.isoformat()),
+            'user_timezone': get_local_timezone_name(),
+            'project_key': project_key,
+            'status': 'analyzed',  # No AI analysis needed for idle records
+            'metadata': json.dumps({
+                'tracking_mode': 'idle_detection',
+                'idle_reason': reason,
+                'app_version': self.app_version
+            })
+        }
+        self._pending_idle_records.append(record)
+        print(f"[IDLE] Created idle record: {self.idle_start_time.strftime('%H:%M:%S')} → {idle_end.strftime('%H:%M:%S')} ({idle_duration}s, reason: {reason})")
+        self.idle_start_time = None
+
     def monitor_user_activity(self):
         """Monitor mouse and keyboard activity for idle detection"""
         try:
@@ -8082,11 +8190,13 @@ class TimeTracker:
                             if not self.is_idle:
                                 self._finalize_active_session("system sleep")
                                 self.session_manager.stop_current_timer()  # Stop SQLite activity timer so idle time isn't counted in activity_records
+                                self.idle_start_time = datetime.fromtimestamp(self.last_activity_time, tz=timezone.utc)
                                 self.is_idle = True
                                 self.update_tray_icon()
                                 self.add_admin_log('INFO', 'System sleep detected — entered idle')
                         elif wparam == PBT_APMRESUMEAUTOMATIC:
                             print("[INFO] System wake detected — will resume tracking on activity")
+                            self._create_idle_record("system sleep")
                             self.needs_idle_resume = True
                     elif msg == WM_WTSSESSION_CHANGE:
                         if wparam == WTS_SESSION_LOCK:
@@ -8094,11 +8204,13 @@ class TimeTracker:
                             if not self.is_idle:
                                 self._finalize_active_session("screen lock")
                                 self.session_manager.stop_current_timer()  # Stop SQLite activity timer so idle time isn't counted in activity_records
+                                self.idle_start_time = datetime.fromtimestamp(self.last_activity_time, tz=timezone.utc)
                                 self.is_idle = True
                                 self.update_tray_icon()
                                 self.add_admin_log('INFO', 'Screen locked — entered idle')
                         elif wparam == WTS_SESSION_UNLOCK:
                             print("[INFO] Screen unlock detected — will resume tracking on activity")
+                            self._create_idle_record("screen lock")
                             self.needs_idle_resume = True
                 except Exception as e:
                     print(f"[ERROR] Error in system event handler: {e}")
@@ -8431,6 +8543,9 @@ class TimeTracker:
                         self._finalize_active_session("idle timeout")
                         self.session_manager.stop_current_timer()  # Stop SQLite activity timer so idle time isn't counted in activity_records
 
+                        # Record when idle started (backdate to last activity)
+                        self.idle_start_time = last_activity
+
                         self.is_idle = True
                         self.update_tray_icon()
                         self.add_admin_log('INFO', f'User idle (no activity for {int(idle_duration)}s)')
@@ -8446,6 +8561,10 @@ class TimeTracker:
                     resume_time = datetime.now(timezone.utc)
                     print(f"[INFO] Activity detected at {resume_time.strftime('%H:%M:%S')} UTC, resuming tracking from idle")
                     print(f"     - All tracking state reset - new session will start fresh")
+
+                    # Create an idle record for the period the user was away
+                    self._create_idle_record("idle timeout")
+
                     self.is_idle = False
                     self.needs_idle_resume = False
                     self.update_tray_icon()
