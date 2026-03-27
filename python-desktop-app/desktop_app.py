@@ -10,16 +10,40 @@ import time
 import json
 import queue
 import atexit
+import subprocess
 import threading
 
 # Fix GSettings schema crash on Linux when launched from .desktop / menu.
 # PyInstaller bundles may carry stale GLib schemas that conflict with the host.
 # Pointing GSETTINGS_SCHEMA_DIR at the system-compiled schemas avoids the
 # "does not contain a key named 'antialiasing'" fatal GLib error.
-if sys.platform.startswith('linux') and 'GSETTINGS_SCHEMA_DIR' not in os.environ:
+if sys.platform.startswith('linux'):
     _sys_schema = '/usr/share/glib-2.0/schemas'
     if os.path.isfile(os.path.join(_sys_schema, 'gschemas.compiled')):
         os.environ['GSETTINGS_SCHEMA_DIR'] = _sys_schema
+
+# --- Crash log: redirect stderr to a file so .desktop launches are diagnosable ---
+if sys.platform.startswith('linux') and getattr(sys, 'frozen', False):
+    try:
+        _log_dir = os.path.join(
+            os.environ.get('XDG_DATA_HOME', os.path.join(os.path.expanduser('~'), '.local', 'share')),
+            'timetracker'
+        )
+        os.makedirs(_log_dir, exist_ok=True)
+        _crash_log = os.path.join(_log_dir, 'crash.log')
+        # Rotate: keep last log as crash.log.1
+        if os.path.exists(_crash_log) and os.path.getsize(_crash_log) > 512_000:
+            _prev = _crash_log + '.1'
+            if os.path.exists(_prev):
+                os.remove(_prev)
+            os.rename(_crash_log, _prev)
+        _crash_fd = open(_crash_log, 'a')
+        _crash_fd.write(f'\n=== Time Tracker start {__import__("datetime").datetime.now().isoformat()} ===\n')
+        _crash_fd.flush()
+        sys.stdout = _crash_fd
+        sys.stderr = _crash_fd
+    except Exception:
+        pass  # If we can't set up logging, don't prevent startup
 import webbrowser
 import tempfile
 import traceback
@@ -40,8 +64,82 @@ import psutil
 import requests
 from flask import Flask, render_template_string, jsonify, request, session, redirect, url_for
 from flask_cors import CORS
-import pystray
-from pystray import MenuItem as item
+# ---------------------------------------------------------------------------
+# pystray requires AppIndicator3 GObject Introspection typelib on Linux.
+# If the typelib is missing (common on fresh Ubuntu desktops), install it
+# automatically so users never have to run manual commands.
+# ---------------------------------------------------------------------------
+def _auto_install_appindicator():
+    """Install the AppIndicator typelib if missing. Returns True if available."""
+    if not sys.platform.startswith('linux'):
+        return True  # Not needed on Windows/macOS
+
+    # Quick check: can GI find the typelib already?
+    try:
+        import gi
+        try:
+            gi.require_version('AyatanaAppIndicator3', '0.1')
+            return True
+        except ValueError:
+            pass
+        try:
+            gi.require_version('AppIndicator3', '0.1')
+            return True
+        except ValueError:
+            pass
+    except ImportError:
+        pass  # gi itself not available — install will provide it
+
+    print("[INFO] AppIndicator typelib not found — installing automatically...")
+
+    # Packages to try, in preference order
+    _PACKAGES = [
+        'gir1.2-ayatanaappindicator3-0.1',
+        'gir1.2-appindicator3-0.1',
+    ]
+
+    for pkg in _PACKAGES:
+        try:
+            # Try pkexec first (graphical sudo prompt — works from .desktop launcher)
+            result = subprocess.run(
+                ['pkexec', 'apt-get', 'install', '-y', pkg],
+                capture_output=True, text=True, timeout=120,
+            )
+            if result.returncode == 0:
+                print(f"[OK] Installed {pkg} successfully")
+                return True
+        except FileNotFoundError:
+            # pkexec not available, try plain sudo (for terminal launches)
+            try:
+                result = subprocess.run(
+                    ['sudo', '-n', 'apt-get', 'install', '-y', pkg],
+                    capture_output=True, text=True, timeout=120,
+                )
+                if result.returncode == 0:
+                    print(f"[OK] Installed {pkg} successfully")
+                    return True
+            except Exception:
+                pass
+        except subprocess.TimeoutExpired:
+            print(f"[WARN] Timed out installing {pkg}")
+        except Exception as e:
+            print(f"[WARN] Could not install {pkg}: {e}")
+
+    print("[WARN] Could not auto-install AppIndicator typelib")
+    return False
+
+_auto_install_appindicator()
+
+try:
+    import pystray
+    from pystray import MenuItem as item
+    PYSTRAY_AVAILABLE = True
+except (ImportError, ValueError, Exception) as _pystray_err:
+    pystray = None
+    item = None
+    PYSTRAY_AVAILABLE = False
+    print(f"[WARN] pystray not available: {_pystray_err}")
+    print("[WARN] System tray icon will not be shown.")
 from PIL import Image as PILImage
 
 # Supabase
@@ -989,7 +1087,6 @@ def install_application():
 
     try:
         import shutil
-        import subprocess
 
         # If updating, handle the old version
         if is_update:
@@ -9776,6 +9873,8 @@ class TimeTracker:
 
     def _build_tray_menu(self):
         """Build the tray menu with current state"""
+        if not PYSTRAY_AVAILABLE:
+            return None
         def get_menu_label():
             if self.current_user:
                 return f"Logged in as: {self.current_user.get('email', 'User')}"
@@ -9935,6 +10034,19 @@ class TimeTracker:
     
     def setup_system_tray(self):
         """Setup system tray icon"""
+        if not PYSTRAY_AVAILABLE:
+            print("[WARN] pystray not available — no system tray icon.")
+            print(f"[INFO] App is running at http://localhost:{getattr(self, 'web_port', 51777)}")
+            print("[INFO] Install the AppIndicator library to get a tray icon:")
+            print("       sudo apt install gir1.2-ayatanaappindicator3-0.1")
+            # Keep the main thread alive so the daemon Flask thread doesn't die
+            try:
+                while True:
+                    time.sleep(60)
+            except KeyboardInterrupt:
+                pass
+            return
+
         try:
             # Create initial icon based on current state
             initial_state = self.get_tray_icon_state()
@@ -9980,6 +10092,13 @@ class TimeTracker:
                 self.tray.run()
             except Exception as e2:
                 print(f"[ERROR] System tray fallback also failed: {e2}")
+                print("[INFO] Keeping app alive (Flask server still running). Use http://localhost:{} to access.".format(getattr(self, 'web_port', 51777)))
+                # Keep the main thread alive so the daemon Flask thread doesn't die
+                try:
+                    while True:
+                        time.sleep(60)
+                except KeyboardInterrupt:
+                    pass
     
     def quit_app(self):
         """Quit application"""
@@ -12132,7 +12251,9 @@ def main():
     except Exception as e:
         print(f"[ERROR] Application error: {e}")
         traceback.print_exc()
-        input("Press Enter to exit...")
+        # Only prompt for Enter when running in an interactive terminal
+        if sys.stdin and sys.stdin.isatty():
+            input("Press Enter to exit...")
 
 if __name__ == '__main__':
     main()

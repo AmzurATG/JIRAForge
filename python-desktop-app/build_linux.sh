@@ -63,7 +63,7 @@ Architecture: amd64
 Maintainer: $MAINTAINER
 Description: $APP_DISPLAY_NAME
  $APP_DESCRIPTION
-Depends: libx11-6, libdbus-1-3
+Depends: libx11-6, libdbus-1-3, gir1.2-ayatanaappindicator3-0.1 | gir1.2-appindicator3-0.1
 EOF
 
 # ── DEBIAN/postinst (runs after install) ──
@@ -72,6 +72,16 @@ cat > "$DEB_ROOT/DEBIAN/postinst" <<'POSTINST'
 set -e
 # Ensure binary is executable
 chmod 755 /opt/timetracker/timetracker
+# Install AppIndicator typelib (required by pystray for system tray icon).
+# The Depends field handles fresh installs, but upgrades from older .deb
+# versions that lacked this dependency need it installed explicitly.
+if ! dpkg -s gir1.2-ayatanaappindicator3-0.1 >/dev/null 2>&1 && \
+   ! dpkg -s gir1.2-appindicator3-0.1 >/dev/null 2>&1; then
+    echo "[TimeTracker] Installing AppIndicator typelib..."
+    apt-get install -y gir1.2-ayatanaappindicator3-0.1 2>/dev/null || \
+    apt-get install -y gir1.2-appindicator3-0.1 2>/dev/null || \
+    echo "[TimeTracker] WARN: Could not install AppIndicator typelib. Tray icon may not appear."
+fi
 # Update desktop database so the launcher appears in the menu
 if command -v update-desktop-database >/dev/null 2>&1; then
     update-desktop-database /usr/share/applications || true
