@@ -588,6 +588,39 @@
   font-size: 20px;
 }
 
+/* Worklog Reassignment Modal */
+.reassign-worklog-modal {
+  max-width: 520px;
+}
+
+.reassign-warning {
+  color: #d97706;
+  font-size: 0.85rem;
+  background: #fef3c7;
+  padding: 8px 12px;
+  border-radius: 6px;
+  margin-top: 8px;
+}
+
+.reassign-search {
+  margin: 12px 0;
+}
+
+.search-input {
+  width: 100%;
+  padding: 8px 12px;
+  border: 1px solid var(--ds-border, #dfe1e6);
+  border-radius: 4px;
+  font-size: 0.9rem;
+  box-sizing: border-box;
+}
+
+.search-input:focus {
+  outline: none;
+  border-color: var(--ds-border-focused, #4c9aff);
+  box-shadow: 0 0 0 2px rgba(76, 154, 255, 0.2);
+}
+
 .feedback-success p {
   margin: 0;
   color: var(--ds-text-subtle);

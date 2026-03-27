@@ -2,11 +2,11 @@
 const { defineConfig } = require('@playwright/test');
 
 /**
- * Playwright configuration for idle-time feature E2E tests.
+ * Playwright configuration for E2E tests.
  * Runs against the Forge Custom UI tunnel (forge tunnel --debug).
  */
 module.exports = defineConfig({
-  testDir: './idle-time',
+  testDir: '.',
   timeout: 60_000,
   retries: 1,
   use: {
@@ -18,7 +18,13 @@ module.exports = defineConfig({
   },
   projects: [
     {
-      name: 'chromium',
+      name: 'idle-time',
+      testDir: './idle-time',
+      use: { browserName: 'chromium' },
+    },
+    {
+      name: 'worklog-reassignment',
+      testDir: './worklog-reassignment',
       use: { browserName: 'chromium' },
     },
   ],
