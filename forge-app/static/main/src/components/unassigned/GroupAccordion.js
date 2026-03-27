@@ -258,7 +258,7 @@ function GroupAccordion({
                         <polyline points="12 6 12 12 16 14"></polyline>
                       </svg>
                     </span>
-                    <span className="stat-value">{details?.total_time_formatted || group.total_time_formatted}</span>
+                    <span className="stat-value">{details?.total_seconds ? details.total_time_formatted : group.total_time_formatted}</span>
                   </div>
                   <button
                     className="assign-button-compact"

@@ -223,8 +223,7 @@ function AssignmentModal({
                 Time to log: <strong>{selectedGroup.total_time_formatted}</strong>
                 {selectedGroup.total_seconds < 60 && (
                   <div className="time-warning">
-                    Note: Time is under 1 minute. Jira requires at least 60 seconds to log a worklog.
-                    The work will be linked to the issue but no time will be logged.
+                    Note: Time is under 1 minute. It will be rounded up to 60 seconds (Jira's minimum) when logging the worklog.
                   </div>
                 )}
               </div>
@@ -325,8 +324,7 @@ function AssignmentModal({
                 Time to log: <strong>{selectedGroup.total_time_formatted}</strong>
                 {selectedGroup.total_seconds < 60 && (
                   <div className="time-warning">
-                    Note: Time is under 1 minute. Jira requires at least 60 seconds to log a worklog.
-                    The issue will be created but no time will be logged.
+                    Note: Time is under 1 minute. It will be rounded up to 60 seconds (Jira's minimum) when logging the worklog.
                   </div>
                 )}
               </div>
