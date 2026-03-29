@@ -164,6 +164,8 @@ export async function createJiraIssue(projectKey, issueData) {
  * @returns {Promise<Object>} Created worklog response
  */
 export async function createJiraWorklog(issueKey, timeSpentSeconds, startedAt) {
+  // Jira requires minimum 60 seconds for worklogs — round up sub-minute values
+  const effectiveSeconds = Math.max(timeSpentSeconds, 60);
   const response = await api.asUser().requestJira(
     route`/rest/api/3/issue/${issueKey}/worklog?adjustEstimate=leave`,
     {
@@ -173,7 +175,7 @@ export async function createJiraWorklog(issueKey, timeSpentSeconds, startedAt) {
         'Content-Type': 'application/json'
       },
       body: JSON.stringify({
-        timeSpentSeconds,
+        timeSpentSeconds: effectiveSeconds,
         started: startedAt,
         comment: buildWorklogComment(null)
       })
@@ -209,6 +211,8 @@ export async function deleteJiraWorklog(issueKey, worklogId) {
  * @returns {Promise<Response>} Raw response (caller checks status)
  */
 export async function updateJiraWorklog(issueKey, worklogId, timeSpentSeconds) {
+  // Jira requires minimum 60 seconds for worklogs — round up sub-minute values
+  const effectiveSeconds = Math.max(timeSpentSeconds, 60);
   const response = await api.asUser().requestJira(
     route`/rest/api/3/issue/${issueKey}/worklog/${worklogId}?adjustEstimate=leave`,
     {
@@ -217,7 +221,7 @@ export async function updateJiraWorklog(issueKey, worklogId, timeSpentSeconds) {
         'Accept': 'application/json',
         'Content-Type': 'application/json'
       },
-      body: JSON.stringify({ timeSpentSeconds })
+      body: JSON.stringify({ timeSpentSeconds: effectiveSeconds })
     }
   );
   return response;
@@ -234,6 +238,8 @@ export async function updateJiraWorklog(issueKey, worklogId, timeSpentSeconds) {
  * @returns {Promise<Object>} Created worklog response
  */
 export async function createJiraWorklogAsUser(accountId, issueKey, timeSpentSeconds, startedAt, displayName = null) {
+  // Jira requires minimum 60 seconds for worklogs — round up sub-minute values
+  const effectiveSeconds = Math.max(timeSpentSeconds, 60);
   const response = await api.asUser(accountId).requestJira(
     route`/rest/api/3/issue/${issueKey}/worklog?adjustEstimate=leave`,
     {
@@ -243,7 +249,7 @@ export async function createJiraWorklogAsUser(accountId, issueKey, timeSpentSeco
         'Content-Type': 'application/json'
       },
       body: JSON.stringify({
-        timeSpentSeconds,
+        timeSpentSeconds: effectiveSeconds,
         started: startedAt,
         comment: buildWorklogComment(displayName)
       })
@@ -262,6 +268,8 @@ export async function createJiraWorklogAsUser(accountId, issueKey, timeSpentSeco
  * @returns {Promise<Response>} Raw response (caller checks status)
  */
 export async function updateJiraWorklogAsUser(accountId, issueKey, worklogId, timeSpentSeconds) {
+  // Jira requires minimum 60 seconds for worklogs — round up sub-minute values
+  const effectiveSeconds = Math.max(timeSpentSeconds, 60);
   const response = await api.asUser(accountId).requestJira(
     route`/rest/api/3/issue/${issueKey}/worklog/${worklogId}?adjustEstimate=leave`,
     {
@@ -270,7 +278,7 @@ export async function updateJiraWorklogAsUser(accountId, issueKey, worklogId, ti
         'Accept': 'application/json',
         'Content-Type': 'application/json'
       },
-      body: JSON.stringify({ timeSpentSeconds })
+      body: JSON.stringify({ timeSpentSeconds: effectiveSeconds })
     }
   );
 
@@ -285,6 +293,8 @@ export async function updateJiraWorklogAsUser(accountId, issueKey, worklogId, ti
  * @returns {Promise<Object>} Created worklog response
  */
 export async function createJiraWorklogAsApp(issueKey, timeSpentSeconds, startedAt, displayName = null) {
+  // Jira requires minimum 60 seconds for worklogs — round up sub-minute values
+  const effectiveSeconds = Math.max(timeSpentSeconds, 60);
   const response = await api.asApp().requestJira(
     route`/rest/api/3/issue/${issueKey}/worklog?adjustEstimate=leave`,
     {
@@ -294,7 +304,7 @@ export async function createJiraWorklogAsApp(issueKey, timeSpentSeconds, started
         'Content-Type': 'application/json'
       },
       body: JSON.stringify({
-        timeSpentSeconds,
+        timeSpentSeconds: effectiveSeconds,
         started: startedAt,
         comment: buildWorklogComment(displayName)
       })
@@ -311,6 +321,8 @@ export async function createJiraWorklogAsApp(issueKey, timeSpentSeconds, started
  * @returns {Promise<Response>} Raw response (caller checks status)
  */
 export async function updateJiraWorklogAsApp(issueKey, worklogId, timeSpentSeconds) {
+  // Jira requires minimum 60 seconds for worklogs — round up sub-minute values
+  const effectiveSeconds = Math.max(timeSpentSeconds, 60);
   const response = await api.asApp().requestJira(
     route`/rest/api/3/issue/${issueKey}/worklog/${worklogId}?adjustEstimate=leave`,
     {
@@ -319,7 +331,7 @@ export async function updateJiraWorklogAsApp(issueKey, worklogId, timeSpentSecon
         'Accept': 'application/json',
         'Content-Type': 'application/json'
       },
-      body: JSON.stringify({ timeSpentSeconds })
+      body: JSON.stringify({ timeSpentSeconds: effectiveSeconds })
     }
   );
   return response;

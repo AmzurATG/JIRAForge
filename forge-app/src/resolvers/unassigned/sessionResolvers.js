@@ -177,11 +177,10 @@ export async function getUnassignedGroups(req) {
 
     const { config: supabaseConfig, organization, userId } = ctx;
 
-    // Viability filters: exclude groups with 0 sessions (data inconsistency)
-    // and groups below Jira's 60-second worklog minimum (can never produce valid worklogs).
-    // Applied at the DB level so pagination counts are accurate.
-    const JIRA_MIN_WORKLOG_SECONDS = 60;
-    const viabilityFilter = `&session_count=gt.0&total_seconds=gte.${JIRA_MIN_WORKLOG_SECONDS}`;
+    // Viability filter: exclude groups with 0 sessions (data inconsistency).
+    // Sub-minute groups are allowed — Jira's 60s minimum is handled at worklog
+    // creation time by rounding up, so users can still see and assign them.
+    const viabilityFilter = `&session_count=gt.0&total_seconds=gt.0`;
 
     // First, get total count for pagination info
     const countResult = await supabaseRequest(
@@ -234,7 +233,7 @@ export async function getUnassignedGroups(req) {
 
     // Safety net: DB query already filters via viabilityFilter, but guard
     // against null/0 values that passed through (e.g. column stored as NULL).
-    const validGroups = enrichedGroups.filter(g => g.session_count > 0 && g.total_seconds >= JIRA_MIN_WORKLOG_SECONDS);
+    const validGroups = enrichedGroups.filter(g => g.session_count > 0 && g.total_seconds > 0);
 
     return {
       success: true,
