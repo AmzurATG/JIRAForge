@@ -12,7 +12,7 @@ const logger = require('../utils/logger');
 const CLUSTERING_SCHEDULE_HOUR = Number.parseInt(process.env.CLUSTERING_SCHEDULE_HOUR || '2', 10); // 2 AM
 const CLUSTERING_SCHEDULE_MINUTE = Number.parseInt(process.env.CLUSTERING_SCHEDULE_MINUTE || '0', 10); // 0 minutes
 const MIN_SESSIONS_FOR_CLUSTERING = 2; // Need at least 2 sessions to cluster
-const MIN_GROUP_TOTAL_SECONDS = 1; // Allow sub-minute groups; Jira's 60s minimum is handled at worklog creation (rounded up)
+const MIN_GROUP_TOTAL_SECONDS = 1; // Allow sub-minute groups; worklogs are deferred to scheduled sync for aggregation
 
 let scheduledTimeoutId = null;
 let isRunning = false;
