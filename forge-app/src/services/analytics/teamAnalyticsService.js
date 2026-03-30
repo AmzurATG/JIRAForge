@@ -4,7 +4,7 @@
  */
 
 import { getSupabaseConfig, getOrCreateOrganization, supabaseRequest } from '../../utils/supabase.js';
-import { checkUserPermissions, isJiraAdmin, getProjectsUserAdmins } from '../../utils/jira.js';
+import { checkUserPermissions, getProjectsUserAdmins } from '../../utils/jira.js';
 import { MAX_DAILY_SUMMARY_DAYS, MAX_ISSUES_IN_ANALYTICS, DEFAULT_TRACKING_SETTINGS } from '../../config/constants.js';
 import { isValidProjectKey } from '../../utils/validators.js';
 
@@ -113,9 +113,9 @@ function validateDateFormat(date) {
  * @returns {Promise<{isAdmin: boolean, hasPermission: boolean}>}
  */
 async function checkProjectAdminAccess(projectKey) {
-  const isAdmin = await isJiraAdmin();
-  const permissions = await checkUserPermissions(['ADMINISTER_PROJECTS'], projectKey);
-  const hasPermission = permissions.permissions?.ADMINISTER_PROJECTS?.havePermission;
+  const permissions = await checkUserPermissions(['ADMINISTER', 'ADMINISTER_PROJECTS'], projectKey);
+  const isAdmin = permissions.permissions?.ADMINISTER?.havePermission || false;
+  const hasPermission = permissions.permissions?.ADMINISTER_PROJECTS?.havePermission || false;
   return { isAdmin, hasPermission };
 }
 
@@ -529,7 +529,7 @@ function buildUserByIdMap(allUsers) {
   return userById;
 }
 
-export async function fetchTeamDayTimeline(accountId, cloudId, projectKey, date) {
+export async function fetchTeamDayTimeline(accountId, cloudId, projectKey, date, permissionsOverride) {
   validateDateFormat(date);
 
   // Validate project key if provided
@@ -537,11 +537,27 @@ export async function fetchTeamDayTimeline(accountId, cloudId, projectKey, date)
     throw new Error('Invalid project key format');
   }
 
-  const isAdmin = await isJiraAdmin();
-  const { hasPermission, projectAdminProjects } = await resolveTeamPermissions(isAdmin, projectKey);
+  // Use pre-resolved permissions from the resolver when available to avoid duplicate Jira API calls.
+  // Falls back to checking permissions directly if called without permissionsOverride.
+  let isAdmin, isProjectAdmin;
+  if (permissionsOverride) {
+    isAdmin = permissionsOverride.isAdmin;
+    isProjectAdmin = permissionsOverride.isProjectAdmin;
+  } else {
+    const perms = await checkUserPermissions(['ADMINISTER', 'ADMINISTER_PROJECTS'], projectKey || null);
+    isAdmin = perms.permissions?.ADMINISTER?.havePermission || false;
+    isProjectAdmin = perms.permissions?.ADMINISTER_PROJECTS?.havePermission || false;
+  }
 
-  if (!hasPermission) {
+  if (!isAdmin && !isProjectAdmin) {
     throw new Error('Access denied: You do not have permission to view team timeline');
+  }
+
+  // For project admins, fetch their administered projects
+  let projectAdminProjects = [];
+  if (!isAdmin && isProjectAdmin) {
+    projectAdminProjects = await getProjectsUserAdmins() || [];
+    console.log('[TeamTimeline] Project admin projects:', projectAdminProjects);
   }
 
   const { supabaseConfig, organization } = await initializeContext(accountId, cloudId);

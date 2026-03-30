@@ -98,11 +98,9 @@ export function registerAnalyticsResolvers(resolver) {
     const cloudId = context.cloudId;
 
     try {
-      const [adminCheck, projectPerms] = await Promise.all([
-        isJiraAdmin(),
-        checkUserPermissions(['ADMINISTER_PROJECTS'], projectKey)
-      ]);
-      const isProjectAdmin = projectPerms.permissions?.ADMINISTER_PROJECTS?.havePermission || false;
+      const perms = await checkUserPermissions(['ADMINISTER', 'ADMINISTER_PROJECTS'], projectKey);
+      const adminCheck = perms.permissions?.ADMINISTER?.havePermission || false;
+      const isProjectAdmin = perms.permissions?.ADMINISTER_PROJECTS?.havePermission || false;
       if (!adminCheck && !isProjectAdmin) {
         return { success: false, error: 'Access denied: Project Admin or Jira Administrator required' };
       }
@@ -126,15 +124,13 @@ export function registerAnalyticsResolvers(resolver) {
     const cloudId = context.cloudId;
 
     try {
-      const [adminCheck, projectPerms] = await Promise.all([
-        isJiraAdmin(),
-        checkUserPermissions(['ADMINISTER_PROJECTS'], projectKey)
-      ]);
-      const isProjectAdmin = projectPerms.permissions?.ADMINISTER_PROJECTS?.havePermission || false;
+      const perms = await checkUserPermissions(['ADMINISTER', 'ADMINISTER_PROJECTS'], projectKey);
+      const adminCheck = perms.permissions?.ADMINISTER?.havePermission || false;
+      const isProjectAdmin = perms.permissions?.ADMINISTER_PROJECTS?.havePermission || false;
       if (!adminCheck && !isProjectAdmin) {
         return { success: false, error: 'Access denied: Project Admin or Jira Administrator required' };
       }
-      const data = await fetchTeamDayTimeline(accountId, cloudId, projectKey, date);
+      const data = await fetchTeamDayTimeline(accountId, cloudId, projectKey, date, { isAdmin: adminCheck, isProjectAdmin });
       return { success: true, data };
     } catch (error) {
       console.error('Error fetching team day timeline:', error);

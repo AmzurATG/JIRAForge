@@ -802,31 +802,27 @@ async function buildUsersQuery(supabase, { canViewTeamData, shouldFilterByProjec
  * forward the correct HTTP status to the client.
  */
 async function resolveDashboardEntities(supabase, cloudId, accountId) {
-  const { data: orgs, error: orgError } = await supabase
-    .from('organizations')
-    .select('*')
-    .eq('jira_cloud_id', cloudId);
+  // Run org and user lookups in parallel to reduce latency
+  const [orgResult, userResult] = await Promise.all([
+    supabase.from('organizations').select('*').eq('jira_cloud_id', cloudId),
+    supabase.from('users').select('id, organization_id, email, display_name').eq('atlassian_account_id', accountId)
+  ]);
 
-  if (orgError) throw orgError;
-  if (!orgs || orgs.length === 0) {
+  if (orgResult.error) throw orgResult.error;
+  if (!orgResult.data || orgResult.data.length === 0) {
     const err = new Error('Organization not found. Please reload the page.');
     err.statusCode = 404;
     throw err;
   }
-  const organization = orgs[0];
+  const organization = orgResult.data[0];
 
-  const { data: users, error: userError } = await supabase
-    .from('users')
-    .select('id, organization_id, email, display_name')
-    .eq('atlassian_account_id', accountId);
-
-  if (userError) throw userError;
-  if (!users || users.length === 0) {
+  if (userResult.error) throw userResult.error;
+  if (!userResult.data || userResult.data.length === 0) {
     const err = new Error('User not found. Please reload the page.');
     err.statusCode = 404;
     throw err;
   }
-  const user = users[0];
+  const user = userResult.data[0];
 
   const { data: membership } = await supabase
     .from('organization_members')
@@ -894,8 +890,10 @@ exports.getDashboardData = async (req, res) => {
     });
 
     // 1-3. Resolve organization, user, and membership from Forge context
+    const t0 = Date.now();
     const { organization, user, membership } = await resolveDashboardEntities(supabase, cloudId, accountId);
     const userId = user.id;
+    logger.info(`[ForgeProxy] Entity resolution took ${Date.now() - t0}ms`);
 
     // Determine if user can view all data
     // IMPORTANT: Only trust the Forge-verified canViewAllUsers flag.
@@ -945,6 +943,7 @@ exports.getDashboardData = async (req, res) => {
     );
 
     // 5. Execute all queries in parallel
+    const t1 = Date.now();
     const [dailyResult, weeklyResult, projectResult, activityResult, allUsersResult] = await Promise.all([
       dailyQuery,
       weeklyQuery,
@@ -958,6 +957,8 @@ exports.getDashboardData = async (req, res) => {
 
     logger.info('[ForgeProxy] Dashboard batch complete', {
       cloudId,
+      queryTimeMs: Date.now() - t1,
+      totalTimeMs: Date.now() - t0,
       dailyCount: dailyResult.data?.length || 0,
       weeklyCount: weeklyResult.data?.length || 0,
       projectCount: projectResult.data?.length || 0

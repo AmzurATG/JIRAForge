@@ -42,9 +42,9 @@ const inFlightRequests = new Map();
  * @param {Object} options - Request options
  * @returns {Promise<Object>} Response data
  */
-const MAX_RETRIES = 2;
-const BASE_DELAY_MS = 1000;
-const RATE_LIMIT_DELAY_MS = 3000; // Longer wait on 429 before retrying
+const MAX_RETRIES = 1;
+const BASE_DELAY_MS = 200;
+const RATE_LIMIT_DELAY_MS = 1000; // Longer wait on 429 before retrying
 
 async function performRetryDelay(attempt, endpoint, isRateLimit = false) {
   if (attempt === 0) return;
@@ -140,6 +140,8 @@ async function remoteRequest(endpoint, options = {}) {
     }
     lastWasRateLimit = result.isRateLimit || false;
   }
+  // All retries exhausted without success or thrown error
+  throw new Error(`Remote request to ${endpoint} failed after ${MAX_RETRIES + 1} attempts`);
 }
 
 /**
