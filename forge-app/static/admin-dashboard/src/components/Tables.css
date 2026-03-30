@@ -1,0 +1,110 @@
+/* ── Dashboard Tables ── */
+
+.table-section {
+  margin-bottom: 8px;
+}
+
+.table-header-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+.table-title {
+  font-size: 14px;
+  font-weight: bold;
+  color: #1a5276;
+}
+
+.btn-add {
+  padding: 5px 14px;
+  background: #5b9bd5;
+  color: #fff;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.btn-add:hover {
+  background: #4a8cc7;
+}
+
+/* Table */
+.dashboard-table {
+  width: 100%;
+  border-collapse: collapse;
+  border: 1px solid #bdc3c7;
+  font-size: 13px;
+}
+
+.dashboard-table thead th {
+  background: #5b9bd5;
+  color: #fff;
+  padding: 8px 12px;
+  text-align: left;
+  font-weight: 600;
+  font-size: 13px;
+  border: 1px solid #4a8cc7;
+}
+
+.dashboard-table tbody td {
+  padding: 6px 12px;
+  border: 1px solid #dce1e6;
+  vertical-align: middle;
+}
+
+/* Alternating row colors */
+.dashboard-table tbody tr:nth-child(even) {
+  background-color: #d6eaf8;
+}
+
+.dashboard-table tbody tr:nth-child(odd) {
+  background-color: #fff;
+}
+
+/* Total row */
+.total-row {
+  background-color: #eaecee !important;
+  font-weight: bold;
+}
+
+.total-row td {
+  border-top: 2px solid #5b9bd5;
+}
+
+/* Auto-calculated cell */
+.auto-calc {
+  color: #7f8c8d;
+  font-style: italic;
+}
+
+/* Actions column */
+.actions-col {
+  width: 60px;
+  text-align: center;
+}
+
+.btn-delete-row {
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 14px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  opacity: 0.5;
+  transition: opacity 0.2s;
+}
+
+.btn-delete-row:hover {
+  opacity: 1;
+  background: #fadbd8;
+}
+
+/* Status badge colors — applied via inline styles on TicketStatusTable */
+.status-badge {
+  display: inline-block;
+  font-weight: bold;
+}
