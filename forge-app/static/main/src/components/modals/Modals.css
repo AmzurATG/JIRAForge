@@ -602,6 +602,88 @@
   margin-top: 8px;
 }
 
+/* Split Worklog — Time Input */
+.split-time-section {
+  margin: 12px 0;
+  padding: 12px;
+  background: #f4f5f7;
+  border-radius: 6px;
+}
+
+.split-label {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: #172b4d;
+}
+
+.split-slider-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 8px;
+}
+
+.split-slider {
+  flex: 1;
+  -webkit-appearance: none;
+  height: 6px;
+  border-radius: 3px;
+  background: #dfe1e6;
+  outline: none;
+}
+
+.split-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #0052cc;
+  cursor: pointer;
+  border: 2px solid #fff;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.2);
+}
+
+.split-slider::-moz-range-thumb {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #0052cc;
+  cursor: pointer;
+  border: 2px solid #fff;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.2);
+}
+
+.split-minutes-input {
+  width: 56px;
+  padding: 4px 6px;
+  border: 1px solid #dfe1e6;
+  border-radius: 4px;
+  font-size: 0.9rem;
+  text-align: center;
+}
+
+.split-minutes-input:focus {
+  outline: none;
+  border-color: #4c9aff;
+  box-shadow: 0 0 0 2px rgba(76, 154, 255, 0.2);
+}
+
+.split-unit {
+  font-size: 0.85rem;
+  color: #5e6c84;
+}
+
+.split-summary {
+  margin-top: 8px;
+  font-size: 0.85rem;
+  color: #5e6c84;
+  line-height: 1.4;
+}
+
+.split-summary strong {
+  color: #172b4d;
+}
+
 .reassign-search {
   margin: 12px 0;
 }

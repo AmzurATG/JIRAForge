@@ -5,7 +5,7 @@
 
 import { createWorklog, syncCurrentUserWorklogs } from '../services/worklogService.js';
 import { runScheduledWorklogSync } from '../services/scheduledWorklogSync.js';
-import { reassignWorklog } from '../services/worklogReassignmentService.js';
+import { reassignWorklog, splitWorklog } from '../services/worklogReassignmentService.js';
 import { isJiraAdmin } from '../utils/jira.js';
 import api, { route } from '@forge/api';
 
@@ -197,6 +197,43 @@ export function registerWorklogResolvers(resolver) {
       };
     } catch (error) {
       console.error(`[reassignWorklog] Error: ${error.message}`);
+      return { success: false, error: error.message };
+    }
+  });
+
+  /**
+   * Resolver for splitting a synced Jira worklog between two issues.
+   * Moves a specified amount of time from one issue to another.
+   * Full move (splitSeconds == total) delegates to reassignWorklog.
+   */
+  resolver.define('splitWorklog', async (req) => {
+    const { context, payload } = req;
+    const accountId = context.accountId;
+    const cloudId = context.cloudId;
+    const { fromIssueKey, toIssueKey, splitSeconds } = payload;
+
+    if (!fromIssueKey || !toIssueKey) {
+      return { success: false, error: 'Both fromIssueKey and toIssueKey are required' };
+    }
+    if (fromIssueKey === toIssueKey) {
+      return { success: false, error: 'Cannot split to the same issue' };
+    }
+    if (!splitSeconds || splitSeconds <= 0 || !Number.isInteger(splitSeconds)) {
+      return { success: false, error: 'splitSeconds must be a positive integer' };
+    }
+
+    try {
+      const result = await splitWorklog(accountId, cloudId, fromIssueKey, toIssueKey, splitSeconds);
+      return {
+        success: true,
+        fromIssueKey: result.fromIssueKey,
+        toIssueKey: result.toIssueKey,
+        splitSeconds: result.splitSeconds,
+        remainingSeconds: result.remainingSeconds,
+        message: result.message
+      };
+    } catch (error) {
+      console.error(`[splitWorklog] Error: ${error.message}`);
       return { success: false, error: error.message };
     }
   });
