@@ -44,9 +44,9 @@ const SANITIZATION_PATTERNS = [
   // Private keys
   { pattern: /-----BEGIN\s+(?:RSA\s+)?PRIVATE\s+KEY-----[\s\S]*?-----END\s+(?:RSA\s+)?PRIVATE\s+KEY-----/g, replacement: '[REDACTED_PRIVATE_KEY]' },
   // Connection strings with embedded passwords
-  { pattern: /(?:mongodb|postgres|mysql|redis|amqp):\/\/[^\s]+:[^\s@]+@[^\s]+/gi, replacement: '[REDACTED_CONNECTION_STRING]' },
+  { pattern: /(?:mongodb|postgres|mysql|redis|amqp):\/\/[^\s:]+:[^\s@]+@[^\s]+/gi, replacement: '[REDACTED_CONNECTION_STRING]' },
   // Email addresses
-  { pattern: /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/gi, replacement: '[REDACTED_EMAIL]' },
+  { pattern: /[a-zA-Z0-9._%+-]+@(?:[a-zA-Z0-9-]+\.)+[a-zA-Z]{2,}/gi, replacement: '[REDACTED_EMAIL]' },
   // Atlassian Account IDs (format: 712020:xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx)
   { pattern: /\b\d{6}:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi, replacement: '[REDACTED_ATLASSIAN_ID]' },
   // Atlassian ARIs (ari:cloud:<product>::<resource>/<uuid>)
@@ -335,17 +335,19 @@ function parseAnalysisResponse(content) {
     return JSON.parse(content);
   } catch (error) {
     logger.debug('[ActivityService] Direct JSON parse failed, trying markdown extraction: %s', error.message);
-    const jsonMatch = content.match(/\[[\s\S]*\]/);
-    if (!jsonMatch) {
+    const startIdx = content.indexOf('[');
+    const endIdx = content.lastIndexOf(']');
+    if (startIdx === -1 || endIdx <= startIdx) {
       logger.error('[ActivityService] Failed to parse batch analysis response: %s', content.substring(0, 200));
       throw new Error('Failed to parse AI response as JSON array');
     }
+    const jsonMatch = content.substring(startIdx, endIdx + 1);
     try {
-      return JSON.parse(jsonMatch[0]);
+      return JSON.parse(jsonMatch);
     } catch (error_) {
       // JSON may be truncated by max_tokens — try to salvage complete entries
       logger.debug('[ActivityService] Markdown JSON parse failed, salvaging truncated response: %s', error_.message);
-      return salvageTruncatedJsonArray(jsonMatch[0]);
+      return salvageTruncatedJsonArray(jsonMatch);
     }
   }
 }
@@ -494,10 +496,11 @@ async function classifyUnknownApp(appName, windowTitle, ocrText, userId = null, 
     try {
       result = JSON.parse(content);
     } catch (error) {
-      logger.debug('[ActivityService] Direct JSON parse failed, trying regex extraction: %s', error.message);
-      const jsonMatch = content.match(/\{[\s\S]*\}/);
-      if (jsonMatch) {
-        result = JSON.parse(jsonMatch[0]);
+      logger.debug('[ActivityService] Direct JSON parse failed, trying substring extraction: %s', error.message);
+      const startIdx = content.indexOf('{');
+      const endIdx = content.lastIndexOf('}');
+      if (startIdx !== -1 && endIdx > startIdx) {
+        result = JSON.parse(content.substring(startIdx, endIdx + 1));
       } else {
         logger.error('[ActivityService] Failed to parse classification response: %s', content.substring(0, 200));
         throw new Error('Failed to parse AI classification response');
@@ -587,11 +590,12 @@ async function identifyAppByName(searchTerm) {
       result = JSON.parse(content);
       logger.info('[ActivityService] Parsed JSON result: %s', JSON.stringify(result));
     } catch (error) {
-      logger.warn('[ActivityService] Direct JSON parse failed, trying regex extraction: %s', error.message);
-      const jsonMatch = content.match(/\{[\s\S]*\}/);
-      if (jsonMatch) {
-        result = JSON.parse(jsonMatch[0]);
-        logger.info('[ActivityService] Regex extracted JSON: %s', JSON.stringify(result));
+      logger.warn('[ActivityService] Direct JSON parse failed, trying substring extraction: %s', error.message);
+      const startIdx = content.indexOf('{');
+      const endIdx = content.lastIndexOf('}');
+      if (startIdx !== -1 && endIdx > startIdx) {
+        result = JSON.parse(content.substring(startIdx, endIdx + 1));
+        logger.info('[ActivityService] Extracted JSON: %s', JSON.stringify(result));
       } else {
         logger.error('[ActivityService] Failed to parse app identification response: %s', content.substring(0, 200));
         throw new Error('Failed to parse AI response');

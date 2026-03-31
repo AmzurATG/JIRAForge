@@ -40,7 +40,7 @@ const SANITIZATION_PATTERNS = {
   
   // Email addresses
   EMAIL: {
-    pattern: /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g,
+    pattern: /[a-zA-Z0-9._%+-]+@(?:[a-zA-Z0-9-]+\.)+[a-zA-Z]{2,}/g,
     replacement: '[EMAIL_REDACTED]',
     levels: ['minimal', 'standard', 'strict']
   },
