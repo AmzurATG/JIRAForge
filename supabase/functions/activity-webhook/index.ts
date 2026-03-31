@@ -189,6 +189,7 @@ serve(async (req) => {
           user_id: userId,
           organization_id: organizationId
         }),
+        signal: AbortSignal.timeout(60000), // 60s timeout for batch processing
       });
 
       if (!aiResponse.ok) {

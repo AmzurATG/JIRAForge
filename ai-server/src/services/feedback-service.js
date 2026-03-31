@@ -584,8 +584,9 @@ async function attachSingleImage(basicAuth, attachmentUrl, imagePath, index, tot
       'X-Atlassian-Token': 'no-check', // Required for attachment uploads
       ...formData.getHeaders()
     },
-    maxBodyLength: Infinity,
-    maxContentLength: Infinity,
+    maxBodyLength: 10 * 1024 * 1024, // 10MB max upload size
+    maxContentLength: 10 * 1024 * 1024, // 10MB max response size
+    maxRedirects: 5,
     timeout: 30000
   });
 
