@@ -90,25 +90,26 @@ function AppContent() {
     setWorklogToReassign(null);
   };
 
-  const handleReassignWorklog = async (toIssueKey) => {
+  const handleReassignWorklog = async (toIssueKey, splitSeconds) => {
     if (!worklogToReassign || reassigningWorklog) return;
 
     setReassigningWorklog(true);
     try {
-      const result = await invoke('reassignWorklog', {
+      const result = await invoke('splitWorklog', {
         fromIssueKey: worklogToReassign.fromIssueKey,
-        toIssueKey: toIssueKey
+        toIssueKey: toIssueKey,
+        splitSeconds: splitSeconds
       });
 
       if (result.success) {
         await loadActiveIssues();
         closeWorklogReassignModal();
       } else {
-        alert(`Failed to reassign worklog: ${result.error}`);
+        alert(`Failed to split worklog: ${result.error}`);
       }
     } catch (err) {
-      console.error('Error reassigning worklog:', err);
-      alert(`Error reassigning worklog: ${err.message}`);
+      console.error('Error splitting worklog:', err);
+      alert(`Error splitting worklog: ${err.message}`);
     } finally {
       setReassigningWorklog(false);
     }
