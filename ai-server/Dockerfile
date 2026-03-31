@@ -1,5 +1,5 @@
-# Use the official Node.js 20 LTS image
-FROM node:20-slim
+# Use the official Node.js 20 LTS image (pinned patch version)
+FROM node:20.18-slim
 
 # Install dependencies for Tesseract OCR and Sharp
 RUN apt-get update && apt-get install -y \
