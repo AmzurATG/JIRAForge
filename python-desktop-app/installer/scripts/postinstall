@@ -1,0 +1,95 @@
+#!/bin/bash
+# =============================================================================
+# TimeTracker Post-Install Script
+# Runs automatically after PKG installation completes
+# =============================================================================
+
+APP_PATH="/Applications/TimeTracker.app"
+LAUNCH_AGENT_DIR="$HOME/Library/LaunchAgents"
+LAUNCH_AGENT_PLIST="$LAUNCH_AGENT_DIR/com.amzur.timetracker.plist"
+LOG_FILE="/tmp/timetracker_install.log"
+
+log() {
+    echo "$(date '+%Y-%m-%d %H:%M:%S') [TimeTracker Install] $1" >> "$LOG_FILE"
+    echo "$1"
+}
+
+log "=== TimeTracker Post-Install Started ==="
+
+# 1. Remove quarantine attribute (critical for Gatekeeper bypass)
+if [ -d "$APP_PATH" ]; then
+    log "Removing quarantine attribute from $APP_PATH..."
+    xattr -cr "$APP_PATH" 2>/dev/null
+    if [ $? -eq 0 ]; then
+        log "Quarantine attribute removed successfully."
+    else
+        log "Warning: Could not remove quarantine attribute (may not exist)."
+    fi
+else
+    log "ERROR: $APP_PATH not found!"
+    exit 1
+fi
+
+# 2. Set proper permissions
+log "Setting permissions..."
+chmod -R 755 "$APP_PATH"
+chown -R "$USER:staff" "$APP_PATH" 2>/dev/null
+
+# 3. Register the app with Launch Services (so macOS recognizes it)
+log "Registering app with Launch Services..."
+/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$APP_PATH" 2>/dev/null
+
+# 4. Set up Launch Agent for auto-start on login
+log "Setting up auto-start Launch Agent..."
+CURRENT_USER="${USER:-$(stat -f '%Su' /dev/console)}"
+CURRENT_USER_HOME=$(eval echo ~"$CURRENT_USER")
+LAUNCH_AGENT_DIR="$CURRENT_USER_HOME/Library/LaunchAgents"
+
+mkdir -p "$LAUNCH_AGENT_DIR"
+
+cat > "$LAUNCH_AGENT_DIR/com.amzur.timetracker.plist" << 'PLIST_EOF'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.amzur.timetracker</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/bin/open</string>
+        <string>-a</string>
+        <string>/Applications/TimeTracker.app</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <false/>
+    <key>StandardOutPath</key>
+    <string>/tmp/timetracker.stdout.log</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/timetracker.stderr.log</string>
+</dict>
+</plist>
+PLIST_EOF
+
+chown "$CURRENT_USER:staff" "$LAUNCH_AGENT_DIR/com.amzur.timetracker.plist"
+chmod 644 "$LAUNCH_AGENT_DIR/com.amzur.timetracker.plist"
+
+log "Launch Agent created at $LAUNCH_AGENT_DIR/com.amzur.timetracker.plist"
+
+# 5. Load the Launch Agent (for current session, will auto-load on reboot)
+sudo -u "$CURRENT_USER" launchctl load "$LAUNCH_AGENT_DIR/com.amzur.timetracker.plist" 2>/dev/null
+log "Launch Agent loaded."
+
+# 6. Clear any cached Gatekeeper assessments for this app
+spctl --remove "$APP_PATH" 2>/dev/null
+
+log "=== TimeTracker Post-Install Complete ==="
+log "TimeTracker has been installed to /Applications/"
+log "It will start automatically on next login."
+
+# 7. Launch the app now
+log "Launching TimeTracker..."
+sudo -u "$CURRENT_USER" open "$APP_PATH" &
+
+exit 0

@@ -1,0 +1,44 @@
+#!/bin/bash
+# =============================================================================
+# TimeTracker Pre-Install Script
+# Runs before PKG installation to clean up any existing installation
+# =============================================================================
+
+APP_PATH="/Applications/TimeTracker.app"
+LOG_FILE="/tmp/timetracker_install.log"
+
+log() {
+    echo "$(date '+%Y-%m-%d %H:%M:%S') [TimeTracker Pre-Install] $1" >> "$LOG_FILE"
+    echo "$1"
+}
+
+log "=== TimeTracker Pre-Install Started ==="
+
+# 1. Stop any running instance of TimeTracker
+log "Stopping any running TimeTracker instances..."
+pkill -f "TimeTracker" 2>/dev/null
+killall "TimeTracker" 2>/dev/null
+
+# Wait a moment for the process to terminate
+sleep 1
+
+# 2. Unload existing Launch Agent if present
+CURRENT_USER="${USER:-$(stat -f '%Su' /dev/console)}"
+CURRENT_USER_HOME=$(eval echo ~"$CURRENT_USER")
+LAUNCH_AGENT_PLIST="$CURRENT_USER_HOME/Library/LaunchAgents/com.amzur.timetracker.plist"
+
+if [ -f "$LAUNCH_AGENT_PLIST" ]; then
+    log "Unloading existing Launch Agent..."
+    sudo -u "$CURRENT_USER" launchctl unload "$LAUNCH_AGENT_PLIST" 2>/dev/null
+fi
+
+# 3. Remove old installation (but preserve user data)
+if [ -d "$APP_PATH" ]; then
+    log "Removing previous TimeTracker installation..."
+    rm -rf "$APP_PATH"
+    log "Previous installation removed."
+fi
+
+log "=== TimeTracker Pre-Install Complete ==="
+
+exit 0

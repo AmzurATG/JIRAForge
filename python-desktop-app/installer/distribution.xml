@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="utf-8"?>
+<installer-gui-script minSpecVersion="2">
+    <title>TimeTracker</title>
+    <organization>com.amzur</organization>
+    <domains enable_localSystem="true" enable_currentUserHome="false" enable_anywhere="false"/>
+    
+    <options customize="never" require-scripts="true" rootVolumeOnly="true"/>
+    
+    <!-- Minimum macOS version: Big Sur 11.0 -->
+    <volume-check>
+        <allowed-os-versions>
+            <os-version min="11.0"/>
+        </allowed-os-versions>
+    </volume-check>
+    
+    <!-- Welcome / Introduction -->
+    <welcome file="welcome.html" mime-type="text/html"/>
+    
+    <!-- License (optional) -->
+    <!-- <license file="license.html" mime-type="text/html"/> -->
+    
+    <!-- Background image (optional) -->
+    <!-- <background file="background.png" alignment="bottomleft" scaling="none"/> -->
+    
+    <!-- Installation choices -->
+    <choices-outline>
+        <line choice="default">
+            <line choice="com.amzur.timetracker.pkg"/>
+        </line>
+    </choices-outline>
+    
+    <choice id="default"/>
+    
+    <choice id="com.amzur.timetracker.pkg" visible="false">
+        <pkg-ref id="com.amzur.timetracker.pkg"/>
+    </choice>
+    
+    <pkg-ref id="com.amzur.timetracker.pkg" version="1.2.1" onConclusion="none">TimeTracker-component.pkg</pkg-ref>
+    
+</installer-gui-script>
