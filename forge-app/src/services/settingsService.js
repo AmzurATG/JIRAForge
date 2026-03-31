@@ -120,8 +120,8 @@ function transformSettingsToApiFormat(settings, settingsSource) {
     privateSitesEnabled: settings.private_sites_enabled,
     privateSites: settings.private_sites || [],
     jiraWorklogSyncEnabled: settings.jira_worklog_sync_enabled ?? false,
-    workHoursStart: settings.work_hours_start || '09:00',
-    workHoursEnd: settings.work_hours_end || '18:00',
+    workHoursStart: (settings.work_hours_start || '09:00').slice(0, 5),
+    workHoursEnd: (settings.work_hours_end || '18:00').slice(0, 5),
     workDays: settings.work_days || [1, 2, 3, 4, 5],
     projectKey: settings.project_key || null,
     settingsSource: settingsSource
@@ -448,8 +448,8 @@ function validateTrackingSettings(settings) {
     throw new Error('Non-work threshold must be between 0 and 100 percent');
   }
 
-  // Validate work hours if provided
-  const timePattern = /^([01]\d|2[0-3]):[0-5]\d$/;
+  // Validate work hours if provided (accept HH:MM or HH:MM:SS from database TIME columns)
+  const timePattern = /^([01]\d|2[0-3]):[0-5]\d(:[0-5]\d)?$/;
   if (settings.workHoursStart && !timePattern.test(settings.workHoursStart)) {
     throw new Error('Work hours start must be in HH:MM format (00:00–23:59)');
   }

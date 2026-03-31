@@ -3608,16 +3608,18 @@ class AppClassificationManager:
         # No match found
         return ('unknown', None)
 
-    def sync_classifications(self, supabase_client, organization_id, project_key=None):
+    def sync_classifications(self, supabase_client, organization_id, project_key=None, all_project_keys=None):
         """Fetch classifications from Supabase and write results to SQLite cache.
 
         Strategy:
         Merge all tiers in order:
         1) Global defaults
         2) Organization overrides
-        3) Project overrides
+        3) Project overrides (for ALL known projects, not just the current one)
 
         Later tiers override earlier ones by (identifier, match_by).
+        When all_project_keys is provided, loads project-level overrides for
+        every project the user works on, so multi-project tracking is accurate.
         """
         try:
             merged = {}  # key = (identifier_lower, match_by) -> row dict
@@ -3646,19 +3648,28 @@ class AppClassificationManager:
                     key = ((row.get('identifier') or '').lower(), row.get('match_by'))
                     merged[key] = row
 
-            # Tier 3: Project overrides
-            if organization_id and project_key:
-                try:
-                    project_result = supabase_client.table('application_classifications').select(
-                        'identifier, display_name, classification, match_by'
-                    ).eq('organization_id', organization_id).eq('project_key', project_key).execute()
-                    project_rows = project_result.data or []
-                    project_count = len(project_rows)
-                    for row in project_rows:
-                        key = ((row.get('identifier') or '').lower(), row.get('match_by'))
-                        merged[key] = row
-                except Exception as project_err:
-                    print(f"[WARN] Project-level classification fetch failed for {project_key}: {project_err}")
+            # Tier 3: Project overrides — load for ALL known projects so
+            # multi-project users get correct classifications regardless of
+            # which project is "current".
+            project_keys_to_load = set()
+            if project_key:
+                project_keys_to_load.add(project_key)
+            if all_project_keys:
+                project_keys_to_load.update(all_project_keys)
+
+            if organization_id and project_keys_to_load:
+                for pk in project_keys_to_load:
+                    try:
+                        project_result = supabase_client.table('application_classifications').select(
+                            'identifier, display_name, classification, match_by'
+                        ).eq('organization_id', organization_id).eq('project_key', pk).execute()
+                        project_rows = project_result.data or []
+                        project_count += len(project_rows)
+                        for row in project_rows:
+                            key = ((row.get('identifier') or '').lower(), row.get('match_by'))
+                            merged[key] = row
+                    except Exception as project_err:
+                        print(f"[WARN] Project-level classification fetch failed for {pk}: {project_err}")
 
             # Write merged results to SQLite cache
             conn = sqlite3.connect(self.db_path)
@@ -3681,10 +3692,10 @@ class AppClassificationManager:
             finally:
                 conn.close()
 
-            if project_key:
+            if project_keys_to_load:
                 print(
                     f"[OK] Synced {len(merged)} app classifications from Supabase "
-                    f"({defaults_count} defaults, {org_count} org, {project_count} project for {project_key})"
+                    f"({defaults_count} defaults, {org_count} org, {project_count} project for {sorted(project_keys_to_load)})"
                 )
             else:
                 print(
@@ -4742,11 +4753,12 @@ class TimeTracker:
                 # Update desktop app status to logged in
                 self._update_desktop_status(logged_in=True)
 
-                # Sync app classifications from Supabase
+                # Sync app classifications from Supabase (all projects)
                 try:
                     client = self.supabase_service if self.supabase_service else self.supabase
                     self.classification_manager.sync_classifications(
-                        client, self.organization_id, self.current_project_key
+                        client, self.organization_id, self.current_project_key,
+                        all_project_keys=list(self._get_known_project_keys())
                     )
                 except Exception as e:
                     print(f"[WARN] Classification sync failed during auth: {e}")
@@ -6378,10 +6390,13 @@ class TimeTracker:
         Strategy:
         1. Extract Jira issue keys from the window title (e.g., PROJ-123 → PROJ)
         2. Extract VS Code workspace/folder name and match against known projects
-        3. Fall back to batch-level default_project_key
+        3. Fall back to None — let the AI server determine the project from context
+           (previously fell back to batch-level default which was often wrong for
+           multi-project users, causing timelogs to be misattributed)
         """
         if not window_title:
-            return default_project_key
+            # No window title to analyze — return None so AI determines the project
+            return None
 
         known_projects = self._get_known_project_keys()
 
@@ -6417,7 +6432,10 @@ class TimeTracker:
                     if pk_normalized in ws_upper or ws_upper.startswith(pk_normalized):
                         return pk
 
-        return default_project_key
+        # No confident match from window title — return None instead of the
+        # batch-level default so the AI server can determine the correct project
+        # from OCR text, window titles, and issue context across ALL projects.
+        return None
 
     def get_user_project_key(self):
         """Get project key from user's issues or projects
@@ -6525,11 +6543,12 @@ class TimeTracker:
             # Fetch settings for new project
             self.fetch_tracking_settings(new_project_key)
             
-            # Re-sync app classifications with project-level overrides
+            # Re-sync app classifications with all project-level overrides
             try:
                 client = self.supabase_service if self.supabase_service else self.supabase
                 self.classification_manager.sync_classifications(
-                    client, self.organization_id, new_project_key
+                    client, self.organization_id, new_project_key,
+                    all_project_keys=list(self._get_known_project_keys())
                 )
             except Exception as e:
                 print(f"[WARN] Classification sync failed on project change: {e}")
@@ -7090,12 +7109,15 @@ class TimeTracker:
 
             # Build activity_records payload
             records = []
-            # Prefer the already-resolved current project used by tracking settings/classifications.
-            # Falling back to get_user_project_key() can drift when issue ordering/cache changes.
-            # This serves as the DEFAULT project key — per-record resolution may override it.
-            default_project_key = self.current_project_key or self.get_user_project_key()
-            project_key_source = "current_project_key" if self.current_project_key else "derived_from_issues_or_projects"
-            print(f"[BATCH] Default project_key: {default_project_key} (source: {project_key_source})")
+            # Per-record project key resolution extracts the project from window
+            # title context (Jira keys, VS Code workspace name, etc.).
+            # When detection fails, project_key is set to None — the AI server
+            # will determine the correct project from OCR text, window titles,
+            # and the full set of user_assigned_issues across ALL projects.
+            # This prevents misattribution when users work on multiple projects.
+            known_projects = self._get_known_project_keys()
+            print(f"[BATCH] Known project keys: {sorted(known_projects) if known_projects else 'none'}")
+            print(f"[BATCH] User assigned issues: {len(self.user_issues) if self.user_issues else 0} across {len(set(i.get('project') for i in (self.user_issues or []) if i.get('project')))} projects")
 
             for s in sessions:
                 classification = s.get('classification', 'unknown')
@@ -7125,9 +7147,10 @@ class TimeTracker:
 
                 # Resolve project key per-record from window title context.
                 # This allows records from different projects in the same batch
-                # to carry their correct project_key.
+                # to carry their correct project_key. Returns None when detection
+                # fails — the AI server will determine the project from full context.
                 record_project_key = self._resolve_record_project_key(
-                    s.get('window_title', ''), default_project_key
+                    s.get('window_title', ''), None
                 )
 
                 record = {
@@ -8507,7 +8530,8 @@ class TimeTracker:
                         try:
                             client = self.supabase_service if self.supabase_service else self.supabase
                             self.classification_manager.sync_classifications(
-                                client, self.organization_id, self.current_project_key
+                                client, self.organization_id, self.current_project_key,
+                                all_project_keys=list(self._get_known_project_keys())
                             )
                         except Exception as e:
                             print(f"[WARN] Periodic classification sync failed: {e}")
@@ -9502,11 +9526,12 @@ class TimeTracker:
                             self.current_user_id = self._load_cached_user_id()
                         else:
                             self.current_user_id = self.ensure_user_exists(user_info)
-                            # Sync app classifications from Supabase
+                            # Sync app classifications from Supabase (all projects)
                             try:
                                 client = self.supabase_service if self.supabase_service else self.supabase
                                 self.classification_manager.sync_classifications(
-                                    client, self.organization_id, self.current_project_key
+                                    client, self.organization_id, self.current_project_key,
+                                    all_project_keys=list(self._get_known_project_keys())
                                 )
                             except Exception as e:
                                 print(f"[WARN] Classification sync failed during startup: {e}")
