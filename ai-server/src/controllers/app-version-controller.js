@@ -8,6 +8,19 @@ const https = require('node:https');
 const logger = require('../utils/logger');
 const { getClient } = require('../services/db/supabase-client');
 
+// Allowed domains for download URL checksum computation (SSRF protection)
+const ALLOWED_DOWNLOAD_DOMAINS = [
+  'github.com',
+  'objects.githubusercontent.com',
+  'github-releases.githubusercontent.com',
+];
+
+// Maximum download size for checksum computation (500MB)
+const MAX_DOWNLOAD_SIZE = 500 * 1024 * 1024;
+
+// Maximum redirect depth to prevent redirect loops
+const MAX_REDIRECT_DEPTH = 5;
+
 /**
  * Get the latest app version for a platform
  * 
@@ -406,9 +419,21 @@ function validateDownloadUrl(url) {
     return 'Only HTTPS URLs are allowed';
   }
   const host = parsed.hostname.toLowerCase();
+  // Block all private/reserved IP ranges (IPv4 and IPv6)
   if (host === 'localhost' || host === '0.0.0.0' ||
+      host === '[::1]' || host === '::1' ||
       host.startsWith('127.') || host.startsWith('10.') ||
-      host.startsWith('192.168.') || host.startsWith('169.254.')) {
+      host.startsWith('192.168.') || host.startsWith('169.254.') ||
+      host.startsWith('172.16.') || host.startsWith('172.17.') ||
+      host.startsWith('172.18.') || host.startsWith('172.19.') ||
+      host.startsWith('172.20.') || host.startsWith('172.21.') ||
+      host.startsWith('172.22.') || host.startsWith('172.23.') ||
+      host.startsWith('172.24.') || host.startsWith('172.25.') ||
+      host.startsWith('172.26.') || host.startsWith('172.27.') ||
+      host.startsWith('172.28.') || host.startsWith('172.29.') ||
+      host.startsWith('172.30.') || host.startsWith('172.31.') ||
+      host.startsWith('fc00:') || host.startsWith('fd') ||
+      host.startsWith('fe80:')) {
     return 'Internal/private URLs are not allowed';
   }
   return null;
@@ -419,9 +444,14 @@ function validateDownloadUrl(url) {
  * Streams the file to avoid loading entirely into memory
  *
  * @param {string} url - Download URL (validated against ALLOWED_DOWNLOAD_DOMAINS)
+ * @param {number} [redirectDepth=0] - Current redirect depth (prevents infinite redirect loops)
  * @returns {Promise<string>} SHA256 hash as lowercase hex string
  */
-function computeSHA256FromUrl(url) {
+function computeSHA256FromUrl(url, redirectDepth = 0) {
+  if (redirectDepth > MAX_REDIRECT_DEPTH) {
+    return Promise.reject(new Error(`Too many redirects (max ${MAX_REDIRECT_DEPTH})`));
+  }
+
   // Validate and parse the URL here (defence-in-depth; also gives the static
   // analyser a clear taint-sanitisation point — we use parsed.href, not the
   // raw user string, in the https.get call below).
@@ -447,6 +477,7 @@ function computeSHA256FromUrl(url) {
 
   return new Promise((resolve, reject) => {
     const hash = crypto.createHash('sha256');
+    let bytesReceived = 0;
 
     const request = https.get(safeUrl, (response) => {
       // Handle redirects — validate Location header before following
@@ -455,7 +486,7 @@ function computeSHA256FromUrl(url) {
         if (redirectError) {
           return reject(new Error(`Redirect blocked: ${redirectError}`));
         }
-        return computeSHA256FromUrl(response.headers.location)
+        return computeSHA256FromUrl(response.headers.location, redirectDepth + 1)
           .then(resolve)
           .catch(reject);
       }
@@ -464,7 +495,19 @@ function computeSHA256FromUrl(url) {
         return reject(new Error(`HTTP ${response.statusCode}: ${response.statusMessage}`));
       }
 
+      // Check Content-Length header if available
+      const contentLength = parseInt(response.headers['content-length'], 10);
+      if (contentLength && contentLength > MAX_DOWNLOAD_SIZE) {
+        request.destroy();
+        return reject(new Error(`File too large: ${contentLength} bytes (max ${MAX_DOWNLOAD_SIZE})`));
+      }
+
       response.on('data', (chunk) => {
+        bytesReceived += chunk.length;
+        if (bytesReceived > MAX_DOWNLOAD_SIZE) {
+          request.destroy();
+          return reject(new Error(`Download exceeded max size of ${MAX_DOWNLOAD_SIZE} bytes`));
+        }
         hash.update(chunk);
       });
 

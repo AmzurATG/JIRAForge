@@ -119,6 +119,7 @@ serve(async (req) => {
             // Use screenshot issues (fresh) with cache as fallback
             user_assigned_issues: issuesForAnalysis,
           }),
+          signal: AbortSignal.timeout(30000), // 30s timeout to prevent hanging connections
         });
 
         if (!aiResponse.ok) {
