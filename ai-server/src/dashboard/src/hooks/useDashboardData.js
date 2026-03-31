@@ -1,9 +1,10 @@
 import { useState, useEffect, useCallback } from 'react';
-import { invoke } from '@forge/bridge';
+import { api } from '../api/dashboardApi';
 
 /**
  * Custom hook that manages all dashboard data and CRUD operations.
  * Single source of truth for the entire dashboard state.
+ * Uses REST API calls instead of Forge bridge invoke().
  */
 export default function useDashboardData() {
   const [data, setData] = useState({
@@ -20,7 +21,7 @@ export default function useDashboardData() {
     setLoading(true);
     setError(null);
     try {
-      const result = await invoke('getDashboardData');
+      const result = await api.getData();
       if (result.success) {
         setData(result.data);
       } else {
@@ -38,10 +39,10 @@ export default function useDashboardData() {
   }, [loadData]);
 
   // ── Generic mutation wrapper ──
-  const mutate = async (resolverName, payload) => {
+  const mutate = async (apiFn, ...args) => {
     setSaving(true);
     try {
-      const result = await invoke(resolverName, payload);
+      const result = await apiFn(...args);
       if (result.success) {
         await loadData(); // Refresh everything
         return { success: true, data: result.data };
@@ -56,24 +57,36 @@ export default function useDashboardData() {
   };
 
   // ── HEADER METRICS ──
-  const addMetric = (payload) => mutate('addDashboardMetric', payload);
-  const updateMetric = (payload) => mutate('updateDashboardMetric', payload);
-  const deleteMetric = (id) => mutate('deleteDashboardMetric', { id });
+  const addMetric = (payload) => mutate(api.addMetric, payload);
+  const updateMetric = (payload) => {
+    const { id, ...rest } = payload;
+    return mutate(api.updateMetric, id, rest);
+  };
+  const deleteMetric = (id) => mutate(api.deleteMetric, id);
 
   // ── ORGANIZATIONS ──
-  const addOrg = (payload) => mutate('addDashboardOrg', payload);
-  const updateOrg = (payload) => mutate('updateDashboardOrg', payload);
-  const deleteOrg = (id) => mutate('deleteDashboardOrg', { id });
+  const addOrg = (payload) => mutate(api.addOrg, payload);
+  const updateOrg = (payload) => {
+    const { id, ...rest } = payload;
+    return mutate(api.updateOrg, id, rest);
+  };
+  const deleteOrg = (id) => mutate(api.deleteOrg, id);
 
   // ── TICKETS PER TEAM ──
-  const addTicketTeam = (payload) => mutate('addDashboardTicketTeam', payload);
-  const updateTicketTeam = (payload) => mutate('updateDashboardTicketTeam', payload);
-  const deleteTicketTeam = (id) => mutate('deleteDashboardTicketTeam', { id });
+  const addTicketTeam = (payload) => mutate(api.addTicketTeam, payload);
+  const updateTicketTeam = (payload) => {
+    const { id, ...rest } = payload;
+    return mutate(api.updateTicketTeam, id, rest);
+  };
+  const deleteTicketTeam = (id) => mutate(api.deleteTicketTeam, id);
 
   // ── TICKET STATUS ──
-  const addTicketStatus = (payload) => mutate('addDashboardTicketStatus', payload);
-  const updateTicketStatus = (payload) => mutate('updateDashboardTicketStatus', payload);
-  const deleteTicketStatus = (id) => mutate('deleteDashboardTicketStatus', { id });
+  const addTicketStatus = (payload) => mutate(api.addTicketStatus, payload);
+  const updateTicketStatus = (payload) => {
+    const { id, ...rest } = payload;
+    return mutate(api.updateTicketStatus, id, rest);
+  };
+  const deleteTicketStatus = (id) => mutate(api.deleteTicketStatus, id);
 
   return {
     ...data,

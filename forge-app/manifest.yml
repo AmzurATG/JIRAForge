@@ -41,13 +41,6 @@ modules:
       resolver:
         function: main
 
-  jira:globalPage:
-    - key: brd-time-tracker-admin-dashboard
-      title: Time Tracker Status Report
-      resource: admin-dashboard
-      resolver:
-        function: main
-
   scheduledTrigger:
     - key: worklog-sync-trigger
       function: scheduledWorklogSync
@@ -64,8 +57,6 @@ resources:
     path: static/main/build
   - key: settings
     path: static/settings/build
-  - key: admin-dashboard
-    path: static/admin-dashboard/build
 
 permissions:
   scopes:

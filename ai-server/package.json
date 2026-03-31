@@ -6,6 +6,7 @@
   "scripts": {
     "start": "node src/index.js",
     "dev": "nodemon src/index.js",
+    "build:dashboard": "cd src/dashboard && npm install && npm run build",
     "test": "jest"
   },
   "keywords": [
@@ -43,5 +44,16 @@
     "jest": "^29.7.0",
     "nodemon": "^3.0.2",
     "supertest": "^7.2.2"
+  },
+  "overrides": {
+    "node-forge": "1.4.0",
+    "nodemailer": "8.0.4",
+    "http-proxy-agent": "7.0.2",
+    "notifme-sdk": {
+      "form-data": "4.0.5"
+    },
+    "node-gcm": {
+      "axios": "$axios"
+    }
   }
 }
