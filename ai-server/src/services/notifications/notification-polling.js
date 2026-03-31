@@ -884,17 +884,16 @@ class NotificationPollingService {
         try {
             const prefs = await notificationDb.getUserPreferences(userId);
 
-            // Default to allowing if no preferences set
-            if (!prefs) {
-                return true;
-            }
+            // Use sensible defaults when no preferences are set
+            const userTimezone = prefs?.timezone || 'UTC';
+            const workDays = prefs?.work_days || [1, 2, 3, 4, 5];
+            const workHoursStart = prefs?.work_hours_start || '09:00:00';
+            const workHoursEnd = prefs?.work_hours_end || '18:00:00';
 
             const now = new Date();
-            const userTimezone = prefs.timezone || 'UTC';
             const userTime = this._convertToTimezone(now, userTimezone);
 
             const currentDay = userTime.getDay();
-            const workDays = prefs.work_days || [1, 2, 3, 4, 5];
 
             // Check if it's a work day (default: Monday-Friday)
             if (!this._isWorkDay(currentDay, workDays)) {
@@ -902,7 +901,7 @@ class NotificationPollingService {
             }
 
             const currentMinutes = userTime.getHours() * 60 + userTime.getMinutes();
-            return this._isWithinTimeRange(currentMinutes, prefs.work_hours_start, prefs.work_hours_end);
+            return this._isWithinTimeRange(currentMinutes, workHoursStart, workHoursEnd);
 
         } catch (error) {
             logger.warn('[NotificationPolling] Error checking work hours:', error.message);

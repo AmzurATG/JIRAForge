@@ -677,11 +677,39 @@ describe('NotificationPollingService', () => {
             expect(result).toBe(false);
         });
 
-        it('should return true with default preferences', async () => {
+        it('should return true with default preferences on weekday within work hours', async () => {
+            // Tuesday 14:00 UTC (set by beforeEach override) — weekday, within 09-18
             notificationDb.getUserPreferences.mockResolvedValue(null);
 
             const result = await pollingService._isWithinWorkHours('user-1');
             expect(result).toBe(true);
+        });
+
+        it('should return false with default preferences on weekend', async () => {
+            // Saturday 12:00 UTC — within default hours but not a default work day
+            jest.setSystemTime(new Date('2025-03-08T12:00:00Z'));
+            notificationDb.getUserPreferences.mockResolvedValue(null);
+
+            const result = await pollingService._isWithinWorkHours('user-1');
+            expect(result).toBe(false);
+        });
+
+        it('should return false with default preferences on Sunday', async () => {
+            // Sunday 14:00 UTC
+            jest.setSystemTime(new Date('2025-03-09T14:00:00Z'));
+            notificationDb.getUserPreferences.mockResolvedValue(null);
+
+            const result = await pollingService._isWithinWorkHours('user-1');
+            expect(result).toBe(false);
+        });
+
+        it('should return false with default preferences outside work hours', async () => {
+            // Tuesday 06:00 UTC — before default 09:00 start
+            jest.setSystemTime(new Date('2025-02-25T06:00:00Z'));
+            notificationDb.getUserPreferences.mockResolvedValue(null);
+
+            const result = await pollingService._isWithinWorkHours('user-1');
+            expect(result).toBe(false);
         });
 
         it('should handle different timezones', async () => {

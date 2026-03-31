@@ -311,29 +311,60 @@ describe('Fix: Notifications must not be sent on weekends', () => {
         });
     });
 
-    // ── 2d. Users with no preferences default to allowing ────────────
-    describe('should send when user has no notification preferences', () => {
-
-        beforeEach(() => {
-            // Wednesday 14:00 UTC
-            jest.useFakeTimers({ now: new Date('2025-03-12T14:00:00Z') });
-            notificationDb.getUserPreferences.mockResolvedValue(null);
-        });
+    // ── 2d. Users with no preferences use sensible defaults ────────
+    describe('should use default work schedule when user has no preferences', () => {
 
         afterEach(() => jest.useRealTimers());
 
-        it('_sendLoginReminderToUser defaults to allowing', async () => {
+        it('_sendLoginReminderToUser allows on weekday during default work hours', async () => {
+            // Wednesday 14:00 UTC — weekday, within default 09-18
+            jest.useFakeTimers({ now: new Date('2025-03-12T14:00:00Z') });
+            notificationDb.getUserPreferences.mockResolvedValue(null);
+
             const mockNotifService = require('../../src/services/notifications/notification-service');
             jest.spyOn(mockNotifService, 'sendLoginReminder').mockResolvedValue({ success: true });
             const result = await pollingService._sendLoginReminderToUser(mockUser);
             expect(result).toBe(true);
         });
 
-        it('_sendDownloadReminderToUser defaults to allowing', async () => {
+        it('_sendDownloadReminderToUser allows on weekday during default work hours', async () => {
+            // Wednesday 14:00 UTC
+            jest.useFakeTimers({ now: new Date('2025-03-12T14:00:00Z') });
+            notificationDb.getUserPreferences.mockResolvedValue(null);
+
             const mockNotifService = require('../../src/services/notifications/notification-service');
             jest.spyOn(mockNotifService, 'sendDownloadReminder').mockResolvedValue({ success: true });
             const result = await pollingService._sendDownloadReminderToUser(mockUser);
             expect(result).toBe(true);
+        });
+
+        it('_sendLoginReminderToUser blocks on Saturday even with no preferences', async () => {
+            // Saturday 12:00 UTC — within default hours but Saturday
+            jest.useFakeTimers({ now: new Date('2025-03-08T12:00:00Z') });
+            notificationDb.getUserPreferences.mockResolvedValue(null);
+
+            const result = await pollingService._sendLoginReminderToUser(mockUser);
+            expect(result).toBe(false);
+        });
+
+        it('_sendInactivityAlertToUser blocks on Sunday even with no preferences', async () => {
+            // Sunday 14:00 UTC
+            jest.useFakeTimers({ now: new Date('2025-03-09T14:00:00Z') });
+            notificationDb.getUserPreferences.mockResolvedValue(null);
+
+            const result = await pollingService._sendInactivityAlertToUser(
+                { ...mockUser, desktop_last_heartbeat: '2025-03-07T10:00:00Z' }, {}
+            );
+            expect(result).toBe(false);
+        });
+
+        it('_sendDownloadReminderToUser blocks outside default work hours with no preferences', async () => {
+            // Tuesday 06:00 UTC — before default 09:00 start
+            jest.useFakeTimers({ now: new Date('2025-03-11T06:00:00Z') });
+            notificationDb.getUserPreferences.mockResolvedValue(null);
+
+            const result = await pollingService._sendDownloadReminderToUser(mockUser);
+            expect(result).toBe(false);
         });
     });
 
