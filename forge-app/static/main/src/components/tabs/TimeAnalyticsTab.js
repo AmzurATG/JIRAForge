@@ -15,7 +15,6 @@ function TimeAnalyticsTab({ onOpenWorklogReassignModal }) {
   const { userPermissions } = useApp();
 
   const [loading, setLoading] = useState(true);
-  // eslint-disable-next-line no-unused-vars
   const [error, setError] = useState(null);
   const [timeData, setTimeData] = useState(null);
   const [timesheetView, setTimesheetView] = useState('day');
@@ -33,13 +32,21 @@ function TimeAnalyticsTab({ onOpenWorklogReassignModal }) {
     setError(null);
     try {
       const result = await invoke('getTimeAnalytics');
+      console.log('[TimeAnalytics] getTimeAnalytics result:', 
+        'success:', result?.success,
+        'allUsers:', result?.data?.allUsers?.length,
+        'dailySummary:', result?.data?.dailySummary?.length,
+        'canViewAllUsers:', result?.data?.canViewAllUsers,
+        'error:', result?.error
+      );
       if (result.success) {
         setTimeData(result.data);
       } else {
         setError(result.error);
       }
     } catch (err) {
-      setError('Failed to load time analytics: ' + err.message);
+      console.error('[TimeAnalytics] Failed to load:', err);
+      setError(err.message);
     } finally {
       setLoading(false);
     }
@@ -86,6 +93,13 @@ function TimeAnalyticsTab({ onOpenWorklogReassignModal }) {
           </div>
         </div>
       </div>
+
+      {error && (
+        <div className="analytics-error-banner">
+          <p>Failed to load time analytics: {error}</p>
+          <button onClick={loadTimeAnalytics} className="retry-button">Retry</button>
+        </div>
+      )}
 
       <SummaryCards 
         loading={loading} 

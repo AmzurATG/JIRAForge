@@ -4,9 +4,66 @@
  */
 
 import { getSupabaseConfig, getOrCreateUser, getOrCreateOrganization, getUserOrganizationMembership, supabaseRequest } from '../../utils/supabase.js';
-import { isJiraAdmin, checkUserPermissions, getProjectsUserAdmins } from '../../utils/jira.js';
+import { checkUserPermissions, getProjectsUserAdmins } from '../../utils/jira.js';
 import { MAX_DAILY_SUMMARY_DAYS, MAX_WEEKLY_SUMMARY_WEEKS, MAX_ISSUES_IN_ANALYTICS } from '../../config/constants.js';
 import { fetchDashboardData } from '../../utils/remote.js';
+import { kvs } from '@forge/kvs';
+
+// Permission cache TTL (5 minutes) — balances freshness with latency savings
+const PERM_CACHE_TTL_MS = 5 * 60 * 1000;
+
+/**
+ * Get cached Jira permissions from Forge KVS.
+ * Returns null if cache miss, expired, or error.
+ */
+async function getCachedPermissions(accountId) {
+  try {
+    const entry = await kvs.get(`analytics:perms:${accountId}`);
+    if (entry && Date.now() < entry.expiresAt) return entry.value;
+  } catch { /* cache miss */ }
+  return null;
+}
+
+/**
+ * Save Jira permissions to Forge KVS (fire-and-forget).
+ */
+function setCachedPermissions(accountId, data) {
+  kvs.set(`analytics:perms:${accountId}`, {
+    value: data,
+    expiresAt: Date.now() + PERM_CACHE_TTL_MS
+  }).catch(() => {});
+}
+
+/**
+ * Resolve Jira permissions for the current user.
+ * Uses KVS cache to avoid the expensive Jira API call on subsequent loads.
+ * Returns { isAdmin, isProjectAdmin, projectKeys }
+ */
+async function resolvePermissions(accountId) {
+  // Try cache first (KVS survives cold starts, unlike in-memory)
+  const cached = await getCachedPermissions(accountId);
+  if (cached) {
+    console.log('[Analytics] Using cached permissions for', accountId);
+    return cached;
+  }
+
+  // Cache miss — call Jira API
+  const permissions = await checkUserPermissions(['ADMINISTER', 'ADMINISTER_PROJECTS']);
+  const isAdmin = permissions.permissions?.ADMINISTER?.havePermission || false;
+  const isProjectAdmin = permissions.permissions?.ADMINISTER_PROJECTS?.havePermission || false;
+
+  let projectKeys = null;
+  if (!isAdmin && isProjectAdmin) {
+    projectKeys = await getProjectsUserAdmins();
+    if (!Array.isArray(projectKeys) || projectKeys.length === 0) {
+      projectKeys = [];
+    }
+  }
+
+  const result = { isAdmin, isProjectAdmin, projectKeys };
+  setCachedPermissions(accountId, result);
+  return result;
+}
 
 /**
  * Fetch time analytics data using the optimized batch API
@@ -18,37 +75,21 @@ import { fetchDashboardData } from '../../utils/remote.js';
  * @returns {Promise<Object>} Analytics data (daily, weekly, by project, by issue)
  */
 export async function fetchTimeAnalyticsBatch(accountId, cloudId) {
-  // Determine user permissions for data filtering on server-side
-  const isAdmin = await isJiraAdmin();
-  const permissions = await checkUserPermissions(['ADMINISTER_PROJECTS']);
-  const isProjectAdmin = permissions.permissions?.ADMINISTER_PROJECTS?.havePermission;
-  
-  // Get the list of projects this user administers (for project admins)
-  // Jira admins see all data, project admins see only their projects
-  let projectKeys = null;
-  if (!isAdmin && isProjectAdmin) {
-    projectKeys = await getProjectsUserAdmins();
-    // If getProjectsUserAdmins() returns empty array (API error or no projects),
-    // treat as "no access" rather than "all access" for safety
-    if (!Array.isArray(projectKeys) || projectKeys.length === 0) {
-      console.log('[Analytics] Project admin has no discoverable projects - returning empty data');
-      // Return empty data structure instead of potentially exposing all org data
-      return {
-        organizationId: null,
-        organizationName: null,
-        userId: null,
-        userDisplayName: null,
-        userEmail: null,
-        membership: null,
-        canViewAllUsers: false,
-        dailySummary: [],
-        weeklySummary: [],
-        timeByProject: [],
-        timeByIssue: [],
-        allUsers: []
-      };
-    }
-    console.log('[Analytics] Project admin - filtering to projects:', projectKeys.length, 'projects');
+  const t0 = Date.now();
+
+  // Resolve permissions (cached in KVS — saves ~3-5s on subsequent loads)
+  const { isAdmin, isProjectAdmin, projectKeys } = await resolvePermissions(accountId);
+  console.log(`[Analytics] Permission resolve took ${Date.now() - t0}ms, isAdmin:`, isAdmin, 'isProjectAdmin:', isProjectAdmin);
+
+  // Project admin with no discoverable projects — return empty data for safety
+  if (!isAdmin && isProjectAdmin && (!Array.isArray(projectKeys) || projectKeys.length === 0)) {
+    console.log('[Analytics] Project admin has no discoverable projects - returning empty data');
+    return {
+      organizationId: null, organizationName: null,
+      userId: null, userDisplayName: null, userEmail: null,
+      membership: null, canViewAllUsers: false,
+      dailySummary: [], weeklySummary: [], timeByProject: [], timeByIssue: [], allUsers: []
+    };
   }
   
   // User can view team data if Jira admin or project admin
@@ -57,14 +98,16 @@ export async function fetchTimeAnalyticsBatch(accountId, cloudId) {
   console.log('[Analytics] Using batch endpoint with canViewAllUsers:', canViewAllUsers, 'isJiraAdmin:', isAdmin);
 
   // Single batch request replaces 8+ individual calls
+  const t1 = Date.now();
   const dashboardData = await fetchDashboardData({
     canViewAllUsers,
     isJiraAdmin: isAdmin,
-    projectKeys: projectKeys, // null for Jira admins (see all), array for project admins
+    projectKeys: isProjectAdmin ? projectKeys : null,
     maxDailySummaryDays: MAX_DAILY_SUMMARY_DAYS,
     maxWeeklySummaryWeeks: MAX_WEEKLY_SUMMARY_WEEKS,
     maxIssuesInAnalytics: MAX_ISSUES_IN_ANALYTICS
   });
+  console.log(`[Analytics] Dashboard batch took ${Date.now() - t1}ms, total elapsed ${Date.now() - t0}ms`);
 
   // Enforce Forge-computed permission — never trust the AI server's canViewAllUsers
   dashboardData.canViewAllUsers = canViewAllUsers;
@@ -98,9 +141,9 @@ export async function fetchTimeAnalytics(accountId, cloudId) {
     throw new Error('Unable to get user information');
   }
 
-  // Check if user is admin or project admin in Jira
-  const isAdmin = await isJiraAdmin();
-  const permissions = await checkUserPermissions(['ADMINISTER_PROJECTS']);
+  // Check if user is admin or project admin in Jira (single API call)
+  const permissions = await checkUserPermissions(['ADMINISTER', 'ADMINISTER_PROJECTS']);
+  const isAdmin = permissions.permissions?.ADMINISTER?.havePermission || false;
   const isProjectAdmin = permissions.permissions?.ADMINISTER_PROJECTS?.havePermission;
 
   // Get membership for reference but do NOT use can_view_team_analytics to widen access.

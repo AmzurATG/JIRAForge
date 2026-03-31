@@ -15,6 +15,40 @@
   margin-bottom: 16px;
 }
 
+/* Error Banner */
+.analytics-error-banner {
+  background: #FFEBE6;
+  border: 1px solid #FF5630;
+  border-radius: 6px;
+  padding: 12px 16px;
+  margin-bottom: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.analytics-error-banner p {
+  margin: 0;
+  color: #BF2600;
+  font-size: 14px;
+}
+
+.analytics-error-banner .retry-button {
+  background: #FF5630;
+  color: #fff;
+  border: none;
+  border-radius: 4px;
+  padding: 6px 16px;
+  font-size: 13px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.analytics-error-banner .retry-button:hover {
+  background: #DE350B;
+}
+
 /* Download Banner */
 .download-banner {
   background: #fff;

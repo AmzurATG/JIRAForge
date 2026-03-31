@@ -178,8 +178,9 @@ export async function getUnassignedGroups(req) {
     const { config: supabaseConfig, organization, userId } = ctx;
 
     // Viability filter: exclude groups with 0 sessions (data inconsistency).
-    // Sub-minute groups are allowed — Jira's 60s minimum is handled at worklog
-    // creation time by rounding up, so users can still see and assign them.
+    // Sub-minute groups are allowed — when assigned, their worklog is deferred
+    // to the scheduled sync which aggregates all time per user+issue. The sync
+    // only rounds up to 60s once on the final aggregated total if still < 60s.
     const viabilityFilter = `&session_count=gt.0&total_seconds=gt.0`;
 
     // First, get total count for pagination info

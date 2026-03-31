@@ -56,12 +56,18 @@ async function createWorklogIfNeeded({ issueKey, timeToLog, sessionCount, autoSy
   }
 
   if (timeToLog < JIRA_MIN_WORKLOG_SECONDS) {
-    // Round up to Jira's minimum instead of discarding — the user explicitly
-    // chose to assign this work, so losing it is worse than adding a few seconds.
-    // This only applies to the already-aggregated group total (not per-session),
-    // so maximum inflation is 59 seconds per issue.
-    console.log(`[worklog] Rounding up time from ${timeToLog}s to ${JIRA_MIN_WORKLOG_SECONDS}s (Jira minimum)`);
-    timeToLog = JIRA_MIN_WORKLOG_SECONDS;
+    // Jira rejects worklogs under 60 seconds. Instead of rounding up (which
+    // inflates time — e.g. ten 8s entries would become 600s instead of 80s),
+    // we defer to the scheduled sync.  The sync aggregates ALL time per
+    // user+issue, so these sub-minute entries get combined with other work on
+    // the same issue. If the aggregated total is still < 60s the sync rounds
+    // up just once (max 59s inflation total, not per entry).
+    console.log(`[worklog] Deferring sub-minute worklog (${timeToLog}s < ${JIRA_MIN_WORKLOG_SECONDS}s) to scheduled sync for aggregation`);
+    return {
+      worklog: null,
+      worklogSkipped: true,
+      worklogSkippedReason: `Time is under ${JIRA_MIN_WORKLOG_SECONDS}s — deferred to scheduled sync for aggregation`
+    };
   }
   
   try {
