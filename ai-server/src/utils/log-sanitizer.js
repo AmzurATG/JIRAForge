@@ -38,9 +38,9 @@ const SANITIZATION_PATTERNS = {
   // HIGH PRIORITY - PII (Always sanitized)
   // ============================================
   
-  // Email addresses
+  // Email addresses (flattened to avoid nested quantifier backtracking / ReDoS)
   EMAIL: {
-    pattern: /[a-zA-Z0-9._%+-]+@(?:[a-zA-Z0-9-]+\.)+[a-zA-Z]{2,}/g,
+    pattern: /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9-]+(?:\.[a-zA-Z0-9-]+)*\.[a-zA-Z]{2,}/g,
     replacement: '[EMAIL_REDACTED]',
     levels: ['minimal', 'standard', 'strict']
   },
