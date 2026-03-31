@@ -67,7 +67,7 @@ const corsOptions = {
 // Middleware
 app.use(helmet());
 app.use(cors(corsOptions));
-app.use(express.json({ limit: '50mb' }));
+app.use(express.json({ limit: '1mb' }));
 
 // Rate limiting
 const limiter = rateLimit({
@@ -90,8 +90,20 @@ app.use('/api/', (req, res, next) => {
   return limiter(req, res, next);
 });
 
+// Rate limiter for public/health endpoints — prevents abuse during DDoS
+const publicLimiter = rateLimit({
+  windowMs: 1 * 60 * 1000, // 1 minute
+  max: 30,                  // 30 requests per minute per IP
+  message: 'Too many requests, please try again later.',
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => {
+    return req.ip || req.headers['x-forwarded-for'] || req.connection.remoteAddress || 'unknown';
+  }
+});
+
 // Root endpoint
-app.get('/', (req, res) => {
+app.get('/', publicLimiter, (req, res) => {
   res.json({
     name: 'BRD Time Tracker AI Server',
     version: '1.0.0',
@@ -108,7 +120,7 @@ app.get('/', (req, res) => {
 });
 
 // Health check
-app.get('/health', (req, res) => {
+app.get('/health', publicLimiter, (req, res) => {
   res.json({
     status: 'healthy',
     timestamp: new Date().toISOString(),
@@ -131,17 +143,17 @@ function renderLegalPage(title, pageTitle, contentFile) {
 }
 
 // Privacy Policy
-app.get('/legal/privacy', (req, res) => {
+app.get('/legal/privacy', publicLimiter, (req, res) => {
   res.type('html').send(renderLegalPage('Privacy Policy - BRD Time Tracker', 'Privacy Policy', 'privacy-content.html'));
 });
 
 // Terms of Service
-app.get('/legal/terms', (req, res) => {
+app.get('/legal/terms', publicLimiter, (req, res) => {
   res.type('html').send(renderLegalPage('Terms of Service - BRD Time Tracker', 'Terms of Service', 'terms-content.html'));
 });
 
 // Legal page styles (shared by Terms and Privacy pages)
-app.get('/legal/styles.css', (req, res) => {
+app.get('/legal/styles.css', publicLimiter, (req, res) => {
   res.type('text/css');
   res.sendFile(path.join(__dirname, 'legal', 'styles.css'));
 });
@@ -302,8 +314,8 @@ app.post('/api/forge/organization/membership', forgeLimiter, forgeAuthMiddleware
 // User management
 app.post('/api/forge/user', forgeLimiter, forgeAuthMiddleware, forgeProxyController.getOrCreateUser);
 
-// Storage operations
-app.post('/api/forge/storage/upload', forgeLimiter, forgeAuthMiddleware, forgeProxyController.storageUpload);
+// Storage operations — larger body limit for file uploads
+app.post('/api/forge/storage/upload', express.json({ limit: '10mb' }), forgeLimiter, forgeAuthMiddleware, forgeProxyController.storageUpload);
 app.post('/api/forge/storage/signed-url', forgeLimiter, forgeAuthMiddleware, forgeProxyController.storageSignedUrl);
 app.post('/api/forge/storage/delete', forgeLimiter, forgeAuthMiddleware, forgeProxyController.storageDelete);
 
@@ -320,12 +332,12 @@ app.post('/api/forge/issues/cache', forgeLimiter, forgeAuthMiddleware, forgeProx
 // PROTECTED ROUTES (require authMiddleware)
 // =============================================================================
 
-// Routes
-app.post('/api/analyze-screenshot', authMiddleware, screenshotController.analyzeScreenshot);
-app.post('/api/process-brd', authMiddleware, brdController.processBRD);
+// Routes — apply larger body limit for upload-heavy endpoints
+app.post('/api/analyze-screenshot', express.json({ limit: '10mb' }), authMiddleware, screenshotController.analyzeScreenshot);
+app.post('/api/process-brd', express.json({ limit: '10mb' }), authMiddleware, brdController.processBRD);
 
 // Activity tracking endpoints (new event-based pipeline)
-app.post('/api/analyze-batch', authMiddleware, activityController.analyzeBatch);
+app.post('/api/analyze-batch', express.json({ limit: '10mb' }), authMiddleware, activityController.analyzeBatch);
 // classify-app uses Atlassian token auth (desktop app sends OAuth token)
 app.post('/api/classify-app', atlassianAuthMiddleware, activityController.classifyApp);
 // identify-app uses Forge auth (called from Forge app for admin app classification)
@@ -500,7 +512,13 @@ app.use((req, res) => {
 // Start server with async initialization
 async function startServer() {
   return new Promise((resolve) => {
-    app.listen(PORT, async () => {
+    const server = app.listen(PORT, async () => {
+      // DDoS protection: connection and request timeouts
+      server.timeout = 120000;          // 120s max for entire request (some AI calls are slow)
+      server.headersTimeout = 15000;    // 15s to receive all headers — prevents slow-loris
+      server.keepAliveTimeout = 5000;   // 5s keep-alive — prevents connection hogging
+      server.maxHeadersCount = 50;      // Limit number of headers per request
+
       logger.info(`AI Analysis Server running on port ${PORT}`);
       logger.info(`Environment: ${process.env.NODE_ENV || 'development'}`);
       
