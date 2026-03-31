@@ -23,6 +23,9 @@ COPY eng.traineddata /usr/share/tesseract-ocr/5/tessdata/
 # Copy source code
 COPY src/ ./src/
 
+# Build dashboard React app
+RUN cd src/dashboard && npm install && npm run build && rm -rf node_modules
+
 # Set environment variables
 ENV NODE_ENV=production
 ENV PORT=8080

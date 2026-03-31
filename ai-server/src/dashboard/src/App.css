@@ -41,6 +41,49 @@ body {
   to { transform: rotate(360deg); }
 }
 
+/* Login */
+.login-container {
+  text-align: center;
+  padding: 64px 24px;
+}
+
+.login-container h1 {
+  color: #1a5276;
+  margin-bottom: 12px;
+  font-size: 22px;
+}
+
+.login-container p {
+  color: #666;
+  margin-bottom: 24px;
+  font-size: 14px;
+}
+
+.auth-error {
+  color: #c0392b;
+  background: #fadbd8;
+  padding: 8px 16px;
+  border-radius: 4px;
+  margin-bottom: 16px;
+  display: inline-block;
+}
+
+.btn-login {
+  padding: 12px 32px;
+  background: #0052CC;
+  color: #fff;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 15px;
+  font-weight: 600;
+  transition: background 0.2s;
+}
+
+.btn-login:hover {
+  background: #0747A6;
+}
+
 /* Access denied */
 .access-denied {
   text-align: center;

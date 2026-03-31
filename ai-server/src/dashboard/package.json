@@ -1,12 +1,12 @@
 {
-  "name": "brd-time-tracker-admin-dashboard-ui",
+  "name": "brd-time-tracker-admin-dashboard",
   "version": "1.0.0",
   "private": true,
-  "homepage": ".",
+  "homepage": "/dashboard",
   "dependencies": {
-    "@forge/bridge": "^3.0.0",
     "react": "^19.2.4",
-    "react-dom": "^19.2.4"
+    "react-dom": "^19.2.4",
+    "react-scripts": "5.0.1"
   },
   "scripts": {
     "start": "react-scripts start",
@@ -29,8 +29,5 @@
       "last 1 firefox version",
       "last 1 safari version"
     ]
-  },
-  "devDependencies": {
-    "react-scripts": "^5.0.1"
   }
 }

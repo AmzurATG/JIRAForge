@@ -11,6 +11,7 @@ const userDbService = require('./user-db-service');
 const documentDbService = require('./document-db-service');
 const clusteringDbService = require('./clustering-db-service');
 const feedbackDbService = require('./feedback-db-service');
+const dashboardDbService = require('./dashboard-db-service');
 
 module.exports = {
   // Supabase Client
@@ -68,5 +69,8 @@ module.exports = {
   createFeedback: feedbackDbService.createFeedback,
   getFeedbackById: feedbackDbService.getFeedbackById,
   updateFeedbackStatus: feedbackDbService.updateFeedbackStatus,
-  updateFeedbackAIResults: feedbackDbService.updateFeedbackAIResults
+  updateFeedbackAIResults: feedbackDbService.updateFeedbackAIResults,
+
+  // Dashboard DB Service
+  dashboardDb: dashboardDbService
 };
