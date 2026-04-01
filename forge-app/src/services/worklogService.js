@@ -300,6 +300,7 @@ async function cleanupOrphanedUserWorklogs(supabaseConfig, organizationId, userI
  * @returns {Promise<{success: boolean, synced?: number, errors?: number, error?: string, message?: string}>}
  */
 export async function syncCurrentUserWorklogs(accountId, cloudId) {
+  console.log(`[UserSync] === START syncCurrentUserWorklogs === accountId=${accountId}, cloudId=${cloudId}`);
   // Diagnostic: verify the resolver context has a real user session
   try {
     const meResp = await api.asUser().requestJira(
@@ -340,10 +341,12 @@ export async function syncCurrentUserWorklogs(accountId, cloudId) {
 
   // Build sync configuration
   const syncConfig = buildOrgSyncConfig(allSettings || []);
+  console.log(`[UserSync] Settings count: ${(allSettings || []).length}, syncConfig: orgEnabled=${syncConfig.orgEnabled}, projects=${JSON.stringify(syncConfig.projects)}`);
 
   // Check if ANY sync is enabled (org or any project)
   const hasAnySyncEnabled = syncConfig.orgEnabled || Object.values(syncConfig.projects).some(v => v === true);
   if (!hasAnySyncEnabled) {
+    console.log(`[UserSync] === SKIP: Worklog sync not enabled ===`);
     return { success: true, synced: 0, errors: 0, message: 'Worklog sync not enabled' };
   }
 
@@ -359,6 +362,8 @@ export async function syncCurrentUserWorklogs(accountId, cloudId) {
   // them to in-progress issues via project_key — same fallback the dashboard uses.
   // This ensures time that appears in the UI also gets synced to Jira.
   const fallbackEntries = await aggregateUnassignedTimeWithFallback(supabaseConfig, organizationId, userId);
+
+  console.log(`[UserSync] directEntries=${directEntries.length}, fallbackEntries=${fallbackEntries.length}, userId=${userId}, orgId=${organizationId}`);
 
   // Merge: if both direct and fallback have time for the same issue, sum them.
   const mergedByIssue = {};
