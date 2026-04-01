@@ -373,9 +373,20 @@ function validateAnalysisKeys(analyses, userAssignedIssues) {
  * Logs individual update failures without stopping the rest of the batch.
  */
 async function persistAnalysisResults(analyses, records, provider, model) {
+  const MIN_CONFIDENCE_THRESHOLD = parseFloat(process.env.AI_MATCH_MIN_CONFIDENCE || '0.5');
+
   for (const analysis of analyses) {
     const recordIndex = analysis.recordIndex;
     if (recordIndex >= 0 && recordIndex < records.length && records[recordIndex].id) {
+      // Log when a match is demoted due to low confidence for observability
+      if (analysis.taskKey && (analysis.confidenceScore || 0) < MIN_CONFIDENCE_THRESHOLD) {
+        logger.info(
+          `[ActivityService] Low-confidence match demoted to unassigned | ` +
+          `record=${records[recordIndex].id} taskKey=${analysis.taskKey} ` +
+          `confidence=${analysis.confidenceScore} reasoning="${analysis.reasoning}"`
+        );
+      }
+
       try {
         await activityDbService.updateActivityRecordAnalysis(records[recordIndex].id, {
           taskKey: analysis.taskKey,

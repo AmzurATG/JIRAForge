@@ -13,6 +13,18 @@ export function AuthProvider({ children }) {
   const [token, setToken] = useState(() => sessionStorage.getItem(TOKEN_KEY));
   const [loading, setLoading] = useState(true);
   const [authError, setAuthError] = useState(null);
+  const [clientId, setClientId] = useState(null);
+
+  // Fetch OAuth client ID from server on mount
+  useEffect(() => {
+    fetch('/api/auth/config')
+      .then(r => r.json())
+      .then(data => {
+        if (data.success) setClientId(data.clientId);
+        else setAuthError('Unable to load OAuth configuration');
+      })
+      .catch(() => setAuthError('Unable to reach server for OAuth config'));
+  }, []);
 
   // Check for OAuth callback params on mount
   useEffect(() => {
@@ -114,13 +126,16 @@ export function AuthProvider({ children }) {
   };
 
   const login = useCallback(() => {
+    if (!clientId) {
+      setAuthError('OAuth client ID not loaded yet. Please try again.');
+      return;
+    }
     // Redirect to Atlassian OAuth consent screen
-    const clientId = process.env.REACT_APP_ATLASSIAN_CLIENT_ID;
     const redirectUri = encodeURIComponent(window.location.origin + '/dashboard');
     const scope = encodeURIComponent('read:me read:jira-work read:jira-user manage:jira-configuration');
     const authUrl = `https://auth.atlassian.com/authorize?audience=api.atlassian.com&client_id=${clientId}&scope=${scope}&redirect_uri=${redirectUri}&response_type=code&prompt=consent`;
     window.location.href = authUrl;
-  }, []);
+  }, [clientId]);
 
   const logout = useCallback(() => {
     sessionStorage.removeItem(TOKEN_KEY);

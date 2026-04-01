@@ -65,7 +65,7 @@ export const DEFAULT_TRACKING_SETTINGS = {
   flagExcessiveNonWork: true,
   privateSitesEnabled: true,
   privateSites: [],
-  jiraWorklogSyncEnabled: false,
+  jiraWorklogSyncEnabled: true,
   showIdleInTimeline: true,
   workHoursStart: '09:00',
   workHoursEnd: '18:00',

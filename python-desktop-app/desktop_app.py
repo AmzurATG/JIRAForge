@@ -3918,6 +3918,85 @@ class ActiveSessionManager:
             conn.close()
             self._current_key = None
 
+    def harvest_and_clear(self, min_duration_seconds=0):
+        """Atomically harvest all sessions and clear the table under a single lock.
+
+        Returns only sessions with total_time_seconds >= min_duration_seconds.
+        Sessions below the threshold are also deleted (noise).
+        New sessions written after this call will be stored normally.
+
+        This prevents the TOCTOU race condition where new sessions could be
+        inserted between separate get_all_sessions() and clear_all() calls.
+        """
+        with self._lock:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            try:
+                # Stop any running timer first so accumulated time is accurate
+                now = datetime.now(timezone.utc).isoformat()
+                self._stop_timer_internal(cursor, now)
+
+                # Read all sessions
+                cursor.execute('SELECT * FROM active_sessions')
+                columns = [desc[0] for desc in cursor.description]
+                rows = cursor.fetchall()
+
+                # Clear the table
+                cursor.execute('DELETE FROM active_sessions')
+                conn.commit()
+            except Exception as e:
+                print(f"[ERROR] harvest_and_clear failed: {e}")
+                conn.rollback()
+                return []
+            finally:
+                conn.close()
+
+            self._current_key = None
+            all_sessions = [dict(zip(columns, row)) for row in rows]
+
+            if min_duration_seconds > 0:
+                valid = [s for s in all_sessions
+                         if (s.get('total_time_seconds') or 0) >= min_duration_seconds]
+                filtered = len(all_sessions) - len(valid)
+                if filtered > 0:
+                    print(f"[BATCH] Filtered {filtered} noise sessions (< {min_duration_seconds}s)")
+                return valid
+            return all_sessions
+
+    def restore_sessions(self, sessions):
+        """Re-insert sessions back into SQLite after a failed upload.
+
+        Used to restore data when batch upload to Supabase fails,
+        so records are not lost and can be retried on the next cycle.
+        """
+        if not sessions:
+            return
+        with self._lock:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            try:
+                for s in sessions:
+                    cursor.execute(
+                        '''INSERT OR REPLACE INTO active_sessions
+                        (window_title, application_name, classification, ocr_text, ocr_method,
+                         ocr_confidence, ocr_error_message, total_time_seconds, visit_count,
+                         first_seen, last_seen, timer_started_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+                        (s.get('window_title'), s.get('application_name'),
+                         s.get('classification'), s.get('ocr_text'),
+                         s.get('ocr_method'), s.get('ocr_confidence'),
+                         s.get('ocr_error_message'), s.get('total_time_seconds', 0),
+                         s.get('visit_count', 1), s.get('first_seen'),
+                         s.get('last_seen'), s.get('timer_started_at'))
+                    )
+                conn.commit()
+                print(f"[BATCH] Restored {len(sessions)} sessions to SQLite for retry")
+            except Exception as e:
+                print(f"[ERROR] Failed to restore sessions: {e}")
+                conn.rollback()
+            finally:
+                conn.close()
+
     def update_classification(self, app_name, old_classification, new_classification):
         """Thread-safe update of classification for an app (called from async classify thread)."""
         with self._lock:
@@ -6396,17 +6475,21 @@ class TimeTracker:
         """
         if not window_title:
             # No window title to analyze — return None so AI determines the project
+            print(f"[PROJECT_KEY] No window title — returning None")
             return None
 
         known_projects = self._get_known_project_keys()
+        print(f"[PROJECT_KEY] Resolving for title: '{window_title[:80]}' | known_projects={sorted(known_projects) if known_projects else 'none'}")
 
         # Strategy 1: Look for Jira issue keys in window title (PROJ-123 → PROJ)
         issue_matches = re.findall(r'\b([A-Z][A-Z0-9]+)-\d+\b', window_title)
         if issue_matches:
             for match in issue_matches:
                 if match in known_projects:
+                    print(f"[PROJECT_KEY] Strategy 1 HIT: issue key '{match}' found in known projects")
                     return match
             # Use first extracted key even if not in known projects cache
+            print(f"[PROJECT_KEY] Strategy 1 PARTIAL: using first issue key '{issue_matches[0]}' (not in known projects)")
             return issue_matches[0]
 
         # Strategy 2: Extract workspace/folder name from VS Code or IDE titles
@@ -6424,17 +6507,25 @@ class TimeTracker:
                     workspace_name = ide_match.group(1).strip()
 
             if workspace_name:
+                print(f"[PROJECT_KEY] Strategy 2: extracted workspace '{workspace_name}'")
                 # Try case-insensitive match of workspace name against project keys
                 ws_upper = workspace_name.upper().replace('-', '').replace('_', '').replace(' ', '')
                 for pk in known_projects:
                     pk_normalized = pk.upper().replace('-', '').replace('_', '').replace(' ', '')
                     # Match if workspace contains the project key or vice versa
                     if pk_normalized in ws_upper or ws_upper.startswith(pk_normalized):
+                        print(f"[PROJECT_KEY] Strategy 2 HIT: workspace '{workspace_name}' matched project '{pk}'")
                         return pk
+                print(f"[PROJECT_KEY] Strategy 2 MISS: workspace '{workspace_name}' didn't match any known project")
+            else:
+                print(f"[PROJECT_KEY] Strategy 2 SKIP: no workspace name extracted from title")
+        else:
+            print(f"[PROJECT_KEY] Strategy 2 SKIP: no known projects to match against")
 
         # No confident match from window title — return None instead of the
         # batch-level default so the AI server can determine the correct project
         # from OCR text, window titles, and issue context across ALL projects.
+        print(f"[PROJECT_KEY] No match — returning None (AI server will resolve)")
         return None
 
     def get_user_project_key(self):
@@ -7051,31 +7142,23 @@ class TimeTracker:
                     self.session_manager.backfill_ocr(pk_title, pk_app, ocr_result)
                 backfill_count += 1
 
-            # Stop current timer so accumulated time is accurate
-            self.session_manager.stop_current_timer()
-
-            # Harvest all sessions
-            sessions = self.session_manager.get_all_sessions()
+            # Atomically harvest all sessions and clear SQLite in one locked operation.
+            # This prevents the race condition where new sessions could be inserted
+            # between separate get_all_sessions() and clear_all() calls.
+            MIN_SESSION_DURATION_SECONDS = 5
+            sessions = self.session_manager.harvest_and_clear(min_duration_seconds=MIN_SESSION_DURATION_SECONDS)
             if not sessions and not self._pending_idle_records:
                 print("[BATCH] No activity records to upload")
+                self.current_window_key = None  # Force re-detection so tracking resumes on next loop
                 self.last_batch_upload_time = time.time()
                 return
 
-            # Filter out noise: sessions shorter than 5 seconds are accidental
-            # window switches (Alt-Tab, taskbar hover, notification popups).
-            MIN_SESSION_DURATION_SECONDS = 5
-            original_count = len(sessions)
-            sessions = [s for s in sessions if int(s.get('total_time_seconds') or 0) >= MIN_SESSION_DURATION_SECONDS]
-            filtered_count = original_count - len(sessions)
-            if filtered_count > 0:
-                print(f"[BATCH] Filtered {filtered_count} noise sessions (< {MIN_SESSION_DURATION_SECONDS}s)")
             if not sessions:
                 if self._pending_idle_records:
                     print("[BATCH] All work sessions were noise — but idle records exist, continuing")
                 else:
                     print("[BATCH] All sessions were noise — nothing to upload")
-                    self.session_manager.clear_all()
-                    self.current_window_key = None  # Force re-detection so next loop iteration creates a fresh session
+                    self.current_window_key = None  # Force re-detection so tracking resumes on next loop
                     self.last_batch_upload_time = time.time()
                     return
 
@@ -7184,9 +7267,8 @@ class TimeTracker:
                 }
                 records.append(record)
 
-            # Append any pending idle records
+            # Append any pending idle records (don't clear yet — clear only after confirmed upload)
             idle_records = list(self._pending_idle_records)
-            self._pending_idle_records.clear()
             for idle_rec in idle_records:
                 # Add batch metadata
                 idle_rec['batch_timestamp'] = batch_timestamp
@@ -7213,6 +7295,7 @@ class TimeTracker:
                 secure_log("[BATCH] Inserted record IDs", ids=inserted_ids)
 
                 # Verify records actually exist in the database
+                upload_verified = False
                 try:
                     verify = self.supabase_service.table('activity_records') \
                         .select('id') \
@@ -7222,21 +7305,28 @@ class TimeTracker:
                     verified_count = len(verify.data) if verify.data else 0
                     print(f"[BATCH] Verification: {verified_count}/{len(records)} records confirmed in database")
                     if verified_count == 0:
-                        print(f"[WARN] Insert returned data but verification found 0 records — possible RLS or trigger issue")
+                        print(f"[ERROR] Insert returned data but verification found 0 records — possible RLS or trigger issue")
+                        print(f"[BATCH] Restoring {len(sessions)} sessions to SQLite for retry on next cycle")
+                        self.session_manager.restore_sessions(sessions)
+                    else:
+                        upload_verified = True
                 except Exception as ve:
-                    print(f"[WARN] Verification query failed: {ve}")
+                    print(f"[ERROR] Verification query failed: {ve} — restoring sessions to SQLite for retry")
+                    self.session_manager.restore_sessions(sessions)
 
-                # Success — clear local sessions and reset batch timer
-                self.session_manager.clear_all()
-                self.current_window_key = None  # Force re-detection so next loop iteration creates a fresh session
-                self.batch_start_time = datetime.now(timezone.utc)
+                if upload_verified:
+                    # Upload confirmed — safe to clear idle records and reset batch timer
+                    self._pending_idle_records.clear()
+                    self.current_window_key = None  # Force re-detection so tracking resumes on next loop
+                    self.batch_start_time = datetime.now(timezone.utc)
+                    print(f"[BATCH] Upload verified and committed successfully")
             else:
                 # Log detailed response for debugging
-                print(f"[WARN] Batch upload returned no data — records stay in SQLite")
+                print(f"[WARN] Batch upload returned no data — restoring sessions to SQLite for retry")
                 if hasattr(result, 'count'):
                     print(f"       result.count={result.count}")
-                # Log the full result for debugging
                 print(f"       result={result}")
+                self.session_manager.restore_sessions(sessions)
 
             self.last_batch_upload_time = time.time()
 
@@ -7249,7 +7339,10 @@ class TimeTracker:
                 print(f"       Error code: {e.code}")
             if hasattr(e, 'details'):
                 print(f"       Details: {e.details}")
-            print(f"       {len(sessions) if 'sessions' in dir() else '?'} records remain in SQLite for retry on next cycle")
+            # Restore sessions to SQLite so they can be retried on next cycle
+            if 'sessions' in dir() and sessions:
+                self.session_manager.restore_sessions(sessions)
+                print(f"       {len(sessions)} records restored to SQLite for retry on next cycle")
             self.last_batch_upload_time = time.time()
 
     def process_window_event(self, window_info):
@@ -8454,6 +8547,11 @@ class TimeTracker:
                     # Finalize current session using last known activity time
                     self._finalize_active_session("system suspension detected")
                     self.session_manager.stop_current_timer()  # Stop SQLite activity timer so suspension time isn't counted in activity_records
+                    # Upload accumulated data before resetting state to prevent data loss
+                    try:
+                        self.upload_activity_batch()
+                    except Exception as e:
+                        print(f"[WARN] Suspension batch upload failed: {e} — data remains in SQLite for next cycle")
                     # Reset ALL tracking state — new session starts fresh
                     self.is_idle = False
                     self.needs_idle_resume = False
@@ -8470,7 +8568,7 @@ class TimeTracker:
                     self.last_interval_time = current_loop_time
                     self.last_activity_time = current_loop_time
                     last_loop_time = current_loop_time
-                    self.add_admin_log('INFO', f'System suspension detected ({int(time_since_last_loop)}s gap) — session finalized')
+                    self.add_admin_log('INFO', f'System suspension detected ({int(time_since_last_loop)}s gap) — session finalized and uploaded')
                     continue
                 last_loop_time = current_loop_time
                 # === END suspension detection ===

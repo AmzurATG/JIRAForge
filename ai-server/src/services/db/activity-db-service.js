@@ -59,9 +59,18 @@ async function updateActivityRecordAnalysis(recordId, analysisResult) {
   const supabase = getClient();
   if (!supabase) throw new Error('Supabase client not initialized');
 
+  // Only assign issue key when the AI's confidence meets the minimum threshold.
+  // Low-confidence matches (e.g. 0.2–0.4) are often wrong — the AI matched
+  // based on weak signals like "same project" rather than real content alignment.
+  // These records become "unassigned work" for the user to assign manually,
+  // which is better than silently creating a worklog on the wrong issue.
+  const MIN_CONFIDENCE_THRESHOLD = parseFloat(process.env.AI_MATCH_MIN_CONFIDENCE || '0.5');
+  const confidenceScore = analysisResult.metadata?.confidenceScore ?? 0;
+  const taskKeyMeetsThreshold = analysisResult.taskKey && confidenceScore >= MIN_CONFIDENCE_THRESHOLD;
+
   const updateData = {
     status: 'analyzed',
-    user_assigned_issue_key: analysisResult.taskKey || null,
+    user_assigned_issue_key: taskKeyMeetsThreshold ? analysisResult.taskKey : null,
     metadata: analysisResult.metadata || {},
     analyzed_at: new Date().toISOString(),
     updated_at: new Date().toISOString()
