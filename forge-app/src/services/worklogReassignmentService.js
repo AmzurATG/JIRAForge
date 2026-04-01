@@ -50,9 +50,7 @@ async function reassignActivityRecordsOnly(supabaseConfig, userId, organizationI
       method: 'PATCH',
       body: {
         user_assigned_issue_key: toIssueKey,
-        project_key: toProjectKey,
-        reassigned_from: fromIssueKey || 'unassigned',
-        reassigned_at: now
+        project_key: toProjectKey
       }
     }
   );
@@ -240,9 +238,7 @@ export async function reassignWorklog(accountId, cloudId, fromIssueKey, toIssueK
       method: 'PATCH',
       body: {
         user_assigned_issue_key: toIssueKey,
-        project_key: toProjectKey,
-        reassigned_from: fromIssueKey,
-        reassigned_at: now
+        project_key: toProjectKey
       }
     }
   );
@@ -339,9 +335,15 @@ export async function splitWorklog(accountId, cloudId, fromIssueKey, toIssueKey,
   // --- 2b. No worklog_sync → reassign activity_records proportionally ---
   if (!syncRecords || syncRecords.length === 0) {
     console.log(`[WorklogSplit] No worklog_sync for ${fromIssueKey || 'unassigned'}, reassigning activity_records directly`);
-    await reassignProportionalActivityRecords(
+    const moveResult = await reassignProportionalActivityRecords(
       supabaseConfig, userId, organization.id, fromIssueKey, toIssueKey, splitSeconds
     );
+    const movedCount = moveResult?.movedCount || 0;
+    const movedSeconds = moveResult?.movedSeconds || 0;
+    console.log(`[WorklogSplit] Activity-only result: movedCount=${movedCount}, movedSeconds=${movedSeconds}`);
+    if (movedCount === 0) {
+      throw new Error(`No activity records found to reassign from ${fromIssueKey || 'unassigned'}. Check that tracked time exists for today.`);
+    }
     return {
       success: true,
       fromIssueKey,
@@ -350,7 +352,7 @@ export async function splitWorklog(accountId, cloudId, fromIssueKey, toIssueKey,
       remainingSeconds: null,
       oldWorklogId: null,
       newWorklogId: null,
-      message: `Activity records split: ${splitSeconds}s from ${fromIssueKey} to ${toIssueKey} (worklog will sync on next cycle)`
+      message: `Activity records split: ${movedSeconds}s moved (${movedCount} records) from ${fromIssueKey || 'unassigned'} to ${toIssueKey}`
     };
   }
 
@@ -522,7 +524,7 @@ async function reassignProportionalActivityRecords(
 
     if (!records || records.length === 0) {
       console.warn(`[WorklogSplit] No records found for proportional split. userId=${userId}, orgId=${organizationId}, issueFilter=${issueFilter}`);
-      return;
+      return { movedCount: 0, movedSeconds: 0 };
     }
 
     // Accumulate records until we cover splitSeconds
@@ -536,7 +538,7 @@ async function reassignProportionalActivityRecords(
       accumulated += duration;
     }
 
-    if (idsToMove.length === 0) return;
+    if (idsToMove.length === 0) return { movedCount: 0, movedSeconds: 0 };
 
     // Batch update
     const patchResult = await supabaseRequest(
@@ -546,16 +548,15 @@ async function reassignProportionalActivityRecords(
         method: 'PATCH',
         body: {
           user_assigned_issue_key: toIssueKey,
-          project_key: toProjectKey,
-          reassigned_from: fromIssueKey || 'unassigned',
-          reassigned_at: now
+          project_key: toProjectKey
         }
       }
     );
 
     console.log(`[WorklogSplit] Moved ${idsToMove.length} activity records (${accumulated}s) from ${fromIssueKey || 'unassigned'} to ${toIssueKey}. PATCH result count: ${(patchResult || []).length}`);
+    return { movedCount: idsToMove.length, movedSeconds: accumulated };
   } catch (err) {
-    // Non-critical — worklog_sync is the source of truth
-    console.warn(`[WorklogSplit] Activity records reassignment failed: ${err.message}`);
+    console.error(`[WorklogSplit] Activity records reassignment failed: ${err.message}`);
+    throw err;
   }
 }

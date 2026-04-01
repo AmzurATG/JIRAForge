@@ -214,6 +214,8 @@ export function registerWorklogResolvers(resolver) {
     const cloudId = context.cloudId;
     const { fromIssueKey, toIssueKey, splitSeconds } = payload;
 
+    console.log(`[splitWorklog] Resolver invoked: from=${fromIssueKey || 'null'}, to=${toIssueKey}, splitSeconds=${splitSeconds}, accountId=${accountId}, cloudId=${cloudId}`);
+
     if (!toIssueKey) {
       return { success: false, error: 'toIssueKey is required' };
     }
