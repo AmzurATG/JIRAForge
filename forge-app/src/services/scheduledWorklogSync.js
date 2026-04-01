@@ -398,6 +398,19 @@ async function syncSingleEntry(supabaseConfig, organizationId, userId, accountId
   const { issueKey, timeTracked, lastWorkedOn } = entry;
 
   if (existingMapping) {
+    // Never touch user-authored worklogs from the scheduled trigger.
+    // The interactive syncMyWorklogs path owns these — it runs in the user's
+    // live session and can update/recreate with proper user attribution.
+    if (existingMapping.created_as_user === true) {
+      if (existingMapping.last_synced_seconds === timeTracked) {
+        return false; // No change
+      }
+      // Time changed but worklog was created as user — still skip.
+      // The interactive sync will pick this up on the user's next visit.
+      console.log(`[ScheduledSync] Skipping ${issueKey} for user ${userId} — worklog is user-authored (created_as_user=true), deferring to interactive sync`);
+      return false;
+    }
+
     if (existingMapping.last_synced_seconds === timeTracked) {
       return false; // No change
     }
@@ -465,7 +478,12 @@ async function syncSingleEntry(supabaseConfig, organizationId, userId, accountId
     try {
       worklogResult = await createJiraWorklogAsUser(accountId, issueKey, timeTracked, startedAt, displayName);
       usedAsUser = true;
+      console.log(`[ScheduledSync] asUser(${accountId}) call succeeded for ${issueKey}`);
     } catch (impersonationErr) {
+      console.error(`[ScheduledSync] asUser(${accountId}) failed for ${issueKey}:`,
+        impersonationErr.message,
+        impersonationErr.name,
+        impersonationErr.status || 'no-status');
       if (impersonationErr.message?.includes('AUTH_TYPE_UNAVAILABLE')) {
         // Impersonation not available — save a pending record instead of falling back
         // to asApp(). The user-context sync (syncMyWorklogs) will create the worklog

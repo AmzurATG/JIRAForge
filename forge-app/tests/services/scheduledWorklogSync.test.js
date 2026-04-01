@@ -352,7 +352,7 @@ describe('scheduledWorklogSync — update existing worklog', () => {
           issue_key: ISSUE_KEY,
           jira_worklog_id: 'jira-worklog-1',
           last_synced_seconds: 120, // Same as tracked time
-          created_as_user: true,
+          created_as_user: false,
         }],
       })
     );
@@ -367,7 +367,38 @@ describe('scheduledWorklogSync — update existing worklog', () => {
     expect(mockCreateJiraWorklogAsApp).not.toHaveBeenCalled();
   });
 
-  it('updates via asUser when time changed and accountId available', async () => {
+  it('skips user-authored worklog even when time has changed (defers to interactive sync)', async () => {
+    mockSupabaseRequest.mockImplementation(
+      buildSupabaseRequestMock({
+        activityRecords: [{
+          user_id: USER_ID,
+          user_assigned_issue_key: ISSUE_KEY,
+          duration_seconds: 300,
+          total_time_seconds: 300,
+          end_time: '2026-03-12T10:00:00Z',
+        }],
+        existingMappings: [{
+          id: 'mapping-user-owned',
+          issue_key: ISSUE_KEY,
+          jira_worklog_id: 'jira-worklog-user',
+          last_synced_seconds: 120, // Time has changed
+          created_as_user: true,    // But it's user-authored
+        }],
+      })
+    );
+
+    const result = await runScheduledWorklogSync();
+
+    expect(result.success).toBe(true);
+    expect(result.synced).toBe(0); // Should NOT count as synced
+    // Should NOT touch the Jira worklog at all
+    expect(mockUpdateJiraWorklogAsUser).not.toHaveBeenCalled();
+    expect(mockUpdateJiraWorklogAsApp).not.toHaveBeenCalled();
+    expect(mockCreateJiraWorklogAsUser).not.toHaveBeenCalled();
+    expect(mockCreateJiraWorklogAsApp).not.toHaveBeenCalled();
+  });
+
+  it('updates app-authored worklog via asUser when time changed and accountId available', async () => {
     mockSupabaseRequest.mockImplementation(
       buildSupabaseRequestMock({
         activityRecords: [{
@@ -382,7 +413,7 @@ describe('scheduledWorklogSync — update existing worklog', () => {
           issue_key: ISSUE_KEY,
           jira_worklog_id: 'jira-worklog-1',
           last_synced_seconds: 120, // Different from tracked time
-          created_as_user: true,
+          created_as_user: false,   // App-authored — scheduled trigger may update
         }],
       })
     );
@@ -413,7 +444,7 @@ describe('scheduledWorklogSync — update existing worklog', () => {
           issue_key: ISSUE_KEY,
           jira_worklog_id: 'jira-worklog-1',
           last_synced_seconds: 120,
-          created_as_user: true,
+          created_as_user: false,   // App-authored — safe for scheduled trigger
         }],
       })
     );
@@ -432,7 +463,7 @@ describe('scheduledWorklogSync — update existing worklog', () => {
     );
   });
 
-  it('recreates worklog when update returns 404 (stale mapping)', async () => {
+  it('recreates worklog when update returns 404 (stale app-authored mapping)', async () => {
     mockSupabaseRequest.mockImplementation(
       buildSupabaseRequestMock({
         activityRecords: [{
@@ -447,7 +478,7 @@ describe('scheduledWorklogSync — update existing worklog', () => {
           issue_key: ISSUE_KEY,
           jira_worklog_id: 'jira-worklog-1',
           last_synced_seconds: 120,
-          created_as_user: true,
+          created_as_user: false,   // App-authored — safe for scheduled trigger
         }],
       })
     );

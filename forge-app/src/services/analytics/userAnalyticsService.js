@@ -6,7 +6,7 @@
 import { getSupabaseConfig, getOrCreateUser, getOrCreateOrganization, getUserOrganizationMembership, supabaseRequest } from '../../utils/supabase.js';
 import { checkUserPermissions, getProjectsUserAdmins } from '../../utils/jira.js';
 import { MAX_DAILY_SUMMARY_DAYS, MAX_WEEKLY_SUMMARY_WEEKS, MAX_ISSUES_IN_ANALYTICS } from '../../config/constants.js';
-import { fetchDashboardData } from '../../utils/remote.js';
+import { fetchDashboardData, syncCacheFromBatchResponse } from '../../utils/remote.js';
 import { kvs } from '@forge/kvs';
 
 // Permission cache TTL (5 minutes) — balances freshness with latency savings
@@ -108,6 +108,11 @@ export async function fetchTimeAnalyticsBatch(accountId, cloudId) {
     maxIssuesInAnalytics: MAX_ISSUES_IN_ANALYTICS
   });
   console.log(`[Analytics] Dashboard batch took ${Date.now() - t1}ms, total elapsed ${Date.now() - t0}ms`);
+  console.log('[Analytics] Batch API orgId:', dashboardData.organizationId, 'userId:', dashboardData.userId, 'allUsers:', dashboardData.allUsers?.length, 'dailySummary:', dashboardData.dailySummary?.length);
+
+  // Sync Forge caches with the authoritative values from the batch API.
+  // This prevents stale org/user IDs from causing timeline and worklog operations to fail.
+  syncCacheFromBatchResponse(cloudId, accountId, dashboardData);
 
   // Enforce Forge-computed permission — never trust the AI server's canViewAllUsers
   dashboardData.canViewAllUsers = canViewAllUsers;

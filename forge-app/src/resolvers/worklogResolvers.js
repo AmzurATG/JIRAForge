@@ -7,6 +7,7 @@ import { createWorklog, syncCurrentUserWorklogs } from '../services/worklogServi
 import { runScheduledWorklogSync } from '../services/scheduledWorklogSync.js';
 import { reassignWorklog, splitWorklog } from '../services/worklogReassignmentService.js';
 import { isJiraAdmin } from '../utils/jira.js';
+import { clearCache } from '../utils/cache.js';
 import api, { route } from '@forge/api';
 
 /**
@@ -178,16 +179,17 @@ export function registerWorklogResolvers(resolver) {
     const cloudId = context.cloudId;
     const { fromIssueKey, toIssueKey } = payload;
 
-    if (!fromIssueKey || !toIssueKey) {
-      return { success: false, error: 'Both fromIssueKey and toIssueKey are required' };
+    if (!toIssueKey) {
+      return { success: false, error: 'toIssueKey is required' };
     }
 
-    if (fromIssueKey === toIssueKey) {
+    if (fromIssueKey && fromIssueKey === toIssueKey) {
       return { success: false, error: 'Cannot reassign to the same issue' };
     }
 
     try {
       const result = await reassignWorklog(accountId, cloudId, fromIssueKey, toIssueKey);
+      clearCache(); // Invalidate dashboard cache so next fetch returns fresh data
       return {
         success: true,
         fromIssueKey: result.fromIssueKey,
@@ -212,10 +214,10 @@ export function registerWorklogResolvers(resolver) {
     const cloudId = context.cloudId;
     const { fromIssueKey, toIssueKey, splitSeconds } = payload;
 
-    if (!fromIssueKey || !toIssueKey) {
-      return { success: false, error: 'Both fromIssueKey and toIssueKey are required' };
+    if (!toIssueKey) {
+      return { success: false, error: 'toIssueKey is required' };
     }
-    if (fromIssueKey === toIssueKey) {
+    if (fromIssueKey && fromIssueKey === toIssueKey) {
       return { success: false, error: 'Cannot split to the same issue' };
     }
     if (!splitSeconds || splitSeconds <= 0 || !Number.isInteger(splitSeconds)) {
@@ -224,6 +226,7 @@ export function registerWorklogResolvers(resolver) {
 
     try {
       const result = await splitWorklog(accountId, cloudId, fromIssueKey, toIssueKey, splitSeconds);
+      clearCache(); // Invalidate dashboard cache so next fetch returns fresh data
       return {
         success: true,
         fromIssueKey: result.fromIssueKey,

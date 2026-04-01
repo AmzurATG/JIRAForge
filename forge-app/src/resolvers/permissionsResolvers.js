@@ -3,7 +3,7 @@
  * Resolver definitions for checking user permissions and roles
  */
 
-import { isJiraAdmin, checkUserPermissions, getProjectsUserAdmins, getAllJiraProjectKeys } from '../utils/jira.js';
+import { isJiraAdmin, checkUserPermissions, getVerifiedAdminProjectKeys, getAllJiraProjectKeys } from '../utils/jira.js';
 
 /**
  * Register permissions resolvers
@@ -27,34 +27,10 @@ export function registerPermissionsResolvers(resolver) {
       let projectAdminProjects = [];
       let allProjectKeys = [];
 
-      // Always get projects where user is project admin.
-      // NOTE: getProjectsUserAdmins() uses ?action=edit which, per Atlassian docs,
-      // maps to the EDIT_ISSUES permission — not ADMINISTER_PROJECTS. This means
-      // regular developers can appear in the list, causing admin tabs to show for
-      // everyone. We correct this with a two-step explicit ADMINISTER_PROJECTS check.
-      projectAdminProjects = await getProjectsUserAdmins();
-
-      if (!isAdmin && projectAdminProjects.length > 0) {
-        // Step 1 — global fast-fail (1 API call).
-        // mypermissions without a projectKey returns havePermission:true if the user
-        // holds ADMINISTER_PROJECTS on ANY project in the instance. If false, the user
-        // is not a project admin anywhere and we can skip all further checks.
-        const globalAdminCheck = await checkUserPermissions(['ADMINISTER_PROJECTS']);
-        if (!globalAdminCheck.permissions?.ADMINISTER_PROJECTS?.havePermission) {
-          // Not an admin anywhere — action=edit returned too broadly (EDIT_ISSUES holders).
-          projectAdminProjects = [];
-        } else {
-          // Step 2 — per-project verification.
-          // User IS an admin on at least one project, but action=edit still includes
-          // projects where the user only has EDIT_ISSUES. Filter to the true admin set.
-          const verified = await Promise.all(
-            projectAdminProjects.map(async (pk) => {
-              const perm = await checkUserPermissions(['ADMINISTER_PROJECTS'], pk);
-              return perm.permissions?.ADMINISTER_PROJECTS?.havePermission ? pk : null;
-            })
-          );
-          projectAdminProjects = verified.filter(Boolean);
-        }
+      if (!isAdmin) {
+        // Use the verified helper that does the 2-step ADMINISTER_PROJECTS check,
+        // filtering out projects where the user only has EDIT_ISSUES.
+        projectAdminProjects = await getVerifiedAdminProjectKeys();
       }
 
       // For Jira Admins, also get all project keys for Team Analytics

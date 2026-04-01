@@ -4,6 +4,8 @@
  */
 
 import { createJiraWorklog, updateJiraWorklog, deleteJiraWorklog, deleteJiraWorklogAsApp } from '../utils/jira.js';
+import { getAllUserAssignedIssues } from '../utils/jira.js';
+import api, { route } from '@forge/api';
 // eslint-disable-next-line deprecation/deprecation
 import { getSupabaseConfig, supabaseRequest, getOrCreateOrganization, getOrCreateUser } from '../utils/supabase.js';
 import { formatJiraDate } from '../utils/formatters.js';
@@ -86,17 +88,21 @@ async function aggregateUserTrackedTime(supabaseConfig, organizationId, userId) 
   let totalFetched = 0;
 
   while (true) {
-    // Query activity_records (interval-based tracking) instead of analysis_results (screenshot-based)
+    // Query activity_records — include ALL records (with and without user_assigned_issue_key).
+    // Records without an assigned issue key will be matched to in-progress issues
+    // by project_key below, mirroring the UI's display logic so users don't see time
+    // in the dashboard that isn't synced to Jira.
     // eslint-disable-next-line deprecation/deprecation
     const page = await supabaseRequest(
       supabaseConfig,
-      `activity_records?organization_id=eq.${organizationId}&user_id=eq.${userId}&status=in.(pending,processing,analyzed)&classification=in.(productive,unknown)&user_assigned_issue_key=not.is.null&select=user_assigned_issue_key,duration_seconds,total_time_seconds,end_time&order=created_at.desc&limit=${PAGE_SIZE}&offset=${offset}`
+      `activity_records?organization_id=eq.${organizationId}&user_id=eq.${userId}&status=in.(pending,processing,analyzed)&classification=in.(productive,unknown)&select=user_assigned_issue_key,project_key,duration_seconds,total_time_seconds,end_time&order=created_at.desc&limit=${PAGE_SIZE}&offset=${offset}`
     );
 
     if (!page || !Array.isArray(page) || page.length === 0) break;
 
     page.forEach(entry => {
       const key = entry.user_assigned_issue_key;
+      if (!key) return; // Unassigned records handled separately in aggregateWithFallback
       if (!timeByIssue[key]) {
         timeByIssue[key] = 0;
         lastWorkedByIssue[key] = null;
@@ -131,6 +137,103 @@ async function aggregateUserTrackedTime(supabaseConfig, organizationId, userId) 
         lastWorkedOn: lastWorkedByIssue[issueKey]
       };
     });
+}
+
+/**
+ * Aggregate unassigned records (no user_assigned_issue_key) and attribute them
+ * to the user's first in-progress Jira issue in the same project. This mirrors
+ * the fallback matching in getActiveIssuesWithTime (issueQueryService.js) so
+ * time that appears in the dashboard UI also gets synced to Jira.
+ *
+ * Only used in the interactive user sync path (not the scheduled trigger),
+ * because it requires the user's live Jira session to fetch their issues.
+ *
+ * @param {Object} supabaseConfig - Supabase configuration
+ * @param {string} organizationId - Organization ID
+ * @param {string} userId - User ID
+ * @returns {Promise<Array>} Array of {issueKey, timeTracked, lastWorkedOn}
+ */
+async function aggregateUnassignedTimeWithFallback(supabaseConfig, organizationId, userId) {
+  const PAGE_SIZE = 1000;
+  const timeByProject = {};
+  const lastWorkedByProject = {};
+  let offset = 0;
+  let totalFetched = 0;
+
+  while (true) {
+    // Fetch records with NO user_assigned_issue_key but WITH a project_key
+    // eslint-disable-next-line deprecation/deprecation
+    const page = await supabaseRequest(
+      supabaseConfig,
+      `activity_records?organization_id=eq.${organizationId}&user_id=eq.${userId}&status=in.(pending,processing,analyzed)&classification=in.(productive,unknown)&user_assigned_issue_key=is.null&project_key=not.is.null&select=project_key,duration_seconds,total_time_seconds,end_time&order=created_at.desc&limit=${PAGE_SIZE}&offset=${offset}`
+    );
+
+    if (!page || !Array.isArray(page) || page.length === 0) break;
+
+    page.forEach(entry => {
+      const pk = entry.project_key;
+      if (!pk) return;
+      if (!timeByProject[pk]) {
+        timeByProject[pk] = 0;
+        lastWorkedByProject[pk] = null;
+      }
+      timeByProject[pk] += entry.duration_seconds || entry.total_time_seconds || 0;
+      const ts = entry.end_time;
+      if (ts && (!lastWorkedByProject[pk] || ts > lastWorkedByProject[pk])) {
+        lastWorkedByProject[pk] = ts;
+      }
+    });
+
+    totalFetched += page.length;
+    offset += page.length;
+    if (page.length < PAGE_SIZE) break;
+    if (totalFetched > 5000) break;
+  }
+
+  const projectsWithTime = Object.keys(timeByProject);
+  if (projectsWithTime.length === 0) return [];
+
+  console.log(`[UserSync] Found unassigned time in ${projectsWithTime.length} projects: ${JSON.stringify(timeByProject)}`);
+
+  // Fetch user's in-progress issues to map project_key -> issue_key
+  // Uses the same Jira API as getActiveIssuesWithTime (getAllUserAssignedIssues)
+  let jiraIssues;
+  try {
+    const jiraData = await getAllUserAssignedIssues();
+    jiraIssues = jiraData.issues || [];
+  } catch (err) {
+    console.warn(`[UserSync] Could not fetch user issues for fallback matching:`, err.message);
+    return [];
+  }
+
+  // Build map: project_key -> first in-progress issue key (same logic as issueQueryService)
+  const inProgressIssuesByProject = {};
+  jiraIssues.forEach(issue => {
+    const projectKey = issue.fields?.project?.key;
+    const statusCategory = issue.fields?.status?.statusCategory?.key;
+    if (projectKey && statusCategory === 'indeterminate' && !inProgressIssuesByProject[projectKey]) {
+      inProgressIssuesByProject[projectKey] = issue.key;
+    }
+  });
+
+  // Map unassigned project time to in-progress issues
+  const fallbackEntries = [];
+  for (const [projectKey, seconds] of Object.entries(timeByProject)) {
+    const issueKey = inProgressIssuesByProject[projectKey];
+    if (!issueKey) {
+      console.log(`[UserSync] No in-progress issue for project ${projectKey}, skipping ${Math.round(seconds)}s of unassigned time`);
+      continue;
+    }
+    const rounded = Math.round(seconds);
+    fallbackEntries.push({
+      issueKey,
+      timeTracked: rounded < MIN_SYNC_SECONDS ? MIN_SYNC_SECONDS : rounded,
+      lastWorkedOn: lastWorkedByProject[projectKey]
+    });
+    console.log(`[UserSync] Fallback: ${Math.round(seconds)}s unassigned time in ${projectKey} → ${issueKey}`);
+  }
+
+  return fallbackEntries;
 }
 
 /**
@@ -197,6 +300,24 @@ async function cleanupOrphanedUserWorklogs(supabaseConfig, organizationId, userI
  * @returns {Promise<{success: boolean, synced?: number, errors?: number, error?: string, message?: string}>}
  */
 export async function syncCurrentUserWorklogs(accountId, cloudId) {
+  // Diagnostic: verify the resolver context has a real user session
+  try {
+    const meResp = await api.asUser().requestJira(
+      route`/rest/api/3/myself`,
+      { headers: { 'Accept': 'application/json' } }
+    );
+    const me = await meResp.json();
+    console.log(`[UserSync] Running as: ${me.displayName} (${me.accountId})`);
+
+    if (me.accountId !== accountId) {
+      console.error(`[UserSync] MISMATCH! Context accountId=${accountId} but api.asUser() resolved to ${me.accountId}`);
+    }
+  } catch (e) {
+    console.error(`[UserSync] api.asUser() /myself failed:`, e.message);
+    // If this fails, the user context is broken — worklogs WILL be created as app
+    return { success: false, error: 'User session not available for worklog sync' };
+  }
+
   // eslint-disable-next-line deprecation/deprecation
   const supabaseConfig = await getSupabaseConfig(accountId);
   if (!supabaseConfig) {
@@ -232,7 +353,32 @@ export async function syncCurrentUserWorklogs(accountId, cloudId) {
   }
 
   // Aggregate tracked time for this user across all issues
-  const allEntries = await aggregateUserTrackedTime(supabaseConfig, organizationId, userId);
+  const directEntries = await aggregateUserTrackedTime(supabaseConfig, organizationId, userId);
+
+  // Also pick up unassigned records (no user_assigned_issue_key) by matching
+  // them to in-progress issues via project_key — same fallback the dashboard uses.
+  // This ensures time that appears in the UI also gets synced to Jira.
+  const fallbackEntries = await aggregateUnassignedTimeWithFallback(supabaseConfig, organizationId, userId);
+
+  // Merge: if both direct and fallback have time for the same issue, sum them.
+  const mergedByIssue = {};
+  for (const entry of [...directEntries, ...fallbackEntries]) {
+    if (!mergedByIssue[entry.issueKey]) {
+      mergedByIssue[entry.issueKey] = { ...entry };
+    } else {
+      mergedByIssue[entry.issueKey].timeTracked += entry.timeTracked;
+      // Keep the most recent lastWorkedOn
+      if (entry.lastWorkedOn && (!mergedByIssue[entry.issueKey].lastWorkedOn ||
+          entry.lastWorkedOn > mergedByIssue[entry.issueKey].lastWorkedOn)) {
+        mergedByIssue[entry.issueKey].lastWorkedOn = entry.lastWorkedOn;
+      }
+    }
+  }
+  const allEntries = Object.values(mergedByIssue);
+
+  if (fallbackEntries.length > 0) {
+    console.log(`[UserSync] Merged ${directEntries.length} direct + ${fallbackEntries.length} fallback entries → ${allEntries.length} total`);
+  }
 
   // Filter entries by project-level sync settings
   const entries = allEntries.filter(entry => {

@@ -19,7 +19,7 @@ import {
   deleteProjectSettings
 } from '../services/projectSettingsService.js';
 
-import { isJiraAdmin, checkUserPermissions } from '../utils/jira.js';
+import { isJiraAdmin, checkUserPermissions, getVerifiedAdminProjectKeys } from '../utils/jira.js';
 
 /**
  * Register settings resolvers
@@ -150,16 +150,29 @@ export function registerSettingsResolvers(resolver) {
   });
 
   /**
-   * Resolver for getting all Jira projects
-   * Used to show which projects have settings configured
+   * Resolver for getting Jira projects the user can administer
+   * Jira Admins see all projects; Project Admins see only their admin projects
+   * Normal users get an empty list (server-side enforcement)
    */
   resolver.define('getJiraProjects', async (req) => {
     try {
-      const projects = await getJiraProjects();
-      return {
-        success: true,
-        projects
-      };
+      const allProjects = await getJiraProjects();
+      const isAdmin = await isJiraAdmin();
+
+      if (isAdmin) {
+        // Jira admin — return all projects
+        return { success: true, projects: allProjects };
+      }
+
+      // Non-admin — only return projects where user has ADMINISTER_PROJECTS
+      const adminKeys = await getVerifiedAdminProjectKeys();
+      if (adminKeys.length === 0) {
+        return { success: true, projects: [] };
+      }
+
+      const adminKeySet = new Set(adminKeys);
+      const filteredProjects = allProjects.filter(p => adminKeySet.has(p.key));
+      return { success: true, projects: filteredProjects };
     } catch (error) {
       console.error('Error getting Jira projects:', error);
       return {

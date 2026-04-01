@@ -182,7 +182,14 @@ export async function createJiraWorklog(issueKey, timeSpentSeconds, startedAt) {
     }
   );
 
-  return response.json();
+  const result = await response.json();
+
+  // Diagnostic: Log who Jira thinks created this worklog
+  if (result?.author) {
+    console.log(`[Worklog] Created via asUser() — Jira author: ${result.author.displayName} (${result.author.accountId})`);
+  }
+
+  return result;
 }
 
 /**
@@ -458,6 +465,36 @@ export async function getAllJiraProjects() {
 export async function getAllJiraProjectKeys() {
   const projects = await getAllJiraProjects();
   return new Set(projects.map(p => p.key));
+}
+
+/**
+ * Get verified list of project keys where the current user is a Project Administrator.
+ * Uses a 2-step approach:
+ *   1. Gets candidate projects via action=edit (which maps to EDIT_ISSUES — too broad)
+ *   2. Verifies ADMINISTER_PROJECTS on each candidate via mypermissions
+ * This avoids false positives where users with only EDIT_ISSUES appear as admins.
+ * @returns {Promise<Array<string>>} Array of verified project admin keys
+ */
+export async function getVerifiedAdminProjectKeys() {
+  const candidates = await getProjectsUserAdmins();
+  if (candidates.length === 0) return [];
+
+  // Global fast-fail — if the user doesn't have ADMINISTER_PROJECTS on any
+  // project at all, skip the per-project checks.
+  const globalCheck = await checkUserPermissions(['ADMINISTER_PROJECTS']);
+  if (!globalCheck.permissions?.ADMINISTER_PROJECTS?.havePermission) {
+    return [];
+  }
+
+  // Per-project verification: only keep projects where the user truly has
+  // ADMINISTER_PROJECTS (not just EDIT_ISSUES).
+  const verified = await Promise.all(
+    candidates.map(async (pk) => {
+      const perm = await checkUserPermissions(['ADMINISTER_PROJECTS'], pk);
+      return perm.permissions?.ADMINISTER_PROJECTS?.havePermission ? pk : null;
+    })
+  );
+  return verified.filter(Boolean);
 }
 
 /**
