@@ -210,6 +210,11 @@ if os.path.exists(ocr_dir):
 dynamic_hiddenimports = []
 dynamic_hiddenimports += collect_submodules('ocr')
 dynamic_hiddenimports += collect_submodules('privacy')
+try:
+    dynamic_hiddenimports += collect_submodules('presidio_analyzer')
+    dynamic_hiddenimports += collect_submodules('presidio_anonymizer')
+except Exception:
+    print("[WARN] Could not collect presidio submodules")
 dynamic_hiddenimports += collect_submodules('supabase')
 dynamic_hiddenimports += collect_submodules('keyring')
 dynamic_hiddenimports += collect_submodules('pynput')
@@ -219,6 +224,11 @@ dynamic_hiddenimports += collect_submodules('pystray')
 runtime_datas = []
 runtime_datas += collect_data_files('certifi')
 runtime_datas += collect_data_files('tzdata')
+try:
+    runtime_datas += collect_data_files('presidio_analyzer')
+    runtime_datas += collect_data_files('presidio_anonymizer')
+except Exception:
+    print("[WARN] Could not collect presidio data files")
 # ==============================================================================
 # BUILD SUMMARY
 # ==============================================================================
@@ -313,6 +323,9 @@ a = Analysis(
         'dotenv',
         # Crypto
         'cryptography',
+        # Privacy / PII detection
+        'presidio_analyzer',
+        'presidio_anonymizer',
         # Process management
         'psutil',
         # Tkinter (for pause popup)
