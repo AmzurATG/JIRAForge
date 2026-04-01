@@ -32,7 +32,7 @@ function TimesheetSettings() {
     idleThresholdSeconds: 300,
 
     // Jira Worklog Sync
-    jiraWorklogSyncEnabled: false,
+    jiraWorklogSyncEnabled: true,
 
     // Working Hours
     workHoursStart: '09:00',

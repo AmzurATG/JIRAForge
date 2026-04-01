@@ -183,6 +183,9 @@ const authLimiter = rateLimit({
   }
 });
 
+// Public OAuth config (exposes only the client ID — safe for browsers)
+app.get('/api/auth/config', authLimiter, authController.getOAuthConfig);
+
 // Exchange OAuth code for tokens (Atlassian OAuth callback proxy)
 app.post('/api/auth/atlassian/callback', authLimiter, authController.atlassianCallback);
 

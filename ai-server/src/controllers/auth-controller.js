@@ -34,6 +34,21 @@ function getAtlassianCredentials() {
 }
 
 /**
+ * GET /api/auth/config
+ * Returns public OAuth configuration (client ID only — no secrets).
+ * Used by the dashboard React app at runtime so the client ID doesn't
+ * need to be baked in at build time.
+ */
+exports.getOAuthConfig = (req, res) => {
+  const clientId = process.env.ATLASSIAN_CLIENT_ID;
+  if (!clientId) {
+    logger.error('[Auth] ATLASSIAN_CLIENT_ID not configured');
+    return res.status(500).json({ success: false, error: 'OAuth not configured on server' });
+  }
+  res.json({ success: true, clientId });
+};
+
+/**
  * Check if Atlassian credentials are configured
  * @param {Object} res - Express response object
  * @returns {boolean} True if credentials are valid, false if error response sent

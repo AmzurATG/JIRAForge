@@ -6,7 +6,7 @@ import { invoke } from '@forge/bridge';
  * Allows project admins to enable/disable worklog sync for their project
  */
 function ProjectWorklogSyncSettings({ projectKey, projectName }) {
-  const [enabled, setEnabled] = useState(false);
+  const [enabled, setEnabled] = useState(true);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [syncing, setSyncing] = useState(false);
@@ -24,7 +24,7 @@ function ProjectWorklogSyncSettings({ projectKey, projectName }) {
     try {
       const result = await invoke('getTrackingSettings', { projectKey });
       if (result.success && result.settings) {
-        setEnabled(result.settings.jiraWorklogSyncEnabled || false);
+        setEnabled(result.settings.jiraWorklogSyncEnabled ?? true);
         setSettingsSource(result.settings.settingsSource || 'organization');
       }
     } catch (err) {
