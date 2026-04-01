@@ -78,7 +78,10 @@ async function verifyAtlassianToken(atlassianToken) {
       'Authorization': `Bearer ${atlassianToken}`,
       'Accept': 'application/json'
     },
-    timeout: 10000
+    timeout: 10000,
+    maxContentLength: 1 * 1024 * 1024,
+    maxBodyLength: 1 * 1024 * 1024,
+    maxRedirects: 5
   });
   return userResponse.data;
 }
@@ -231,7 +234,10 @@ async function autoProvisionUser(atlassianAccountId, atlassianToken, email, disp
         'Authorization': `Bearer ${atlassianToken}`,
         'Accept': 'application/json'
       },
-      timeout: 10000
+      timeout: 10000,
+      maxContentLength: 1 * 1024 * 1024,
+      maxBodyLength: 1 * 1024 * 1024,
+      maxRedirects: 5
     });
 
     const resources = resourcesResponse.data;
@@ -441,7 +447,10 @@ exports.atlassianCallback = async (req, res) => {
       tokenRequestPayload,
       {
         headers: { 'Content-Type': 'application/json' },
-        timeout: 30000
+        timeout: 30000,
+        maxContentLength: 1 * 1024 * 1024,
+        maxBodyLength: 1 * 1024 * 1024,
+        maxRedirects: 5
       }
     );
 
@@ -495,7 +504,10 @@ exports.refreshToken = async (req, res) => {
       },
       {
         headers: { 'Content-Type': 'application/json' },
-        timeout: 30000
+        timeout: 30000,
+        maxContentLength: 1 * 1024 * 1024,
+        maxBodyLength: 1 * 1024 * 1024,
+        maxRedirects: 5
       }
     );
 

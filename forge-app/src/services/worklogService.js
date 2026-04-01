@@ -112,7 +112,10 @@ async function aggregateUserTrackedTime(supabaseConfig, organizationId, userId) 
     totalFetched += page.length;
     offset += page.length;
     if (page.length < PAGE_SIZE) break;
-    if (totalFetched > 5000) break; // Safety limit per user
+    if (totalFetched > 50000) {
+      console.warn(`[WorklogService] Safety limit reached (50000 records) for user ${userId}`);
+      break;
+    }
   }
 
   // Round up sub-60s totals to Jira's minimum instead of discarding —

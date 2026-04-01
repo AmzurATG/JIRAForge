@@ -268,7 +268,8 @@ app.get('/api/feedback/feedback-form.js', (req, res) => {
 app.post('/api/feedback/submit', feedbackLimiter, feedbackController.submitFeedback);
 
 // Check feedback/Jira creation status (public - feedback ID is unguessable UUID)
-app.get('/api/feedback/status/:id', feedbackController.getFeedbackStatus);
+// Rate-limited to prevent polling abuse
+app.get('/api/feedback/status/:id', publicLimiter, feedbackController.getFeedbackStatus);
 
 // =============================================================================
 // APP VERSION ROUTES (Public - for desktop app update checking)
@@ -316,49 +317,50 @@ app.use('/api/notifications', authMiddleware, notificationController);
 // =============================================================================
 
 // Rate limiter for Forge routes
-// NOTE: All Forge app calls arrive from Atlassian's shared infrastructure IPs,
-// not individual user IPs. The keyGenerator tries to use cloudId (per-tenant)
-// but forgeContext is set by forgeAuthMiddleware which runs AFTER this limiter,
-// so it always falls back to IP. Set a high limit to accommodate all tenants.
+// All Forge app calls arrive from Atlassian's shared infrastructure IPs,
+// not individual user IPs. We use a per-tenant key (cloudId) set by
+// forgeAuthMiddleware. The limiter is applied AFTER auth so cloudId is available.
 const forgeLimiter = rateLimit({
   windowMs: 1 * 60 * 1000, // 1 minute
-  max: 2000, // High limit - all tenants share the same Atlassian egress IP(s)
-  message: 'Too many requests from this IP, please try again later.',
+  max: 200, // 200 requests per minute per tenant (cloudId)
+  message: 'Too many requests from this tenant, please try again later.',
   standardHeaders: true,
   legacyHeaders: false,
   keyGenerator: (req) => {
-    // forgeContext is not yet set here (set by forgeAuthMiddleware downstream)
-    // so this always falls back to IP — which is Atlassian's shared IP
+    // forgeAuthMiddleware runs before this limiter in the middleware chain
     return req.forgeContext?.cloudId || req.ip || 'unknown';
   }
 });
 
+// Helper: apply forgeAuth BEFORE forgeLimiter so cloudId-based keying works
+const forgeMiddleware = [forgeAuthMiddleware, forgeLimiter];
+
 // Generic Supabase query endpoint
-app.post('/api/forge/supabase/query', forgeLimiter, forgeAuthMiddleware, forgeProxyController.supabaseQuery);
+app.post('/api/forge/supabase/query', ...forgeMiddleware, forgeProxyController.supabaseQuery);
 
 // Batch endpoint - fetches all dashboard data in single request (RECOMMENDED)
-app.post('/api/forge/dashboard', forgeLimiter, forgeAuthMiddleware, forgeProxyController.getDashboardData);
+app.post('/api/forge/dashboard', ...forgeMiddleware, forgeProxyController.getDashboardData);
 
 // Organization management
-app.post('/api/forge/organization', forgeLimiter, forgeAuthMiddleware, forgeProxyController.getOrCreateOrganization);
-app.post('/api/forge/organization/membership', forgeLimiter, forgeAuthMiddleware, forgeProxyController.getOrganizationMembership);
+app.post('/api/forge/organization', ...forgeMiddleware, forgeProxyController.getOrCreateOrganization);
+app.post('/api/forge/organization/membership', ...forgeMiddleware, forgeProxyController.getOrganizationMembership);
 
 // User management
-app.post('/api/forge/user', forgeLimiter, forgeAuthMiddleware, forgeProxyController.getOrCreateUser);
+app.post('/api/forge/user', ...forgeMiddleware, forgeProxyController.getOrCreateUser);
 
 // Storage operations — larger body limit for file uploads
-app.post('/api/forge/storage/upload', express.json({ limit: '10mb' }), forgeLimiter, forgeAuthMiddleware, forgeProxyController.storageUpload);
-app.post('/api/forge/storage/signed-url', forgeLimiter, forgeAuthMiddleware, forgeProxyController.storageSignedUrl);
-app.post('/api/forge/storage/delete', forgeLimiter, forgeAuthMiddleware, forgeProxyController.storageDelete);
+app.post('/api/forge/storage/upload', express.json({ limit: '10mb' }), ...forgeMiddleware, forgeProxyController.storageUpload);
+app.post('/api/forge/storage/signed-url', ...forgeMiddleware, forgeProxyController.storageSignedUrl);
+app.post('/api/forge/storage/delete', ...forgeMiddleware, forgeProxyController.storageDelete);
 
 // App version (for update notifications in Forge UI)
-app.post('/api/forge/app-version/latest', forgeLimiter, forgeAuthMiddleware, forgeProxyController.getLatestAppVersion);
+app.post('/api/forge/app-version/latest', ...forgeMiddleware, forgeProxyController.getLatestAppVersion);
 
 // Feedback session (opens feedback form in browser)
-app.post('/api/forge/feedback/session', forgeLimiter, forgeAuthMiddleware, forgeProxyController.createFeedbackSession);
+app.post('/api/forge/feedback/session', ...forgeMiddleware, forgeProxyController.createFeedbackSession);
 
 // Issue cache — called by the avi:jira:updated:issue trigger to keep user_jira_issues_cache fresh
-app.post('/api/forge/issues/cache', forgeLimiter, forgeAuthMiddleware, forgeProxyController.cacheUserIssues);
+app.post('/api/forge/issues/cache', ...forgeMiddleware, forgeProxyController.cacheUserIssues);
 
 // =============================================================================
 // PROTECTED ROUTES (require authMiddleware)
@@ -373,7 +375,7 @@ app.post('/api/analyze-batch', express.json({ limit: '10mb' }), authMiddleware, 
 // classify-app uses Atlassian token auth (desktop app sends OAuth token)
 app.post('/api/classify-app', atlassianAuthMiddleware, activityController.classifyApp);
 // identify-app uses Forge auth (called from Forge app for admin app classification)
-app.post('/api/identify-app', forgeLimiter, forgeAuthMiddleware, activityController.identifyApp);
+app.post('/api/identify-app', ...forgeMiddleware, activityController.identifyApp);
 
 // Manual trigger for clustering - called by organization admins from Forge app
 app.post('/api/trigger-clustering', authMiddleware, async (req, res, next) => {
@@ -475,7 +477,7 @@ app.post('/api/trigger-org-clustering', authMiddleware, async (req, res, next) =
   }
 });
 
-app.post('/api/cluster-unassigned-work', async (req, res, next) => {
+app.post('/api/cluster-unassigned-work', authMiddleware, async (req, res, next) => {
   try {
     const { sessions, userIssues } = req.body;
 
@@ -483,6 +485,22 @@ app.post('/api/cluster-unassigned-work', async (req, res, next) => {
       return res.status(400).json({
         success: false,
         error: 'Sessions array required'
+      });
+    }
+
+    // Limit input size to prevent resource exhaustion / DDoS amplification
+    const MAX_SESSIONS = 500;
+    const MAX_ISSUES = 1000;
+    if (sessions.length > MAX_SESSIONS) {
+      return res.status(400).json({
+        success: false,
+        error: `Too many sessions (max ${MAX_SESSIONS})`
+      });
+    }
+    if (Array.isArray(userIssues) && userIssues.length > MAX_ISSUES) {
+      return res.status(400).json({
+        success: false,
+        error: `Too many issues (max ${MAX_ISSUES})`
       });
     }
 

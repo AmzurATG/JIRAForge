@@ -42,7 +42,10 @@ const atlassianAuth = async (req, res, next) => {
           'Authorization': `Bearer ${token}`,
           'Accept': 'application/json'
         },
-        timeout: 10000
+        timeout: 10000,
+        maxContentLength: 1 * 1024 * 1024, // 1MB max response
+        maxBodyLength: 1 * 1024 * 1024,
+        maxRedirects: 5
       });
 
       // Attach user info to request for downstream use

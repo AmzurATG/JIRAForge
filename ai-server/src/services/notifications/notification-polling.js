@@ -17,6 +17,7 @@ const logger = require('../../utils/logger');
 const POLLING_INTERVAL = Number.parseInt(process.env.NOTIFICATION_POLLING_INTERVAL || '900000', 10); // 15 minutes
 const INACTIVITY_THRESHOLD_HOURS = Number.parseFloat(process.env.INACTIVITY_THRESHOLD_HOURS || '4');
 const LOGIN_REMINDER_DAYS = Number.parseInt(process.env.LOGIN_REMINDER_DAYS || '7', 10);
+const MAX_EMAILS_PER_CYCLE = Number.parseInt(process.env.MAX_EMAILS_PER_CYCLE || '50', 10); // Cap emails per polling cycle
 
 class NotificationPollingService {
     intervalId = null;
@@ -192,6 +193,10 @@ class NotificationPollingService {
 
             let sentCount = 0;
             for (const user of users) {
+                if (sentCount >= MAX_EMAILS_PER_CYCLE) {
+                    logger.warn(`[NotificationPolling] Login reminders: hit per-cycle cap (${MAX_EMAILS_PER_CYCLE}), ${users.length - sentCount} users deferred`);
+                    break;
+                }
                 const sent = await this._sendLoginReminderToUser(user);
                 if (sent) sentCount++;
             }
