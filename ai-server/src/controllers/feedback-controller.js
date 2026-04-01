@@ -34,7 +34,10 @@ async function verifyAtlassianToken(token) {
       'Authorization': `Bearer ${token}`,
       'Accept': 'application/json'
     },
-    timeout: 10000
+    timeout: 10000,
+    maxContentLength: 1 * 1024 * 1024,
+    maxBodyLength: 1 * 1024 * 1024,
+    maxRedirects: 5
   });
   return userResponse.data;
 }

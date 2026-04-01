@@ -38,7 +38,10 @@ const dashboardAuth = async (req, res, next) => {
     try {
       const meResponse = await axios.get(ATLASSIAN_ME_URL, {
         headers: { 'Authorization': `Bearer ${token}`, 'Accept': 'application/json' },
-        timeout: 10000
+        timeout: 10000,
+        maxContentLength: 1 * 1024 * 1024,
+        maxBodyLength: 1 * 1024 * 1024,
+        maxRedirects: 5
       });
       userInfo = meResponse.data;
     } catch (err) {
@@ -51,7 +54,10 @@ const dashboardAuth = async (req, res, next) => {
     try {
       const resourcesResponse = await axios.get(ATLASSIAN_RESOURCES_URL, {
         headers: { 'Authorization': `Bearer ${token}`, 'Accept': 'application/json' },
-        timeout: 10000
+        timeout: 10000,
+        maxContentLength: 1 * 1024 * 1024,
+        maxBodyLength: 1 * 1024 * 1024,
+        maxRedirects: 5
       });
 
       const resources = resourcesResponse.data;
@@ -81,7 +87,10 @@ const dashboardAuth = async (req, res, next) => {
         `https://api.atlassian.com/ex/jira/${cloudId}/rest/api/3/mypermissions?permissions=ADMINISTER`,
         {
           headers: { 'Authorization': `Bearer ${token}`, 'Accept': 'application/json' },
-          timeout: 10000
+          timeout: 10000,
+          maxContentLength: 1 * 1024 * 1024,
+          maxBodyLength: 1 * 1024 * 1024,
+          maxRedirects: 5
         }
       );
 

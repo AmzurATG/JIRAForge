@@ -15,8 +15,8 @@ const ALLOWED_DOWNLOAD_DOMAINS = [
   'github-releases.githubusercontent.com',
 ];
 
-// Maximum download size for checksum computation (500MB)
-const MAX_DOWNLOAD_SIZE = 500 * 1024 * 1024;
+// Maximum download size for checksum computation (100MB)
+const MAX_DOWNLOAD_SIZE = 100 * 1024 * 1024;
 
 // Maximum redirect depth to prevent redirect loops
 const MAX_REDIRECT_DEPTH = 5;

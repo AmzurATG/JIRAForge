@@ -82,6 +82,7 @@ serve(async (req) => {
             storage_path: payload.record.storage_path,
             project_key: payload.record.project_key,
           }),
+          signal: AbortSignal.timeout(120000), // 120s timeout to prevent hanging connections
         });
 
         if (!aiResponse.ok) {

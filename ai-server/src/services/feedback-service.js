@@ -301,7 +301,10 @@ async function getProjectIssueTypes(email, apiToken, siteUrl, projectKey) {
         'Authorization': `Basic ${basicAuth}`,
         'Accept': 'application/json'
       },
-      timeout: 15000
+      timeout: 15000,
+      maxContentLength: 5 * 1024 * 1024,
+      maxBodyLength: 1 * 1024 * 1024,
+      maxRedirects: 5
     }
   );
 
@@ -483,7 +486,10 @@ async function executeJiraRequest(apiUrl, requestBody, authHeader, baseUrl) {
   try {
     const response = await axios.post(apiUrl, requestBody, {
       headers,
-      timeout: 30000
+      timeout: 30000,
+      maxContentLength: 5 * 1024 * 1024,
+      maxBodyLength: 5 * 1024 * 1024,
+      maxRedirects: 5
     });
 
     return {
@@ -505,7 +511,10 @@ async function executeJiraRequest(apiUrl, requestBody, authHeader, baseUrl) {
 
     const retryResponse = await axios.post(apiUrl, requestBody, {
       headers,
-      timeout: 30000
+      timeout: 30000,
+      maxContentLength: 5 * 1024 * 1024,
+      maxBodyLength: 5 * 1024 * 1024,
+      maxRedirects: 5
     });
 
     return {
