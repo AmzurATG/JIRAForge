@@ -11154,6 +11154,7 @@ class TimeTracker:
     <nav class="navbar">
         <h1>&#128272; Admin Dashboard</h1>
         <div class="navbar-actions">
+            <a href="/admin-dashboard" class="nav-btn">Status Report</a>
             <a href="/" class="nav-btn">View App</a>
             <a href="/admin/logout" class="nav-btn">Logout</a>
         </div>

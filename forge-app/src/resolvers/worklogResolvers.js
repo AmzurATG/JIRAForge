@@ -49,7 +49,9 @@ export function registerWorklogResolvers(resolver) {
    * 15-minute client-side cooldown to avoid excessive calls).
    */
   resolver.define('syncMyWorklogs', async (req) => {
+    console.log('[WorklogResolver] syncMyWorklogs invoked');
     const { accountId, cloudId } = req.context;
+    console.log(`[WorklogResolver] syncMyWorklogs context: accountId=${accountId}, cloudId=${cloudId}`);
     try {
       return await syncCurrentUserWorklogs(accountId, cloudId);
     } catch (error) {
@@ -59,17 +61,38 @@ export function registerWorklogResolvers(resolver) {
   });
 
   /**
-   * Resolver to manually trigger worklog sync (admin only)
+   * Resolver to manually trigger worklog sync (admin only).
+   * Runs the scheduled sync first (creates pending records), then the
+   * interactive user sync (converts pending → real Jira worklogs under the
+   * user's name) since the user has a live Jira session.
    */
-  resolver.define('triggerWorklogSync', async () => {
+  resolver.define('triggerWorklogSync', async (req) => {
     try {
       const isAdmin = await isJiraAdmin();
       if (!isAdmin) {
         return { success: false, error: 'Only Jira administrators can trigger worklog sync' };
       }
 
-      const result = await runScheduledWorklogSync();
-      return { success: true, ...result };
+      // Step 1: Run scheduled sync (finds activity records, creates pending worklog_sync entries)
+      const scheduledResult = await runScheduledWorklogSync();
+      console.log(`[WorklogResolver] triggerWorklogSync scheduled result:`, JSON.stringify(scheduledResult));
+
+      // Step 2: Run interactive user sync to convert pending records to real Jira worklogs
+      // using the current user's live session (so worklogs are attributed to the user)
+      const { accountId, cloudId } = req.context;
+      let userSyncResult = { synced: 0 };
+      if (accountId && cloudId) {
+        try {
+          userSyncResult = await syncCurrentUserWorklogs(accountId, cloudId);
+          console.log(`[WorklogResolver] triggerWorklogSync user sync result:`, JSON.stringify(userSyncResult));
+        } catch (userErr) {
+          console.error('[WorklogResolver] User sync after trigger failed:', userErr.message);
+        }
+      }
+
+      const totalSynced = (scheduledResult.synced || 0) + (userSyncResult.synced || 0);
+      const totalErrors = (scheduledResult.errors || 0) + (userSyncResult.errors || 0);
+      return { success: true, synced: totalSynced, errors: totalErrors };
     } catch (error) {
       console.error('Error triggering worklog sync:', error);
       return { success: false, error: error.message };

@@ -182,7 +182,7 @@ describe('scheduledWorklogSync — created_as_user flag', () => {
   });
 
   describe('when impersonation is called but author does NOT match accountId', () => {
-    it('deletes the app worklog and saves a pending record', async () => {
+    it('keeps the app-authored worklog and saves mapping with created_as_user=false', async () => {
       mockSupabaseRequest.mockImplementation(
         buildSupabaseRequestMock({
           activityRecords: [{
@@ -201,29 +201,26 @@ describe('scheduledWorklogSync — created_as_user flag', () => {
         author: { accountId: 'app-account-id', displayName: 'Time Tracker App' },
       });
 
-      // deleteJiraWorklogAsApp used to clean up the app-authored worklog
-      mockDeleteJiraWorklogAsApp.mockResolvedValue({ status: 204 });
-
       const result = await runScheduledWorklogSync();
 
       expect(result.success).toBe(true);
       expect(result.synced).toBe(1);
 
-      // Should have deleted the app-authored worklog
-      expect(mockDeleteJiraWorklogAsApp).toHaveBeenCalledWith(ISSUE_KEY, 'worklog-2');
+      // Should NOT delete the worklog — keep it so time is visible
+      expect(mockDeleteJiraWorklogAsApp).not.toHaveBeenCalled();
 
-      // Should save a pending record (jira_worklog_id = null)
+      // Should save mapping with the real worklog ID and created_as_user=false
       const postCall = mockSupabaseRequest.mock.calls.find(
         ([, q, opts]) => q === 'worklog_sync' && opts?.method === 'POST'
       );
       expect(postCall).toBeDefined();
       expect(postCall[2].body.created_as_user).toBe(false);
-      expect(postCall[2].body.jira_worklog_id).toBeNull();
+      expect(postCall[2].body.jira_worklog_id).toBe('worklog-2');
     });
   });
 
   describe('when impersonation response has no author field', () => {
-    it('deletes the worklog and saves a pending record', async () => {
+    it('keeps the worklog and saves mapping with created_as_user=false', async () => {
       mockSupabaseRequest.mockImplementation(
         buildSupabaseRequestMock({
           activityRecords: [{
@@ -241,26 +238,24 @@ describe('scheduledWorklogSync — created_as_user flag', () => {
         id: 'worklog-3',
       });
 
-      mockDeleteJiraWorklogAsApp.mockResolvedValue({ status: 204 });
-
       const result = await runScheduledWorklogSync();
 
       expect(result.success).toBe(true);
 
-      // Should have deleted the ambiguous worklog
-      expect(mockDeleteJiraWorklogAsApp).toHaveBeenCalledWith(ISSUE_KEY, 'worklog-3');
+      // Should NOT delete the worklog
+      expect(mockDeleteJiraWorklogAsApp).not.toHaveBeenCalled();
 
       const postCall = mockSupabaseRequest.mock.calls.find(
         ([, q, opts]) => q === 'worklog_sync' && opts?.method === 'POST'
       );
       expect(postCall).toBeDefined();
       expect(postCall[2].body.created_as_user).toBe(false);
-      expect(postCall[2].body.jira_worklog_id).toBeNull();
+      expect(postCall[2].body.jira_worklog_id).toBe('worklog-3');
     });
   });
 
   describe('when AUTH_TYPE_UNAVAILABLE prevents impersonation', () => {
-    it('saves a pending record instead of falling back to asApp', async () => {
+    it('falls back to asApp when AUTH_TYPE_UNAVAILABLE', async () => {
       mockSupabaseRequest.mockImplementation(
         buildSupabaseRequestMock({
           activityRecords: [{
@@ -278,27 +273,32 @@ describe('scheduledWorklogSync — created_as_user flag', () => {
         new Error('AUTH_TYPE_UNAVAILABLE: User has not granted offline access')
       );
 
+      // asApp fallback succeeds
+      mockCreateJiraWorklogAsApp.mockResolvedValue({
+        id: 'worklog-app-fallback',
+        author: { accountId: 'app-id', displayName: 'Time Tracker' },
+      });
+
       const result = await runScheduledWorklogSync();
 
       expect(result.success).toBe(true);
       expect(result.synced).toBe(1);
 
-      // Should NOT fall back to asApp — no "Itracker" worklog created
-      expect(mockCreateJiraWorklogAsApp).not.toHaveBeenCalled();
+      // Should fall back to asApp
+      expect(mockCreateJiraWorklogAsApp).toHaveBeenCalled();
 
-      // Should save a pending record with jira_worklog_id = null
+      // Should save mapping with the real worklog ID
       const postCall = mockSupabaseRequest.mock.calls.find(
         ([, q, opts]) => q === 'worklog_sync' && opts?.method === 'POST'
       );
       expect(postCall).toBeDefined();
+      expect(postCall[2].body.jira_worklog_id).toBe('worklog-app-fallback');
       expect(postCall[2].body.created_as_user).toBe(false);
-      expect(postCall[2].body.jira_worklog_id).toBeNull();
-      expect(postCall[2].body.issue_key).toBe(ISSUE_KEY);
     });
   });
 
   describe('when no accountId exists for the user', () => {
-    it('saves a pending record instead of creating via asApp', async () => {
+    it('creates worklog via asApp when no accountId exists', async () => {
       mockSupabaseRequest.mockImplementation(
         buildSupabaseRequestMock({
           activityRecords: [{
@@ -313,21 +313,28 @@ describe('scheduledWorklogSync — created_as_user flag', () => {
         })
       );
 
+      // asApp creates the worklog
+      mockCreateJiraWorklogAsApp.mockResolvedValue({
+        id: 'worklog-no-account',
+        author: { accountId: 'app-id', displayName: 'Time Tracker' },
+      });
+
       const result = await runScheduledWorklogSync();
 
       expect(result.success).toBe(true);
       expect(result.synced).toBe(1);
-      // Should NOT call either Jira API
+      // Should NOT call asUser (no accountId)
       expect(mockCreateJiraWorklogAsUser).not.toHaveBeenCalled();
-      expect(mockCreateJiraWorklogAsApp).not.toHaveBeenCalled();
+      // Should call asApp
+      expect(mockCreateJiraWorklogAsApp).toHaveBeenCalled();
 
-      // Should save a pending record with jira_worklog_id = null
+      // Should save mapping with real worklog ID
       const postCall = mockSupabaseRequest.mock.calls.find(
         ([, q, opts]) => q === 'worklog_sync' && opts?.method === 'POST'
       );
       expect(postCall).toBeDefined();
+      expect(postCall[2].body.jira_worklog_id).toBe('worklog-no-account');
       expect(postCall[2].body.created_as_user).toBe(false);
-      expect(postCall[2].body.jira_worklog_id).toBeNull();
     });
   });
 });
@@ -673,9 +680,10 @@ describe('scheduledWorklogSync — project-level sync filtering', () => {
 
     expect(result.success).toBe(true);
     // The project filter is applied in the DB query, but since we mock
-    // supabaseRequest to return records regardless, we check the query
+    // supabaseRequest to return records regardless, we check the query.
+    // Use classification filter to distinguish aggregation query from diagnostic query.
     const activityQuery = mockSupabaseRequest.mock.calls.find(
-      ([, q]) => q.includes('activity_records?')
+      ([, q]) => q.includes('activity_records?') && q.includes('classification=in.')
     );
     expect(activityQuery).toBeDefined();
     // Should contain the project exclusion clause
@@ -696,11 +704,122 @@ describe('scheduledWorklogSync — project-level sync filtering', () => {
     const result = await runScheduledWorklogSync();
 
     expect(result.success).toBe(true);
+    // Use classification filter to distinguish aggregation query from diagnostic query
     const activityQuery = mockSupabaseRequest.mock.calls.find(
-      ([, q]) => q.includes('activity_records?')
+      ([, q]) => q.includes('activity_records?') && q.includes('classification=in.')
     );
     expect(activityQuery).toBeDefined();
     expect(activityQuery[1]).toContain('project_key=in.(ENABLED)');
+  });
+});
+
+// ============================================================================
+// Tests: diagnostic query and filter removal
+// ============================================================================
+describe('scheduledWorklogSync — diagnostic query and aggregation filter', () => {
+
+  it('runs a diagnostic query before aggregation', async () => {
+    mockSupabaseRequest.mockImplementation(
+      buildSupabaseRequestMock({
+        activityRecords: [{
+          user_id: USER_ID,
+          user_assigned_issue_key: ISSUE_KEY,
+          duration_seconds: 120,
+          total_time_seconds: 120,
+          end_time: '2026-03-12T10:00:00Z',
+        }],
+      })
+    );
+
+    mockCreateJiraWorklogAsUser.mockResolvedValue({
+      id: 'worklog-diag',
+      author: { accountId: ACCOUNT_ID, displayName: DISPLAY_NAME },
+    });
+
+    await runScheduledWorklogSync();
+
+    // Find the diagnostic query — it selects id,user_assigned_issue_key,classification with limit=5
+    const diagQuery = mockSupabaseRequest.mock.calls.find(
+      ([, q]) => q.includes('activity_records?') && q.includes('select=id,user_assigned_issue_key,classification')
+    );
+    expect(diagQuery).toBeDefined();
+    expect(diagQuery[1]).toContain('limit=5');
+  });
+
+  it('aggregation query does not include user_assigned_issue_key filter', async () => {
+    mockSupabaseRequest.mockImplementation(
+      buildSupabaseRequestMock({
+        activityRecords: [{
+          user_id: USER_ID,
+          user_assigned_issue_key: ISSUE_KEY,
+          duration_seconds: 120,
+          total_time_seconds: 120,
+          end_time: '2026-03-12T10:00:00Z',
+        }],
+      })
+    );
+
+    mockCreateJiraWorklogAsUser.mockResolvedValue({
+      id: 'worklog-nf',
+      author: { accountId: ACCOUNT_ID, displayName: DISPLAY_NAME },
+    });
+
+    await runScheduledWorklogSync();
+
+    // The aggregation query should NOT filter by user_assigned_issue_key at the DB level.
+    // Records with null issue keys are now skipped in JS.
+    const aggQuery = mockSupabaseRequest.mock.calls.find(
+      ([, q]) => q.includes('activity_records?') && q.includes('classification=in.')
+    );
+    expect(aggQuery).toBeDefined();
+    expect(aggQuery[1]).not.toContain('user_assigned_issue_key=not.is.null');
+  });
+
+  it('skips records with null user_assigned_issue_key in JS aggregation', async () => {
+    mockSupabaseRequest.mockImplementation(
+      buildSupabaseRequestMock({
+        activityRecords: [
+          // Record WITH issue key — should be aggregated
+          {
+            user_id: USER_ID,
+            user_assigned_issue_key: ISSUE_KEY,
+            duration_seconds: 120,
+            total_time_seconds: 120,
+            end_time: '2026-03-12T10:00:00Z',
+          },
+          // Record WITHOUT issue key — should be skipped
+          {
+            user_id: USER_ID,
+            user_assigned_issue_key: null,
+            project_key: 'ESW',
+            duration_seconds: 60,
+            total_time_seconds: 60,
+            end_time: '2026-03-12T10:30:00Z',
+          },
+        ],
+      })
+    );
+
+    mockCreateJiraWorklogAsUser.mockResolvedValue({
+      id: 'worklog-mixed',
+      author: { accountId: ACCOUNT_ID, displayName: DISPLAY_NAME },
+    });
+
+    const result = await runScheduledWorklogSync();
+
+    expect(result.success).toBe(true);
+    expect(result.synced).toBe(1);
+
+    // Only the record with issue key should result in a worklog
+    expect(mockCreateJiraWorklogAsUser).toHaveBeenCalledWith(
+      ACCOUNT_ID,
+      ISSUE_KEY,
+      120,
+      expect.any(String),
+      DISPLAY_NAME
+    );
+    // Should be called exactly once (only for the record with issue key)
+    expect(mockCreateJiraWorklogAsUser).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -709,7 +828,7 @@ describe('scheduledWorklogSync — project-level sync filtering', () => {
 // ============================================================================
 describe('scheduledWorklogSync — pending record handling', () => {
 
-  it('updates pending record time without calling Jira when time changes', async () => {
+  it('converts pending record to real worklog via asApp when time changes', async () => {
     mockSupabaseRequest.mockImplementation(
       buildSupabaseRequestMock({
         activityRecords: [{
@@ -722,23 +841,28 @@ describe('scheduledWorklogSync — pending record handling', () => {
         existingMappings: [{
           id: 'mapping-pending-1',
           issue_key: ISSUE_KEY,
-          jira_worklog_id: null, // Pending — no Jira worklog
+          jira_worklog_id: 'PENDING', // Pending — no Jira worklog
           last_synced_seconds: 120,
           created_as_user: false,
         }],
       })
     );
 
+    // asApp creates the worklog when converting pending
+    mockCreateJiraWorklogAsApp.mockResolvedValue({
+      id: 'worklog-converted',
+      author: { accountId: 'app-id' },
+    });
+
     const result = await runScheduledWorklogSync();
 
     expect(result.success).toBe(true);
     expect(result.synced).toBe(1);
 
-    // Should NOT call any Jira API for pending records
+    // Should create via asApp (converting pending to real)
+    expect(mockCreateJiraWorklogAsApp).toHaveBeenCalled();
     expect(mockUpdateJiraWorklogAsUser).not.toHaveBeenCalled();
     expect(mockUpdateJiraWorklogAsApp).not.toHaveBeenCalled();
-    expect(mockCreateJiraWorklogAsUser).not.toHaveBeenCalled();
-    expect(mockCreateJiraWorklogAsApp).not.toHaveBeenCalled();
 
     // Should update the pending record in the DB with new time
     const patchCall = mockSupabaseRequest.mock.calls.find(
@@ -748,7 +872,7 @@ describe('scheduledWorklogSync — pending record handling', () => {
     expect(patchCall[2].body.last_synced_seconds).toBe(300);
   });
 
-  it('skips pending record when tracked time has not changed', async () => {
+  it('converts pending record even when tracked time has not changed', async () => {
     mockSupabaseRequest.mockImplementation(
       buildSupabaseRequestMock({
         activityRecords: [{
@@ -761,19 +885,24 @@ describe('scheduledWorklogSync — pending record handling', () => {
         existingMappings: [{
           id: 'mapping-pending-2',
           issue_key: ISSUE_KEY,
-          jira_worklog_id: null,
+          jira_worklog_id: 'PENDING',
           last_synced_seconds: 120, // Same
           created_as_user: false,
         }],
       })
     );
 
+    // asApp creates the worklog when converting pending
+    mockCreateJiraWorklogAsApp.mockResolvedValue({
+      id: 'worklog-converted-2',
+      author: { accountId: 'app-id' },
+    });
+
     const result = await runScheduledWorklogSync();
 
     expect(result.success).toBe(true);
-    expect(result.synced).toBe(0);
-    expect(mockUpdateJiraWorklogAsUser).not.toHaveBeenCalled();
-    expect(mockCreateJiraWorklogAsUser).not.toHaveBeenCalled();
+    expect(result.synced).toBe(1); // Should convert even though time is same
+    expect(mockCreateJiraWorklogAsApp).toHaveBeenCalled();
   });
 
   it('cleans up orphaned pending records without calling Jira', async () => {
@@ -784,7 +913,7 @@ describe('scheduledWorklogSync — pending record handling', () => {
           id: 'mapping-orphan-pending',
           user_id: USER_ID,
           issue_key: ISSUE_KEY,
-          jira_worklog_id: null, // Pending record
+          jira_worklog_id: 'PENDING', // Pending record
         }],
       })
     );

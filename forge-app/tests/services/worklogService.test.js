@@ -92,12 +92,12 @@ function buildSupabaseRequestMock({
     }
 
     // Existing worklog_sync mappings
-    if (query.startsWith('worklog_sync?organization_id=') && query.includes('issue_key=in.')) {
+    if (query.startsWith('worklog_sync?') && query.includes('issue_key=in.')) {
       return Promise.resolve(existingMappings);
     }
 
     // All worklog_sync mappings for cleanup
-    if (query.startsWith('worklog_sync?organization_id=') && query.includes('select=id,issue_key,jira_worklog_id') && !query.includes('issue_key=in.')) {
+    if (query.startsWith('worklog_sync?') && query.includes('select=id,issue_key,jira_worklog_id') && !query.includes('issue_key=in.')) {
       return Promise.resolve(allMappings);
     }
 
@@ -143,7 +143,7 @@ beforeEach(() => {
 // ============================================================================
 describe('worklogService — syncCurrentUserWorklogs', () => {
 
-  describe('when a pending record exists (jira_worklog_id = null)', () => {
+  describe('when a pending record exists (jira_worklog_id = PENDING)', () => {
     it('creates the worklog as the user without trying to delete from Jira', async () => {
       mockSupabaseRequest.mockImplementation(
         buildSupabaseRequestMock({
@@ -156,7 +156,7 @@ describe('worklogService — syncCurrentUserWorklogs', () => {
           existingMappings: [{
             id: 'mapping-pending-1',
             issue_key: ISSUE_KEY,
-            jira_worklog_id: null, // Pending — no Jira worklog
+            jira_worklog_id: 'PENDING', // Pending — no Jira worklog
             last_synced_seconds: 120,
             created_as_user: false,
           }],

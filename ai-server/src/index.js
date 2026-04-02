@@ -13,11 +13,9 @@ const forgeProxyController = require('./controllers/forge-proxy-controller');
 const appVersionController = require('./controllers/app-version-controller');
 const feedbackController = require('./controllers/feedback-controller');
 const notificationController = require('./controllers/notification-controller');
-const dashboardController = require('./controllers/dashboard-controller');
 const authMiddleware = require('./middleware/auth');
 const forgeAuthMiddleware = require('./middleware/forge-auth');
 const atlassianAuthMiddleware = require('./middleware/atlassian-auth');
-const dashboardAuthMiddleware = require('./middleware/dashboard-auth');
 const logger = require('./utils/logger');
 const pollingService = require('./services/polling-service');
 const clusteringPollingService = require('./services/clustering-polling-service');
@@ -26,6 +24,7 @@ const notificationPollingService = require('./services/notifications/notificatio
 const aiService = require('./services/ai');
 const { initializeSheetsLogger } = require('./services/sheets-logger');
 const activityController = require('./controllers/activity-controller');
+const adminDashboardController = require('./controllers/admin-dashboard-controller');
 const activityPollingService = require('./services/activity-polling-service');
 
 const app = express();
@@ -131,6 +130,21 @@ app.get('/health', publicLimiter, (req, res) => {
 });
 
 // =============================================================================
+// ADMIN DASHBOARD (Simple server-side dashboard - password protected)
+// =============================================================================
+
+// Serve the dashboard HTML page (public — login happens client-side)
+app.get('/admin-dashboard', publicLimiter, (req, res) => {
+  res.sendFile(path.join(__dirname, 'dashboard', 'admin-dashboard.html'));
+});
+
+// Dashboard login — validates password, returns session token
+app.post('/admin-dashboard/api/login', authLimiter, adminDashboardController.login);
+
+// Dashboard API — protected by session token
+app.get('/admin-dashboard/api/stats', adminDashboardController.requireSession, adminDashboardController.getStats);
+
+// =============================================================================
 // LEGAL PAGES (Public - served as HTML from layout + content templates)
 // =============================================================================
 
@@ -207,32 +221,7 @@ app.post('/api/auth/ocr-config', authLimiter, authController.getOcrConfig);
 // Submit client diagnostics (OCR status, login events, errors)
 app.post('/api/auth/diagnostics', authLimiter, authController.submitDiagnostics);
 
-// =============================================================================
-// ADMIN DASHBOARD ROUTES (Atlassian OAuth + Jira Admin check)
-// Standalone dashboard accessible via /dashboard URL
-// =============================================================================
 
-// Dashboard API — CRUD for status report data
-app.get('/api/dashboard/data', dashboardAuthMiddleware, dashboardController.getData);
-app.post('/api/dashboard/metrics', dashboardAuthMiddleware, dashboardController.addMetric);
-app.patch('/api/dashboard/metrics/:id', dashboardAuthMiddleware, dashboardController.updateMetric);
-app.delete('/api/dashboard/metrics/:id', dashboardAuthMiddleware, dashboardController.deleteMetric);
-app.post('/api/dashboard/organizations', dashboardAuthMiddleware, dashboardController.addOrg);
-app.patch('/api/dashboard/organizations/:id', dashboardAuthMiddleware, dashboardController.updateOrg);
-app.delete('/api/dashboard/organizations/:id', dashboardAuthMiddleware, dashboardController.deleteOrg);
-app.post('/api/dashboard/ticket-teams', dashboardAuthMiddleware, dashboardController.addTicketTeam);
-app.patch('/api/dashboard/ticket-teams/:id', dashboardAuthMiddleware, dashboardController.updateTicketTeam);
-app.delete('/api/dashboard/ticket-teams/:id', dashboardAuthMiddleware, dashboardController.deleteTicketTeam);
-app.post('/api/dashboard/ticket-statuses', dashboardAuthMiddleware, dashboardController.addTicketStatus);
-app.patch('/api/dashboard/ticket-statuses/:id', dashboardAuthMiddleware, dashboardController.updateTicketStatus);
-app.delete('/api/dashboard/ticket-statuses/:id', dashboardAuthMiddleware, dashboardController.deleteTicketStatus);
-
-// Serve dashboard React app (static build files)
-app.use('/dashboard', express.static(path.join(__dirname, 'dashboard', 'build')));
-// SPA fallback — serves index.html for all /dashboard/* client-side routes
-app.get('/dashboard/*', (req, res) => {
-  res.sendFile(path.join(__dirname, 'dashboard', 'build', 'index.html'));
-});
 
 // =============================================================================
 // FEEDBACK ROUTES (Session-authenticated via feedback session store)

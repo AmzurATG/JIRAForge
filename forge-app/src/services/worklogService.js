@@ -248,12 +248,18 @@ async function cleanupOrphanedUserWorklogs(supabaseConfig, organizationId, userI
     // eslint-disable-next-line deprecation/deprecation
     const allMappings = await supabaseRequest(
       supabaseConfig,
-      `worklog_sync?organization_id=eq.${organizationId}&user_id=eq.${userId}&select=id,issue_key,jira_worklog_id`
+      `worklog_sync?user_id=eq.${userId}&select=id,issue_key,jira_worklog_id`
     ) || [];
 
     const orphaned = allMappings.filter(m => !activeIssueKeys.has(m.issue_key));
     for (const orphan of orphaned) {
       try {
+        if (!orphan.jira_worklog_id || orphan.jira_worklog_id === 'PENDING') {
+          // Pending record — no Jira worklog to delete, just remove the DB mapping
+          // eslint-disable-next-line deprecation/deprecation
+          await supabaseRequest(supabaseConfig, `worklog_sync?id=eq.${orphan.id}`, { method: 'DELETE' });
+          continue;
+        }
         let deleteResp = await deleteJiraWorklog(orphan.issue_key, orphan.jira_worklog_id);
 
         if (deleteResp.status === 403) {
@@ -334,10 +340,24 @@ export async function syncCurrentUserWorklogs(accountId, cloudId) {
 
   // Fetch ALL tracking settings for this org (org + project level)
   // eslint-disable-next-line deprecation/deprecation
-  const allSettings = await supabaseRequest(
+  let allSettings = await supabaseRequest(
     supabaseConfig,
     `tracking_settings?organization_id=eq.${organizationId}&select=project_key,jira_worklog_sync_enabled`
   );
+
+  // Fallback: if no settings found, check ALL tracking_settings (handles org ID mismatch
+  // where tracking_settings and activity_records reference different org UUIDs)
+  if ((!allSettings || allSettings.length === 0)) {
+    // eslint-disable-next-line deprecation/deprecation
+    const fallbackSettings = await supabaseRequest(
+      supabaseConfig,
+      `tracking_settings?jira_worklog_sync_enabled=eq.true&select=organization_id,project_key,jira_worklog_sync_enabled&limit=10`
+    );
+    if (fallbackSettings && fallbackSettings.length > 0) {
+      console.warn(`[UserSync] No settings for org ${organizationId}, found settings under org ${fallbackSettings[0].organization_id} — org mismatch`);
+      allSettings = fallbackSettings;
+    }
+  }
 
   // Build sync configuration
   const syncConfig = buildOrgSyncConfig(allSettings || []);
@@ -396,6 +416,8 @@ export async function syncCurrentUserWorklogs(accountId, cloudId) {
   }
 
   // Fetch existing worklog_sync mappings for this user
+  // Query by user_id + issue_keys only (without organization_id) to handle org mismatch
+  // where scheduled sync may have written records under a different org UUID
   let existingMappings = [];
   if (entries.length > 0) {
     const issueKeys = entries.map(e => e.issueKey).filter(isValidIssueKey);
@@ -403,7 +425,7 @@ export async function syncCurrentUserWorklogs(accountId, cloudId) {
       // eslint-disable-next-line deprecation/deprecation
       existingMappings = await supabaseRequest(
         supabaseConfig,
-        `worklog_sync?organization_id=eq.${organizationId}&user_id=eq.${userId}&issue_key=in.(${issueKeys.join(',')})&select=id,issue_key,jira_worklog_id,last_synced_seconds,created_as_user`
+        `worklog_sync?user_id=eq.${userId}&issue_key=in.(${issueKeys.join(',')})&select=id,issue_key,jira_worklog_id,last_synced_seconds,created_as_user`
       ) || [];
     }
   }
@@ -556,7 +578,7 @@ async function syncSingleEntryAsCurrentUser(supabaseConfig, organizationId, user
     // Pending record (scheduled trigger saved without creating Jira worklog) or
     // app-created worklog — either way, create/recreate as the real user.
     if (existingMapping.created_as_user === false) {
-      if (existingMapping.jira_worklog_id) {
+      if (existingMapping.jira_worklog_id && existingMapping.jira_worklog_id !== 'PENDING') {
         // App-created worklog exists in Jira — delete it first
         const migrated = await migrateAppWorklogToUser(
           issueKey,
