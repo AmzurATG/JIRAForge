@@ -308,12 +308,14 @@ async function cleanupOrphanedUserWorklogs(supabaseConfig, organizationId, userI
 export async function syncCurrentUserWorklogs(accountId, cloudId) {
   console.log(`[UserSync] === START syncCurrentUserWorklogs === accountId=${accountId}, cloudId=${cloudId}`);
   // Diagnostic: verify the resolver context has a real user session
+  let displayName = null;
   try {
     const meResp = await api.asUser().requestJira(
       route`/rest/api/3/myself`,
       { headers: { 'Accept': 'application/json' } }
     );
     const me = await meResp.json();
+    displayName = me.displayName;
     console.log(`[UserSync] Running as: ${me.displayName} (${me.accountId})`);
 
     if (me.accountId !== accountId) {
@@ -376,14 +378,36 @@ export async function syncCurrentUserWorklogs(accountId, cloudId) {
   }
 
   // Aggregate tracked time for this user across all issues
-  const directEntries = await aggregateUserTrackedTime(supabaseConfig, organizationId, userId);
+  let directEntries = await aggregateUserTrackedTime(supabaseConfig, organizationId, userId);
 
   // Also pick up unassigned records (no user_assigned_issue_key) by matching
   // them to in-progress issues via project_key — same fallback the dashboard uses.
   // This ensures time that appears in the UI also gets synced to Jira.
-  const fallbackEntries = await aggregateUnassignedTimeWithFallback(supabaseConfig, organizationId, userId);
+  let fallbackEntries = await aggregateUnassignedTimeWithFallback(supabaseConfig, organizationId, userId);
 
-  console.log(`[UserSync] directEntries=${directEntries.length}, fallbackEntries=${fallbackEntries.length}, userId=${userId}, orgId=${organizationId}`);
+  // If no records found, the desktop app may have stored activity under a different
+  // user ID (different Atlassian account for the same person). Look for sibling users
+  // in the same org who have activity records but no separate Forge session.
+  let effectiveUserId = userId;
+  if (directEntries.length === 0 && fallbackEntries.length === 0) {
+    // eslint-disable-next-line deprecation/deprecation
+    const siblingUsers = await supabaseRequest(
+      supabaseConfig,
+      `users?organization_id=eq.${organizationId}&id=neq.${userId}&select=id&limit=10`
+    );
+    for (const sibling of (siblingUsers || [])) {
+      const siblingDirect = await aggregateUserTrackedTime(supabaseConfig, organizationId, sibling.id);
+      if (siblingDirect.length > 0) {
+        console.warn(`[UserSync] No records for user ${userId}, found ${siblingDirect.length} entries under sibling user ${sibling.id} — using sibling`);
+        directEntries = siblingDirect;
+        fallbackEntries = await aggregateUnassignedTimeWithFallback(supabaseConfig, organizationId, sibling.id);
+        effectiveUserId = sibling.id;
+        break;
+      }
+    }
+  }
+
+  console.log(`[UserSync] directEntries=${directEntries.length}, fallbackEntries=${fallbackEntries.length}, userId=${effectiveUserId}, orgId=${organizationId}`);
 
   // Merge: if both direct and fallback have time for the same issue, sum them.
   const mergedByIssue = {};
@@ -417,15 +441,19 @@ export async function syncCurrentUserWorklogs(accountId, cloudId) {
 
   // Fetch existing worklog_sync mappings for this user
   // Query by user_id + issue_keys only (without organization_id) to handle org mismatch
-  // where scheduled sync may have written records under a different org UUID
+  // where scheduled sync may have written records under a different org UUID.
+  // Also check the effectiveUserId (sibling user) if different from the current user.
   let existingMappings = [];
   if (entries.length > 0) {
     const issueKeys = entries.map(e => e.issueKey).filter(isValidIssueKey);
     if (issueKeys.length > 0) {
+      const userFilter = effectiveUserId !== userId
+        ? `user_id=in.(${userId},${effectiveUserId})`
+        : `user_id=eq.${effectiveUserId}`;
       // eslint-disable-next-line deprecation/deprecation
       existingMappings = await supabaseRequest(
         supabaseConfig,
-        `worklog_sync?user_id=eq.${userId}&issue_key=in.(${issueKeys.join(',')})&select=id,issue_key,jira_worklog_id,last_synced_seconds,created_as_user`
+        `worklog_sync?${userFilter}&issue_key=in.(${issueKeys.join(',')})&select=id,issue_key,jira_worklog_id,last_synced_seconds,created_as_user`
       ) || [];
     }
   }
@@ -439,7 +467,7 @@ export async function syncCurrentUserWorklogs(accountId, cloudId) {
   for (const entry of entries) {
     try {
       const didSync = await syncSingleEntryAsCurrentUser(
-        supabaseConfig, organizationId, userId, entry, mappingByKey[entry.issueKey]
+        supabaseConfig, organizationId, effectiveUserId, entry, mappingByKey[entry.issueKey], accountId, displayName
       );
       if (didSync) synced++;
     } catch (err) {
@@ -450,9 +478,9 @@ export async function syncCurrentUserWorklogs(accountId, cloudId) {
 
   // Cleanup orphaned mappings for this user (time reassigned away from issue)
   const activeIssueKeys = new Set(entries.map(e => e.issueKey));
-  await cleanupOrphanedUserWorklogs(supabaseConfig, organizationId, userId, activeIssueKeys);
+  await cleanupOrphanedUserWorklogs(supabaseConfig, organizationId, effectiveUserId, activeIssueKeys);
 
-  console.log(`[UserSync] Done for user ${userId}. Synced: ${synced}, Errors: ${errors}`);
+  console.log(`[UserSync] Done for user ${effectiveUserId}. Synced: ${synced}, Errors: ${errors}`);
   return { success: true, synced, errors };
 }
 
@@ -468,15 +496,17 @@ async function migrateAppWorklogToUser(issueKey, worklogId, mappingId, supabaseC
   console.log(`[UserSync] Migrating app-authored worklog for ${issueKey} to user name`);
   let deleteResp = await deleteJiraWorklog(issueKey, worklogId);
 
-  if (deleteResp.status === 403) {
-    // User lacks DELETE_ALL_WORKLOGS — the worklog is owned by the app, so delete as app
-    console.log(`[UserSync] User delete returned 403 for ${issueKey}, retrying as app`);
+  if (deleteResp.status === 403 || deleteResp.status === 400) {
+    // User cannot delete (403 = no permission, 400 = worklog owned by app) — retry as app
+    console.log(`[UserSync] User delete returned ${deleteResp.status} for ${issueKey}, retrying as app`);
     deleteResp = await deleteJiraWorklogAsApp(issueKey, worklogId);
   }
 
   if (deleteResp.status !== 204 && deleteResp.status !== 404) {
     // Still cannot delete — leave as-is and retry next session
-    console.warn(`[UserSync] Cannot migrate ${issueKey}: delete returned HTTP ${deleteResp.status}`);
+    let errBody = '';
+    try { errBody = await deleteResp.text(); } catch (_) { /* ignore */ }
+    console.warn(`[UserSync] Cannot migrate ${issueKey}: delete returned HTTP ${deleteResp.status} — ${errBody}`);
     return false;
   }
 
@@ -527,12 +557,20 @@ async function updateExistingWorklog(issueKey, worklogId, timeTracked, mappingId
  * @param {Object} supabaseConfig - Supabase configuration
  * @param {string} organizationId - Organization ID
  * @param {string} userId - User ID
+ * @param {string} accountId - User's Atlassian account ID (for author verification)
+ * @param {string} displayName - User's display name (for worklog comment)
  * @returns {Promise<boolean>} true if creation succeeded
  */
-async function createUserWorklog(issueKey, timeTracked, startedAt, supabaseConfig, organizationId, userId) {
-  const worklogResult = await createJiraWorklog(issueKey, timeTracked, startedAt);
+async function createUserWorklog(issueKey, timeTracked, startedAt, supabaseConfig, organizationId, userId, accountId, displayName) {
+  const worklogResult = await createJiraWorklog(issueKey, timeTracked, startedAt, displayName);
 
   if (worklogResult?.id) {
+    // Verify that Jira actually attributed the worklog to the user (not the app)
+    const actuallyCreatedAsUser = worklogResult.author?.accountId === accountId;
+    if (!actuallyCreatedAsUser) {
+      console.warn(`[UserSync] Worklog for ${issueKey} created but author is ${worklogResult.author?.displayName || 'unknown'} (${worklogResult.author?.accountId || 'no-id'}), expected ${accountId}`);
+    }
+
     const now = new Date().toISOString();
     // eslint-disable-next-line deprecation/deprecation
     await supabaseRequest(
@@ -547,13 +585,13 @@ async function createUserWorklog(issueKey, timeTracked, startedAt, supabaseConfi
           jira_worklog_id: String(worklogResult.id),
           last_synced_seconds: timeTracked,
           started_at: startedAt,
-          created_as_user: true,  // Created in interactive user context
+          created_as_user: actuallyCreatedAsUser,
           created_at: now,
           updated_at: now
         }
       }
     );
-    console.log(`[UserSync] Created worklog for ${issueKey}: ${timeTracked}s`);
+    console.log(`[UserSync] Created worklog for ${issueKey}: ${timeTracked}s (as_user: ${actuallyCreatedAsUser})`);
     return true;
   }
 
@@ -570,7 +608,7 @@ async function createUserWorklog(issueKey, timeTracked, startedAt, supabaseConfi
  * Uses api.asUser() (no accountId) — the live Jira session — so the worklog
  * author is the real user, not the app.
  */
-async function syncSingleEntryAsCurrentUser(supabaseConfig, organizationId, userId, entry, existingMapping) {
+async function syncSingleEntryAsCurrentUser(supabaseConfig, organizationId, userId, entry, existingMapping, accountId, displayName) {
   const { issueKey, timeTracked, lastWorkedOn } = entry;
   const startedAt = formatJiraDate(lastWorkedOn ? new Date(lastWorkedOn) : new Date());
 
@@ -615,5 +653,5 @@ async function syncSingleEntryAsCurrentUser(supabaseConfig, organizationId, user
   }
 
   // Create new worklog in the user's live session
-  return await createUserWorklog(issueKey, timeTracked, startedAt, supabaseConfig, organizationId, userId);
+  return await createUserWorklog(issueKey, timeTracked, startedAt, supabaseConfig, organizationId, userId, accountId, displayName);
 }

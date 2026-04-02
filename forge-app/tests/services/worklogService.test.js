@@ -186,7 +186,7 @@ describe('worklogService — syncCurrentUserWorklogs', () => {
 
       // Should create fresh worklog via user session
       expect(mockCreateJiraWorklog).toHaveBeenCalledWith(
-        ISSUE_KEY, 120, expect.any(String)
+        ISSUE_KEY, 120, expect.any(String), 'Test User'
       );
 
       // New mapping should have created_as_user = true
@@ -238,7 +238,7 @@ describe('worklogService — syncCurrentUserWorklogs', () => {
 
       // Should create new worklog as user
       expect(mockCreateJiraWorklog).toHaveBeenCalledWith(
-        ISSUE_KEY, 120, expect.any(String)
+        ISSUE_KEY, 120, expect.any(String), 'Test User'
       );
 
       // New mapping should be user-created
@@ -378,7 +378,7 @@ describe('worklogService — syncCurrentUserWorklogs', () => {
       expect(result.synced).toBe(1);
 
       expect(mockCreateJiraWorklog).toHaveBeenCalledWith(
-        ISSUE_KEY, 180, expect.any(String)
+        ISSUE_KEY, 180, expect.any(String), 'Test User'
       );
 
       const postCall = mockSupabaseRequest.mock.calls.find(
@@ -458,7 +458,7 @@ describe('worklogService — syncCurrentUserWorklogs', () => {
 
       // Should create worklog on the in-progress issue
       expect(mockCreateJiraWorklog).toHaveBeenCalledWith(
-        'FEEDBACK-33', 484, expect.any(String)
+        'FEEDBACK-33', 484, expect.any(String), 'Test User'
       );
 
       // New mapping should be user-created
@@ -512,7 +512,7 @@ describe('worklogService — syncCurrentUserWorklogs', () => {
 
       // Should create worklog with merged time (120 + 300 = 420s)
       expect(mockCreateJiraWorklog).toHaveBeenCalledWith(
-        'FEEDBACK-33', 420, expect.any(String)
+        'FEEDBACK-33', 420, expect.any(String), 'Test User'
       );
     });
   });

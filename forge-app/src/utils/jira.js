@@ -9,13 +9,13 @@ import { JQL_ACTIVE_STATUSES, MAX_JIRA_SEARCH_RESULTS } from '../config/constant
 /**
  * Build ADF comment for a worklog.
  * When displayName is provided (scheduled sync fallback), the comment reads
- * "Uploaded from Time Tracker — Iswarya Kolimalla" so the actual person is
+ * "Uploaded by Iswarya Kolimalla" so the actual person is
  * identifiable even when the Jira worklog author shows as the app.
  * @param {string|null} displayName - User's display name (optional)
  */
 function buildWorklogComment(displayName) {
   const text = displayName
-    ? `Uploaded from Time Tracker — ${displayName}`
+    ? `Uploaded by ${displayName}`
     : 'Uploaded from Time Tracker';
   return {
     type: 'doc',
@@ -163,7 +163,7 @@ export async function createJiraIssue(projectKey, issueData) {
  * @param {string} startedAt - ISO timestamp when work started
  * @returns {Promise<Object>} Created worklog response
  */
-export async function createJiraWorklog(issueKey, timeSpentSeconds, startedAt) {
+export async function createJiraWorklog(issueKey, timeSpentSeconds, startedAt, displayName = null) {
   // Jira requires minimum 60 seconds for worklogs — round up sub-minute values
   const effectiveSeconds = Math.max(timeSpentSeconds, 60);
   const response = await api.asUser().requestJira(
@@ -177,7 +177,7 @@ export async function createJiraWorklog(issueKey, timeSpentSeconds, startedAt) {
       body: JSON.stringify({
         timeSpentSeconds: effectiveSeconds,
         started: startedAt,
-        comment: buildWorklogComment(null)
+        comment: buildWorklogComment(displayName)
       })
     }
   );

@@ -679,7 +679,7 @@ async function syncSingleEntry(supabaseConfig, organizationId, userId, accountId
         }
       }
     );
-    console.log(`[ScheduledSync] Created worklog for ${issueKey} user ${userId}: ${timeTracked}s (as_user: true)`);
+    console.log(`[ScheduledSync] Created worklog for ${issueKey} user ${userId}: ${timeTracked}s (as_user: ${actuallyCreatedAsUser})`);
     return true;
   }
 
