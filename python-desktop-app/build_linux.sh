@@ -17,6 +17,102 @@ MAINTAINER="Amzur Technologies <support@amzur.com>"
 
 echo "[BUILD] Building TimeTracker for Linux..."
 
+# ── Collect OCR engine hidden imports dynamically ───────────────────────────
+# PyInstaller can't trace imports inside engine files added as --add-data,
+# so we must explicitly list them.  We probe the Python env to use only
+# packages actually installed so the build doesn't error on missing ones.
+OCR_HIDDEN_IMPORTS=""
+OCR_DATA_ARGS=""
+
+_add_hidden() { OCR_HIDDEN_IMPORTS="$OCR_HIDDEN_IMPORTS --hidden-import $1"; }
+_add_data()   { OCR_DATA_ARGS="$OCR_DATA_ARGS --add-data $1"; }
+
+# RapidOCR + ONNX Runtime
+if python3 -c "import rapidocr_onnxruntime" 2>/dev/null; then
+    echo "[BUILD] rapidocr_onnxruntime detected — bundling"
+    _add_hidden rapidocr_onnxruntime
+    # Collect all submodules via a small Python helper
+    for mod in $(python3 -c "
+from PyInstaller.utils.hooks import collect_submodules
+for m in collect_submodules('rapidocr_onnxruntime'):
+    print(m)
+" 2>/dev/null); do _add_hidden "$mod"; done
+    # Collect data files (config.yaml, .onnx models)
+    while IFS='|' read -r src dst; do
+        _add_data "${src}:${dst}"
+    done < <(python3 -c "
+from PyInstaller.utils.hooks import collect_data_files
+for src, dst in collect_data_files('rapidocr_onnxruntime'):
+    print(f'{src}|{dst}')
+" 2>/dev/null)
+    echo "[BUILD] rapidocr_onnxruntime data files collected"
+fi
+if python3 -c "import onnxruntime" 2>/dev/null; then
+    echo "[BUILD] onnxruntime detected — bundling"
+    _add_hidden onnxruntime
+    for mod in $(python3 -c "
+from PyInstaller.utils.hooks import collect_submodules
+for m in collect_submodules('onnxruntime'):
+    print(m)
+" 2>/dev/null); do _add_hidden "$mod"; done
+    # Collect data files
+    while IFS='|' read -r src dst; do
+        _add_data "${src}:${dst}"
+    done < <(python3 -c "
+from PyInstaller.utils.hooks import collect_data_files
+for src, dst in collect_data_files('onnxruntime'):
+    print(f'{src}|{dst}')
+" 2>/dev/null)
+    echo "[BUILD] onnxruntime data files collected"
+fi
+
+# EasyOCR + PyTorch
+if python3 -c "import easyocr" 2>/dev/null; then
+    echo "[BUILD] easyocr detected — bundling"
+    _add_hidden easyocr
+    for mod in $(python3 -c "
+from PyInstaller.utils.hooks import collect_submodules
+for m in collect_submodules('easyocr'):
+    print(m)
+" 2>/dev/null); do _add_hidden "$mod"; done
+    if python3 -c "import torch" 2>/dev/null; then
+        echo "[BUILD] torch detected — bundling for EasyOCR"
+        for mod in $(python3 -c "
+from PyInstaller.utils.hooks import collect_submodules
+for m in collect_submodules('torch') + collect_submodules('torchvision'):
+    print(m)
+" 2>/dev/null); do _add_hidden "$mod"; done
+    fi
+fi
+
+# Shared deps
+_add_hidden cv2
+_add_hidden numpy
+_add_hidden numpy.core
+_add_hidden numpy.core.multiarray
+
+# OCR package modules (PyInstaller can't trace dynamic imports in data files)
+_add_hidden ocr
+_add_hidden ocr.facade
+_add_hidden ocr.config
+_add_hidden ocr.engine_factory
+_add_hidden ocr.base_engine
+_add_hidden ocr.image_processor
+_add_hidden ocr.auto_installer
+_add_hidden ocr.runtime_installer
+_add_hidden ocr.engines
+_add_hidden ocr.engines.rapidocr_engine
+_add_hidden ocr.engines.easyocr_engine
+_add_hidden ocr.engines.winrtocr_engine
+_add_hidden ocr.engines.dynamic_engine
+
+# pystray submodules
+_add_hidden pystray
+_add_hidden pystray._xorg
+_add_hidden pystray._appindicator
+
+echo "[BUILD] OCR hidden imports collected"
+
 pyinstaller --onefile \
     --name "$APP_NAME" \
     --add-data "ocr:ocr" \
@@ -33,6 +129,8 @@ pyinstaller --onefile \
     --hidden-import local_storage.sqlite_manager \
     --hidden-import local_storage.session_tracker \
     --hidden-import local_storage.batch_uploader \
+    $OCR_HIDDEN_IMPORTS \
+    $OCR_DATA_ARGS \
     desktop_app.py
 
 echo "[BUILD] Binary ready at dist/$APP_NAME"
