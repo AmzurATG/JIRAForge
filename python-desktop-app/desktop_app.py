@@ -341,8 +341,7 @@ EMBEDDED_CONFIG = {
 # Runtime Supabase config (fetched from AI server after authentication)
 RUNTIME_SUPABASE_CONFIG = {
     'SUPABASE_URL': None,
-    'SUPABASE_ANON_KEY': None,
-    'SUPABASE_SERVICE_ROLE_KEY': None
+    'SUPABASE_ANON_KEY': None
 }
 
 # Runtime OCR config (fetched from AI server after authentication)
@@ -366,12 +365,11 @@ def get_env_var(key, default=None):
     # Finally use default
     return default
 
-def set_runtime_supabase_config(url, anon_key, service_role_key):
+def set_runtime_supabase_config(url, anon_key):
     """Set Supabase config fetched from AI server"""
     global RUNTIME_SUPABASE_CONFIG
     RUNTIME_SUPABASE_CONFIG['SUPABASE_URL'] = url
     RUNTIME_SUPABASE_CONFIG['SUPABASE_ANON_KEY'] = anon_key
-    RUNTIME_SUPABASE_CONFIG['SUPABASE_SERVICE_ROLE_KEY'] = service_role_key
     print(f"[OK] Supabase config loaded from AI server")
 
 def set_runtime_ocr_config(config_dict):
@@ -1434,7 +1432,11 @@ class AtlassianAuthManager:
         self.tokens = self._load_tokens()
 
     def _migrate_to_keyring(self):
-        """Migrate sensitive tokens from plain-text JSON to secure keyring storage"""
+        """Migrate sensitive tokens from plain-text JSON to secure keyring storage.
+
+        JSON file is kept as a backup (not cleaned) because keyring can lose data
+        if the app is killed during a chunked write (e.g., system shutdown/reboot).
+        """
         if not KEYRING_AVAILABLE:
             return
 
@@ -1446,36 +1448,27 @@ class AtlassianAuthManager:
             with open(self.store_path, 'r') as f:
                 old_data = json.load(f)
 
-            migrated = False
             for key in SENSITIVE_TOKEN_KEYS:
                 if key in old_data and old_data[key]:
                     # Check if already in keyring
                     existing = _keyring_get(KEYRING_SERVICE, key)
                     if existing is None:
-                        # Migrate to keyring
+                        # Copy to keyring (keep JSON as backup)
                         _keyring_set(KEYRING_SERVICE, key, old_data[key])
                         print(f"[OK] Migrated {key} to secure storage")
-                        migrated = True
-
-            if migrated:
-                # Remove sensitive tokens from JSON file
-                for key in SENSITIVE_TOKEN_KEYS:
-                    if key in old_data:
-                        del old_data[key]
-
-                # Save cleaned JSON (only non-sensitive data)
-                with open(self.store_path, 'w') as f:
-                    json.dump(old_data, f)
-                print("[OK] Sensitive tokens removed from plain-text storage")
 
         except Exception as e:
             print(f"[WARN] Migration to secure storage failed: {e}")
 
     def _load_tokens(self):
-        """Load tokens from secure keyring (sensitive) and JSON file (metadata)"""
+        """Load tokens from secure keyring (sensitive) and JSON file (backup).
+
+        Priority: keyring > JSON backup. If keyring is missing a token
+        (e.g., corrupted by interrupted shutdown), fall back to JSON.
+        """
         tokens = {}
 
-        # Load non-sensitive metadata from JSON file
+        # Load all tokens from JSON file (includes backup of sensitive tokens)
         try:
             if os.path.exists(self.store_path):
                 with open(self.store_path, 'r') as f:
@@ -1483,20 +1476,29 @@ class AtlassianAuthManager:
         except Exception as e:
             print(f"[WARN] Failed to load token metadata: {e}")
 
-        # Load sensitive tokens from keyring
+        # Override with keyring values (more secure, preferred source)
         if KEYRING_AVAILABLE:
             try:
                 for key in SENSITIVE_TOKEN_KEYS:
                     value = _keyring_get(KEYRING_SERVICE, key)
                     if value:
                         tokens[key] = value
+                    elif tokens.get(key):
+                        # Keyring lost this token (corrupted chunks from interrupted shutdown)
+                        # but JSON backup has it — re-save to keyring for next time
+                        print(f"[WARN] Keyring missing {key}, recovered from JSON backup")
+                        try:
+                            _keyring_set(KEYRING_SERVICE, key, tokens[key])
+                        except Exception:
+                            pass
             except Exception as e:
                 print(f"[WARN] Failed to load tokens from secure storage: {e}")
+                # JSON backup tokens are already in `tokens` dict — will be used
 
         return tokens
 
     def _save_tokens(self):
-        """Save tokens to secure keyring (sensitive) and JSON file (metadata)"""
+        """Save tokens to secure keyring (sensitive) and JSON file (metadata + backup)"""
         # Separate sensitive and non-sensitive data
         sensitive_data = {}
         metadata = {}
@@ -1515,13 +1517,13 @@ class AtlassianAuthManager:
                         _keyring_set(KEYRING_SERVICE, key, value)
             except Exception as e:
                 print(f"[WARN] Failed to save tokens to secure storage: {e}")
-                # Fallback: save to JSON if keyring fails
-                metadata.update(sensitive_data)
-        else:
-            # No keyring available, save everything to JSON (with warning)
-            metadata.update(sensitive_data)
 
-        # Save non-sensitive metadata to JSON file
+        # Always save tokens to JSON as backup — keyring can lose data if the app
+        # is killed during a chunked write (e.g., system shutdown/reboot).
+        # The JSON file in AppData is the resilient fallback.
+        metadata.update(sensitive_data)
+
+        # Save to JSON file
         try:
             with open(self.store_path, 'w') as f:
                 json.dump(metadata, f)
@@ -1558,7 +1560,7 @@ class AtlassianAuthManager:
             'redirect_uri': self.redirect_uri,
             'state': state,
             'response_type': 'code',
-            'prompt': 'consent',
+            'prompt': 'login',
             'code_challenge': code_challenge,
             'code_challenge_method': 'S256'
         }
@@ -1895,10 +1897,10 @@ class AtlassianAuthManager:
                 return False
 
             # Store the Supabase config in runtime config
+            # Only URL and anon key are needed — JWT provides identity for RLS
             set_runtime_supabase_config(
                 result.get('supabase_url'),
-                result.get('supabase_anon_key'),
-                result.get('supabase_service_role_key')
+                result.get('supabase_anon_key')
             )
             return True
 
@@ -1921,7 +1923,7 @@ class AtlassianAuthManager:
             print("[ERROR] No valid Atlassian token - cannot fetch OCR config")
             return False
 
-        ai_server_url = get_env_var('AI_SERVER_URL', 'http://216.48.190.255:3001')
+        ai_server_url = get_env_var('AI_SERVER_URL', 'https://forgesync.amzur.com')
         
         try:
             print("[INFO] Fetching OCR config from AI Server...")
@@ -2519,7 +2521,7 @@ class OfflineManager:
         
         Args:
             supabase_client: Supabase client for database operations
-            storage_client: Supabase client for storage operations (service role)
+            storage_client: Supabase client for storage operations
         
         Returns:
             tuple: (synced_count, failed_count)
@@ -4378,9 +4380,9 @@ class TimeTracker:
         self.capture_interval = int(get_env_var('CAPTURE_INTERVAL', 300))
         self.web_port = int(get_env_var('WEB_PORT', 51777))
 
-        # Supabase clients (initialized after authentication)
+        # Supabase client (initialized after authentication)
+        # Uses anon key + custom JWT for RLS-scoped access (no service role key)
         self.supabase = None
-        self.supabase_service = None
         self.supabase_url = None
         self.supabase_initialized = False
 
@@ -4656,7 +4658,8 @@ class TimeTracker:
             return None
 
     def initialize_supabase(self):
-        """Initialize Supabase clients after fetching config from AI server.
+        """Initialize Supabase client with custom JWT for RLS-scoped access.
+        Uses anon key + custom JWT — no service role key needed.
         Must be called after successful authentication."""
         if self.supabase_initialized:
             print("[INFO] Supabase already initialized")
@@ -4667,7 +4670,7 @@ class TimeTracker:
         if not self.auth_manager.get_supabase_config():
             print("[ERROR] Failed to get Supabase config from AI server")
             return False
-        
+
         # Fetch OCR config from AI server (requires valid Atlassian token)
         print("[INFO] Fetching OCR configuration from AI server...")
         if not self.auth_manager.get_ocr_config():
@@ -4679,51 +4682,68 @@ class TimeTracker:
         self._setup_ocr_engines()
         self.ocr_processor = LocalOCRProcessor()
 
-        # Now initialize Supabase clients with runtime config
+        # Initialize single Supabase client with anon key + custom JWT
         try:
             self.supabase_url = get_env_var('SUPABASE_URL')
             supabase_anon_key = get_env_var('SUPABASE_ANON_KEY')
-            supabase_service_key = get_env_var('SUPABASE_SERVICE_ROLE_KEY')
 
             if not self.supabase_url or not supabase_anon_key:
                 print("[ERROR] Supabase URL or anon key not available")
                 return False
 
             # Configure Supabase client with longer timeouts to handle slow networks
-            # Default is postgrest_client_timeout=5s, storage_client_timeout=20s
-            # Increase to 60s for both to handle slow connections and network hiccups
             supabase_options = ClientOptions(
                 postgrest_client_timeout=60,  # Database query timeout
                 storage_client_timeout=60      # File storage timeout
             )
 
-            # Initialize anonymous client with custom timeout
+            # Initialize client with anon key (RLS enforced)
             self.supabase: Client = create_client(
-                self.supabase_url, 
+                self.supabase_url,
                 supabase_anon_key,
                 options=supabase_options
             )
             print(f"[OK] Supabase client initialized for {self.supabase_url} (timeout: 60s)")
 
-            # Initialize service client for admin operations (bypasses RLS)
-            if supabase_service_key:
-                self.supabase_service: Client = create_client(
-                    self.supabase_url, 
-                    supabase_service_key,
-                    options=supabase_options
-                )
-                print("[OK] Supabase service client initialized")
-            else:
-                self.supabase_service = self.supabase
-                print("[WARN] No service role key - using anon client for all operations")
+            # Set custom JWT from AI server on the client for RLS-scoped access
+            if not self._set_supabase_jwt():
+                print("[WARN] Could not set Supabase JWT — RLS operations may fail until next refresh")
 
             self.supabase_initialized = True
-            self.add_admin_log('INFO', 'Supabase initialized from AI server config')
+            self.add_admin_log('INFO', 'Supabase initialized with custom JWT (RLS-scoped)')
             return True
 
         except Exception as e:
-            print(f"[ERROR] Failed to initialize Supabase clients: {e}")
+            print(f"[ERROR] Failed to initialize Supabase client: {e}")
             traceback.print_exc()
+            return False
+
+    def _set_supabase_jwt(self):
+        """Set custom JWT on Supabase client for RLS-scoped access.
+        The JWT contains sub=user_id and app_metadata.org_id for tenant isolation.
+        Must be called after initialize_supabase() and whenever the JWT is refreshed."""
+        if not self.supabase:
+            print("[WARN] Supabase client not initialized — cannot set JWT")
+            return False
+        try:
+            supabase_token = self.auth_manager.get_valid_supabase_token()
+            if not supabase_token:
+                print("[WARN] Could not get valid Supabase token")
+                return False
+
+            # Set JWT on PostgREST client (official API)
+            self.supabase.postgrest.auth(supabase_token)
+
+            # Set JWT on Storage client session headers
+            # Access .storage to trigger lazy initialization if needed
+            _ = self.supabase.storage
+            self.supabase.storage.session.headers["Authorization"] = f"Bearer {supabase_token}"
+
+            print("[OK] Supabase JWT set on client (PostgREST + Storage)")
+            return True
+
+        except Exception as e:
+            print(f"[ERROR] Failed to set Supabase JWT: {e}")
             return False
 
     def setup_routes(self):
@@ -4834,7 +4854,7 @@ class TimeTracker:
 
                 # Sync app classifications from Supabase (all projects)
                 try:
-                    client = self.supabase_service if self.supabase_service else self.supabase
+                    client = self.supabase
                     self.classification_manager.sync_classifications(
                         client, self.organization_id, self.current_project_key,
                         all_project_keys=list(self._get_known_project_keys())
@@ -4996,8 +5016,8 @@ class TimeTracker:
                 return jsonify({'error': 'Not authenticated'}), 401
             
             try:
-                # Use service client to bypass RLS for querying
-                client = self.supabase_service if self.supabase_service else self.supabase
+                # Query via RLS-scoped client (JWT has user's identity)
+                client = self.supabase
                 result = client.table('screenshots').select('*').eq(
                     'user_id', self.current_user_id
                 ).order('timestamp', desc=True).limit(50).execute()
@@ -5041,7 +5061,7 @@ class TimeTracker:
                     return jsonify({'error': 'Unauthorized'}), 403
                 
                 # Use service client to get file
-                client = self.supabase_service if self.supabase_service else self.supabase
+                client = self.supabase
                 
                 # Download file from storage
                 file_response = client.storage.from_('screenshots').download(file_path)
@@ -5269,7 +5289,6 @@ class TimeTracker:
 
                     # Clear Supabase state (will be re-initialized on next login)
                     self.supabase = None
-                    self.supabase_service = None
                     self.supabase_initialized = False
 
                     # Clear organization state
@@ -5575,28 +5594,8 @@ class TimeTracker:
             self.admin_logs = self.admin_logs[-self.max_log_entries:]
 
     def refresh_supabase_client(self):
-        """Refresh Supabase client with user-scoped JWT from AI Server"""
-        try:
-            # Get a valid Supabase token from the auth manager
-            supabase_token = self.auth_manager.get_valid_supabase_token()
-
-            if not supabase_token:
-                print("[WARN] Could not get Supabase token - using anon key only")
-                return False
-
-            # Create a new Supabase client with the user token
-            # This client will have RLS-scoped access based on the user's identity
-            self.supabase_service = create_client(
-                self.supabase_url,
-                supabase_token
-            )
-            print("[OK] Supabase service client refreshed with user token")
-            return True
-
-        except Exception as e:
-            print(f"[ERROR] Failed to refresh Supabase client: {e}")
-            self.supabase_service = None
-            return False
+        """Refresh the Supabase JWT on the client"""
+        return self._set_supabase_jwt()
 
     def ensure_user_exists(self, atlassian_user):
         """Ensure user exists in Supabase users table and is linked to organization"""
@@ -5611,8 +5610,8 @@ class TimeTracker:
         if not self.organization_id:
             self.get_jira_cloud_id()  # This will also register the organization
 
-        # Use service client to bypass RLS
-        client = self.supabase_service if self.supabase_service else self.supabase
+        # Use RLS-scoped client (JWT grants access to own records)
+        client = self.supabase
 
         # Check if user exists
         result = client.table('users').select('id, organization_id').eq(
@@ -5768,7 +5767,7 @@ class TimeTracker:
             return
 
         try:
-            client = self.supabase_service if self.supabase_service else self.supabase
+            client = self.supabase
             if not client:
                 print("[WARN] No Supabase client available for status update")
                 return
@@ -5796,7 +5795,7 @@ class TimeTracker:
             return
 
         try:
-            client = self.supabase_service if self.supabase_service else self.supabase
+            client = self.supabase
             if not client:
                 return
 
@@ -5839,7 +5838,7 @@ class TimeTracker:
             return
 
         try:
-            client = self.supabase_service if self.supabase_service else self.supabase
+            client = self.supabase
 
             # Check if membership exists
             result = client.table('organization_members').select('id').eq(
@@ -5847,27 +5846,21 @@ class TimeTracker:
             ).eq('organization_id', self.organization_id).execute()
 
             if not result.data:
-                # Create membership - first user becomes owner, others are members
-                # Check if org has any members
-                member_count = client.table('organization_members').select('id', count='exact').eq(
-                    'organization_id', self.organization_id
-                ).execute()
-
-                is_first_user = member_count.count == 0 if hasattr(member_count, 'count') else len(member_count.data) == 0
-                role = 'owner' if is_first_user else 'member'
-
+                # Insert as 'member' only — the AI server handles first-user-is-owner
+                # logic with service role (bypasses RLS). The RLS policy only allows
+                # role='member' with all permissions false to prevent privilege escalation.
                 membership_data = {
                     'user_id': user_id,
                     'organization_id': self.organization_id,
-                    'role': role,
-                    'can_manage_settings': role in ['owner', 'admin'],
-                    'can_view_team_analytics': role in ['owner', 'admin', 'manager'],
-                    'can_manage_members': role in ['owner', 'admin'],
-                    'can_delete_screenshots': role in ['owner', 'admin'],
-                    'can_manage_billing': role == 'owner'
+                    'role': 'member',
+                    'can_manage_settings': False,
+                    'can_view_team_analytics': False,
+                    'can_manage_members': False,
+                    'can_delete_screenshots': False,
+                    'can_manage_billing': False
                 }
                 client.table('organization_members').insert(membership_data).execute()
-                print(f"[OK] Created organization membership with role: {role}")
+                print("[OK] Created organization membership with role: member")
 
         except Exception as e:
             print(f"[WARN] Failed to create organization membership: {e}")
@@ -5939,8 +5932,8 @@ class TimeTracker:
         
         for attempt in range(max_retries):
             try:
-                # Use service client to bypass RLS
-                client = self.supabase_service if self.supabase_service else self.supabase
+                # Use RLS-scoped client
+                client = self.supabase
 
                 # Check if organization already exists
                 result = client.table('organizations').select('id').eq(
@@ -6042,7 +6035,7 @@ class TimeTracker:
 
         try:
             # ONLINE: Fetch from Supabase
-            client = self.supabase_service if self.supabase_service else self.supabase
+            client = self.supabase
             if not client:
                 print("[WARN] Cannot fetch project settings: No Supabase client")
                 # Try local cache as fallback
@@ -6151,10 +6144,10 @@ class TimeTracker:
         The desktop app writes issues as user_assigned_issues in activity_records using
         the same format that fetch_jira_issues() produces, so both paths are compatible.
         """
-        if not self.supabase_service or not self.current_user_id or not self.organization_id:
+        if not self.supabase or not self.current_user_id or not self.organization_id:
             return None
         try:
-            result = self.supabase_service.table('user_jira_issues_cache') \
+            result = self.supabase.table('user_jira_issues_cache') \
                 .select('issue_key, issue_summary, project_key, status, description, labels') \
                 .eq('user_id', self.current_user_id) \
                 .eq('organization_id', self.organization_id) \
@@ -6636,7 +6629,7 @@ class TimeTracker:
             
             # Re-sync app classifications with all project-level overrides
             try:
-                client = self.supabase_service if self.supabase_service else self.supabase
+                client = self.supabase
                 self.classification_manager.sync_classifications(
                     client, self.organization_id, new_project_key,
                     all_project_keys=list(self._get_known_project_keys())
@@ -6671,7 +6664,7 @@ class TimeTracker:
                 if time_since_fetch < self.tracking_settings_cache_ttl:
                     return self.tracking_settings_cache.get(cache_key, self.default_tracking_settings)
             
-            client = self.supabase_service if self.supabase_service else self.supabase
+            client = self.supabase
             settings = None
             settings_source = 'default'
             
@@ -6841,7 +6834,7 @@ class TimeTracker:
             if not self.current_user_id:
                 return  # No user logged in
             
-            client = self.supabase_service if self.supabase_service else self.supabase
+            client = self.supabase
             
             # Fetch user's settings from users table
             result = client.table('users').select('settings').eq('id', self.current_user_id).limit(1).execute()
@@ -6867,7 +6860,7 @@ class TimeTracker:
             if not self.current_user_id or not self.organization_id:
                 return None
             
-            client = self.supabase_service if self.supabase_service else self.supabase
+            client = self.supabase
             
             # Query unassigned work groups that are not yet assigned
             result = client.table('unassigned_work_groups').select('id,total_seconds').eq(
@@ -7110,8 +7103,7 @@ class TimeTracker:
     def upload_activity_batch(self):
         """Upload accumulated activity records to Supabase as a single batch.
         Called every 5 minutes (batch_upload_interval).
-        Requires the service role client to bypass RLS (desktop app users
-        authenticate via Atlassian OAuth, not Supabase Auth).
+        Uses custom JWT for RLS-scoped access (Atlassian OAuth → AI server JWT).
         """
         try:
             # Wait briefly for any in-flight async OCR to finish before uploading
@@ -7162,18 +7154,9 @@ class TimeTracker:
                     self.last_batch_upload_time = time.time()
                     return
 
-            # Must use service role client — anon client is blocked by RLS
-            # because desktop users don't have supabase_user_id linked
-            if not self.supabase_service:
+            # Supabase client with custom JWT required for RLS-scoped batch insert
+            if not self.supabase:
                 print("[BATCH] No Supabase client — records stay in SQLite")
-                return
-
-            # Verify we have a real service client, not the anon fallback
-            service_key = get_env_var('SUPABASE_SERVICE_ROLE_KEY')
-            if not service_key:
-                print("[BATCH] No service role key available — batch insert requires service role to bypass RLS")
-                print("[BATCH] Records stay in SQLite until service role key is configured")
-                self.last_batch_upload_time = time.time()
                 return
 
             if not self.current_user_id:
@@ -7278,11 +7261,10 @@ class TimeTracker:
             if idle_records:
                 print(f"[BATCH] Including {len(idle_records)} idle records in batch")
 
-            # Single batch insert to Supabase using service role client
+            # Batch insert to Supabase using anon client with custom JWT (RLS-scoped)
             print(f"[BATCH] Inserting {len(records)} activity records...")
-            print(f"[BATCH] Using service client with key type: {'service_role' if service_key else 'unknown'}")
             secure_log("[BATCH] Target table: activity_records", user_id=self.current_user_id)
-            result = self.supabase_service.table('activity_records').insert(records).execute()
+            result = self.supabase.table('activity_records').insert(records).execute()
             print(f"[BATCH] Insert result: data_count={len(result.data) if result.data else 0}, count={getattr(result, 'count', 'N/A')}")
 
             if result.data:
@@ -7297,7 +7279,7 @@ class TimeTracker:
                 # Verify records actually exist in the database
                 upload_verified = False
                 try:
-                    verify = self.supabase_service.table('activity_records') \
+                    verify = self.supabase.table('activity_records') \
                         .select('id') \
                         .eq('user_id', self.current_user_id) \
                         .eq('batch_timestamp', batch_timestamp) \
@@ -7496,9 +7478,9 @@ class TimeTracker:
                 # Also update already-uploaded activity_records that are still unknown
                 # for this app/user/org so DB reflects the latest AI classification.
                 try:
-                    if self.supabase_service and self.current_user_id and self.organization_id:
+                    if self.supabase and self.current_user_id and self.organization_id:
                         new_status = 'pending' if new_classification == 'productive' else 'analyzed'
-                        update_query = self.supabase_service.table('activity_records').update({
+                        update_query = self.supabase.table('activity_records').update({
                             'classification': new_classification,
                             'status': new_status
                         }).eq('user_id', self.current_user_id) \
@@ -7769,9 +7751,8 @@ class TimeTracker:
             print("[INFO] Screenshot upload/storage is disabled by client configuration")
             return None
         
-        # Use service role client for storage operations (bypasses RLS)
-        # Since we're using Atlassian OAuth, not Supabase Auth, we need service role
-        storage_client = self.supabase_service if self.supabase_service else self.supabase
+        # Use RLS-scoped client for storage operations (JWT provides identity)
+        storage_client = self.supabase
         
         try:
             # Convert screenshot to bytes
@@ -8006,8 +7987,8 @@ class TimeTracker:
                 screenshot_data['thumbnail_url'] = thumb_url
                 screenshot_data['status'] = 'pending'
                 
-                # Use service client for database insert to bypass RLS
-                db_client = self.supabase_service if self.supabase_service else self.supabase
+                # Insert screenshot record via RLS-scoped client
+                db_client = self.supabase
                 result = db_client.table('screenshots').insert(screenshot_data).execute()
                 
                 if result.data:
@@ -8113,7 +8094,7 @@ class TimeTracker:
                 duration_seconds = 1
                 end_time = self.current_window_db_start_time + timedelta(seconds=1)
 
-            db_client = self.supabase_service if self.supabase_service else self.supabase
+            db_client = self.supabase
             update_result = db_client.table('screenshots').update({
                 'end_time': end_time.isoformat(),
                 'timestamp': end_time.isoformat(),
@@ -8413,18 +8394,27 @@ class TimeTracker:
         # Check connectivity
         if not self.offline_manager.check_connectivity():
             return None
-        
+
+        # Ensure Supabase JWT is valid before flushing offline queue
+        # (laptop may have been asleep for days — JWT could be expired)
+        sb_expires_at = self.auth_manager.tokens.get('supabase_token_expires_at', 0)
+        if sb_expires_at and time.time() > (sb_expires_at - 300):
+            print("[INFO] Supabase JWT expired — refreshing before offline sync...")
+            if not self._set_supabase_jwt():
+                print("[WARN] Cannot sync offline data: Supabase JWT refresh failed")
+                return None
+
         # Check if there's anything to sync
         pending_count = self.offline_manager.get_pending_count()
         if pending_count == 0:
             return None
-        
+
         print(f"[INFO] Network online - syncing {pending_count} offline screenshots...")
         self.add_admin_log('INFO', f'Syncing {pending_count} offline screenshots...')
 
-        # Get the appropriate clients
-        db_client = self.supabase_service if self.supabase_service else self.supabase
-        storage_client = self.supabase_service if self.supabase_service else self.supabase
+        # Get the client (uses anon key + custom JWT, RLS enforced)
+        db_client = self.supabase
+        storage_client = self.supabase
 
         # Perform sync
         result = self.offline_manager.sync_all(db_client, storage_client)
@@ -8474,13 +8464,24 @@ class TimeTracker:
                         if token_refresh_counter >= token_refresh_interval:
                             token_refresh_counter = 0
                             expires_at = self.auth_manager.tokens.get('expires_at', 0)
-                            # Refresh if token expires within the next 5 minutes
+                            # Refresh Atlassian token if near expiry (5-minute buffer)
                             if expires_at and time.time() > (expires_at - 300):
                                 print("[INFO] Access token nearing expiry, refreshing proactively...")
                                 if self.auth_manager.refresh_access_token():
                                     print("[OK] Proactive token refresh successful")
                                 else:
                                     print("[WARN] Proactive token refresh failed — will retry on next cycle")
+
+                            # Refresh Supabase JWT if near expiry (5-minute buffer)
+                            # Uses the (possibly freshly refreshed) Atlassian token to get a new JWT
+                            sb_expires_at = self.auth_manager.tokens.get('supabase_token_expires_at', 0)
+                            if sb_expires_at and time.time() > (sb_expires_at - 300):
+                                print("[INFO] Supabase JWT nearing expiry, refreshing proactively...")
+                                if self._set_supabase_jwt():
+                                    print("[OK] Supabase JWT refresh successful")
+                                else:
+                                    print("[WARN] Supabase JWT refresh failed — will retry on next cycle")
+
                     elif getattr(self.auth_manager, '_refresh_token_invalid', False):
                         # Refresh token is permanently invalid — show reauth notification once
                         self._show_reauth_notification()
@@ -8626,7 +8627,7 @@ class TimeTracker:
                     # Periodically sync app classifications from Supabase
                     if time.time() - last_classification_sync > classification_sync_interval:
                         try:
-                            client = self.supabase_service if self.supabase_service else self.supabase
+                            client = self.supabase
                             self.classification_manager.sync_classifications(
                                 client, self.organization_id, self.current_project_key,
                                 all_project_keys=list(self._get_known_project_keys())
@@ -8788,7 +8789,7 @@ class TimeTracker:
                             # Update the existing record in database
                             # IMPORTANT: Only update end_time, timestamp, and duration
                             # Do NOT update start_time - it should remain as originally set
-                            db_client = self.supabase_service if self.supabase_service else self.supabase
+                            db_client = self.supabase
                             update_result = db_client.table('screenshots').update({
                                 'end_time': end_time.isoformat(),
                                 'timestamp': end_time.isoformat(),
@@ -8865,7 +8866,7 @@ class TimeTracker:
                             self.last_screenshot_end_time = end_time  # Update with adjusted time
 
                         try:
-                            db_client = self.supabase_service if self.supabase_service else self.supabase
+                            db_client = self.supabase
                             update_result = db_client.table('screenshots').update({
                                 'end_time': end_time.isoformat(),
                                 'timestamp': end_time.isoformat(),
@@ -9626,7 +9627,7 @@ class TimeTracker:
                             self.current_user_id = self.ensure_user_exists(user_info)
                             # Sync app classifications from Supabase (all projects)
                             try:
-                                client = self.supabase_service if self.supabase_service else self.supabase
+                                client = self.supabase
                                 self.classification_manager.sync_classifications(
                                     client, self.organization_id, self.current_project_key,
                                     all_project_keys=list(self._get_known_project_keys())

@@ -120,7 +120,7 @@ async function lookupUserByAtlassianId(atlassianAccountId) {
 
   const { data: dbUser, error: dbError } = await supabase
     .from('users')
-    .select('id, organization_id')
+    .select('id, organization_id, supabase_user_id')
     .eq('atlassian_account_id', atlassianAccountId)
     .single();
 
@@ -298,7 +298,7 @@ async function autoProvisionUser(atlassianAccountId, atlassianToken, email, disp
     // Find or create user
     const { data: existingUsers, error: findUserError } = await supabase
       .from('users')
-      .select('id, organization_id')
+      .select('id, organization_id, supabase_user_id')
       .eq('atlassian_account_id', atlassianAccountId);
 
     if (findUserError) throw findUserError;
@@ -327,7 +327,21 @@ async function autoProvisionUser(atlassianAccountId, atlassianToken, email, disp
         .single();
 
       if (createUserError) throw createUserError;
+
+      // Set supabase_user_id = the newly created user's own id
+      // This is required for RLS: get_current_user_id() does WHERE supabase_user_id = auth.uid()
+      const { error: backfillError } = await supabase
+        .from('users')
+        .update({ supabase_user_id: newUser.id })
+        .eq('id', newUser.id);
+
+      if (backfillError) {
+        logger.error('[Auth] Failed to set supabase_user_id for new user %s: %s', newUser.id, backfillError.message);
+        throw backfillError;
+      }
+
       dbUser = newUser;
+      dbUser.supabase_user_id = newUser.id;
     }
 
     // Ensure organization membership
@@ -364,7 +378,7 @@ async function autoProvisionUser(atlassianAccountId, atlassianToken, email, disp
       logger.info('[Auth] Created organization membership via auto-provisioning', { userId: dbUser.id, role });
     }
 
-    return { id: dbUser.id, organization_id: organization.id };
+    return { id: dbUser.id, organization_id: organization.id, supabase_user_id: dbUser.supabase_user_id || dbUser.id };
   } catch (error) {
     logger.error('[Auth] Auto-provisioning failed:', error.message);
     return null;
@@ -593,6 +607,25 @@ exports.exchangeToken = async (req, res) => {
     });
     if (!dbUser) return;
 
+    // Ensure supabase_user_id is set so RLS policies (via get_current_user_id()) work.
+    // get_current_user_id() does: WHERE supabase_user_id = auth.uid()
+    // We set sub = dbUser.id in the JWT, so supabase_user_id must also = dbUser.id.
+    if (!dbUser.supabase_user_id || dbUser.supabase_user_id !== dbUser.id) {
+      const supabase = getClient();
+      if (supabase) {
+        const { error: updateError } = await supabase
+          .from('users')
+          .update({ supabase_user_id: dbUser.id })
+          .eq('id', dbUser.id);
+
+        if (updateError) {
+          logger.error('[Auth] Failed to set supabase_user_id for user %s: %s', atlassianAccountId, updateError.message);
+          return res.status(500).json({ success: false, error: 'Failed to update user profile for authentication' });
+        }
+        logger.info('[Auth] Set supabase_user_id = %s for user %s', dbUser.id, atlassianAccountId);
+      }
+    }
+
     // Extract Supabase reference from URL (e.g., jvijitdewbypqbatfboi from https://jvijitdewbypqbatfboi.supabase.co)
     const supabaseRefMatch = supabaseUrl ? /https:\/\/([^.]+)\.supabase\.co/.exec(supabaseUrl) : null;
     const supabaseRef = supabaseRefMatch?.[1] || null;
@@ -612,16 +645,17 @@ exports.exchangeToken = async (req, res) => {
 
       // Supabase auth claims
       aud: 'authenticated',
-      sub: atlassianAccountId, // Use Atlassian account ID as subject
+      sub: dbUser.id, // Database UUID — enables RLS via auth.uid() = users.id
 
       // Custom claims for RLS policies
       atlassian_account_id: atlassianAccountId,
       email: email,
 
-      // App metadata
+      // App metadata — org_id enables tenant isolation in RLS
       app_metadata: {
         provider: 'atlassian',
-        providers: ['atlassian']
+        providers: ['atlassian'],
+        org_id: dbUser.organization_id
       },
 
       // User metadata
@@ -687,11 +721,12 @@ exports.getSupabaseConfig = async (req, res) => {
     if (!dbUser) return;
 
     // Get Supabase credentials from environment
+    // NOTE: Only the URL and anon key are sent to clients.
+    // The service role key is NEVER sent — it stays server-side only.
     const supabaseUrl = process.env.SUPABASE_URL;
     const supabaseAnonKey = process.env.SUPABASE_ANON_KEY;
-    const supabaseServiceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
-    if (!supabaseUrl || !supabaseAnonKey || !supabaseServiceRoleKey) {
+    if (!supabaseUrl || !supabaseAnonKey) {
       logger.error('[Auth] Supabase credentials not configured on server');
       return res.status(500).json({
         success: false,
@@ -704,8 +739,7 @@ exports.getSupabaseConfig = async (req, res) => {
     res.json({
       success: true,
       supabase_url: supabaseUrl,
-      supabase_anon_key: supabaseAnonKey,
-      supabase_service_role_key: supabaseServiceRoleKey
+      supabase_anon_key: supabaseAnonKey
     });
 
   } catch (error) {

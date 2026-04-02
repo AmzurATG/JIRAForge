@@ -573,8 +573,7 @@ describe('Auth Controller', () => {
       expect(res.json).toHaveBeenCalledWith({
         success: true,
         supabase_url: 'https://test.supabase.co',
-        supabase_anon_key: 'anon-key-123',
-        supabase_service_role_key: 'service-key-123'
+        supabase_anon_key: 'anon-key-123'
       });
     });
 
