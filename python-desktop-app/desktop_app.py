@@ -1432,7 +1432,11 @@ class AtlassianAuthManager:
         self.tokens = self._load_tokens()
 
     def _migrate_to_keyring(self):
-        """Migrate sensitive tokens from plain-text JSON to secure keyring storage"""
+        """Migrate sensitive tokens from plain-text JSON to secure keyring storage.
+
+        JSON file is kept as a backup (not cleaned) because keyring can lose data
+        if the app is killed during a chunked write (e.g., system shutdown/reboot).
+        """
         if not KEYRING_AVAILABLE:
             return
 
@@ -1444,36 +1448,27 @@ class AtlassianAuthManager:
             with open(self.store_path, 'r') as f:
                 old_data = json.load(f)
 
-            migrated = False
             for key in SENSITIVE_TOKEN_KEYS:
                 if key in old_data and old_data[key]:
                     # Check if already in keyring
                     existing = _keyring_get(KEYRING_SERVICE, key)
                     if existing is None:
-                        # Migrate to keyring
+                        # Copy to keyring (keep JSON as backup)
                         _keyring_set(KEYRING_SERVICE, key, old_data[key])
                         print(f"[OK] Migrated {key} to secure storage")
-                        migrated = True
-
-            if migrated:
-                # Remove sensitive tokens from JSON file
-                for key in SENSITIVE_TOKEN_KEYS:
-                    if key in old_data:
-                        del old_data[key]
-
-                # Save cleaned JSON (only non-sensitive data)
-                with open(self.store_path, 'w') as f:
-                    json.dump(old_data, f)
-                print("[OK] Sensitive tokens removed from plain-text storage")
 
         except Exception as e:
             print(f"[WARN] Migration to secure storage failed: {e}")
 
     def _load_tokens(self):
-        """Load tokens from secure keyring (sensitive) and JSON file (metadata)"""
+        """Load tokens from secure keyring (sensitive) and JSON file (backup).
+
+        Priority: keyring > JSON backup. If keyring is missing a token
+        (e.g., corrupted by interrupted shutdown), fall back to JSON.
+        """
         tokens = {}
 
-        # Load non-sensitive metadata from JSON file
+        # Load all tokens from JSON file (includes backup of sensitive tokens)
         try:
             if os.path.exists(self.store_path):
                 with open(self.store_path, 'r') as f:
@@ -1481,20 +1476,29 @@ class AtlassianAuthManager:
         except Exception as e:
             print(f"[WARN] Failed to load token metadata: {e}")
 
-        # Load sensitive tokens from keyring
+        # Override with keyring values (more secure, preferred source)
         if KEYRING_AVAILABLE:
             try:
                 for key in SENSITIVE_TOKEN_KEYS:
                     value = _keyring_get(KEYRING_SERVICE, key)
                     if value:
                         tokens[key] = value
+                    elif tokens.get(key):
+                        # Keyring lost this token (corrupted chunks from interrupted shutdown)
+                        # but JSON backup has it — re-save to keyring for next time
+                        print(f"[WARN] Keyring missing {key}, recovered from JSON backup")
+                        try:
+                            _keyring_set(KEYRING_SERVICE, key, tokens[key])
+                        except Exception:
+                            pass
             except Exception as e:
                 print(f"[WARN] Failed to load tokens from secure storage: {e}")
+                # JSON backup tokens are already in `tokens` dict — will be used
 
         return tokens
 
     def _save_tokens(self):
-        """Save tokens to secure keyring (sensitive) and JSON file (metadata)"""
+        """Save tokens to secure keyring (sensitive) and JSON file (metadata + backup)"""
         # Separate sensitive and non-sensitive data
         sensitive_data = {}
         metadata = {}
@@ -1513,13 +1517,13 @@ class AtlassianAuthManager:
                         _keyring_set(KEYRING_SERVICE, key, value)
             except Exception as e:
                 print(f"[WARN] Failed to save tokens to secure storage: {e}")
-                # Fallback: save to JSON if keyring fails
-                metadata.update(sensitive_data)
-        else:
-            # No keyring available, save everything to JSON (with warning)
-            metadata.update(sensitive_data)
 
-        # Save non-sensitive metadata to JSON file
+        # Always save tokens to JSON as backup — keyring can lose data if the app
+        # is killed during a chunked write (e.g., system shutdown/reboot).
+        # The JSON file in AppData is the resilient fallback.
+        metadata.update(sensitive_data)
+
+        # Save to JSON file
         try:
             with open(self.store_path, 'w') as f:
                 json.dump(metadata, f)
@@ -1556,7 +1560,7 @@ class AtlassianAuthManager:
             'redirect_uri': self.redirect_uri,
             'state': state,
             'response_type': 'code',
-            'prompt': 'consent',
+            'prompt': 'login',
             'code_challenge': code_challenge,
             'code_challenge_method': 'S256'
         }
@@ -1919,7 +1923,7 @@ class AtlassianAuthManager:
             print("[ERROR] No valid Atlassian token - cannot fetch OCR config")
             return False
 
-        ai_server_url = get_env_var('AI_SERVER_URL', 'http://216.48.190.255:3001')
+        ai_server_url = get_env_var('AI_SERVER_URL', 'https://forgesync.amzur.com')
         
         try:
             print("[INFO] Fetching OCR config from AI Server...")
