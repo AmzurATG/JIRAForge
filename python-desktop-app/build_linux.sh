@@ -162,7 +162,50 @@ Maintainer: $MAINTAINER
 Description: $APP_DISPLAY_NAME
  $APP_DESCRIPTION
 Depends: libx11-6, libdbus-1-3, gir1.2-ayatanaappindicator3-0.1 | gir1.2-appindicator3-0.1
+Replaces: $APP_NAME (<< $APP_VERSION)
+Breaks: $APP_NAME (<< $APP_VERSION)
 EOF
+
+# ── DEBIAN/preinst (runs before install — auto-uninstall old version) ──
+cat > "$DEB_ROOT/DEBIAN/preinst" <<'PREINST'
+#!/bin/sh
+set -e
+
+# --- Stop any running timetracker instance before upgrade/install ---
+if pgrep -f /opt/timetracker/timetracker >/dev/null 2>&1; then
+    echo "[TimeTracker] Stopping running instance before install..."
+    pkill -f /opt/timetracker/timetracker 2>/dev/null || true
+    sleep 2
+fi
+
+# --- Remove previous dpkg-managed installation if present ---
+if dpkg -s timetracker >/dev/null 2>&1; then
+    INSTALLED_VER=$(dpkg-query -W -f='${Version}' timetracker 2>/dev/null || echo "unknown")
+    echo "[TimeTracker] Found existing installation (v${INSTALLED_VER}). Removing before upgrade..."
+    dpkg --remove --force-depends timetracker 2>/dev/null || true
+fi
+
+# --- Clean up manual (non-dpkg) installations ---
+if [ -x /opt/timetracker/timetracker ] && ! dpkg -s timetracker >/dev/null 2>&1; then
+    echo "[TimeTracker] Found manual installation in /opt/timetracker. Cleaning up..."
+    rm -f /opt/timetracker/timetracker 2>/dev/null || true
+    rm -f /usr/local/bin/timetracker 2>/dev/null || true
+    rm -f /usr/share/applications/timetracker.desktop 2>/dev/null || true
+    rm -f /usr/share/icons/hicolor/128x128/apps/timetracker.png 2>/dev/null || true
+fi
+
+# --- Remove stale lock files ---
+for USERDIR in /home/*; do
+    for LOCKFILE in \
+        "$USERDIR/.local/share/timetracker/.lock" \
+        "$USERDIR/snap/code/"*"/.local/share/timetracker/.lock"; do
+        rm -f "$LOCKFILE" 2>/dev/null || true
+    done
+done
+
+echo "[TimeTracker] System ready for installation."
+PREINST
+chmod 755 "$DEB_ROOT/DEBIAN/preinst"
 
 # ── DEBIAN/postinst (runs after install) ──
 cat > "$DEB_ROOT/DEBIAN/postinst" <<'POSTINST'
