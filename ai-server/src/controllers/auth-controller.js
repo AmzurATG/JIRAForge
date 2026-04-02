@@ -330,12 +330,18 @@ async function autoProvisionUser(atlassianAccountId, atlassianToken, email, disp
 
       // Set supabase_user_id = the newly created user's own id
       // This is required for RLS: get_current_user_id() does WHERE supabase_user_id = auth.uid()
-      await supabase
+      const { error: backfillError } = await supabase
         .from('users')
         .update({ supabase_user_id: newUser.id })
         .eq('id', newUser.id);
 
+      if (backfillError) {
+        logger.error('[Auth] Failed to set supabase_user_id for new user %s: %s', newUser.id, backfillError.message);
+        throw backfillError;
+      }
+
       dbUser = newUser;
+      dbUser.supabase_user_id = newUser.id;
     }
 
     // Ensure organization membership
@@ -607,10 +613,15 @@ exports.exchangeToken = async (req, res) => {
     if (!dbUser.supabase_user_id || dbUser.supabase_user_id !== dbUser.id) {
       const supabase = getClient();
       if (supabase) {
-        await supabase
+        const { error: updateError } = await supabase
           .from('users')
           .update({ supabase_user_id: dbUser.id })
           .eq('id', dbUser.id);
+
+        if (updateError) {
+          logger.error('[Auth] Failed to set supabase_user_id for user %s: %s', atlassianAccountId, updateError.message);
+          return res.status(500).json({ success: false, error: 'Failed to update user profile for authentication' });
+        }
         logger.info('[Auth] Set supabase_user_id = %s for user %s', dbUser.id, atlassianAccountId);
       }
     }

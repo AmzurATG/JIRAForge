@@ -27,6 +27,7 @@ CREATE POLICY "org_members_self_insert" ON public.organization_members
     FOR INSERT TO authenticated
     WITH CHECK (
         user_id = (SELECT public.get_current_user_id())
+        AND organization_id = (SELECT public.get_current_user_organization_id())
         AND role = 'member'
         AND can_manage_settings = false
         AND can_view_team_analytics = false
