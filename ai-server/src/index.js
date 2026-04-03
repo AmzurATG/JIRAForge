@@ -14,6 +14,7 @@ const appVersionController = require('./controllers/app-version-controller');
 const feedbackController = require('./controllers/feedback-controller');
 const notificationController = require('./controllers/notification-controller');
 const dashboardController = require('./controllers/dashboard-controller');
+const userDataController = require('./controllers/user-data-controller');
 const authMiddleware = require('./middleware/auth');
 const forgeAuthMiddleware = require('./middleware/forge-auth');
 const atlassianAuthMiddleware = require('./middleware/atlassian-auth');
@@ -361,6 +362,33 @@ app.post('/api/forge/feedback/session', ...forgeMiddleware, forgeProxyController
 
 // Issue cache — called by the avi:jira:updated:issue trigger to keep user_jira_issues_cache fresh
 app.post('/api/forge/issues/cache', ...forgeMiddleware, forgeProxyController.cacheUserIssues);
+
+// Uninstall handler — called when app is uninstalled from Jira site (Forge-authenticated)
+// Marks organization for deletion with 30-day grace period
+const uninstallController = require('./controllers/uninstall-controller');
+app.post('/api/forge/uninstall', ...forgeMiddleware, uninstallController.handleUninstall);
+
+// Manual deletion trigger (Admin-only - for testing/recovery)
+// Processes organizations that have passed the 30-day grace period
+const { processScheduledDeletions } = require('./services/deletion-service');
+app.post('/api/admin/process-deletions', authMiddleware, async (req, res) => {
+  try {
+    const result = await processScheduledDeletions();
+    res.json(result);
+  } catch (error) {
+    logger.error('[Admin] Failed to process scheduled deletions', { error: error.message });
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// =============================================================================
+// PERSONAL DATA REPORTING API (GDPR Compliance)
+// Implements Atlassian's Personal Data Reporting API for user data export/deletion
+// Requires Forge Invocation Token (FIT) authentication
+// =============================================================================
+
+// Mount user data routes
+app.use('/api/v1/user-data', userDataController);
 
 // =============================================================================
 // PROTECTED ROUTES (require authMiddleware)

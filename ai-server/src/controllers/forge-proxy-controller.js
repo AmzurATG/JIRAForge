@@ -329,6 +329,51 @@ function shouldUpdateOrgInfo(orgName, existingOrg, cloudId) {
  * Update an existing org with better info, falling back to the original if update fails
  */
 async function resolveExistingOrg(supabase, existingOrg, orgName, jiraUrl, cloudId) {
+  // Handle reinstallation after pending deletion
+  if (existingOrg.status === 'pending_deletion') {
+    logger.info('[ForgeProxy] Reinstallation detected - reactivating organization', {
+      id: existingOrg.id,
+      orgName: existingOrg.org_name,
+      scheduledDeletionAt: existingOrg.scheduled_deletion_at
+    });
+
+    // Reactivate the organization
+    const { data: reactivatedOrg, error: reactivateError } = await supabase
+      .from('organizations')
+      .update({
+        status: 'active',
+        scheduled_deletion_at: null,
+        uninstalled_at: null,
+        updated_at: getUTCISOString()
+      })
+      .eq('id', existingOrg.id)
+      .select()
+      .single();
+
+    if (reactivateError) {
+      logger.error('[ForgeProxy] Failed to reactivate organization', {
+        id: existingOrg.id,
+        error: reactivateError.message
+      });
+    } else {
+      // Cancel the deletion audit log
+      await supabase
+        .from('deletion_audit_log')
+        .update({
+          status: 'cancelled',
+          updated_at: getUTCISOString()
+        })
+        .eq('organization_id', existingOrg.id)
+        .eq('status', 'pending');
+
+      logger.info('[ForgeProxy] Organization reactivated successfully', {
+        id: existingOrg.id
+      });
+
+      return reactivatedOrg;
+    }
+  }
+
   if (!shouldUpdateOrgInfo(orgName, existingOrg, cloudId)) {
     logger.info('[ForgeProxy] Found existing organization', { id: existingOrg.id });
     return existingOrg;
