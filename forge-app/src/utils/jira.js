@@ -182,11 +182,22 @@ export async function createJiraWorklog(issueKey, timeSpentSeconds, startedAt, d
     }
   );
 
+  if (!response.ok) {
+    const errorText = await response.text();
+    console.error(`[Worklog] Failed to create worklog on ${issueKey}: HTTP ${response.status} - ${errorText}`);
+    throw new Error(`Failed to create worklog on ${issueKey}: HTTP ${response.status} - ${errorText.substring(0, 200)}`);
+  }
+
   const result = await response.json();
 
   // Diagnostic: Log who Jira thinks created this worklog
   if (result?.author) {
     console.log(`[Worklog] Created via asUser() — Jira author: ${result.author.displayName} (${result.author.accountId})`);
+  }
+
+  if (!result?.id) {
+    console.error(`[Worklog] No worklog ID in response for ${issueKey}:`, JSON.stringify(result));
+    throw new Error(`No worklog ID returned after creating worklog on ${issueKey}`);
   }
 
   return result;

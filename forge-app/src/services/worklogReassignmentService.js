@@ -6,6 +6,7 @@
 import { getSupabaseConfig, getOrCreateUser, getOrCreateOrganization, supabaseRequest } from '../utils/supabase.js';
 import { isValidIssueKey } from '../utils/validators.js';
 import { createJiraWorklog, deleteJiraWorklog, updateJiraWorklog } from '../utils/jira.js';
+import { formatJiraDate } from '../utils/formatters.js';
 
 /**
  * Reassign activity_records from one issue to another when no worklog_sync exists.
@@ -172,20 +173,38 @@ export async function reassignWorklog(accountId, cloudId, fromIssueKey, toIssueK
     };
   }
 
-  // Check for existing worklog on target issue (prevent duplicates)
-  const existingTarget = await supabaseRequest(
+  const toProjectKey = toIssueKey.split('-')[0];
+  const timeSpentSeconds = last_synced_seconds || 0;
+  // Format date for Jira API compatibility (use +0000 instead of Z)
+  const worklogStartedAt = started_at ? formatJiraDate(new Date(started_at)) : formatJiraDate();
+  const worklogDate = worklogStartedAt.split('T')[0]; // Extract YYYY-MM-DD
+  
+  // Check for existing worklogs on target issue
+  const existingTargetWorklogs = await supabaseRequest(
     supabaseConfig,
     `worklog_sync?organization_id=eq.${organization.id}&user_id=eq.${userId}&issue_key=eq.${toIssueKey}`,
     { method: 'GET' }
   );
 
-  if (existingTarget && existingTarget.length > 0) {
-    throw new Error(`A worklog already exists for issue ${toIssueKey}. Merge is not supported — reassign activity records first.`);
-  }
+  if (existingTargetWorklogs && existingTargetWorklogs.length > 0) {
+    // Check if any are from the SAME DATE (can't merge same-day worklogs)
+    const sameDayWorklogs = existingTargetWorklogs.filter(wl => {
+      const wlDate = wl.started_at ? wl.started_at.split('T')[0] : null;
+      return wlDate === worklogDate;
+    });
 
-  const toProjectKey = toIssueKey.split('-')[0];
-  const timeSpentSeconds = last_synced_seconds || 0;
-  const worklogStartedAt = started_at || new Date().toISOString();
+    if (sameDayWorklogs.length > 0) {
+      throw new Error(`A worklog already exists for issue ${toIssueKey} on ${worklogDate}. Merge is not supported — reassign activity records first.`);
+    }
+
+    // Delete worklogs from different dates (they're already synced to Jira)
+    console.log(`[WorklogReassign] Deleting ${existingTargetWorklogs.length} old worklog_sync record(s) for ${toIssueKey}`);
+    await supabaseRequest(
+      supabaseConfig,
+      `worklog_sync?organization_id=eq.${organization.id}&user_id=eq.${userId}&issue_key=eq.${toIssueKey}`,
+      { method: 'DELETE' }
+    );
+  }
 
   // --- 3. Delete Jira worklog on OLD issue ---
   const deleteResponse = await deleteJiraWorklog(fromIssueKey, jira_worklog_id);
@@ -394,19 +413,37 @@ export async function splitWorklog(accountId, cloudId, fromIssueKey, toIssueKey,
     };
   }
 
-  // --- 4. Check target doesn't already have a worklog ---
-  const existingTarget = await supabaseRequest(
+  const toProjectKey = toIssueKey.split('-')[0];
+  // Format date for Jira API compatibility (use +0000 instead of Z)
+  const worklogStartedAt = started_at ? formatJiraDate(new Date(started_at)) : formatJiraDate();
+  const worklogDate = worklogStartedAt.split('T')[0]; // Extract YYYY-MM-DD
+  
+  // --- 4. Check for existing worklogs on target issue ---
+  const existingTargetWorklogs = await supabaseRequest(
     supabaseConfig,
     `worklog_sync?organization_id=eq.${organization.id}&user_id=eq.${userId}&issue_key=eq.${toIssueKey}`,
     { method: 'GET' }
   );
 
-  if (existingTarget && existingTarget.length > 0) {
-    throw new Error(`A worklog already exists for issue ${toIssueKey}. Merge is not supported — reassign activity records first.`);
-  }
+  if (existingTargetWorklogs && existingTargetWorklogs.length > 0) {
+    // Check if any are from the SAME DATE (can't merge same-day worklogs)
+    const sameDayWorklogs = existingTargetWorklogs.filter(wl => {
+      const wlDate = wl.started_at ? wl.started_at.split('T')[0] : null;
+      return wlDate === worklogDate;
+    });
 
-  const toProjectKey = toIssueKey.split('-')[0];
-  const worklogStartedAt = started_at || new Date().toISOString();
+    if (sameDayWorklogs.length > 0) {
+      throw new Error(`A worklog already exists for issue ${toIssueKey} on ${worklogDate}. Merge is not supported — reassign activity records first.`);
+    }
+
+    // Delete worklogs from different dates (they're already synced to Jira)
+    console.log(`[WorklogSplit] Deleting ${existingTargetWorklogs.length} old worklog_sync record(s) for ${toIssueKey}`);
+    await supabaseRequest(
+      supabaseConfig,
+      `worklog_sync?organization_id=eq.${organization.id}&user_id=eq.${userId}&issue_key=eq.${toIssueKey}`,
+      { method: 'DELETE' }
+    );
+  }
 
   // --- 5a. UPDATE source Jira worklog (reduce to remainingSeconds) ---
   const updateResponse = await updateJiraWorklog(fromIssueKey, jira_worklog_id, remainingSeconds);
@@ -417,23 +454,18 @@ export async function splitWorklog(accountId, cloudId, fromIssueKey, toIssueKey,
   // --- 5b. CREATE target Jira worklog (splitSeconds) ---
   let newWorklogId;
   try {
+    console.log(`[WorklogSplit] Creating worklog on ${toIssueKey}: ${splitSeconds}s at ${worklogStartedAt}`);
     const createResult = await createJiraWorklog(toIssueKey, splitSeconds, worklogStartedAt);
     newWorklogId = createResult.id;
-
-    if (!newWorklogId) {
-      // Rollback: restore source worklog to original total
-      await updateJiraWorklog(fromIssueKey, jira_worklog_id, totalSeconds);
-      throw new Error(`Failed to create worklog on ${toIssueKey}: no worklog ID returned`);
-    }
+    console.log(`[WorklogSplit] Successfully created worklog ${newWorklogId} on ${toIssueKey}`);
   } catch (error) {
-    if (!error.message.includes('Failed to create worklog')) {
-      // Rollback: restore source worklog to original total
-      try {
-        await updateJiraWorklog(fromIssueKey, jira_worklog_id, totalSeconds);
-        console.log(`[WorklogSplit] Rollback: restored ${fromIssueKey} to ${totalSeconds}s`);
-      } catch (rollbackErr) {
-        console.error(`[WorklogSplit] CRITICAL: rollback failed for ${fromIssueKey}:`, rollbackErr.message);
-      }
+    console.error(`[WorklogSplit] Error creating worklog on ${toIssueKey}:`, error.message);
+    // Rollback: restore source worklog to original total
+    try {
+      await updateJiraWorklog(fromIssueKey, jira_worklog_id, totalSeconds);
+      console.log(`[WorklogSplit] Rollback: restored ${fromIssueKey} to ${totalSeconds}s`);
+    } catch (rollbackErr) {
+      console.error(`[WorklogSplit] CRITICAL: rollback failed for ${fromIssueKey}:`, rollbackErr.message);
     }
     throw error;
   }
@@ -453,7 +485,7 @@ export async function splitWorklog(accountId, cloudId, fromIssueKey, toIssueKey,
     }
   );
 
-  // --- 5d. Create target worklog_sync ---
+  // --- 5d. Create target worklog_sync record ---
   await supabaseRequest(
     supabaseConfig,
     'worklog_sync',
