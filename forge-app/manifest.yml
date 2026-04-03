@@ -54,6 +54,14 @@ modules:
 
   trigger:
     - key: issue-cache-trigger
+    - key: app-installed-trigger
+      function: lifecycleHandler
+      events:
+        - avi:forge:installed:app
+    - key: app-uninstalled-trigger
+      function: lifecycleHandler
+      events:
+        - avi:forge:uninstalled:app
       function: issueCacheSync
       events:
         - avi:jira:updated:issue
@@ -65,6 +73,10 @@ modules:
       function: lifecycleHandler
       events:
         - avi:forge:uninstalled:app
+
+  userDataProvider:
+    - key: personal-data-provider
+      handler: personalDataHandler
 
   userDataProvider:
     - key: personal-data-provider
