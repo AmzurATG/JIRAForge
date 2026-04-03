@@ -9,8 +9,6 @@
 
 const OpenAI = require('openai');
 const logger = require('../../utils/logger');
-const { logLLMRequest } = require('../sheets-logger');
-const { logCostTracking } = require('../cost-tracker');
 
 // AI request timeout (default: 60 seconds)
 const AI_REQUEST_TIMEOUT_MS = Number.parseInt(process.env.AI_REQUEST_TIMEOUT_MS || '60000', 10);
@@ -220,16 +218,6 @@ function getClient() {
 }
 
 /**
- * Check if AI analysis is enabled for screenshots (vision-based)
- * Controlled by USE_AI_FOR_SCREENSHOTS env var
- * @returns {boolean} True if any AI client is available and screenshot AI is enabled
- */
-function isAIEnabled() {
-  const hasClient = getPortkeyClient() !== null || getFireworksClient() !== null;
-  return hasClient && process.env.USE_AI_FOR_SCREENSHOTS !== 'false';
-}
-
-/**
  * Check if AI analysis is enabled for activity records (text-only)
  * Controlled by USE_AI_FOR_ACTIVITIES env var (defaults to enabled)
  * Separate from screenshot AI — activity analysis is text-only LLM matching
@@ -434,22 +422,14 @@ function getShortModelName(model) {
 }
 
 /**
- * Get the configured vision model (based on current primary provider)
- * @returns {string} Model name for vision analysis
- */
-function getVisionModel() {
-  const order = getProviderOrder();
-  const primary = order[0];
-  if (primary === 'fireworks') return getFireworksModel();
-  return getPortkeyModel();
-}
-
-/**
  * Get the configured text model (based on current primary provider)
  * @returns {string} Model name for text analysis
  */
 function getTextModel() {
-  return getVisionModel(); // Same logic
+  const order = getProviderOrder();
+  const primary = order[0];
+  if (primary === 'fireworks') return getFireworksModel();
+  return getPortkeyModel();
 }
 
 /**
@@ -535,13 +515,9 @@ function logRequestAttempt(requestType, config, errors) {
  * @param {number} params.max_tokens - Max tokens (default: 800)
  * @param {boolean} params.isVision - Whether this is a vision request (default: false)
  * @param {string} params.reasoningEffort - For Gemini: 'none'|'low'|'medium'|'high'; 'none' disables thinking so output tokens go to the response (optional)
- * @param {string} params.userId - User ID for cost tracking (optional)
- * @param {string} params.organizationId - Organization ID for cost tracking (optional)
- * @param {string} params.screenshotId - Screenshot ID for cost tracking (optional)
- * @param {string} params.apiCallName - Label for the request type (e.g. 'vision-analysis', 'app-classification') (optional)
  * @returns {Promise<Object>} { response, provider, model }
  */
-async function chatCompletionWithFallback({ messages, temperature = 0.3, max_tokens = 800, isVision = false, reasoningEffort = null, userId = null, organizationId = null, screenshotId = null, apiCallName = null }) {
+async function chatCompletionWithFallback({ messages, temperature = 0.3, max_tokens = 800, isVision = false, reasoningEffort = null }) {
   const errors = [];
   const requestType = isVision ? 'vision' : 'text';
 
@@ -606,32 +582,6 @@ async function chatCompletionWithFallback({ messages, temperature = 0.3, max_tok
 
       logger.info('[AI] %s request completed | %s | %dms', requestType, config.displayName, duration);
 
-      // Log to Google Sheets for Fireworks (async)
-      if (providerId === 'fireworks') {
-        const usage = response.usage || {};
-        logLLMRequest({
-          apiCallName: requestType,
-          provider: 'Fireworks',
-          model: config.model,
-          inputTokens: usage.prompt_tokens || 0,
-          outputTokens: usage.completion_tokens || 0
-        }).catch(() => {});
-      }
-
-      // Log cost tracking to Sheet 2 for ALL providers (async)
-      const usage = response.usage || {};
-      logCostTracking({
-        userId: userId,
-        apiCallName: requestType,
-        provider: providerId,
-        model: config.model,
-        inputTokens: usage.prompt_tokens || 0,
-        outputTokens: usage.completion_tokens || 0,
-        duration: duration,
-        organizationId: organizationId,
-        screenshotId: screenshotId
-      }).catch(() => {}); // Don't fail if cost tracking fails
-
       return { response, provider: providerId, model: config.model };
 
     } catch (error) {
@@ -659,7 +609,6 @@ module.exports = {
   getPortkeyClient,
 
   // Status checks
-  isAIEnabled,
   isActivityAIEnabled,
   isFireworksEnabled,
   isPortkeyEnabled,
@@ -668,7 +617,6 @@ module.exports = {
   isProviderDemoted,
 
   // Model getters
-  getVisionModel,
   getTextModel,
   getFireworksModel,
   getPortkeyModel,
