@@ -110,17 +110,9 @@ jest.mock('../src/services/ai', () => ({
     initializeClient: jest.fn()
 }));
 
-jest.mock('../src/services/sheets-logger', () => ({
-    initializeSheetsLogger: jest.fn()
-}));
-
 jest.mock('../src/services/activity-polling-service', () => ({
     start: jest.fn(),
     stop: jest.fn()
-}));
-
-jest.mock('../src/services/cost-tracker', () => ({
-    initializeCostTracker: jest.fn()
 }));
 
 jest.mock('../src/services/supabase-service', () => ({
@@ -805,7 +797,6 @@ describe('startServer function', () => {
     const { app, startServer } = require('../src/index');
     const logger = require('../src/utils/logger');
     const aiService = require('../src/services/ai');
-    const { initializeSheetsLogger } = require('../src/services/sheets-logger');
     const pollingService = require('../src/services/polling-service');
     const notificationPollingService = require('../src/services/notifications/notification-polling');
     const activityPollingService = require('../src/services/activity-polling-service');
@@ -835,7 +826,6 @@ describe('startServer function', () => {
         
         expect(app.listen).toHaveBeenCalled();
         expect(aiService.initializeClient).toHaveBeenCalled();
-        expect(initializeSheetsLogger).toHaveBeenCalled();
         expect(clusteringPollingService.start).toHaveBeenCalled();
         expect(pollingService.start).toHaveBeenCalled();
         expect(cleanupService.start).toHaveBeenCalled();
