@@ -22,7 +22,6 @@ const clusteringPollingService = require('./services/clustering-polling-service'
 const cleanupService = require('./services/cleanup-service');
 const notificationPollingService = require('./services/notifications/notification-polling');
 const aiService = require('./services/ai');
-const { initializeSheetsLogger } = require('./services/sheets-logger');
 const activityController = require('./controllers/activity-controller');
 const adminDashboardController = require('./controllers/admin-dashboard-controller');
 const activityPollingService = require('./services/activity-polling-service');
@@ -565,12 +564,6 @@ async function startServer() {
       logger.info('Initializing AI clients...');
       aiService.initializeClient();
 
-      // Initialize Google Sheets logger for LLM usage tracking
-      initializeSheetsLogger();
-
-      // Initialize cost tracker for Sheet 2 (cost tracking)
-      const { initializeCostTracker } = require('./services/cost-tracker');
-      initializeCostTracker();
 
       // Step 1: Start clustering service first (includes startup clustering if needed)
       // This runs any missed clustering before we start processing new screenshots

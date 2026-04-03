@@ -15,16 +15,6 @@ const mockLogger = {
 
 jest.mock('../../src/utils/logger', () => mockLogger);
 
-const mockLogLLMRequest = jest.fn().mockResolvedValue(undefined);
-jest.mock('../../src/services/sheets-logger', () => ({
-  logLLMRequest: mockLogLLMRequest,
-}));
-
-const mockLogCostTracking = jest.fn().mockResolvedValue(undefined);
-jest.mock('../../src/services/cost-tracker', () => ({
-  logCostTracking: mockLogCostTracking,
-}));
-
 // Default mock for OpenAI
 let mockCreate = jest.fn().mockResolvedValue({
   choices: [{ message: { content: 'test response' } }],
@@ -535,8 +525,10 @@ describe('chatCompletionWithFallback', () => {
     });
 
     expect(result.provider).toBe('portkey-gemini');
+    // Logger receives format string '[AI] %s request completed | %s | %dms' with 'vision' as 2nd arg
     expect(mockLogger.info).toHaveBeenCalledWith(
-      expect.stringContaining('vision request'),
+      expect.stringContaining('%s request'),
+      'vision',
       expect.anything(),
       expect.anything()
     );
@@ -553,8 +545,10 @@ describe('chatCompletionWithFallback', () => {
       isVision: false,
     });
 
+    // Logger receives format string '[AI] %s request completed | %s | %dms' with 'text' as 2nd arg
     expect(mockLogger.info).toHaveBeenCalledWith(
-      expect.stringContaining('text request'),
+      expect.stringContaining('%s request'),
+      'text',
       expect.anything(),
       expect.anything()
     );
@@ -702,61 +696,6 @@ describe('chatCompletionWithFallback - Fallback', () => {
 
 // =============================================================================
 // chatCompletionWithFallback - Cost Tracking
-// =============================================================================
-describe('chatCompletionWithFallback - Cost Tracking', () => {
-  beforeEach(resetAll);
-
-  test('logs to Google Sheets for Fireworks provider', async () => {
-    process.env.USE_FIREWORKS = 'true';
-    process.env.FIREWORKS_API_KEY = 'fw-test';
-    const client = require('../../src/services/ai/ai-client');
-    client.initializeClient();
-
-    await client.chatCompletionWithFallback({
-      messages: [{ role: 'user', content: 'test' }],
-    });
-
-    expect(mockLogLLMRequest).toHaveBeenCalled();
-  });
-
-  test('logs cost tracking for all providers', async () => {
-    process.env.USE_PORTKEY = 'true';
-    process.env.PORTKEY_API_KEY = 'pk-test';
-    const client = require('../../src/services/ai/ai-client');
-    client.initializeClient();
-
-    await client.chatCompletionWithFallback({
-      messages: [{ role: 'user', content: 'test' }],
-      userId: 'user-123',
-      organizationId: 'org-456',
-      screenshotId: 'ss-789',
-    });
-
-    expect(mockLogCostTracking).toHaveBeenCalledWith(
-      expect.objectContaining({
-        userId: 'user-123',
-        organizationId: 'org-456',
-        screenshotId: 'ss-789',
-      })
-    );
-  });
-
-  test('continues if cost tracking fails', async () => {
-    mockLogCostTracking.mockRejectedValueOnce(new Error('Tracking error'));
-
-    process.env.USE_PORTKEY = 'true';
-    process.env.PORTKEY_API_KEY = 'pk-test';
-    const client = require('../../src/services/ai/ai-client');
-    client.initializeClient();
-
-    // Should not throw even if cost tracking fails
-    const result = await client.chatCompletionWithFallback({
-      messages: [{ role: 'user', content: 'test' }],
-    });
-
-    expect(result).toBeDefined();
-  });
-});
 
 // =============================================================================
 // Provider Failure and Circuit Breaker
@@ -768,8 +707,12 @@ describe('Circuit Breaker / Provider Demotion', () => {
     let callCount = 0;
     mockCreate.mockImplementation(() => {
       callCount++;
-      // Fail first 2 calls (threshold), succeed after
-      if (callCount <= 2) {
+      // Fail odd calls (Portkey attempts), succeed even calls (Fireworks fallback)
+      // Call 1: Portkey attempt → fail
+      // Call 2: Fireworks fallback → succeed
+      // Call 3: Portkey attempt → fail (threshold reached, demoted)
+      // Call 4: Fireworks fallback → succeed
+      if (callCount % 2 === 1) {
         throw new Error('Provider error');
       }
       return Promise.resolve({
@@ -786,12 +729,12 @@ describe('Circuit Breaker / Provider Demotion', () => {
     const client = require('../../src/services/ai/ai-client');
     client.initializeClient();
 
-    // First call - Portkey fails (1/2), falls back to Fireworks
+    // First call - Portkey fails (1/2), falls back to Fireworks (succeeds)
     await client.chatCompletionWithFallback({
       messages: [{ role: 'user', content: 'test' }],
     });
 
-    // Second call - Portkey fails again (2/2) and gets demoted
+    // Second call - Portkey fails again (2/2) and gets demoted, Fireworks succeeds
     await client.chatCompletionWithFallback({
       messages: [{ role: 'user', content: 'test' }],
     });
@@ -1166,7 +1109,8 @@ describe('getVisionModel variants', () => {
     let callCount = 0;
     mockCreate.mockImplementation(() => {
       callCount++;
-      if (callCount <= 2) {
+      // Fail odd calls (Portkey), succeed even calls (Fireworks fallback)
+      if (callCount % 2 === 1) {
         throw new Error('Portkey error');
       }
       return Promise.resolve({
@@ -1183,7 +1127,7 @@ describe('getVisionModel variants', () => {
     const client = require('../../src/services/ai/ai-client');
     client.initializeClient();
 
-    // Cause 2 failures to demote Portkey
+    // Cause 2 Portkey failures to demote it (Fireworks succeeds as fallback)
     await client.chatCompletionWithFallback({
       messages: [{ role: 'user', content: 'test' }],
     });
@@ -1219,12 +1163,6 @@ describe('Edge Cases', () => {
     });
 
     expect(result).toBeDefined();
-    expect(mockLogCostTracking).toHaveBeenCalledWith(
-      expect.objectContaining({
-        inputTokens: 0,
-        outputTokens: 0,
-      })
-    );
   });
 
   test('handles apiCallName parameter', async () => {
