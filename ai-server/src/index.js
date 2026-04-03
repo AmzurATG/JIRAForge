@@ -103,6 +103,18 @@ const publicLimiter = rateLimit({
   }
 });
 
+// Rate limiter specifically for auth endpoints (stricter to prevent abuse)
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 30, // 30 requests per 15 minutes per IP
+  message: 'Too many authentication attempts, please try again later.',
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => {
+    return req.ip || req.headers['x-forwarded-for'] || req.connection.remoteAddress || 'unknown';
+  }
+});
+
 // Root endpoint
 app.get('/', publicLimiter, (req, res) => {
   res.json({
@@ -184,18 +196,6 @@ app.get('/terms-of-service', (req, res) => res.redirect('/legal/terms'));
 // AUTH ROUTES (Public - no authMiddleware)
 // These endpoints handle secure token exchange for the desktop app
 // =============================================================================
-
-// Rate limiter specifically for auth endpoints (stricter to prevent abuse)
-const authLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 30, // 30 requests per 15 minutes per IP
-  message: 'Too many authentication attempts, please try again later.',
-  standardHeaders: true,
-  legacyHeaders: false,
-  keyGenerator: (req) => {
-    return req.ip || req.headers['x-forwarded-for'] || req.connection.remoteAddress || 'unknown';
-  }
-});
 
 // Public OAuth config (exposes only the client ID — safe for browsers)
 app.get('/api/auth/config', authLimiter, authController.getOAuthConfig);
