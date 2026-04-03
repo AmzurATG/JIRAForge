@@ -5,7 +5,7 @@ import { navigateToIssue, formatTime } from '../../utils';
 import { parseUTC } from '../tabs/time-analytics/dateUtils';
 import './DashboardTab.css';
 
-function DashboardTab({ onOpenScreenshotPreview, onOpenReassignModal }) {
+function DashboardTab({ onOpenReassignModal }) {
   const {
     activeIssues,
     issuesLoading,
@@ -265,23 +265,6 @@ function DashboardTab({ onOpenScreenshotPreview, onOpenReassignModal }) {
                                                     </span>
                                                   </div>
                                                   <div className="session-actions">
-                                                    {session.screenshots?.length > 0 && (
-                                                      <button
-                                                        className="view-screenshots-button"
-                                                        onClick={(e) => {
-                                                          e.stopPropagation();
-                                                          onOpenScreenshotPreview(session, issue.key);
-                                                        }}
-                                                        title={`View ${session.screenshots.length} screenshot${session.screenshots.length > 1 ? 's' : ''}`}
-                                                      >
-                                                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                                                          <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
-                                                          <circle cx="8.5" cy="8.5" r="1.5"></circle>
-                                                          <polyline points="21 15 16 10 5 21"></polyline>
-                                                        </svg>
-                                                        {session.screenshots.length}
-                                                      </button>
-                                                    )}
                                                     {session.analysisResultIds?.length > 0 && (
                                                       <button
                                                         className="reassign-button"

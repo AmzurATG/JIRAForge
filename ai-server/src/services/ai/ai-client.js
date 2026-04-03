@@ -218,16 +218,6 @@ function getClient() {
 }
 
 /**
- * Check if AI analysis is enabled for screenshots (vision-based)
- * Controlled by USE_AI_FOR_SCREENSHOTS env var
- * @returns {boolean} True if any AI client is available and screenshot AI is enabled
- */
-function isAIEnabled() {
-  const hasClient = getPortkeyClient() !== null || getFireworksClient() !== null;
-  return hasClient && process.env.USE_AI_FOR_SCREENSHOTS !== 'false';
-}
-
-/**
  * Check if AI analysis is enabled for activity records (text-only)
  * Controlled by USE_AI_FOR_ACTIVITIES env var (defaults to enabled)
  * Separate from screenshot AI — activity analysis is text-only LLM matching
@@ -432,22 +422,14 @@ function getShortModelName(model) {
 }
 
 /**
- * Get the configured vision model (based on current primary provider)
- * @returns {string} Model name for vision analysis
- */
-function getVisionModel() {
-  const order = getProviderOrder();
-  const primary = order[0];
-  if (primary === 'fireworks') return getFireworksModel();
-  return getPortkeyModel();
-}
-
-/**
  * Get the configured text model (based on current primary provider)
  * @returns {string} Model name for text analysis
  */
 function getTextModel() {
-  return getVisionModel(); // Same logic
+  const order = getProviderOrder();
+  const primary = order[0];
+  if (primary === 'fireworks') return getFireworksModel();
+  return getPortkeyModel();
 }
 
 /**
@@ -627,7 +609,6 @@ module.exports = {
   getPortkeyClient,
 
   // Status checks
-  isAIEnabled,
   isActivityAIEnabled,
   isFireworksEnabled,
   isPortkeyEnabled,
@@ -636,7 +617,6 @@ module.exports = {
   isProviderDemoted,
 
   // Model getters
-  getVisionModel,
   getTextModel,
   getFireworksModel,
   getPortkeyModel,

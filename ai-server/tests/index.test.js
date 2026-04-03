@@ -14,14 +14,6 @@ jest.mock('../src/utils/logger', () => ({
 }));
 
 // Mock controllers
-jest.mock('../src/controllers/screenshot-controller', () => ({
-    analyzeScreenshot: jest.fn((req, res) => res.json({ success: true }))
-}));
-
-jest.mock('../src/controllers/brd-controller', () => ({
-    processBRD: jest.fn((req, res) => res.json({ success: true }))
-}));
-
 jest.mock('../src/controllers/auth-controller', () => ({
     atlassianCallback: jest.fn((req, res) => res.json({ success: true })),
     refreshToken: jest.fn((req, res) => res.json({ success: true })),
@@ -82,23 +74,11 @@ jest.mock('../src/middleware/forge-auth', () => jest.fn((req, res, next) => {
 jest.mock('../src/middleware/atlassian-auth', () => jest.fn((req, res, next) => next()));
 
 // Mock services
-jest.mock('../src/services/polling-service', () => ({
-    start: jest.fn(),
-    stop: jest.fn()
-}));
-
 jest.mock('../src/services/clustering-polling-service', () => ({
     start: jest.fn().mockResolvedValue(),
     stop: jest.fn(),
     isClusteringRunning: jest.fn().mockReturnValue(false),
     processUserUnassignedWork: jest.fn().mockResolvedValue()
-}));
-
-jest.mock('../src/services/cleanup-service', () => ({
-    start: jest.fn().mockResolvedValue(),
-    stop: jest.fn(),
-    isCleanupRunning: jest.fn().mockReturnValue(false),
-    runCleanup: jest.fn().mockResolvedValue({ success: true, deleted: 5, errors: 0 })
 }));
 
 jest.mock('../src/services/notifications/notification-polling', () => ({
@@ -127,8 +107,6 @@ jest.mock('../src/services/clustering-service', () => ({
 const { app } = require('../src/index');
 
 // Import mocked dependencies for assertions
-const screenshotController = require('../src/controllers/screenshot-controller');
-const brdController = require('../src/controllers/brd-controller');
 const authController = require('../src/controllers/auth-controller');
 const forgeProxyController = require('../src/controllers/forge-proxy-controller');
 const appVersionController = require('../src/controllers/app-version-controller');
@@ -138,7 +116,6 @@ const authMiddleware = require('../src/middleware/auth');
 const forgeAuthMiddleware = require('../src/middleware/forge-auth');
 const atlassianAuthMiddleware = require('../src/middleware/atlassian-auth');
 const clusteringPollingService = require('../src/services/clustering-polling-service');
-const cleanupService = require('../src/services/cleanup-service');
 
 describe('AI Server Index', () => {
     beforeEach(() => {
@@ -475,26 +452,6 @@ describe('AI Server Index', () => {
     // Protected Routes
     // ==========================================================================
     describe('Protected Routes', () => {
-        it('should analyze screenshot', async () => {
-            const res = await request(app)
-                .post('/api/analyze-screenshot')
-                .send({ screenshot: 'base64data' });
-            
-            expect(res.status).toBe(200);
-            expect(authMiddleware).toHaveBeenCalled();
-            expect(screenshotController.analyzeScreenshot).toHaveBeenCalled();
-        });
-        
-        it('should process BRD', async () => {
-            const res = await request(app)
-                .post('/api/process-brd')
-                .send({ brd: 'data' });
-            
-            expect(res.status).toBe(200);
-            expect(authMiddleware).toHaveBeenCalled();
-            expect(brdController.processBRD).toHaveBeenCalled();
-        });
-        
         it('should analyze batch', async () => {
             const res = await request(app)
                 .post('/api/analyze-batch')
@@ -674,32 +631,6 @@ describe('AI Server Index', () => {
     });
     
     // ==========================================================================
-    // Cleanup Endpoints
-    // ==========================================================================
-    describe('Cleanup Endpoints', () => {
-        it('should trigger cleanup successfully', async () => {
-            const res = await request(app)
-                .post('/api/trigger-cleanup')
-                .send({});
-            
-            expect(res.status).toBe(200);
-            expect(res.body.success).toBe(true);
-            expect(res.body.filesDeleted).toBe(5);
-        });
-        
-        it('should return 409 when cleanup is already running', async () => {
-            cleanupService.isCleanupRunning.mockReturnValueOnce(true);
-            
-            const res = await request(app)
-                .post('/api/trigger-cleanup')
-                .send({});
-            
-            expect(res.status).toBe(409);
-            expect(res.body.error).toBe('Cleanup is already in progress. Please wait for it to complete.');
-        });
-    });
-    
-    // ==========================================================================
     // Error Handling
     // ==========================================================================
     describe('Error Handling', () => {
@@ -723,17 +654,6 @@ describe('AI Server Index', () => {
             expect(res.body.error).toBe('Clustering failed');
         });
         
-        it('should handle errors from cleanup', async () => {
-            cleanupService.runCleanup.mockRejectedValueOnce(new Error('Cleanup failed'));
-            
-            const res = await request(app)
-                .post('/api/trigger-cleanup')
-                .send({});
-            
-            expect(res.status).toBe(500);
-            expect(res.body.success).toBe(false);
-            expect(res.body.error).toBe('Cleanup failed');
-        });
     });
     
     // ==========================================================================
@@ -797,7 +717,6 @@ describe('startServer function', () => {
     const { app, startServer } = require('../src/index');
     const logger = require('../src/utils/logger');
     const aiService = require('../src/services/ai');
-    const pollingService = require('../src/services/polling-service');
     const notificationPollingService = require('../src/services/notifications/notification-polling');
     const activityPollingService = require('../src/services/activity-polling-service');
     
@@ -827,8 +746,6 @@ describe('startServer function', () => {
         expect(app.listen).toHaveBeenCalled();
         expect(aiService.initializeClient).toHaveBeenCalled();
         expect(clusteringPollingService.start).toHaveBeenCalled();
-        expect(pollingService.start).toHaveBeenCalled();
-        expect(cleanupService.start).toHaveBeenCalled();
         expect(activityPollingService.start).toHaveBeenCalled();
     });
     
@@ -879,9 +796,7 @@ describe('Cluster Unassigned Work Errors', () => {
 });
 
 describe('Process Signal Handlers', () => {
-    const pollingService = require('../src/services/polling-service');
     const clusteringPollingService = require('../src/services/clustering-polling-service');
-    const cleanupService = require('../src/services/cleanup-service');
     const activityPollingService = require('../src/services/activity-polling-service');
     const notificationPollingService = require('../src/services/notifications/notification-polling');
     const logger = require('../src/utils/logger');
@@ -914,23 +829,19 @@ describe('Process Signal Handlers', () => {
             sigTermHandler();
             
             expect(logger.info).toHaveBeenCalledWith('SIGTERM received, shutting down gracefully');
-            expect(pollingService.stop).toHaveBeenCalled();
             expect(clusteringPollingService.stop).toHaveBeenCalled();
-            expect(cleanupService.stop).toHaveBeenCalled();
             expect(activityPollingService.stop).toHaveBeenCalled();
             expect(notificationPollingService.stop).toHaveBeenCalled();
             expect(process.exit).toHaveBeenCalledWith(0);
         }
     });
-    
+
     it('should handle SIGINT and stop all services', () => {
         if (sigIntHandler) {
             sigIntHandler();
 
             expect(logger.info).toHaveBeenCalledWith('SIGINT received, shutting down gracefully');
-            expect(pollingService.stop).toHaveBeenCalled();
             expect(clusteringPollingService.stop).toHaveBeenCalled();
-            expect(cleanupService.stop).toHaveBeenCalled();
             expect(activityPollingService.stop).toHaveBeenCalled();
             expect(notificationPollingService.stop).toHaveBeenCalled();
             expect(process.exit).toHaveBeenCalledWith(0);

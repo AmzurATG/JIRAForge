@@ -31,12 +31,8 @@
     "helmet": "^7.1.0",
     "jose": "^5.2.0",
     "jsonwebtoken": "^9.0.2",
-    "mammoth": "^1.6.0",
     "notifme-sdk": "^1.11.0",
     "openai": "^4.20.0",
-    "pdf-parse": "^1.1.1",
-    "sharp": "^0.33.0",
-    "tesseract.js": "^5.0.3",
     "winston": "^3.11.0"
   },
   "devDependencies": {
