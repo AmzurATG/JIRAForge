@@ -33,6 +33,7 @@ function AppContent() {
   const [worklogReassignModalOpen, setWorklogReassignModalOpen] = useState(false);
   const [worklogToReassign, setWorklogToReassign] = useState(null);
   const [reassigningWorklog, setReassigningWorklog] = useState(false);
+  const [timeAnalyticsRefreshKey, setTimeAnalyticsRefreshKey] = useState(0);
 
   // Screenshot Preview State
   const [screenshotPreviewOpen, setScreenshotPreviewOpen] = useState(false);
@@ -103,6 +104,7 @@ function AppContent() {
 
       if (result.success) {
         await loadActiveIssues();
+        setTimeAnalyticsRefreshKey(k => k + 1);
         closeWorklogReassignModal();
       } else {
         alert(`Failed to split worklog: ${result.error}`);
@@ -330,7 +332,7 @@ function AppContent() {
               onOpenReassignModal={openReassignModal}
             />
           )}
-          {activeTab === 'time-analytics' && <TimeAnalyticsTab onOpenWorklogReassignModal={openWorklogReassignModal} />}
+          {activeTab === 'time-analytics' && <TimeAnalyticsTab onOpenWorklogReassignModal={openWorklogReassignModal} refreshKey={timeAnalyticsRefreshKey} />}
           {activeTab === 'screenshots' && <ScreenshotsTab />}
           {activeTab === 'team-analytics' && (userPermissions.isJiraAdmin || userPermissions.projectAdminProjects?.length > 0) && <TeamAnalyticsTab />}
           {activeTab === 'org-analytics' && <OrgAnalyticsTab />}

@@ -9,13 +9,13 @@ import { JQL_ACTIVE_STATUSES, MAX_JIRA_SEARCH_RESULTS } from '../config/constant
 /**
  * Build ADF comment for a worklog.
  * When displayName is provided (scheduled sync fallback), the comment reads
- * "Uploaded from Time Tracker — Iswarya Kolimalla" so the actual person is
+ * "Uploaded by Iswarya Kolimalla" so the actual person is
  * identifiable even when the Jira worklog author shows as the app.
  * @param {string|null} displayName - User's display name (optional)
  */
 function buildWorklogComment(displayName) {
   const text = displayName
-    ? `Uploaded from Time Tracker — ${displayName}`
+    ? `Uploaded by ${displayName}`
     : 'Uploaded from Time Tracker';
   return {
     type: 'doc',
@@ -163,7 +163,7 @@ export async function createJiraIssue(projectKey, issueData) {
  * @param {string} startedAt - ISO timestamp when work started
  * @returns {Promise<Object>} Created worklog response
  */
-export async function createJiraWorklog(issueKey, timeSpentSeconds, startedAt) {
+export async function createJiraWorklog(issueKey, timeSpentSeconds, startedAt, displayName = null) {
   // Jira requires minimum 60 seconds for worklogs — round up sub-minute values
   const effectiveSeconds = Math.max(timeSpentSeconds, 60);
   const response = await api.asUser().requestJira(
@@ -177,12 +177,19 @@ export async function createJiraWorklog(issueKey, timeSpentSeconds, startedAt) {
       body: JSON.stringify({
         timeSpentSeconds: effectiveSeconds,
         started: startedAt,
-        comment: buildWorklogComment(null)
+        comment: buildWorklogComment(displayName)
       })
     }
   );
 
-  return response.json();
+  const result = await response.json();
+
+  // Diagnostic: Log who Jira thinks created this worklog
+  if (result?.author) {
+    console.log(`[Worklog] Created via asUser() — Jira author: ${result.author.displayName} (${result.author.accountId})`);
+  }
+
+  return result;
 }
 
 /**
@@ -458,6 +465,36 @@ export async function getAllJiraProjects() {
 export async function getAllJiraProjectKeys() {
   const projects = await getAllJiraProjects();
   return new Set(projects.map(p => p.key));
+}
+
+/**
+ * Get verified list of project keys where the current user is a Project Administrator.
+ * Uses a 2-step approach:
+ *   1. Gets candidate projects via action=edit (which maps to EDIT_ISSUES — too broad)
+ *   2. Verifies ADMINISTER_PROJECTS on each candidate via mypermissions
+ * This avoids false positives where users with only EDIT_ISSUES appear as admins.
+ * @returns {Promise<Array<string>>} Array of verified project admin keys
+ */
+export async function getVerifiedAdminProjectKeys() {
+  const candidates = await getProjectsUserAdmins();
+  if (candidates.length === 0) return [];
+
+  // Global fast-fail — if the user doesn't have ADMINISTER_PROJECTS on any
+  // project at all, skip the per-project checks.
+  const globalCheck = await checkUserPermissions(['ADMINISTER_PROJECTS']);
+  if (!globalCheck.permissions?.ADMINISTER_PROJECTS?.havePermission) {
+    return [];
+  }
+
+  // Per-project verification: only keep projects where the user truly has
+  // ADMINISTER_PROJECTS (not just EDIT_ISSUES).
+  const verified = await Promise.all(
+    candidates.map(async (pk) => {
+      const perm = await checkUserPermissions(['ADMINISTER_PROJECTS'], pk);
+      return perm.permissions?.ADMINISTER_PROJECTS?.havePermission ? pk : null;
+    })
+  );
+  return verified.filter(Boolean);
 }
 
 /**

@@ -7,6 +7,7 @@ import { createWorklog, syncCurrentUserWorklogs } from '../services/worklogServi
 import { runScheduledWorklogSync } from '../services/scheduledWorklogSync.js';
 import { reassignWorklog, splitWorklog } from '../services/worklogReassignmentService.js';
 import { isJiraAdmin } from '../utils/jira.js';
+import { clearCache } from '../utils/cache.js';
 import api, { route } from '@forge/api';
 
 /**
@@ -48,7 +49,9 @@ export function registerWorklogResolvers(resolver) {
    * 15-minute client-side cooldown to avoid excessive calls).
    */
   resolver.define('syncMyWorklogs', async (req) => {
+    console.log('[WorklogResolver] syncMyWorklogs invoked');
     const { accountId, cloudId } = req.context;
+    console.log(`[WorklogResolver] syncMyWorklogs context: accountId=${accountId}, cloudId=${cloudId}`);
     try {
       return await syncCurrentUserWorklogs(accountId, cloudId);
     } catch (error) {
@@ -58,17 +61,38 @@ export function registerWorklogResolvers(resolver) {
   });
 
   /**
-   * Resolver to manually trigger worklog sync (admin only)
+   * Resolver to manually trigger worklog sync (admin only).
+   * Runs the scheduled sync first (creates pending records), then the
+   * interactive user sync (converts pending → real Jira worklogs under the
+   * user's name) since the user has a live Jira session.
    */
-  resolver.define('triggerWorklogSync', async () => {
+  resolver.define('triggerWorklogSync', async (req) => {
     try {
       const isAdmin = await isJiraAdmin();
       if (!isAdmin) {
         return { success: false, error: 'Only Jira administrators can trigger worklog sync' };
       }
 
-      const result = await runScheduledWorklogSync();
-      return { success: true, ...result };
+      // Step 1: Run scheduled sync (finds activity records, creates pending worklog_sync entries)
+      const scheduledResult = await runScheduledWorklogSync();
+      console.log(`[WorklogResolver] triggerWorklogSync scheduled result:`, JSON.stringify(scheduledResult));
+
+      // Step 2: Run interactive user sync to convert pending records to real Jira worklogs
+      // using the current user's live session (so worklogs are attributed to the user)
+      const { accountId, cloudId } = req.context;
+      let userSyncResult = { synced: 0 };
+      if (accountId && cloudId) {
+        try {
+          userSyncResult = await syncCurrentUserWorklogs(accountId, cloudId);
+          console.log(`[WorklogResolver] triggerWorklogSync user sync result:`, JSON.stringify(userSyncResult));
+        } catch (userErr) {
+          console.error('[WorklogResolver] User sync after trigger failed:', userErr.message);
+        }
+      }
+
+      const totalSynced = (scheduledResult.synced || 0) + (userSyncResult.synced || 0);
+      const totalErrors = (scheduledResult.errors || 0) + (userSyncResult.errors || 0);
+      return { success: true, synced: totalSynced, errors: totalErrors };
     } catch (error) {
       console.error('Error triggering worklog sync:', error);
       return { success: false, error: error.message };
@@ -178,16 +202,17 @@ export function registerWorklogResolvers(resolver) {
     const cloudId = context.cloudId;
     const { fromIssueKey, toIssueKey } = payload;
 
-    if (!fromIssueKey || !toIssueKey) {
-      return { success: false, error: 'Both fromIssueKey and toIssueKey are required' };
+    if (!toIssueKey) {
+      return { success: false, error: 'toIssueKey is required' };
     }
 
-    if (fromIssueKey === toIssueKey) {
+    if (fromIssueKey && fromIssueKey === toIssueKey) {
       return { success: false, error: 'Cannot reassign to the same issue' };
     }
 
     try {
       const result = await reassignWorklog(accountId, cloudId, fromIssueKey, toIssueKey);
+      clearCache(); // Invalidate dashboard cache so next fetch returns fresh data
       return {
         success: true,
         fromIssueKey: result.fromIssueKey,
@@ -212,10 +237,12 @@ export function registerWorklogResolvers(resolver) {
     const cloudId = context.cloudId;
     const { fromIssueKey, toIssueKey, splitSeconds } = payload;
 
-    if (!fromIssueKey || !toIssueKey) {
-      return { success: false, error: 'Both fromIssueKey and toIssueKey are required' };
+    console.log(`[splitWorklog] Resolver invoked: from=${fromIssueKey || 'null'}, to=${toIssueKey}, splitSeconds=${splitSeconds}, accountId=${accountId}, cloudId=${cloudId}`);
+
+    if (!toIssueKey) {
+      return { success: false, error: 'toIssueKey is required' };
     }
-    if (fromIssueKey === toIssueKey) {
+    if (fromIssueKey && fromIssueKey === toIssueKey) {
       return { success: false, error: 'Cannot split to the same issue' };
     }
     if (!splitSeconds || splitSeconds <= 0 || !Number.isInteger(splitSeconds)) {
@@ -224,6 +251,7 @@ export function registerWorklogResolvers(resolver) {
 
     try {
       const result = await splitWorklog(accountId, cloudId, fromIssueKey, toIssueKey, splitSeconds);
+      clearCache(); // Invalidate dashboard cache so next fetch returns fresh data
       return {
         success: true,
         fromIssueKey: result.fromIssueKey,

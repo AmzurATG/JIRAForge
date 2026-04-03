@@ -172,11 +172,12 @@ async function updateSessionsAndAnalysis({ validSessionIds, issueKey, userId, or
   // Also update activity_records for hybrid OCR approach data
   // validSessionIds may contain activity_record IDs (from new pipeline groups)
   // Use id=in.() so only the specific sessions in this group are updated
+  // NOTE: No organization_id filter to handle org mismatch cases (like worklog sync)
   const projectKey = issueKey.split('-')[0];
   try {
     await supabaseRequest(
       supabaseConfig,
-      `activity_records?id=in.(${sessionIdsParam})&user_id=eq.${userId}&organization_id=eq.${organizationId}`,
+      `activity_records?id=in.(${sessionIdsParam})&user_id=eq.${userId}`,
       {
         method: 'PATCH',
         body: {
@@ -843,7 +844,7 @@ export async function dismissUnassignedGroup(req) {
     if (activityRecordIds.length > 0) {
       await supabaseRequest(
         supabaseConfig,
-        `activity_records?id=in.(${activityRecordIds.join(',')})&user_id=eq.${userId}&organization_id=eq.${organization.id}`,
+        `activity_records?id=in.(${activityRecordIds.join(',')})&user_id=eq.${userId}`,
         {
           method: 'PATCH',
           body: { clustering_dismissed: true, clustering_dismissed_at: now }
@@ -937,7 +938,7 @@ export async function dismissGroupMember(req) {
     if (source === 'activity_records') {
       await supabaseRequest(
         supabaseConfig,
-        `activity_records?id=eq.${sessionId}&user_id=eq.${userId}&organization_id=eq.${organization.id}`,
+        `activity_records?id=eq.${sessionId}&user_id=eq.${userId}`,
         {
           method: 'PATCH',
           body: { clustering_dismissed: true, clustering_dismissed_at: now }

@@ -26,6 +26,45 @@ function setStorageCached(key, value) {
   kvs.set(key, { value, expiresAt: Date.now() + STORAGE_TTL_MS }).catch(() => {});
 }
 
+/**
+ * Sync the Forge storage + in-memory cache for org and user IDs to match
+ * the batch API response. The batch API resolves these directly from the DB,
+ * so its values are authoritative. This prevents cache staleness when orgs
+ * or users are recreated.
+ * @param {string} cloudId - Jira Cloud ID
+ * @param {string} accountId - Atlassian account ID
+ * @param {Object} batchData - Batch API response containing organizationId and userId
+ */
+export function syncCacheFromBatchResponse(cloudId, accountId, batchData) {
+  if (!batchData) return;
+
+  const { organizationId, userId } = batchData;
+
+  // Sync organization cache
+  if (organizationId && cloudId) {
+    const orgCacheKey = CacheKeys.organization(cloudId);
+    const cachedOrg = getFromCache(orgCacheKey);
+    if (!cachedOrg || cachedOrg.id !== organizationId) {
+      // In-memory org cache is an org object — at minimum we need { id }
+      const orgObj = { id: organizationId, jira_cloud_id: cloudId };
+      setInCache(orgCacheKey, orgObj, TTL.ORGANIZATION);
+      setStorageCached(`remote:org:${cloudId}`, orgObj);
+      console.log(`[Remote] Synced org cache: ${organizationId} (was ${cachedOrg?.id || 'empty'})`);
+    }
+  }
+
+  // Sync user ID cache
+  if (userId && accountId && organizationId) {
+    const userCacheKey = CacheKeys.userId(accountId);
+    const cachedUser = getFromCache(userCacheKey);
+    if (!cachedUser || cachedUser.userId !== userId) {
+      setInCache(userCacheKey, { userId, organizationId }, TTL.USER_ID);
+      setStorageCached(`remote:user:${accountId}:${organizationId}`, userId);
+      console.log(`[Remote] Synced user cache: ${userId} (was ${cachedUser?.userId || 'empty'})`);
+    }
+  }
+}
+
 // Remote key from manifest.yml - must match exactly
 const REMOTE_KEY = 'ai-server';
 
@@ -227,13 +266,9 @@ export async function getOrCreateOrganization(cloudId, orgName = null, jiraUrl =
 
   const promise = (async () => {
     try {
-      // Check persistent Forge storage cache (survives across invocations)
-      const storageCached = await getStorageCached(`remote:org:${cloudId}`);
-      if (storageCached) {
-        console.log(`[Remote] Org ${cloudId} loaded from storage cache`);
-        setInCache(cacheKey, storageCached, TTL.ORGANIZATION);
-        return storageCached;
-      }
+      // Always resolve from AI server to avoid stale KVS cache.
+      // KVS cache caused org ID mismatches when multiple orgs exist for the same cloudId.
+      // In-memory cache (checked above) still deduplicates within the same invocation.
 
       // If orgName or jiraUrl not provided, fetch from Jira API
       if (!orgName || !jiraUrl) {
@@ -249,9 +284,8 @@ export async function getOrCreateOrganization(cloudId, orgName = null, jiraUrl =
         body: { orgName, jiraUrl }
       });
 
-      // Populate both caches
+      // Populate in-memory cache only (KVS storage cache removed to prevent staleness)
       setInCache(cacheKey, org, TTL.ORGANIZATION);
-      setStorageCached(`remote:org:${cloudId}`, org);
 
       return org;
     } catch (error) {
@@ -285,22 +319,16 @@ export async function getOrCreateUser(accountId, organizationId = null, email = 
   }
 
   try {
-    // Check persistent Forge storage cache (survives across invocations)
-    const storageCacheKey = `remote:user:${accountId}:${organizationId}`;
-    const storageCached = await getStorageCached(storageCacheKey);
-    if (storageCached) {
-      console.log(`[Remote] User ${accountId} loaded from storage cache`);
-      setInCache(cacheKey, { userId: storageCached, organizationId }, TTL.USER_ID);
-      return storageCached;
-    }
+    // Always resolve from AI server to avoid stale KVS cache.
+    // KVS cache caused user ID mismatches when org IDs were stale.
+    // In-memory cache (checked above) still deduplicates within the same invocation.
 
     const result = await remoteRequest('/api/forge/user', {
       body: { organizationId, email, displayName }
     });
 
-    // Populate both caches
+    // Populate in-memory cache only (KVS storage cache removed to prevent staleness)
     setInCache(cacheKey, { userId: result.userId, organizationId }, TTL.USER_ID);
-    setStorageCached(storageCacheKey, result.userId);
 
     return result.userId;
   } catch (error) {

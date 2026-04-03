@@ -11,7 +11,7 @@ const FALLBACK_DOWNLOAD_URL = 'https://jvijitdewbypqbatfboi.supabase.co/storage/
  * Time Analytics Tab Component
  * Orchestrates the different timesheet views (Day, Week, Month)
  */
-function TimeAnalyticsTab({ onOpenWorklogReassignModal }) {
+function TimeAnalyticsTab({ onOpenWorklogReassignModal, refreshKey }) {
   const { userPermissions } = useApp();
 
   const [loading, setLoading] = useState(true);
@@ -26,6 +26,13 @@ function TimeAnalyticsTab({ onOpenWorklogReassignModal }) {
     loadTimeAnalytics();
     fetchDownloadUrl();
   }, []);
+
+  // Re-fetch time data when refreshKey changes (e.g., after worklog split/reassign)
+  useEffect(() => {
+    if (refreshKey > 0) {
+      loadTimeAnalytics();
+    }
+  }, [refreshKey]);
 
   const loadTimeAnalytics = async () => {
     setLoading(true);

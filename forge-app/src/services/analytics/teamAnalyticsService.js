@@ -3,7 +3,7 @@
  * Handles project-level and team analytics
  */
 
-import { getSupabaseConfig, getOrCreateOrganization, supabaseRequest } from '../../utils/supabase.js';
+import { getSupabaseConfig, getOrCreateOrganization, getOrCreateUser, supabaseRequest } from '../../utils/supabase.js';
 import { checkUserPermissions, getProjectsUserAdmins } from '../../utils/jira.js';
 import { MAX_DAILY_SUMMARY_DAYS, MAX_ISSUES_IN_ANALYTICS, DEFAULT_TRACKING_SETTINGS } from '../../config/constants.js';
 import { isValidProjectKey } from '../../utils/validators.js';
@@ -580,11 +580,12 @@ export async function fetchTeamDayTimeline(accountId, cloudId, projectKey, date,
   // Get current user's ID for filtering (project admins should always see their own data)
   let currentUserId = null;
   if (!isAdmin) {
-    const currentUserResult = await supabaseRequest(
-      supabaseConfig,
-      `users?organization_id=eq.${organization.id}&atlassian_account_id=eq.${accountId}&select=id&limit=1`
-    );
-    currentUserId = currentUserResult?.[0]?.id || null;
+    try {
+      currentUserId = await getOrCreateUser(accountId, supabaseConfig, organization.id);
+    } catch (err) {
+      console.warn('[TeamTimeline] Could not resolve current user:', err.message);
+    }
+    console.log('[TeamTimeline] Current user resolved:', { orgId: organization.id, accountId, currentUserId });
   }
 
   // Determine projects to filter by:
@@ -594,7 +595,8 @@ export async function fetchTeamDayTimeline(accountId, cloudId, projectKey, date,
   const filterByProjects = !!projectKey || (!isAdmin && projectAdminProjects.length > 0);
 
   console.log('[TeamTimeline] Fetching timeline for date:', date, 'org:', organization.id,
-    'filterByProjects:', filterByProjects, 'projectCount:', projectsToFilter.length);
+    'filterByProjects:', filterByProjects, 'projectCount:', projectsToFilter.length,
+    'currentUserId:', currentUserId, 'projectsToFilter:', projectsToFilter);
 
   const activityQuery = buildActivityQuery(organization.id, date, filterByProjects, projectsToFilter, currentUserId);
   const legacyQuery = buildLegacyQuery(organization.id, date, isAdmin, currentUserId);
@@ -822,13 +824,16 @@ export async function fetchMyDayTimeline(accountId, cloudId, date) {
 
   const { supabaseConfig, organization } = await initializeContext(accountId, cloudId);
 
-  // Get current user's ID from their Supabase record
-  const currentUser = await supabaseRequest(
-    supabaseConfig,
-    `users?organization_id=eq.${organization.id}&atlassian_account_id=eq.${accountId}&select=id,display_name,email&limit=1`
-  );
+  // Get current user's ID using the reliable getOrCreateUser helper
+  // (raw users table query can fail when user's organization_id is stale)
+  let userId;
+  try {
+    userId = await getOrCreateUser(accountId, supabaseConfig, organization.id);
+  } catch (err) {
+    console.warn('[MyTimeline] Could not resolve current user:', err.message);
+  }
 
-  if (!currentUser || currentUser.length === 0) {
+  if (!userId) {
     // User not found, return empty timeline
     return {
       date,
@@ -843,8 +848,19 @@ export async function fetchMyDayTimeline(accountId, cloudId, date) {
     };
   }
 
-  const userId = currentUser[0].id;
-  const displayName = currentUser[0].display_name || currentUser[0].email || 'User';
+  // Fetch display name separately (getOrCreateUser only returns the UUID)
+  let displayName = 'User';
+  try {
+    const userInfo = await supabaseRequest(
+      supabaseConfig,
+      `users?id=eq.${userId}&select=display_name,email&limit=1`
+    );
+    if (userInfo?.[0]) {
+      displayName = userInfo[0].display_name || userInfo[0].email || 'User';
+    }
+  } catch (err) {
+    console.warn('[MyTimeline] Could not fetch user display name:', err.message);
+  }
 
   // Fetch activity records for current user on the specified date
   // All classifications included — timeline shows all activity to indicate user presence

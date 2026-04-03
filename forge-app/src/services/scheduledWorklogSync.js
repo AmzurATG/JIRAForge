@@ -24,6 +24,7 @@ import { isValidIssueKey } from '../utils/validators.js';
 
 const SYNC_BATCH_LIMIT = 10; // Max issues per user per run
 const MIN_SYNC_SECONDS = 60;
+const PENDING_WORKLOG_ID = 'PENDING'; // Sentinel for worklog_sync rows awaiting user-context sync
 
 /**
  * Format a DB timestamp for Jira's worklog `started` field.
@@ -96,6 +97,91 @@ function getExplicitlyEnabledProjects(orgSyncConfig) {
     }
   }
   return enabled;
+}
+
+/**
+ * Resolve the correct organization ID for activity_records.
+ * The tracking_settings may reference a different org ID than what the desktop
+ * app uses for activity_records (duplicate org problem). When the settings org
+ * has no data, look up the org's jira_cloud_id and find the sibling org that
+ * actually contains activity records.
+ * @returns {Promise<string>} The organization ID to use for querying activity_records
+ */
+async function resolveActivityOrgId(supabaseConfig, settingsOrgId) {
+  // Quick check: does the settings org have any activity records?
+  // eslint-disable-next-line deprecation/deprecation
+  const probe = await supabaseRequest(
+    supabaseConfig,
+    `activity_records?organization_id=eq.${settingsOrgId}&select=id&limit=1`
+  );
+  if (probe && probe.length > 0) {
+    return settingsOrgId; // Settings org has data — no mismatch
+  }
+
+  // Settings org has no data — look up its jira_cloud_id
+  console.warn(`[ScheduledSync] Org ${settingsOrgId} has no activity_records, checking for sibling orgs...`);
+  // eslint-disable-next-line deprecation/deprecation
+  const settingsOrg = await supabaseRequest(
+    supabaseConfig,
+    `organizations?id=eq.${settingsOrgId}&select=id,jira_cloud_id&limit=1`
+  );
+  const cloudId = settingsOrg?.[0]?.jira_cloud_id;
+  if (!cloudId) {
+    console.warn(`[ScheduledSync] Could not find jira_cloud_id for org ${settingsOrgId}, checking all activity orgs...`);
+    // Org doesn't exist in organizations table — fall through to broad search
+    // eslint-disable-next-line deprecation/deprecation
+    const anyRecords = await supabaseRequest(
+      supabaseConfig,
+      `activity_records?select=organization_id&limit=10`
+    );
+    const otherOrgIds = [...new Set((anyRecords || []).map(r => r.organization_id))];
+    if (otherOrgIds.length === 1) {
+      console.warn(`[ScheduledSync] Org mismatch: settings=${settingsOrgId}, activity_records=${otherOrgIds[0]} — using activity org`);
+      return otherOrgIds[0];
+    }
+    if (otherOrgIds.length > 1) {
+      console.warn(`[ScheduledSync] Multiple orgs with data: ${JSON.stringify(otherOrgIds)} — cannot auto-resolve`);
+    }
+    return settingsOrgId;
+  }
+
+  // Find ALL orgs with this jira_cloud_id (handles duplicates)
+  // eslint-disable-next-line deprecation/deprecation
+  const siblingOrgs = await supabaseRequest(
+    supabaseConfig,
+    `organizations?jira_cloud_id=eq.${cloudId}&select=id`
+  );
+  if (!siblingOrgs || siblingOrgs.length <= 1) {
+    // No siblings — check if ANY org has data (desktop app might use a different cloud_id)
+    // eslint-disable-next-line deprecation/deprecation
+    const anyRecords = await supabaseRequest(
+      supabaseConfig,
+      `activity_records?select=organization_id&limit=10`
+    );
+    const otherOrgIds = [...new Set((anyRecords || []).map(r => r.organization_id))];
+    if (otherOrgIds.length === 1) {
+      console.warn(`[ScheduledSync] Org mismatch: settings=${settingsOrgId}, activity_records=${otherOrgIds[0]} — using activity org`);
+      return otherOrgIds[0];
+    }
+    console.warn(`[ScheduledSync] Multiple or no orgs with data: ${JSON.stringify(otherOrgIds)}`);
+    return settingsOrgId;
+  }
+
+  // Check which sibling has activity records
+  for (const sibling of siblingOrgs) {
+    if (sibling.id === settingsOrgId) continue;
+    // eslint-disable-next-line deprecation/deprecation
+    const check = await supabaseRequest(
+      supabaseConfig,
+      `activity_records?organization_id=eq.${sibling.id}&select=id&limit=1`
+    );
+    if (check && check.length > 0) {
+      console.warn(`[ScheduledSync] Org mismatch: settings=${settingsOrgId}, sibling with data=${sibling.id} — using sibling`);
+      return sibling.id;
+    }
+  }
+
+  return settingsOrgId;
 }
 
 /**
@@ -185,6 +271,36 @@ async function aggregateTrackedTime(supabaseConfig, organizationId, projectFilte
   let offset = 0;
   let totalFetched = 0;
 
+  // Diagnostic: count ALL records for this org to detect data/filter mismatches
+  try {
+    // eslint-disable-next-line deprecation/deprecation
+    const allCount = await supabaseRequest(
+      supabaseConfig,
+      `activity_records?organization_id=eq.${organizationId}&status=in.(pending,processing,analyzed)&select=id,user_assigned_issue_key,classification&limit=5`
+    );
+    const total = allCount?.length ?? 0;
+    const withIssueKey = (allCount || []).filter(r => r.user_assigned_issue_key).length;
+    const classifications = [...new Set((allCount || []).map(r => r.classification))];
+    console.log(`[ScheduledSync] Diagnostic for org ${organizationId}: sample=${total}, withIssueKey=${withIssueKey}, classifications=${JSON.stringify(classifications)}`);
+
+    if (total === 0) {
+      // org_id returns nothing — check if there are ANY records at all (across all orgs)
+      // eslint-disable-next-line deprecation/deprecation
+      const anyRecords = await supabaseRequest(
+        supabaseConfig,
+        `activity_records?status=in.(pending,processing,analyzed)&select=organization_id&limit=10`
+      );
+      const orgIds = [...new Set((anyRecords || []).map(r => r.organization_id))];
+      console.warn(`[ScheduledSync] ZERO records for org ${organizationId}! Other org_ids with data: ${JSON.stringify(orgIds)}`);
+    }
+
+    if (total > 0 && withIssueKey === 0) {
+      console.warn(`[ScheduledSync] All records have NULL user_assigned_issue_key — worklog sync needs fallback matching`);
+    }
+  } catch (diagErr) {
+    console.warn(`[ScheduledSync] Diagnostic query failed:`, diagErr.message);
+  }
+
   // Build project filter clause for the query
   let projectClause = '';
   if (projectFilter.excludedProjects && projectFilter.excludedProjects.length > 0) {
@@ -200,11 +316,13 @@ async function aggregateTrackedTime(supabaseConfig, organizationId, projectFilte
   }
 
   while (true) {
-    // Query activity_records (interval-based tracking) instead of analysis_results (screenshot-based)
+    // Query activity_records — fetch ALL records (with and without user_assigned_issue_key).
+    // Records without an assigned issue key are aggregated by project_key for
+    // later fallback matching by the interactive sync path.
     // eslint-disable-next-line deprecation/deprecation
     const page = await supabaseRequest(
       supabaseConfig,
-      `activity_records?organization_id=eq.${organizationId}&status=in.(pending,processing,analyzed)&classification=in.(productive,unknown)&user_assigned_issue_key=not.is.null${projectClause}&select=user_id,user_assigned_issue_key,project_key,duration_seconds,total_time_seconds,end_time&order=created_at.desc&limit=${PAGE_SIZE}&offset=${offset}`
+      `activity_records?organization_id=eq.${organizationId}&status=in.(pending,processing,analyzed)&classification=in.(productive,unknown)${projectClause}&select=user_id,user_assigned_issue_key,project_key,duration_seconds,total_time_seconds,end_time&order=created_at.desc&limit=${PAGE_SIZE}&offset=${offset}`
     );
 
     if (!page || !Array.isArray(page) || page.length === 0) {
@@ -213,6 +331,7 @@ async function aggregateTrackedTime(supabaseConfig, organizationId, projectFilte
 
     page.forEach(entry => {
       const issueKey = entry.user_assigned_issue_key;
+      if (!issueKey) return; // Skip unassigned records — handled by interactive sync fallback
       const key = `${entry.user_id}::${issueKey}`;
       if (!timeByUserIssue[key]) {
         timeByUserIssue[key] = 0;
@@ -244,7 +363,8 @@ async function aggregateTrackedTime(supabaseConfig, organizationId, projectFilte
   if (totalFetched === 0) {
     console.log(`[ScheduledSync] No time data for org ${organizationId}`);
   } else {
-    console.log(`[ScheduledSync] Fetched ${totalFetched} records for org ${organizationId}`);
+    const issueCount = Object.keys(timeByUserIssue).length;
+    console.log(`[ScheduledSync] Fetched ${totalFetched} records for org ${organizationId}, ${issueCount} user-issue pairs with assigned issue keys`);
   }
 
   return { timeByUserIssue, lastWorkedByUserIssue };
@@ -258,6 +378,10 @@ async function aggregateTrackedTime(supabaseConfig, organizationId, projectFilte
  * @param {Object} orgConfig - Project sync configuration { orgEnabled: boolean, projects: {} }
  */
 async function syncOrganization(supabaseConfig, organizationId, orgConfig = { orgEnabled: true, projects: {} }) {
+  // Resolve the correct org ID for activity_records (handles duplicate org problem
+  // where tracking_settings and activity_records reference different org UUIDs)
+  const activityOrgId = await resolveActivityOrgId(supabaseConfig, organizationId);
+
   // Determine project filter based on org and project-level settings
   let projectFilter = {};
   
@@ -279,8 +403,8 @@ async function syncOrganization(supabaseConfig, organizationId, orgConfig = { or
     console.log(`[ScheduledSync] Org ${organizationId}: sync disabled, only syncing ${onlyProjects.length} projects`);
   }
 
-  // Fetch activity_records for this org with project filtering
-  const { timeByUserIssue, lastWorkedByUserIssue } = await aggregateTrackedTime(supabaseConfig, organizationId, projectFilter);
+  // Fetch activity_records using the resolved org ID (may differ from tracking_settings org)
+  const { timeByUserIssue, lastWorkedByUserIssue } = await aggregateTrackedTime(supabaseConfig, activityOrgId, projectFilter);
 
   // Build list of {userId, issueKey, timeTracked, lastWorkedOn}
   // Build entries from aggregated time. Round up sub-60s totals to Jira's
@@ -398,20 +522,49 @@ async function syncSingleEntry(supabaseConfig, organizationId, userId, accountId
   const { issueKey, timeTracked, lastWorkedOn } = entry;
 
   if (existingMapping) {
-    if (existingMapping.last_synced_seconds === timeTracked) {
-      return false; // No change
+    // Never touch user-authored worklogs from the scheduled trigger.
+    // The interactive syncMyWorklogs path owns these — it runs in the user's
+    // live session and can update/recreate with proper user attribution.
+    if (existingMapping.created_as_user === true) {
+      if (existingMapping.last_synced_seconds === timeTracked) {
+        return false; // No change
+      }
+      // Time changed but worklog was created as user — still skip.
+      // The interactive sync will pick this up on the user's next visit.
+      console.log(`[ScheduledSync] Skipping ${issueKey} for user ${userId} — worklog is user-authored (created_as_user=true), deferring to interactive sync`);
+      return false;
     }
 
-    // Pending record (no Jira worklog yet) — just update tracked time in DB
-    if (!existingMapping.jira_worklog_id) {
-      // eslint-disable-next-line deprecation/deprecation
-      await supabaseRequest(
-        supabaseConfig,
-        `worklog_sync?id=eq.${existingMapping.id}`,
-        { method: 'PATCH', body: { last_synced_seconds: timeTracked, updated_at: new Date().toISOString() } }
-      );
-      console.log(`[ScheduledSync] Updated pending record ${issueKey} for user ${userId}: ${timeTracked}s`);
-      return true;
+    // Pending record (no Jira worklog yet) — create via asApp now, regardless of time change
+    if (!existingMapping.jira_worklog_id || existingMapping.jira_worklog_id === PENDING_WORKLOG_ID) {
+      console.log(`[ScheduledSync] Converting pending record ${issueKey} for user ${userId} to real worklog via asApp`);
+      try {
+        const startedAt = formatStartedForJira(lastWorkedOn);
+        const result = await createJiraWorklogAsApp(issueKey, timeTracked, startedAt, displayName);
+        if (result?.id) {
+          // eslint-disable-next-line deprecation/deprecation
+          await supabaseRequest(
+            supabaseConfig,
+            `worklog_sync?id=eq.${existingMapping.id}`,
+            { method: 'PATCH', body: {
+              jira_worklog_id: String(result.id),
+              last_synced_seconds: timeTracked,
+              created_as_user: false,
+              updated_at: new Date().toISOString()
+            } }
+          );
+          console.log(`[ScheduledSync] Converted pending → worklog ${result.id} for ${issueKey}: ${timeTracked}s`);
+          return true;
+        }
+      } catch (appErr) {
+        console.error(`[ScheduledSync] Failed to convert pending for ${issueKey}:`, appErr.message);
+        return false;
+      }
+      return false;
+    }
+
+    if (existingMapping.last_synced_seconds === timeTracked) {
+      return false; // No change for non-pending record
     }
 
     // Try to update existing worklog (as user when possible, else as app)
@@ -465,62 +618,32 @@ async function syncSingleEntry(supabaseConfig, organizationId, userId, accountId
     try {
       worklogResult = await createJiraWorklogAsUser(accountId, issueKey, timeTracked, startedAt, displayName);
       usedAsUser = true;
+      console.log(`[ScheduledSync] asUser(${accountId}) call succeeded for ${issueKey}`);
     } catch (impersonationErr) {
+      console.error(`[ScheduledSync] asUser(${accountId}) failed for ${issueKey}:`,
+        impersonationErr.message,
+        impersonationErr.name,
+        impersonationErr.status || 'no-status');
       if (impersonationErr.message?.includes('AUTH_TYPE_UNAVAILABLE')) {
-        // Impersonation not available — save a pending record instead of falling back
-        // to asApp(). The user-context sync (syncMyWorklogs) will create the worklog
-        // under the user's real name when they next open the app.
-        console.warn(`[ScheduledSync] asUser unavailable for ${issueKey}, saving pending record for user-context sync`);
-        const now = new Date().toISOString();
-        // eslint-disable-next-line deprecation/deprecation
-        await supabaseRequest(
-          supabaseConfig,
-          'worklog_sync',
-          {
-            method: 'POST',
-            body: {
-              organization_id: organizationId,
-              user_id: userId,
-              issue_key: issueKey,
-              jira_worklog_id: null,
-              last_synced_seconds: timeTracked,
-              started_at: startedAt,
-              created_as_user: false,
-              created_at: now,
-              updated_at: now
-            }
-          }
-        );
-        console.log(`[ScheduledSync] Saved pending worklog for ${issueKey} user ${userId}: ${timeTracked}s`);
-        return true;
+        // Impersonation not available — fall back to asApp() so time is visible
+        // in Jira immediately. The worklog comment includes the user's display
+        // name for identification even though the author shows as the app.
+        console.warn(`[ScheduledSync] asUser unavailable for ${issueKey}, falling back to asApp`);
+        try {
+          worklogResult = await createJiraWorklogAsApp(issueKey, timeTracked, startedAt, displayName);
+          console.log(`[ScheduledSync] Created worklog via asApp for ${issueKey}: ${timeTracked}s`);
+        } catch (appErr) {
+          console.error(`[ScheduledSync] asApp also failed for ${issueKey}:`, appErr.message);
+          throw appErr;
+        }
       } else {
         throw impersonationErr;
       }
     }
   } else {
-    // No accountId — save a pending record for user-context sync instead of creating as app
-    console.warn(`[ScheduledSync] No accountId for ${issueKey}, saving pending record for user-context sync`);
-    const now = new Date().toISOString();
-    // eslint-disable-next-line deprecation/deprecation
-    await supabaseRequest(
-      supabaseConfig,
-      'worklog_sync',
-      {
-        method: 'POST',
-        body: {
-          organization_id: organizationId,
-          user_id: userId,
-          issue_key: issueKey,
-          jira_worklog_id: null,
-          last_synced_seconds: timeTracked,
-          started_at: startedAt,
-          created_as_user: false,
-          created_at: now,
-          updated_at: now
-        }
-      }
-    );
-    return true;
+    // No accountId — create via asApp with display name in comment
+    console.warn(`[ScheduledSync] No accountId for ${issueKey}, creating via asApp`);
+    worklogResult = await createJiraWorklogAsApp(issueKey, timeTracked, startedAt, displayName);
   }
 
   if (worklogResult?.id) {
@@ -530,36 +653,10 @@ async function syncSingleEntry(supabaseConfig, organizationId, userId, accountId
       worklogResult.author?.accountId === accountId;
 
     if (usedAsUser && !actuallyCreatedAsUser) {
-      // Impersonation didn't take effect — delete the app-authored worklog and save
-      // a pending record instead, so the user-context sync creates it properly.
-      console.warn(`[ScheduledSync] Impersonation did not take effect for ${issueKey} — deleting app worklog and saving pending record`);
-      try {
-        await deleteJiraWorklogAsApp(issueKey, String(worklogResult.id));
-      } catch (deleteErr) {
-        console.warn(`[ScheduledSync] Failed to delete app worklog for ${issueKey}: ${deleteErr.message}`);
-      }
-      const now = new Date().toISOString();
-      // eslint-disable-next-line deprecation/deprecation
-      await supabaseRequest(
-        supabaseConfig,
-        'worklog_sync',
-        {
-          method: 'POST',
-          body: {
-            organization_id: organizationId,
-            user_id: userId,
-            issue_key: issueKey,
-            jira_worklog_id: null,
-            last_synced_seconds: timeTracked,
-            started_at: startedAt,
-            created_as_user: false,
-            created_at: now,
-            updated_at: now
-          }
-        }
-      );
-      console.log(`[ScheduledSync] Saved pending worklog for ${issueKey} user ${userId}: ${timeTracked}s`);
-      return true;
+      // Impersonation didn't take effect — worklog created by app. Keep it so
+      // time is visible in Jira. The worklog comment includes the user's
+      // display name for identification.
+      console.warn(`[ScheduledSync] Impersonation did not take effect for ${issueKey} — keeping app-authored worklog (author: ${worklogResult.author?.displayName || 'app'})`);
     }
 
     const now = new Date().toISOString();
@@ -576,13 +673,13 @@ async function syncSingleEntry(supabaseConfig, organizationId, userId, accountId
           jira_worklog_id: String(worklogResult.id),
           last_synced_seconds: timeTracked,
           started_at: startedAt,
-          created_as_user: true,
+          created_as_user: actuallyCreatedAsUser,
           created_at: now,
           updated_at: now
         }
       }
     );
-    console.log(`[ScheduledSync] Created worklog for ${issueKey} user ${userId}: ${timeTracked}s (as_user: true)`);
+    console.log(`[ScheduledSync] Created worklog for ${issueKey} user ${userId}: ${timeTracked}s (as_user: ${actuallyCreatedAsUser})`);
     return true;
   }
 
@@ -640,7 +737,7 @@ async function cleanupOrphanedWorklogs(supabaseConfig, organizationId, activeEnt
   for (const mapping of orphaned) {
     try {
       // Pending records (no Jira worklog created yet) — just delete the DB mapping
-      if (!mapping.jira_worklog_id) {
+      if (!mapping.jira_worklog_id || mapping.jira_worklog_id === PENDING_WORKLOG_ID) {
         // eslint-disable-next-line deprecation/deprecation
         await supabaseRequest(
           supabaseConfig,
