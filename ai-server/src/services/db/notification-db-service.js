@@ -193,19 +193,27 @@ async function checkCooldown(userId, notificationType) {
 
 /**
  * Update cooldown after sending a notification
- * Uses the database function for atomic updates
+ * Uses the database function for atomic updates.
  * @param {string} userId - User ID
  * @param {string} notificationType - Notification type
+ * @param {number} [cooldownHours] - Custom cooldown hours (uses the 3-param DB overload). Omit for default (24h).
  * @returns {Promise<void>}
  */
-async function updateCooldown(userId, notificationType) {
+async function updateCooldown(userId, notificationType, cooldownHours) {
     const supabase = getClient();
     if (!supabase) throw new Error('Supabase client not initialized');
 
-    const { error } = await supabase.rpc('update_notification_cooldown', {
+    const rpcParams = {
         p_user_id: userId,
         p_notification_type: notificationType
-    });
+    };
+
+    // Use the 3-param overload when a custom cooldown is specified
+    if (cooldownHours !== undefined) {
+        rpcParams.p_cooldown_hours = cooldownHours;
+    }
+
+    const { error } = await supabase.rpc('update_notification_cooldown', rpcParams);
 
     if (error) {
         logger.error('[NotificationDB] Error updating cooldown:', error);

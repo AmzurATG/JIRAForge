@@ -152,7 +152,7 @@ class NotificationService {
 
             // 9. Update cooldown if successful
             if (result.success) {
-                await notificationDb.updateCooldown(userId, type);
+                await notificationDb.updateCooldown(userId, type, data._cooldownHours);
             }
 
             logger.info(`[Notification] ${type} to ${user.email}: ${result.success ? 'sent' : 'failed'}`, {
@@ -285,6 +285,22 @@ class NotificationService {
             orgName,
             users,
             downloadUrl: resolvedUrl
+        });
+    }
+
+    /**
+     * Send default password reminder to an org admin
+     * Uses a 30-day (720h) cooldown so admins aren't nagged.
+     * @param {string} adminUserId - Admin's user ID
+     * @param {string} organizationId - Organization ID
+     * @param {Object} payload
+     * @param {string} payload.orgName - Organization display name
+     * @returns {Promise<Object>} Send result
+     */
+    async sendDefaultPasswordReminder(adminUserId, organizationId, { orgName }) {
+        return this.sendNotification(adminUserId, organizationId, 'default_password_reminder', {
+            orgName,
+            _cooldownHours: 720 // 30 days
         });
     }
 

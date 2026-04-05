@@ -123,6 +123,7 @@ function transformSettingsToApiFormat(settings, settingsSource) {
     workHoursStart: (settings.work_hours_start || '09:00').slice(0, 5),
     workHoursEnd: (settings.work_hours_end || '18:00').slice(0, 5),
     workDays: settings.work_days || [1, 2, 3, 4, 5],
+    desktopAdminPassword: settings.desktop_admin_password || '',
     projectKey: settings.project_key || null,
     settingsSource: settingsSource
   };
@@ -461,6 +462,15 @@ function validateTrackingSettings(settings) {
       throw new Error('Work days must be an array of integers 1 (Mon) through 7 (Sun)');
     }
   }
+
+  if (settings.desktopAdminPassword !== undefined) {
+    if (typeof settings.desktopAdminPassword !== 'string' || settings.desktopAdminPassword.length < 6) {
+      throw new Error('Desktop admin password must be at least 6 characters');
+    }
+    if (settings.desktopAdminPassword.length > 128) {
+      throw new Error('Desktop admin password must be 128 characters or less');
+    }
+  }
 }
 
 /**
@@ -583,6 +593,11 @@ export async function saveTrackingSettings(accountId, cloudId, settings, project
     updated_by: userId,
     updated_at: new Date().toISOString()
   };
+
+  // Desktop admin password is org-level only (not project-specific)
+  if (!projectKey && settings.desktopAdminPassword !== undefined) {
+    trackingData.desktop_admin_password = settings.desktopAdminPassword;
+  }
 
   // Check if settings already exist for this organization/project
   const existingSettings = await fetchExistingTrackingSettings(supabaseConfig, organizationId, projectKey);
