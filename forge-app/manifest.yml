@@ -54,6 +54,9 @@ modules:
 
   trigger:
     - key: issue-cache-trigger
+      function: issueCacheSync
+      events:
+        - avi:jira:updated:issue
     - key: app-installed-trigger
       function: lifecycleHandler
       events:
@@ -62,9 +65,6 @@ modules:
       function: lifecycleHandler
       events:
         - avi:forge:uninstalled:app
-      function: issueCacheSync
-      events:
-        - avi:jira:updated:issue
 
   userDataProvider:
     - key: personal-data-provider
@@ -90,5 +90,6 @@ permissions:
     fetch:
       backend:
         - address: "*.supabase.co"
+        - address: "forgesync.amzur.com"
     images:
       - address: "*.supabase.co"

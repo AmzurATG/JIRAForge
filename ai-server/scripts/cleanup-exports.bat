@@ -1,4 +1,4 @@
 @echo off
-cd /d "d:\ATG-timetracker\compliance\JIRAForge\ai-server"
+cd /d "%~dp0.."
 node scripts\cleanup-old-exports.js
 pause

@@ -349,6 +349,7 @@ app.post('/api/forge/issues/cache', ...forgeMiddleware, forgeProxyController.cac
 // Uninstall handler — called when app is uninstalled from Jira site (Forge-authenticated)
 // Marks organization for deletion with 30-day grace period
 const uninstallController = require('./controllers/uninstall-controller');
+const userDataController = require('./controllers/user-data-controller');
 app.post('/api/forge/uninstall', ...forgeMiddleware, uninstallController.handleUninstall);
 
 // Manual deletion trigger (Admin-only - for testing/recovery)

@@ -9,7 +9,6 @@
 'use strict';
 
 const { getClient } = require('./db/supabase-client');
-const { deleteFile } = require('./db/storage-service');
 const logger = require('../utils/logger');
 const crypto = require('crypto');
 
@@ -48,10 +47,11 @@ async function getRequestStatus(accountId, cloudId, requestType) {
 
 /**
  * Create new data request
+ * Idempotent: If an active request already exists, returns it instead of failing
  * @param {string} accountId - Atlassian account ID
  * @param {string} cloudId - Jira cloud instance ID
  * @param {string} requestType - 'export' or 'delete'
- * @returns {Promise<Object>} Created request object
+ * @returns {Promise<Object>} Created or existing request object
  */
 async function createRequest(accountId, cloudId, requestType) {
   try {
@@ -69,6 +69,15 @@ async function createRequest(accountId, cloudId, requestType) {
       .single();
 
     if (error) {
+      // Check if this is a unique constraint violation (duplicate active request)
+      if (error.code === '23505' || error.message?.includes('duplicate') || error.message?.includes('unique')) {
+        // Fetch and return the existing active request
+        logger.info('[UserData] Active request already exists, returning existing request');
+        const existingRequest = await getRequestStatus(accountId, cloudId, requestType);
+        if (existingRequest) {
+          return existingRequest;
+        }
+      }
       throw new Error(`Failed to create request: ${error.message}`);
     }
 
