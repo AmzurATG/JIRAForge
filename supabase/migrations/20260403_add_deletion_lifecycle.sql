@@ -97,9 +97,8 @@ COMMENT ON FUNCTION public.get_org_scoped_tables() IS
   'Discovers all tables with organization_id column for automatic deletion. 
    Called by deletion service to ensure new tables are automatically included.';
 
--- Grant execute permission to service role
+-- Grant execute permission only to service role (backend operations only)
 GRANT EXECUTE ON FUNCTION public.get_org_scoped_tables() TO service_role;
-GRANT EXECUTE ON FUNCTION public.get_org_scoped_tables() TO authenticated;
 
 -- ============================================================================
 -- PART 4: Create function to discover org-scoped materialized views
@@ -127,9 +126,8 @@ COMMENT ON FUNCTION public.get_org_scoped_materialized_views() IS
   'Discovers all materialized views with organization_id column.
    These should be refreshed or dropped during org deletion.';
 
--- Grant execute permission
+-- Grant execute permission only to service role (backend operations only)
 GRANT EXECUTE ON FUNCTION public.get_org_scoped_materialized_views() TO service_role;
-GRANT EXECUTE ON FUNCTION public.get_org_scoped_materialized_views() TO authenticated;
 
 -- ============================================================================
 -- PART 5: Create helper function to refresh materialized views
@@ -146,9 +144,9 @@ $$ LANGUAGE plpgsql SECURITY DEFINER;
 COMMENT ON FUNCTION public.refresh_matview(TEXT) IS 
   'Refreshes a materialized view by name. Called during org deletion to update views.';
 
--- Grant execute permission
+-- Grant execute permission only to service role (backend operations only)
+-- This function can refresh any materialized view by name - restrict to backend only
 GRANT EXECUTE ON FUNCTION public.refresh_matview(TEXT) TO service_role;
-GRANT EXECUTE ON FUNCTION public.refresh_matview(TEXT) TO authenticated;
 
 -- ============================================================================
 -- PART 6: Row Level Security (RLS) for deletion_audit_log

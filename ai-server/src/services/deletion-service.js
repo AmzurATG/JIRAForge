@@ -141,7 +141,7 @@ async function getAllStorageBuckets() {
       logger.warn('[Deletion] Failed to list storage buckets, using defaults', {
         error: error.message
       });
-      return ['screenshots', 'documents', 'exports'];  // Fallback
+      return ['screenshots', 'documents', 'exports', 'feedback-images'];  // Fallback
     }
     cachedBuckets = buckets.map(b => b.name);
     return cachedBuckets;
@@ -149,13 +149,79 @@ async function getAllStorageBuckets() {
     logger.warn('[Deletion] Exception listing buckets, using defaults', {
       error: error.message
     });
-    return ['screenshots', 'documents', 'exports'];
+    return ['screenshots', 'documents', 'exports', 'feedback-images'];
   }
+}
+
+/**
+ * Recursively delete files from a folder path in a bucket
+ * Handles nested folder structures like organizationId/userId/*
+ * @param {Object} supabase - Supabase client
+ * @param {string} bucket - Bucket name
+ * @param {string} folderPath - Folder path to delete from
+ * @returns {Promise<number>} Number of files deleted
+ */
+async function deleteFilesRecursively(supabase, bucket, folderPath) {
+  let totalDeleted = 0;
+  
+  try {
+    // List all files in the folder
+    const { data: files, error: listError } = await supabase
+      .storage
+      .from(bucket)
+      .list(folderPath, {
+        limit: 1000,
+        offset: 0
+      });
+
+    if (listError || !files || files.length === 0) {
+      return 0;
+    }
+
+    // Separate files and folders
+    const fileItems = files.filter(f => f.id); // Files have an 'id' property
+    const folderItems = files.filter(f => !f.id && f.name); // Folders don't have 'id'
+
+    // Delete files in this level
+    if (fileItems.length > 0) {
+      const filePaths = fileItems.map(file => 
+        folderPath ? `${folderPath}/${file.name}` : file.name
+      );
+      
+      const { error: deleteError } = await supabase
+        .storage
+        .from(bucket)
+        .remove(filePaths);
+
+      if (deleteError) {
+        logger.error(`[Deletion] Failed to delete files from ${bucket}/${folderPath}`, {
+          error: deleteError.message
+        });
+      } else {
+        totalDeleted += filePaths.length;
+      }
+    }
+
+    // Recursively delete from subfolders
+    for (const folder of folderItems) {
+      const subPath = folderPath ? `${folderPath}/${folder.name}` : folder.name;
+      const subDeleted = await deleteFilesRecursively(supabase, bucket, subPath);
+      totalDeleted += subDeleted;
+    }
+
+  } catch (error) {
+    logger.error(`[Deletion] Error deleting recursively from ${bucket}/${folderPath}`, {
+      error: error.message
+    });
+  }
+
+  return totalDeleted;
 }
 
 /**
  * Delete all storage files for an organization
  * AUTO-DISCOVERS all storage buckets and deletes org-scoped files
+ * Handles nested folder structures: organizationId/userId/*, organizationId/*, userId/*
  * @param {string} organizationId - Organization UUID
  * @returns {Promise<Object>} Deletion summary
  */
@@ -193,59 +259,19 @@ async function deleteStorageFiles(organizationId) {
       storageSummary[bucket] = { deleted: 0, errors: 0 };
 
       try {
-        // Strategy 1: Try org-scoped deletion (organizationId/*)
-        const { data: orgFiles, error: orgListError } = await supabase
-          .storage
-          .from(bucket)
-          .list(organizationId);
-
-        if (!orgListError && orgFiles && orgFiles.length > 0) {
-          // Bucket uses org-scoped folder structure
-          const orgPaths = orgFiles.map(file => `${organizationId}/${file.name}`);
-          const { error: deleteOrgError } = await supabase
-            .storage
-            .from(bucket)
-            .remove(orgPaths);
-
-          if (deleteOrgError) {
-            logger.error(`[Deletion] Failed to delete org-scoped files from ${bucket}`, {
-              orgId: organizationId,
-              count: orgPaths.length,
-              error: deleteOrgError.message
-            });
-            storageSummary[bucket].errors++;
-          } else {
-            storageSummary[bucket].deleted += orgPaths.length;
-            logger.info(`[Deletion] Deleted ${orgPaths.length} org-scoped files from ${bucket}`);
-          }
+        // Strategy 1: Try org-scoped deletion (organizationId/* including nested userId folders)
+        const orgDeleted = await deleteFilesRecursively(supabase, bucket, organizationId);
+        if (orgDeleted > 0) {
+          storageSummary[bucket].deleted += orgDeleted;
+          logger.info(`[Deletion] Deleted ${orgDeleted} org-scoped files from ${bucket} (including nested folders)`);
         }
 
-        // Strategy 2: Try user-scoped deletion (userId/*)
+        // Strategy 2: Try user-scoped deletion (userId/* for buckets without org prefix)
         for (const userId of userIds) {
-          const { data: userFiles, error: userListError } = await supabase
-            .storage
-            .from(bucket)
-            .list(userId);
-
-          if (userListError || !userFiles || userFiles.length === 0) {
-            continue;  // No files for this user in this bucket
-          }
-
-          const userPaths = userFiles.map(file => `${userId}/${file.name}`);
-          const { error: deleteUserError } = await supabase
-            .storage
-            .from(bucket)
-            .remove(userPaths);
-
-          if (deleteUserError) {
-            logger.error(`[Deletion] Failed to delete user-scoped files from ${bucket}`, {
-              userId,
-              count: userPaths.length,
-              error: deleteUserError.message
-            });
-            storageSummary[bucket].errors++;
-          } else {
-            storageSummary[bucket].deleted += userPaths.length;
+          const userDeleted = await deleteFilesRecursively(supabase, bucket, userId);
+          if (userDeleted > 0) {
+            storageSummary[bucket].deleted += userDeleted;
+            logger.info(`[Deletion] Deleted ${userDeleted} user-scoped files from ${bucket} for user ${userId}`);
           }
         }
 
@@ -354,11 +380,11 @@ async function deleteOrganizationData(org) {
     // Step 2: Delete child table records (order matters for FKs)
     for (const table of tablesToDelete) {
       try {
-        const { data, error } = await supabase
+        // Use count to avoid fetching full rows - more efficient for large datasets
+        const { count, error } = await supabase
           .from(table)
-          .delete()
-          .eq('organization_id', organizationId)
-          .select('id');
+          .delete({ count: 'exact' })
+          .eq('organization_id', organizationId);
 
         if (error) {
           logger.error(`[Deletion] Failed to delete from ${table}`, {
@@ -367,8 +393,7 @@ async function deleteOrganizationData(org) {
           });
           summary[table] = { deleted: 0, error: error.message };
         } else {
-          const count = data?.length || 0;
-          summary[table] = { deleted: count };
+          summary[table] = { deleted: count || 0 };
           if (count > 0) {
             logger.info(`[Deletion] Deleted ${count} records from ${table}`);
           }

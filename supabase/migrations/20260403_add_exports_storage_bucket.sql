@@ -2,7 +2,7 @@
 -- Add Exports Storage Bucket for Personal Data Reporting
 -- ============================================================================
 -- Creates 'exports' bucket for temporary storage of user data export files
--- Files auto-expire after 7 days (configured via Supabase lifecycle policy in dashboard)
+-- Files are deleted after 7 days via automated cleanup script
 -- Created: April 3, 2026
 -- ============================================================================
 
@@ -37,7 +37,7 @@ USING (bucket_id = 'exports');
 -- IMPORTANT: Lifecycle Policy Configuration
 -- ============================================================================
 -- Supabase does not support lifecycle policies via UI or SQL.
--- Instead, use the automated cleanup script:
+-- Files are automatically deleted by a scheduled cleanup script:
 -- 
 -- Run weekly via cron/scheduler:
 --   node ai-server/scripts/cleanup-old-exports.js
@@ -47,6 +47,3 @@ USING (bucket_id = 'exports');
 -- 
 -- See: ai-server/scripts/cleanup-old-exports.js
 -- ============================================================================
-
-COMMENT ON TABLE storage.buckets IS 
-    'Storage buckets configuration. exports bucket stores temporary user data export files with 7-day auto-cleanup.';

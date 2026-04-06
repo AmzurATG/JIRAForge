@@ -6,9 +6,10 @@
  * @module services/personalDataService
  */
 
-import api from '@forge/api';
+import { invokeRemote } from '@forge/api';
 
-const AI_SERVER_URL = process.env.AI_SERVER_URL || 'https://forgesync.amzur.com';
+// Remote key from manifest.yml - must match exactly
+const REMOTE_KEY = 'ai-server';
 
 /**
  * Main handler for personal data requests
@@ -73,16 +74,13 @@ export async function handlePersonalDataRequest(event) {
         };
       }
     } else {
-      // First poll - create new request and start processing
+      // First poll - create new request
+      // The AI server will handle processing asynchronously server-side
       console.log('[PersonalData] Creating new request');
       const newRequest = await createNewRequest(accountId, cloudId, requestType);
 
-      // Trigger async processing (non-blocking)
-      processRequestAsync(newRequest.id, accountId, cloudId, requestType)
-        .catch(err => {
-          console.error('[PersonalData] Async processing failed:', err);
-          // Error will be recorded in data_requests table by AI server
-        });
+      // Immediately trigger processing server-side (awaited to ensure it's scheduled)
+      await triggerProcessing(newRequest.id, accountId, cloudId, requestType);
 
       return {
         status: 'PENDING',
@@ -107,7 +105,8 @@ export async function handlePersonalDataRequest(event) {
  */
 async function checkRequestStatus(accountId, cloudId, requestType) {
   try {
-    const response = await api.fetch(`${AI_SERVER_URL}/api/v1/user-data/status`, {
+    const response = await invokeRemote(REMOTE_KEY, {
+      path: '/api/v1/user-data/status',
       method: 'POST',
       headers: {
         'Content-Type': 'application/json'
@@ -121,7 +120,8 @@ async function checkRequestStatus(accountId, cloudId, requestType) {
     }
 
     const data = await response.json();
-    return data.request || null;
+    // Updated to match standardized response shape
+    return data.data?.request || data.request || null;
   } catch (error) {
     console.error('[PersonalData] Error checking status:', error);
     return null;
@@ -136,7 +136,8 @@ async function checkRequestStatus(accountId, cloudId, requestType) {
  * @returns {Promise<Object>} Created request object
  */
 async function createNewRequest(accountId, cloudId, requestType) {
-  const response = await api.fetch(`${AI_SERVER_URL}/api/v1/user-data/create-request`, {
+  const response = await invokeRemote(REMOTE_KEY, {
+    path: '/api/v1/user-data/create-request',
     method: 'POST',
     headers: {
       'Content-Type': 'application/json'
@@ -150,26 +151,29 @@ async function createNewRequest(accountId, cloudId, requestType) {
   }
 
   const data = await response.json();
-  return data.request;
+  // Updated to match standardized response shape
+  return data.data?.request || data.request;
 }
 
 /**
- * Trigger async processing (non-blocking)
+ * Trigger processing server-side (awaited to ensure job is scheduled)
+ * The AI server will process the request asynchronously after this call returns
  * @param {string} requestId - Request UUID
  * @param {string} accountId - Atlassian account ID
  * @param {string} cloudId - Jira cloud instance ID
  * @param {string} requestType - 'export' or 'delete'
  * @returns {Promise<void>}
  */
-async function processRequestAsync(requestId, accountId, cloudId, requestType) {
+async function triggerProcessing(requestId, accountId, cloudId, requestType) {
   const endpoint = requestType === 'export' 
-    ? `${AI_SERVER_URL}/api/v1/user-data/export`
-    : `${AI_SERVER_URL}/api/v1/user-data/delete`;
+    ? '/api/v1/user-data/export'
+    : '/api/v1/user-data/delete';
 
-  console.log('[PersonalData] Starting async processing:', { requestId, requestType });
+  console.log('[PersonalData] Triggering server-side processing:', { requestId, requestType });
 
   try {
-    const response = await api.fetch(endpoint, {
+    const response = await invokeRemote(REMOTE_KEY, {
+      path: endpoint,
       method: 'POST',
       headers: {
         'Content-Type': 'application/json'
@@ -179,13 +183,14 @@ async function processRequestAsync(requestId, accountId, cloudId, requestType) {
 
     if (!response.ok) {
       const errorText = await response.text();
-      throw new Error(`Processing failed: ${response.status} - ${errorText}`);
+      console.error('[PersonalData] Failed to trigger processing:', errorText);
+      // Don't throw - let the request stay pending and get picked up by polling
+    } else {
+      console.log('[PersonalData] Processing triggered successfully:', requestId);
     }
-
-    console.log('[PersonalData] Async processing completed:', requestId);
   } catch (error) {
-    console.error('[PersonalData] Async processing error:', error);
-    throw error;
+    console.error('[PersonalData] Error triggering processing:', error);
+    // Don't throw - let the request stay pending
   }
 }
 
