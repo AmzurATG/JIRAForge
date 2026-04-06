@@ -37,7 +37,10 @@ function TimesheetSettings() {
     // Working Hours
     workHoursStart: '09:00',
     workHoursEnd: '18:00',
-    workDays: [1, 2, 3, 4, 5]
+    workDays: [1, 2, 3, 4, 5],
+
+    // Desktop Admin Panel
+    desktopAdminPassword: ''
   });
 
   const [loading, setLoading] = useState(true);
@@ -50,6 +53,7 @@ function TimesheetSettings() {
   const [availableProjects, setAvailableProjects] = useState([]);
   const [loadingProjects, setLoadingProjects] = useState(true);
   const [settingsSource, setSettingsSource] = useState('organization'); // 'project', 'organization', or 'global'
+  const [isDefaultPassword, setIsDefaultPassword] = useState(true);
 
   const loadProjects = async () => {
     setLoadingProjects(true);
@@ -76,6 +80,10 @@ function TimesheetSettings() {
           ...result.settings
         }));
         setSettingsSource(result.settings.settingsSource || 'organization');
+        setIsDefaultPassword(
+          result.settings.desktopAdminPassword === 'admin123' ||
+          !result.settings.desktopAdminPassword
+        );
       }
     } catch (err) {
       console.error('Failed to load tracking settings:', err);
@@ -446,6 +454,43 @@ function TimesheetSettings() {
           </div>
         </div>
       </section>
+
+      {/* Desktop Admin Panel Password - Org-wide only */}
+      {!selectedProject && (
+        <section className="settings-section">
+          <div className="section-header">
+            <div className="section-icon">
+              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <rect x="3" y="11" width="18" height="11" rx="2" ry="2" stroke="currentColor" strokeWidth="2"/>
+                <path d="M7 11V7a5 5 0 0 1 10 0v4" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+              </svg>
+            </div>
+            <h2>Desktop Admin Panel Password</h2>
+          </div>
+          <div className="section-content">
+            <p className="field-description">
+              This password is used to access the local admin panel on the desktop app (localhost:51777/admin).
+              It applies to all users in your organization. Changes take effect within 5 minutes.
+            </p>
+            {isDefaultPassword && (
+              <div className="field-hint" style={{color: '#FF991F', fontWeight: '500', marginBottom: '12px'}}>
+                You are still using the default password. Please change it for security.
+              </div>
+            )}
+            <div className="form-group">
+              <label>Admin Password</label>
+              <input
+                type="text"
+                value={settings.desktopAdminPassword || ''}
+                onChange={(e) => handleChange('desktopAdminPassword', e.target.value)}
+                placeholder="Enter admin panel password"
+                style={{maxWidth: '300px'}}
+              />
+              <p className="field-hint">Minimum 6 characters.</p>
+            </div>
+          </div>
+        </section>
+      )}
 
       {/* Jira Worklog Auto-Sync Section */}
       <section className="settings-section">

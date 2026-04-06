@@ -32,7 +32,8 @@ class NotificationPollingService {
             new_version: 0,
             inactivity_alert: 0,
             admin_inactivity_digest: 0,
-            admin_download_digest: 0
+            admin_download_digest: 0,
+            default_password_reminder: 0
         }
     };
 
@@ -101,7 +102,8 @@ class NotificationPollingService {
                 this.checkLoginReminders(),
                 this.checkDownloadReminders(),
                 this.checkNewVersionNotifications(),
-                this.checkInactivityAlerts()
+                this.checkInactivityAlerts(),
+                this.checkDefaultPasswordReminders()
             ]);
 
             this.lastRunTime = new Date().toISOString();
@@ -915,6 +917,68 @@ class NotificationPollingService {
     }
 
     /**
+     * Check and send default-password reminders
+     * Finds orgs whose desktop_admin_password is still 'admin123' (or NULL)
+     * and sends a gentle reminder to each org's admins every 30 days.
+     */
+    async checkDefaultPasswordReminders() {
+        try {
+            const supabase = getClient();
+            if (!supabase) {
+                logger.warn('[NotificationPolling] Supabase not available for password reminders');
+                return;
+            }
+
+            // Find org-level tracking_settings rows where password is still default
+            const { data: rows, error } = await supabase
+                .from('tracking_settings')
+                .select('organization_id, desktop_admin_password')
+                .is('project_key', null)
+                .or('desktop_admin_password.is.null,desktop_admin_password.eq.admin123');
+
+            if (error) {
+                throw error;
+            }
+
+            if (!rows || rows.length === 0) {
+                logger.info('[NotificationPolling] Default password reminders: all orgs have custom passwords');
+                return;
+            }
+
+            let sentCount = 0;
+            for (const row of rows) {
+                const orgId = row.organization_id;
+                if (!orgId) continue;
+
+                const [admins, orgName] = await Promise.all([
+                    this._getOrgAdmins(orgId),
+                    this._getOrgName(orgId)
+                ]);
+
+                for (const admin of admins) {
+                    try {
+                        const isWorkHours = await this._isWithinWorkHours(admin.id);
+                        if (!isWorkHours) continue;
+
+                        const result = await notificationService.sendDefaultPasswordReminder(
+                            admin.id, orgId, { orgName }
+                        );
+                        if (result.success) sentCount++;
+                    } catch (err) {
+                        logger.warn(`[NotificationPolling] Error sending password reminder to ${admin.id}:`, err.message);
+                    }
+                }
+            }
+
+            this.stats.notificationsSent.default_password_reminder += sentCount;
+            logger.info(`[NotificationPolling] Default password reminders: checked ${rows.length} orgs, sent ${sentCount}`);
+
+        } catch (error) {
+            logger.error('[NotificationPolling] Error checking default password reminders: %s', error.message);
+        }
+    }
+
+    /**
      * Run a single check type manually
      * @param {string} checkType - Type of check to run
      * @returns {Promise<void>}
@@ -924,7 +988,8 @@ class NotificationPollingService {
             'login_reminder': () => this.checkLoginReminders(),
             'download_reminder': () => this.checkDownloadReminders(),
             'new_version': () => this.checkNewVersionNotifications(),
-            'inactivity_alert': () => this.checkInactivityAlerts()
+            'inactivity_alert': () => this.checkInactivityAlerts(),
+            'default_password_reminder': () => this.checkDefaultPasswordReminders()
         };
 
         const checkFn = checks[checkType];

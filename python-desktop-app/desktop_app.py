@@ -335,7 +335,6 @@ EMBEDDED_CONFIG = {
     'AI_SERVER_URL': 'https://forgesync.amzur.com',  # AI Server for secure token exchange & config
     'CAPTURE_INTERVAL': '300',
     'WEB_PORT': '51777',
-    'ADMIN_PASSWORD': 'admin123'
 }
 
 # Runtime Supabase config (fetched from AI server after authentication)
@@ -4542,7 +4541,7 @@ class TimeTracker:
         self.tray = None
 
         # Admin configuration
-        self.admin_password = get_env_var('ADMIN_PASSWORD', 'admin123')  # Default password, should be changed
+        self.admin_password = None  # Fetched from server after auth; admin panel locked until then
         self.admin_session_token = None
         self.admin_logs = []  # In-memory log storage
         self.max_log_entries = 500  # Maximum log entries to keep
@@ -5100,6 +5099,8 @@ class TimeTracker:
         @self.app.route('/admin')
         def admin_login_page():
             """Admin login page"""
+            if self.admin_password is None:
+                return self.render_admin_locked_page()
             # Check if already authenticated
             session_token = request.cookies.get('admin_session')
             if session_token and session_token == self.admin_session_token:
@@ -5109,6 +5110,8 @@ class TimeTracker:
         @self.app.route('/admin/login', methods=['POST'])
         def admin_login():
             """Handle admin login"""
+            if self.admin_password is None:
+                return self.render_admin_locked_page()
             password = request.form.get('password', '')
 
             if password == self.admin_password:
@@ -5912,6 +5915,12 @@ class TimeTracker:
 
                     # Register organization in database
                     self.register_organization()
+
+                    # Fetch org-level tracking settings early to load admin password
+                    try:
+                        self.fetch_tracking_settings(project_key=None)
+                    except Exception as e:
+                        print(f"[WARN] Early tracking settings fetch failed: {e}")
 
                     return self.jira_cloud_id
             else:
@@ -6727,7 +6736,13 @@ class TimeTracker:
 
                 if SCREENSHOT_MONITORING_HARD_DISABLED:
                     fetched_settings['screenshot_monitoring_enabled'] = False
-                
+
+                # Update admin password from org-wide settings
+                if settings_source in ('organization', 'global') or project_key is None:
+                    raw_password = settings.get('desktop_admin_password')
+                    if raw_password:
+                        self.admin_password = raw_password
+
                 # Cache the settings
                 self.tracking_settings_cache[cache_key] = fetched_settings
                 self.tracking_settings_last_fetch[cache_key] = time.time()
@@ -6751,6 +6766,7 @@ class TimeTracker:
             else:
                 # No settings found, use defaults
                 print(f"[INFO] No tracking settings found in Supabase, using defaults")
+
                 self.tracking_settings_cache[cache_key] = self.default_tracking_settings.copy()
                 self.tracking_settings_last_fetch[cache_key] = time.time()
                 return self.default_tracking_settings
@@ -10314,6 +10330,46 @@ class TimeTracker:
         </p>
         <a href="/consent" class="btn">Review & Grant Consent</a>
         <button class="btn btn-secondary" onclick="window.close()">Close</button>
+    </div>
+</body>
+</html>'''
+        return html
+
+    def render_admin_locked_page(self):
+        html = '''<!DOCTYPE html>
+<html>
+<head>
+    <title>Admin Panel Locked - Time Tracker</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .card {
+            background: white;
+            border-radius: 12px;
+            padding: 40px;
+            max-width: 420px;
+            width: 90%;
+            text-align: center;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+        }
+        .lock-icon { font-size: 48px; margin-bottom: 16px; }
+        h1 { font-size: 22px; color: #333; margin-bottom: 12px; }
+        p { color: #666; font-size: 14px; line-height: 1.6; }
+    </style>
+</head>
+<body>
+    <div class="card">
+        <div class="lock-icon">&#128274;</div>
+        <h1>Admin Panel Locked</h1>
+        <p>The admin panel is not available until the desktop app has authenticated with the server.
+           Please log in via the system tray icon first.</p>
     </div>
 </body>
 </html>'''

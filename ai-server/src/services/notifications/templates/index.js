@@ -10,6 +10,7 @@ const newVersion = require('./new-version');
 const inactivityAlert = require('./inactivity-alert');
 const adminInactivityDigest = require('./admin-inactivity-digest');
 const adminDownloadDigest = require('./admin-download-digest');
+const defaultPasswordReminder = require('./default-password-reminder');
 
 module.exports = {
     loginReminder,
@@ -18,6 +19,7 @@ module.exports = {
     inactivityAlert,
     adminInactivityDigest,
     adminDownloadDigest,
+    defaultPasswordReminder,
 
     // Map by type for easy lookup
     byType: {
@@ -26,7 +28,8 @@ module.exports = {
         'new_version': newVersion,
         'inactivity_alert': inactivityAlert,
         'admin_inactivity_digest': adminInactivityDigest,
-        'admin_download_digest': adminDownloadDigest
+        'admin_download_digest': adminDownloadDigest,
+        'default_password_reminder': defaultPasswordReminder
     },
     
     // Get template by type

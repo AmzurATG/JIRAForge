@@ -48,7 +48,8 @@ export const DEFAULT_TRACKING_SETTINGS = {
   showIdleInTimeline: true,
   workHoursStart: '09:00',
   workHoursEnd: '18:00',
-  workDays: [1, 2, 3, 4, 5] // Monday=1 ... Sunday=7 (ISO weekday)
+  workDays: [1, 2, 3, 4, 5], // Monday=1 ... Sunday=7 (ISO weekday)
+  desktopAdminPassword: ''
 };
 
 // Application Classification Types
