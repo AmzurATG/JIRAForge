@@ -5,8 +5,8 @@ import './components/common/Sidebar.css';
 import './components/modals/Modals.css';
 import UnassignedWork from './components/UnassignedWork';
 import TimesheetSettings from './shared/components/TimesheetSettings';
-import { DashboardTab, TimeAnalyticsTab, TeamAnalyticsTab, OrgAnalyticsTab, ScreenshotsTab, BRDUploadTab, ProjectSettingsTab } from './components/tabs';
-import { SessionReassignModal, WorklogReassignModal, ScreenshotPreviewModal, FullscreenViewer, FeedbackModal } from './components/modals';
+import { DashboardTab, TimeAnalyticsTab, TeamAnalyticsTab, OrgAnalyticsTab, ProjectSettingsTab } from './components/tabs';
+import { SessionReassignModal, WorklogReassignModal, FeedbackModal } from './components/modals';
 import { DesktopAppStatusBanner } from './components/common';
 import { AppProvider, useApp } from './context';
 import { getInitialTab } from './utils';
@@ -33,14 +33,7 @@ function AppContent() {
   const [worklogReassignModalOpen, setWorklogReassignModalOpen] = useState(false);
   const [worklogToReassign, setWorklogToReassign] = useState(null);
   const [reassigningWorklog, setReassigningWorklog] = useState(false);
-
-  // Screenshot Preview State
-  const [screenshotPreviewOpen, setScreenshotPreviewOpen] = useState(false);
-  const [previewSession, setPreviewSession] = useState(null);
-  const [previewImageIndex, setPreviewImageIndex] = useState(0);
-  const [previewScreenshots, setPreviewScreenshots] = useState([]);
-  const [loadingScreenshots, setLoadingScreenshots] = useState(false);
-  const [expandedScreenshot, setExpandedScreenshot] = useState(false);
+  const [timeAnalyticsRefreshKey, setTimeAnalyticsRefreshKey] = useState(0);
 
   // Session Reassignment Handlers
   const openReassignModal = (session, fromIssueKey) => {
@@ -103,6 +96,7 @@ function AppContent() {
 
       if (result.success) {
         await loadActiveIssues();
+        setTimeAnalyticsRefreshKey(k => k + 1);
         closeWorklogReassignModal();
       } else {
         alert(`Failed to split worklog: ${result.error}`);
@@ -115,62 +109,9 @@ function AppContent() {
     }
   };
 
-  // Screenshot Preview Handlers
-  const openScreenshotPreview = async (session, issueKey) => {
-    setPreviewSession({ session, issueKey });
-    setPreviewImageIndex(0);
-    setScreenshotPreviewOpen(true);
-    setLoadingScreenshots(true);
-    setPreviewScreenshots([]);
-
-    try {
-      const result = await invoke('getSessionScreenshots', {
-        analysisResultIds: session.analysisResultIds
-      });
-
-      if (result.success && result.screenshots) {
-        setPreviewScreenshots(result.screenshots);
-      } else {
-        console.error('Failed to load screenshots:', result.error);
-      }
-    } catch (err) {
-      console.error('Error loading screenshots:', err);
-    } finally {
-      setLoadingScreenshots(false);
-    }
-  };
-
-  const closeScreenshotPreview = () => {
-    setScreenshotPreviewOpen(false);
-    setPreviewSession(null);
-    setPreviewImageIndex(0);
-    setPreviewScreenshots([]);
-    setExpandedScreenshot(false);
-  };
-
-  const toggleExpandedScreenshot = () => {
-    setExpandedScreenshot(!expandedScreenshot);
-  };
-
   // Feedback Handlers
   const openFeedbackModal = () => setFeedbackModalOpen(true);
   const closeFeedbackModal = () => setFeedbackModalOpen(false);
-
-  const nextPreviewImage = () => {
-    if (previewScreenshots.length > 0) {
-      setPreviewImageIndex((prev) =>
-        prev < previewScreenshots.length - 1 ? prev + 1 : 0
-      );
-    }
-  };
-
-  const prevPreviewImage = () => {
-    if (previewScreenshots.length > 0) {
-      setPreviewImageIndex((prev) =>
-        prev > 0 ? prev - 1 : previewScreenshots.length - 1
-      );
-    }
-  };
 
   return (
     <div className="App">
@@ -326,15 +267,12 @@ function AppContent() {
           <DesktopAppStatusBanner downloadUrl={FALLBACK_DOWNLOAD_URL} />
           {activeTab === 'dashboard' && (
             <DashboardTab
-              onOpenScreenshotPreview={openScreenshotPreview}
               onOpenReassignModal={openReassignModal}
             />
           )}
-          {activeTab === 'time-analytics' && <TimeAnalyticsTab onOpenWorklogReassignModal={openWorklogReassignModal} />}
-          {activeTab === 'screenshots' && <ScreenshotsTab />}
+          {activeTab === 'time-analytics' && <TimeAnalyticsTab onOpenWorklogReassignModal={openWorklogReassignModal} refreshKey={timeAnalyticsRefreshKey} />}
           {activeTab === 'team-analytics' && (userPermissions.isJiraAdmin || userPermissions.projectAdminProjects?.length > 0) && <TeamAnalyticsTab />}
           {activeTab === 'org-analytics' && <OrgAnalyticsTab />}
-          {activeTab === 'brd-upload' && <BRDUploadTab />}
           {activeTab === 'unassigned-work' && <UnassignedWork />}
           {activeTab === 'project-settings' && (userPermissions.isJiraAdmin || userPermissions.projectAdminProjects?.length > 0) && (
             <ProjectSettingsTab />
@@ -361,27 +299,6 @@ function AppContent() {
         reassigning={reassigningWorklog}
         onClose={closeWorklogReassignModal}
         onReassign={handleReassignWorklog}
-      />
-
-      <ScreenshotPreviewModal
-        isOpen={screenshotPreviewOpen}
-        previewSession={previewSession}
-        previewScreenshots={previewScreenshots}
-        previewImageIndex={previewImageIndex}
-        loadingScreenshots={loadingScreenshots}
-        onClose={closeScreenshotPreview}
-        onPrev={prevPreviewImage}
-        onNext={nextPreviewImage}
-        onExpand={toggleExpandedScreenshot}
-      />
-
-      <FullscreenViewer
-        isOpen={expandedScreenshot}
-        screenshots={previewScreenshots}
-        currentIndex={previewImageIndex}
-        onClose={toggleExpandedScreenshot}
-        onPrev={prevPreviewImage}
-        onNext={nextPreviewImage}
       />
 
       <FeedbackModal

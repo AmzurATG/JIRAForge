@@ -29,20 +29,32 @@ export function AppProvider({ children }) {
     loadUserPermissions();
   }, []);
 
-  // Sync worklogs for the current user on mount (fire-and-forget, 15-min cooldown).
+  // Sync worklogs for the current user on mount (fire-and-forget, 5-min cooldown).
   // Runs in the user's live Jira session so worklogs appear under their real name.
+  // Reduced from 15 min to 5 min to pick up pending worklogs from the scheduled
+  // trigger more quickly, fixing the "Itracker" attribution issue.
   useEffect(() => {
     const COOLDOWN_KEY = 'tt_worklog_sync_last_run';
-    const COOLDOWN_MS = 15 * 60 * 1000; // 15 minutes
+    const COOLDOWN_MS = 5 * 60 * 1000; // 5 minutes
     try {
       const lastRun = localStorage.getItem(COOLDOWN_KEY);
       const lastRunTs = parseInt(lastRun, 10);
       const cooldownExpired = !Number.isFinite(lastRunTs) || Date.now() - lastRunTs > COOLDOWN_MS;
       if (cooldownExpired) {
         localStorage.setItem(COOLDOWN_KEY, String(Date.now()));
-        invoke('syncMyWorklogs').catch(err =>
-          console.warn('[WorklogSync] Background sync failed:', err)
-        );
+        invoke('syncMyWorklogs')
+          .then(result => {
+            if (result?.synced > 0) {
+              console.log(`[WorklogSync] Synced ${result.synced} worklog(s)`);
+            } else if (result?.message) {
+              console.log(`[WorklogSync] ${result.message}`);
+            } else if (result?.error) {
+              console.warn(`[WorklogSync] Error: ${result.error}`);
+            }
+          })
+          .catch(err =>
+            console.warn('[WorklogSync] Background sync failed:', err)
+          );
       }
     } catch (err) {
       console.warn('[WorklogSync] localStorage unavailable, skipping background sync:', err);

@@ -8,13 +8,24 @@ const mockCreateJiraWorklog = jest.fn();
 const mockUpdateJiraWorklog = jest.fn();
 const mockDeleteJiraWorklog = jest.fn();
 const mockDeleteJiraWorklogAsApp = jest.fn();
+const mockGetAllUserAssignedIssues = jest.fn();
 
 jest.mock('../../src/utils/jira.js', () => ({
   createJiraWorklog: mockCreateJiraWorklog,
   updateJiraWorklog: mockUpdateJiraWorklog,
   deleteJiraWorklog: mockDeleteJiraWorklog,
   deleteJiraWorklogAsApp: mockDeleteJiraWorklogAsApp,
+  getAllUserAssignedIssues: mockGetAllUserAssignedIssues,
 }));
+
+// Mock @forge/api — used by the /myself verification check in syncCurrentUserWorklogs
+const mockRequestJira = jest.fn();
+const mockAsUser = jest.fn(() => ({ requestJira: mockRequestJira }));
+jest.mock('@forge/api', () => {
+  const api = { asUser: mockAsUser };
+  api.route = (strings, ...values) => strings.reduce((acc, s, i) => acc + s + (values[i] || ''), '');
+  return { __esModule: true, default: api, route: api.route };
+});
 
 const mockGetSupabaseConfig = jest.fn();
 const mockSupabaseRequest = jest.fn();
@@ -60,6 +71,7 @@ const ISSUE_KEY = 'ESW-6570';
 function buildSupabaseRequestMock({
   trackingSettings = [{ project_key: null, jira_worklog_sync_enabled: true }],
   activityRecords = [],
+  unassignedRecords = [],
   existingMappings = [],
   allMappings = [],
 } = {}) {
@@ -69,18 +81,23 @@ function buildSupabaseRequestMock({
       return Promise.resolve(trackingSettings);
     }
 
-    // activity_records aggregation
+    // activity_records — unassigned (user_assigned_issue_key=is.null)
+    if (query.startsWith('activity_records?') && query.includes('user_assigned_issue_key=is.null')) {
+      return Promise.resolve(unassignedRecords);
+    }
+
+    // activity_records — assigned (all records including those with issue keys)
     if (query.startsWith('activity_records?')) {
       return Promise.resolve(activityRecords);
     }
 
     // Existing worklog_sync mappings
-    if (query.startsWith('worklog_sync?organization_id=') && query.includes('issue_key=in.')) {
+    if (query.startsWith('worklog_sync?') && query.includes('issue_key=in.')) {
       return Promise.resolve(existingMappings);
     }
 
     // All worklog_sync mappings for cleanup
-    if (query.startsWith('worklog_sync?organization_id=') && query.includes('select=id,issue_key,jira_worklog_id') && !query.includes('issue_key=in.')) {
+    if (query.startsWith('worklog_sync?') && query.includes('select=id,issue_key,jira_worklog_id') && !query.includes('issue_key=in.')) {
       return Promise.resolve(allMappings);
     }
 
@@ -111,6 +128,14 @@ beforeEach(() => {
   mockGetSupabaseConfig.mockResolvedValue(FAKE_SUPABASE_CONFIG);
   mockGetOrCreateOrganization.mockResolvedValue({ id: ORG_ID });
   mockGetOrCreateUser.mockResolvedValue(USER_ID);
+
+  // Default: /myself check succeeds and returns the expected user
+  mockRequestJira.mockResolvedValue({
+    json: () => Promise.resolve({ accountId: ACCOUNT_ID, displayName: 'Test User' }),
+  });
+
+  // Default: no Jira issues for fallback matching (no unassigned time matches)
+  mockGetAllUserAssignedIssues.mockResolvedValue({ issues: [], total: 0 });
 });
 
 // ============================================================================
@@ -118,7 +143,7 @@ beforeEach(() => {
 // ============================================================================
 describe('worklogService — syncCurrentUserWorklogs', () => {
 
-  describe('when a pending record exists (jira_worklog_id = null)', () => {
+  describe('when a pending record exists (jira_worklog_id = PENDING)', () => {
     it('creates the worklog as the user without trying to delete from Jira', async () => {
       mockSupabaseRequest.mockImplementation(
         buildSupabaseRequestMock({
@@ -131,7 +156,7 @@ describe('worklogService — syncCurrentUserWorklogs', () => {
           existingMappings: [{
             id: 'mapping-pending-1',
             issue_key: ISSUE_KEY,
-            jira_worklog_id: null, // Pending — no Jira worklog
+            jira_worklog_id: 'PENDING', // Pending — no Jira worklog
             last_synced_seconds: 120,
             created_as_user: false,
           }],
@@ -161,7 +186,7 @@ describe('worklogService — syncCurrentUserWorklogs', () => {
 
       // Should create fresh worklog via user session
       expect(mockCreateJiraWorklog).toHaveBeenCalledWith(
-        ISSUE_KEY, 120, expect.any(String)
+        ISSUE_KEY, 120, expect.any(String), 'Test User'
       );
 
       // New mapping should have created_as_user = true
@@ -213,7 +238,7 @@ describe('worklogService — syncCurrentUserWorklogs', () => {
 
       // Should create new worklog as user
       expect(mockCreateJiraWorklog).toHaveBeenCalledWith(
-        ISSUE_KEY, 120, expect.any(String)
+        ISSUE_KEY, 120, expect.any(String), 'Test User'
       );
 
       // New mapping should be user-created
@@ -353,7 +378,7 @@ describe('worklogService — syncCurrentUserWorklogs', () => {
       expect(result.synced).toBe(1);
 
       expect(mockCreateJiraWorklog).toHaveBeenCalledWith(
-        ISSUE_KEY, 180, expect.any(String)
+        ISSUE_KEY, 180, expect.any(String), 'Test User'
       );
 
       const postCall = mockSupabaseRequest.mock.calls.find(
@@ -378,6 +403,117 @@ describe('worklogService — syncCurrentUserWorklogs', () => {
       expect(result.success).toBe(true);
       expect(result.synced).toBe(0);
       expect(result.message).toMatch(/not enabled/i);
+    });
+  });
+
+  describe('when /myself verification fails', () => {
+    it('returns early with error when user session is broken', async () => {
+      mockRequestJira.mockRejectedValue(new Error('Unauthorized'));
+
+      const result = await syncCurrentUserWorklogs(ACCOUNT_ID, CLOUD_ID);
+
+      expect(result.success).toBe(false);
+      expect(result.error).toMatch(/User session not available/i);
+      // Should NOT proceed to create any worklogs
+      expect(mockCreateJiraWorklog).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('when records have no user_assigned_issue_key but have project_key', () => {
+    it('creates worklog via project fallback matching to in-progress issue', async () => {
+      mockSupabaseRequest.mockImplementation(
+        buildSupabaseRequestMock({
+          activityRecords: [], // No directly-assigned records
+          unassignedRecords: [{
+            project_key: 'FEEDBACK',
+            duration_seconds: 484, // 8m 4s
+            total_time_seconds: 484,
+            end_time: '2026-04-01T10:00:00Z',
+          }],
+          existingMappings: [],
+        })
+      );
+
+      // User has FEEDBACK-33 in-progress in Jira
+      mockGetAllUserAssignedIssues.mockResolvedValue({
+        issues: [{
+          key: 'FEEDBACK-33',
+          fields: {
+            project: { key: 'FEEDBACK' },
+            status: { statusCategory: { key: 'indeterminate' } },
+          }
+        }],
+        total: 1,
+      });
+
+      mockCreateJiraWorklog.mockResolvedValue({
+        id: 'worklog-fallback-1',
+        author: { accountId: ACCOUNT_ID },
+      });
+
+      const result = await syncCurrentUserWorklogs(ACCOUNT_ID, CLOUD_ID);
+
+      expect(result.success).toBe(true);
+      expect(result.synced).toBe(1);
+
+      // Should create worklog on the in-progress issue
+      expect(mockCreateJiraWorklog).toHaveBeenCalledWith(
+        'FEEDBACK-33', 484, expect.any(String), 'Test User'
+      );
+
+      // New mapping should be user-created
+      const postCall = mockSupabaseRequest.mock.calls.find(
+        ([, q, opts]) => q === 'worklog_sync' && opts?.method === 'POST'
+      );
+      expect(postCall).toBeDefined();
+      expect(postCall[2].body.created_as_user).toBe(true);
+      expect(postCall[2].body.issue_key).toBe('FEEDBACK-33');
+    });
+
+    it('merges direct and fallback time for same issue', async () => {
+      mockSupabaseRequest.mockImplementation(
+        buildSupabaseRequestMock({
+          activityRecords: [{
+            user_assigned_issue_key: 'FEEDBACK-33',
+            duration_seconds: 120,
+            total_time_seconds: 120,
+            end_time: '2026-04-01T09:00:00Z',
+          }],
+          unassignedRecords: [{
+            project_key: 'FEEDBACK',
+            duration_seconds: 300,
+            total_time_seconds: 300,
+            end_time: '2026-04-01T10:00:00Z',
+          }],
+          existingMappings: [],
+        })
+      );
+
+      mockGetAllUserAssignedIssues.mockResolvedValue({
+        issues: [{
+          key: 'FEEDBACK-33',
+          fields: {
+            project: { key: 'FEEDBACK' },
+            status: { statusCategory: { key: 'indeterminate' } },
+          }
+        }],
+        total: 1,
+      });
+
+      mockCreateJiraWorklog.mockResolvedValue({
+        id: 'worklog-merged-1',
+        author: { accountId: ACCOUNT_ID },
+      });
+
+      const result = await syncCurrentUserWorklogs(ACCOUNT_ID, CLOUD_ID);
+
+      expect(result.success).toBe(true);
+      expect(result.synced).toBe(1);
+
+      // Should create worklog with merged time (120 + 300 = 420s)
+      expect(mockCreateJiraWorklog).toHaveBeenCalledWith(
+        'FEEDBACK-33', 420, expect.any(String), 'Test User'
+      );
     });
   });
 });

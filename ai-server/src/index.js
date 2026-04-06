@@ -6,26 +6,20 @@ const path = require('node:path');
 const fs = require('node:fs');
 require('dotenv').config();
 
-const screenshotController = require('./controllers/screenshot-controller');
-const brdController = require('./controllers/brd-controller');
 const authController = require('./controllers/auth-controller');
 const forgeProxyController = require('./controllers/forge-proxy-controller');
 const appVersionController = require('./controllers/app-version-controller');
 const feedbackController = require('./controllers/feedback-controller');
 const notificationController = require('./controllers/notification-controller');
-const dashboardController = require('./controllers/dashboard-controller');
 const authMiddleware = require('./middleware/auth');
 const forgeAuthMiddleware = require('./middleware/forge-auth');
 const atlassianAuthMiddleware = require('./middleware/atlassian-auth');
-const dashboardAuthMiddleware = require('./middleware/dashboard-auth');
 const logger = require('./utils/logger');
-const pollingService = require('./services/polling-service');
 const clusteringPollingService = require('./services/clustering-polling-service');
-const cleanupService = require('./services/cleanup-service');
 const notificationPollingService = require('./services/notifications/notification-polling');
 const aiService = require('./services/ai');
-const { initializeSheetsLogger } = require('./services/sheets-logger');
 const activityController = require('./controllers/activity-controller');
+const adminDashboardController = require('./controllers/admin-dashboard-controller');
 const activityPollingService = require('./services/activity-polling-service');
 
 const app = express();
@@ -104,6 +98,18 @@ const publicLimiter = rateLimit({
   }
 });
 
+// Rate limiter specifically for auth endpoints (stricter to prevent abuse)
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 30, // 30 requests per 15 minutes per IP
+  message: 'Too many authentication attempts, please try again later.',
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => {
+    return req.ip || req.headers['x-forwarded-for'] || req.connection.remoteAddress || 'unknown';
+  }
+});
+
 // Root endpoint
 app.get('/', publicLimiter, (req, res) => {
   res.json({
@@ -129,6 +135,21 @@ app.get('/health', publicLimiter, (req, res) => {
     uptime: process.uptime()
   });
 });
+
+// =============================================================================
+// ADMIN DASHBOARD (Simple server-side dashboard - password protected)
+// =============================================================================
+
+// Serve the dashboard HTML page (public — login happens client-side)
+app.get('/admin-dashboard', publicLimiter, (req, res) => {
+  res.sendFile(path.join(__dirname, 'dashboard', 'admin-dashboard.html'));
+});
+
+// Dashboard login — validates password, returns session token
+app.post('/admin-dashboard/api/login', authLimiter, adminDashboardController.login);
+
+// Dashboard API — protected by session token
+app.get('/admin-dashboard/api/stats', adminDashboardController.requireSession, adminDashboardController.getStats);
 
 // =============================================================================
 // LEGAL PAGES (Public - served as HTML from layout + content templates)
@@ -171,18 +192,6 @@ app.get('/terms-of-service', (req, res) => res.redirect('/legal/terms'));
 // These endpoints handle secure token exchange for the desktop app
 // =============================================================================
 
-// Rate limiter specifically for auth endpoints (stricter to prevent abuse)
-const authLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 30, // 30 requests per 15 minutes per IP
-  message: 'Too many authentication attempts, please try again later.',
-  standardHeaders: true,
-  legacyHeaders: false,
-  keyGenerator: (req) => {
-    return req.ip || req.headers['x-forwarded-for'] || req.connection.remoteAddress || 'unknown';
-  }
-});
-
 // Public OAuth config (exposes only the client ID — safe for browsers)
 app.get('/api/auth/config', authLimiter, authController.getOAuthConfig);
 
@@ -207,32 +216,7 @@ app.post('/api/auth/ocr-config', authLimiter, authController.getOcrConfig);
 // Submit client diagnostics (OCR status, login events, errors)
 app.post('/api/auth/diagnostics', authLimiter, authController.submitDiagnostics);
 
-// =============================================================================
-// ADMIN DASHBOARD ROUTES (Atlassian OAuth + Jira Admin check)
-// Standalone dashboard accessible via /dashboard URL
-// =============================================================================
 
-// Dashboard API — CRUD for status report data
-app.get('/api/dashboard/data', dashboardAuthMiddleware, dashboardController.getData);
-app.post('/api/dashboard/metrics', dashboardAuthMiddleware, dashboardController.addMetric);
-app.patch('/api/dashboard/metrics/:id', dashboardAuthMiddleware, dashboardController.updateMetric);
-app.delete('/api/dashboard/metrics/:id', dashboardAuthMiddleware, dashboardController.deleteMetric);
-app.post('/api/dashboard/organizations', dashboardAuthMiddleware, dashboardController.addOrg);
-app.patch('/api/dashboard/organizations/:id', dashboardAuthMiddleware, dashboardController.updateOrg);
-app.delete('/api/dashboard/organizations/:id', dashboardAuthMiddleware, dashboardController.deleteOrg);
-app.post('/api/dashboard/ticket-teams', dashboardAuthMiddleware, dashboardController.addTicketTeam);
-app.patch('/api/dashboard/ticket-teams/:id', dashboardAuthMiddleware, dashboardController.updateTicketTeam);
-app.delete('/api/dashboard/ticket-teams/:id', dashboardAuthMiddleware, dashboardController.deleteTicketTeam);
-app.post('/api/dashboard/ticket-statuses', dashboardAuthMiddleware, dashboardController.addTicketStatus);
-app.patch('/api/dashboard/ticket-statuses/:id', dashboardAuthMiddleware, dashboardController.updateTicketStatus);
-app.delete('/api/dashboard/ticket-statuses/:id', dashboardAuthMiddleware, dashboardController.deleteTicketStatus);
-
-// Serve dashboard React app (static build files)
-app.use('/dashboard', express.static(path.join(__dirname, 'dashboard', 'build')));
-// SPA fallback — serves index.html for all /dashboard/* client-side routes
-app.get('/dashboard/*', (req, res) => {
-  res.sendFile(path.join(__dirname, 'dashboard', 'build', 'index.html'));
-});
 
 // =============================================================================
 // FEEDBACK ROUTES (Session-authenticated via feedback session store)
@@ -367,9 +351,6 @@ app.post('/api/forge/issues/cache', ...forgeMiddleware, forgeProxyController.cac
 // =============================================================================
 
 // Routes — apply larger body limit for upload-heavy endpoints
-app.post('/api/analyze-screenshot', express.json({ limit: '10mb' }), authMiddleware, screenshotController.analyzeScreenshot);
-app.post('/api/process-brd', express.json({ limit: '10mb' }), authMiddleware, brdController.processBRD);
-
 // Activity tracking endpoints (new event-based pipeline)
 app.post('/api/analyze-batch', express.json({ limit: '10mb' }), authMiddleware, activityController.analyzeBatch);
 // classify-app uses Atlassian token auth (desktop app sends OAuth token)
@@ -513,33 +494,6 @@ app.post('/api/cluster-unassigned-work', authMiddleware, async (req, res, next) 
   }
 });
 
-// Manual trigger for cleanup - deletes old screenshot files from storage
-app.post('/api/trigger-cleanup', authMiddleware, async (req, res, next) => {
-  try {
-    // Check if cleanup is already running
-    if (cleanupService.isCleanupRunning()) {
-      return res.status(409).json({
-        success: false,
-        error: 'Cleanup is already in progress. Please wait for it to complete.'
-      });
-    }
-
-    logger.info('[API] Manual cleanup triggered');
-
-    const result = await cleanupService.runCleanup();
-
-    res.json({
-      success: result.success,
-      message: `Cleanup completed. ${result.deleted} files deleted, ${result.errors} errors.`,
-      filesDeleted: result.deleted,
-      errors: result.errors
-    });
-  } catch (error) {
-    logger.error('[API] Error in manual cleanup:', error);
-    next(error);
-  }
-});
-
 // Error handling middleware
 app.use((err, req, res, next) => {
   logger.error('Unhandled error:', err);
@@ -576,35 +530,18 @@ async function startServer() {
       logger.info('Initializing AI clients...');
       aiService.initializeClient();
 
-      // Initialize Google Sheets logger for LLM usage tracking
-      initializeSheetsLogger();
-
-      // Initialize cost tracker for Sheet 2 (cost tracking)
-      const { initializeCostTracker } = require('./services/cost-tracker');
-      initializeCostTracker();
 
       // Step 1: Start clustering service first (includes startup clustering if needed)
-      // This runs any missed clustering before we start processing new screenshots
       logger.info('Initializing clustering service...');
       await clusteringPollingService.start();
       logger.info('Clustering service initialized - daily clustering scheduled');
 
-      // Step 2: Start screenshot analysis polling AFTER clustering is ready
-      // This ensures we don't have race conditions between analysis and clustering
-      pollingService.start();
-      logger.info('Screenshot analysis polling service started - will process pending screenshots automatically');
-
-      // Step 3: Start cleanup service for old screenshot files
-      // Runs monthly to delete files older than 2 months
-      await cleanupService.start();
-      logger.info('Cleanup service started - monthly cleanup scheduled');
-
-      // Step 4: Start activity polling service for new event-based pipeline
+      // Step 2: Start activity polling service for event-based pipeline
       // Processes pending activity_records (text-only AI analysis)
       activityPollingService.start();
       logger.info('Activity polling service started - will process pending activity records');
 
-      // Step 5: Start notification polling service for email notifications
+      // Step 3: Start notification polling service for email notifications
       // Sends login reminders, download reminders, new version alerts, and inactivity alerts
       if (process.env.EMAIL_PROVIDER) {
         notificationPollingService.start();
@@ -640,9 +577,7 @@ if (isMainModule) {
 // Graceful shutdown
 process.on('SIGTERM', () => {
   logger.info('SIGTERM received, shutting down gracefully');
-  pollingService.stop();
   clusteringPollingService.stop();
-  cleanupService.stop();
   activityPollingService.stop();
   notificationPollingService.stop();
   process.exit(0);
@@ -650,9 +585,7 @@ process.on('SIGTERM', () => {
 
 process.on('SIGINT', () => {
   logger.info('SIGINT received, shutting down gracefully');
-  pollingService.stop();
   clusteringPollingService.stop();
-  cleanupService.stop();
   activityPollingService.stop();
   notificationPollingService.stop();
   process.exit(0);
