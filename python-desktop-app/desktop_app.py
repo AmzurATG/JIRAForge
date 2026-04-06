@@ -179,12 +179,13 @@ def secure_log(message: str, level: str = "INFO", **kwargs) -> None:
 
 # Secure credential storage
 try:
-    print("!!!DEBUG!!! About to execute main JQL query for Jira issues.")
-    import keyring
-    KEYRING_AVAILABLE = True
+    from auth import SecureTokenStorage, SecurityError, KEYRING_AVAILABLE
+    SECURE_STORAGE_AVAILABLE = True
+    print("[OK] Secure token storage initialized")
 except ImportError:
-    KEYRING_AVAILABLE = False
-    print("[WARN] keyring module not available - tokens will be stored in plain text")
+    SECURE_STORAGE_AVAILABLE = False
+    print("[ERROR] Secure token storage module not found - this should not happen")
+    raise
 
 # Windows-specific imports
 try:
@@ -1417,6 +1418,7 @@ class AtlassianAuthManager:
         # Token exchange now goes through AI Server
         self.ai_server_url = get_env_var('AI_SERVER_URL', 'https://forgesync.amzur.com')
         self.store_path = store_path or os.path.join(get_app_data_dir(), 'time_tracker_auth.json')
+        self.metadata_path = os.path.join(get_app_data_dir(), 'auth_metadata.json')  # For non-sensitive data
 
         # Prevents concurrent token refreshes from burning the same refresh_token twice.
         # Atlassian uses token rotation: each refresh invalidates the old refresh_token.
@@ -1424,80 +1426,86 @@ class AtlassianAuthManager:
         # refresh_token — the second call arrives after rotation and gets "token invalid".
         self._refresh_lock = threading.Lock()
 
-        # Migrate from plain-text to keyring if needed
-        self._migrate_to_keyring()
+        # Initialize secure storage
+        self.secure_storage = SecureTokenStorage(get_app_data_dir())
 
-        # Load tokens (from keyring + JSON)
+        # Migrate from plain-text JSON to secure storage if needed
+        self._migrate_from_plaintext()
+
+        # Load tokens (from secure storage)
         self.tokens = self._load_tokens()
 
-    def _migrate_to_keyring(self):
-        """Migrate sensitive tokens from plain-text JSON to secure keyring storage.
-
-        JSON file is kept as a backup (not cleaned) because keyring can lose data
-        if the app is killed during a chunked write (e.g., system shutdown/reboot).
+    def _migrate_from_plaintext(self):
+        """Migrate sensitive tokens from plain-text JSON to secure storage.
+        
+        This handles migration from the old insecure system that stored tokens
+        in plaintext JSON when keyring was unavailable.
         """
-        if not KEYRING_AVAILABLE:
-            return
-
         try:
-            # Check if old JSON file has plain-text tokens
+            # Check if old JSON file exists
             if not os.path.exists(self.store_path):
                 return
 
-            with open(self.store_path, 'r') as f:
-                old_data = json.load(f)
-
-            for key in SENSITIVE_TOKEN_KEYS:
-                if key in old_data and old_data[key]:
-                    # Check if already in keyring
-                    existing = _keyring_get(KEYRING_SERVICE, key)
-                    if existing is None:
-                        # Copy to keyring (keep JSON as backup)
-                        _keyring_set(KEYRING_SERVICE, key, old_data[key])
-                        print(f"[OK] Migrated {key} to secure storage")
+            # Use SecureTokenStorage's migration method
+            migrated = self.secure_storage.migrate_from_plaintext(self.store_path)
+            
+            if migrated:
+                print("[OK] Migrated tokens from plaintext to secure storage")
+                
+                # Extract metadata (non-sensitive data) and save separately
+                try:
+                    with open(self.store_path, 'r') as f:
+                        old_data = json.load(f)
+                    
+                    # Save non-sensitive metadata separately
+                    metadata = {k: v for k, v in old_data.items() if k not in SENSITIVE_TOKEN_KEYS}
+                    if metadata:
+                        with open(self.metadata_path, 'w') as f:
+                            json.dump(metadata, f)
+                        print(f"[OK] Saved non-sensitive metadata separately")
+                except Exception:
+                    pass  # Non-critical
 
         except Exception as e:
             print(f"[WARN] Migration to secure storage failed: {e}")
 
     def _load_tokens(self):
-        """Load tokens from secure keyring (sensitive) and JSON file (backup).
-
-        Priority: keyring > JSON backup. If keyring is missing a token
-        (e.g., corrupted by interrupted shutdown), fall back to JSON.
+        """Load tokens from secure storage (keyring or encrypted file).
+        
+        Sensitive tokens are loaded from SecureTokenStorage (keyring → encrypted fallback).
+        Non-sensitive metadata (oauth_state, code_verifier) is loaded from metadata JSON.
         """
         tokens = {}
 
-        # Load all tokens from JSON file (includes backup of sensitive tokens)
+        # Load non-sensitive metadata from JSON file
         try:
-            if os.path.exists(self.store_path):
-                with open(self.store_path, 'r') as f:
+            if os.path.exists(self.metadata_path):
+                with open(self.metadata_path, 'r') as f:
                     tokens = json.load(f)
+                    print(f"[OK] Loaded metadata from {self.metadata_path}")
         except Exception as e:
-            print(f"[WARN] Failed to load token metadata: {e}")
+            print(f"[WARN] Failed to load metadata: {e}")
 
-        # Override with keyring values (more secure, preferred source)
-        if KEYRING_AVAILABLE:
-            try:
-                for key in SENSITIVE_TOKEN_KEYS:
-                    value = _keyring_get(KEYRING_SERVICE, key)
-                    if value:
-                        tokens[key] = value
-                    elif tokens.get(key):
-                        # Keyring lost this token (corrupted chunks from interrupted shutdown)
-                        # but JSON backup has it — re-save to keyring for next time
-                        print(f"[WARN] Keyring missing {key}, recovered from JSON backup")
-                        try:
-                            _keyring_set(KEYRING_SERVICE, key, tokens[key])
-                        except Exception:
-                            pass
-            except Exception as e:
-                print(f"[WARN] Failed to load tokens from secure storage: {e}")
-                # JSON backup tokens are already in `tokens` dict — will be used
+        # Load sensitive tokens from secure storage
+        try:
+            secure_tokens = self.secure_storage.load_tokens()
+            if secure_tokens:
+                tokens.update(secure_tokens)
+                print(f"[OK] Loaded {len(secure_tokens)} tokens from secure storage")
+        except Exception as e:
+            print(f"[ERROR] Failed to load from secure storage: {e}")
 
         return tokens
 
     def _save_tokens(self):
-        """Save tokens to secure keyring (sensitive) and JSON file (metadata + backup)"""
+        """Save tokens to secure storage (keyring or encrypted file).
+        
+        Sensitive tokens (access_token, refresh_token, supabase_token) are saved to
+        SecureTokenStorage (keyring with automatic encrypted fallback).
+        Non-sensitive metadata (oauth_state, code_verifier) is saved to JSON.
+        
+        SECURITY NOTE: No plaintext backup for sensitive tokens.
+        """
         # Separate sensitive and non-sensitive data
         sensitive_data = {}
         metadata = {}
@@ -1508,26 +1516,27 @@ class AtlassianAuthManager:
             else:
                 metadata[key] = value
 
-        # Save sensitive tokens to keyring
-        if KEYRING_AVAILABLE:
+        # Save sensitive tokens to secure storage (keyring → encrypted fallback)
+        if sensitive_data:
             try:
-                for key, value in sensitive_data.items():
-                    if value:
-                        _keyring_set(KEYRING_SERVICE, key, value)
+                self.secure_storage.save_tokens(sensitive_data)
+                print(f"[OK] Saved {len(sensitive_data)} tokens to secure storage")
+            except SecurityError as e:
+                print(f"[ERROR] Cannot save tokens securely: {e}")
+                # This is a critical error - do not fall back to plaintext
+                raise
             except Exception as e:
-                print(f"[WARN] Failed to save tokens to secure storage: {e}")
+                print(f"[ERROR] Failed to save tokens: {e}")
+                raise
 
-        # Always save tokens to JSON as backup — keyring can lose data if the app
-        # is killed during a chunked write (e.g., system shutdown/reboot).
-        # The JSON file in AppData is the resilient fallback.
-        metadata.update(sensitive_data)
-
-        # Save to JSON file
-        try:
-            with open(self.store_path, 'w') as f:
-                json.dump(metadata, f)
-        except Exception as e:
-            print(f"[WARN] Failed to save token metadata: {e}")
+        # Save non-sensitive metadata to JSON file
+        if metadata:
+            try:
+                with open(self.metadata_path, 'w') as f:
+                    json.dump(metadata, f)
+                print(f"[OK] Saved metadata to {self.metadata_path}")
+            except Exception as e:
+                print(f"[WARN] Failed to save metadata: {e}")
     
     def get_auth_url(self):
         """Generate Atlassian OAuth authorization URL with PKCE"""
@@ -5363,6 +5372,29 @@ class TimeTracker:
 
                 except Exception as e:
                     return jsonify({'success': False, 'error': str(e)}), 500
+
+        @self.app.route('/api/security-status', methods=['GET'])
+        def security_status_api():
+            """Get current security/token storage status"""
+            try:
+                status = self.auth_manager.secure_storage.get_storage_status()
+                return jsonify({
+                    'success': True,
+                    'status': status
+                })
+            except Exception as e:
+                return jsonify({
+                    'success': False,
+                    'error': str(e),
+                    'status': {
+                        'method': 'Error',
+                        'security_level': 'Unknown',
+                        'icon': '⚠️',
+                        'description': 'Could not determine security status',
+                        'encryption': 'N/A',
+                        'recommendation': None
+                    }
+                }), 200  # Still return 200 so UI can display error state
 
         # ============================================================================
         # CONSENT ROUTES (GDPR/Privacy Compliance)
@@ -9354,6 +9386,16 @@ class TimeTracker:
                 show_badge = getattr(self, 'update_available', False)
                 new_icon = self.create_tray_icon(state, show_update_badge=show_badge)
                 self.tray.icon = new_icon
+                
+                # Update tooltip with security status
+                try:
+                    storage_status = self.auth_manager.secure_storage.get_storage_status()
+                    icon = storage_status.get('icon', '⚪')
+                    method = storage_status.get('method', 'Unknown').replace('Windows Credential Manager', 'WCM')
+                    self.tray.title = f"TimeTracker - Security: {icon} {method}"
+                except:
+                    self.tray.title = "TimeTracker"
+                    
             except Exception as e:
                 print(f"[WARN] Failed to update tray icon: {e}")
 
@@ -9385,6 +9427,55 @@ class TimeTracker:
             self._open_feedback_form()
 
         menu_items.append(item('Send Feedback', send_feedback_action))
+
+        # Add Security Status menu item
+        def get_security_status_label():
+            """Get security status label for tray menu"""
+            try:
+                storage_status = self.auth_manager.secure_storage.get_storage_status()
+                icon = storage_status.get('icon', '⚪')
+                method = storage_status.get('method', 'Unknown')
+                return f"{icon} Security: {method}"
+            except:
+                return "⚪ Security: Unknown"
+        
+        def show_security_info_action():
+            """Show detailed security status information"""
+            try:
+                storage_status = self.auth_manager.secure_storage.get_storage_status()
+                
+                icon = storage_status.get('icon', '⚪')
+                method = storage_status.get('method', 'Unknown')
+                security_level = storage_status.get('security_level', 'Unknown')
+                description = storage_status.get('description', 'No information available')
+                encryption = storage_status.get('encryption', 'N/A')
+                recommendation = storage_status.get('recommendation', '')
+                
+                message = f"{icon} Security Status\\n\\n"
+                message += f"Storage Method: {method}\\n"
+                message += f"Security Level: {security_level}\\n\\n"
+                message += f"{description}\\n\\n"
+                message += f"Encryption: {encryption}"
+                
+                if recommendation:
+                    message += f"\\n\\n💡 Recommendation:\\n{recommendation}"
+                
+                # Show Windows notification
+                if WINOTIFY_AVAILABLE:
+                    from winotify import Notification
+                    notification = Notification(
+                        app_id="TimeTracker Security",
+                        title="Security Status",
+                        msg=message,
+                        duration="long"
+                    )
+                    notification.show()
+                else:
+                    print(message)
+            except Exception as e:
+                print(f"[ERROR] Could not retrieve security status: {e}")
+        
+        menu_items.append(item(lambda text: get_security_status_label(), show_security_info_action))
 
         # Add separator and update-related menu items
         menu_items.append(pystray.Menu.SEPARATOR)
@@ -9528,6 +9619,15 @@ class TimeTracker:
             menu = self._build_tray_menu()
 
             self.tray = pystray.Icon("Time Tracker", icon_image, menu=menu)
+            
+            # Set initial tooltip with security status
+            try:
+                storage_status = self.auth_manager.secure_storage.get_storage_status()
+                icon = storage_status.get('icon', '⚪')
+                method = storage_status.get('method', 'Unknown').replace('Windows Credential Manager', 'WCM')
+                self.tray.title = f"TimeTracker - Security: {icon} {method}"
+            except:
+                self.tray.title = "TimeTracker"
 
             # Start a thread to periodically update the icon
             def update_icon_periodically():
@@ -10806,6 +10906,41 @@ class TimeTracker:
                 </div>
                 -->
 
+                <!-- Security Status Section -->
+                <div class="setting-section" id="security-status-section">
+                    <h3>🔒 Security Status</h3>
+                    <div class="setting-row" style="flex-direction: column; align-items: flex-start;">
+                        <div class="setting-info" style="padding-right: 0; width: 100%;">
+                            <div id="security-status-container" style="padding: 16px; background: #f9fafb; border-radius: 8px; border: 1px solid #e5e7eb;">
+                                <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 12px;">
+                                    <span id="security-icon" style="font-size: 24px;">⚪</span>
+                                    <div>
+                                        <div id="security-method" style="font-weight: 600; color: #1f2937; font-size: 15px;">Loading...</div>
+                                        <div id="security-level" style="font-size: 13px; color: #6b7280; margin-top: 2px;">Checking security status...</div>
+                                    </div>
+                                </div>
+                                <div id="security-description" style="font-size: 13px; color: #4b5563; margin-bottom: 8px; line-height: 1.5;">
+                                    Please wait while we check your security settings...
+                                </div>
+                                <div id="security-encryption" style="font-size: 12px; color: #6b7280; padding: 8px 12px; background: white; border-radius: 6px; margin-bottom: 8px;">
+                                    <strong>Encryption:</strong> <span id="encryption-type">N/A</span>
+                                </div>
+                                <div id="security-recommendation" style="display: none; padding: 12px; background: #fef3c7; border-left: 3px solid #f59e0b; border-radius: 6px; font-size: 13px; color: #92400e;">
+                                    💡 <span id="recommendation-text"></span>
+                                </div>
+                                <div style="margin-top: 12px; font-size: 12px; color: #9ca3af;">
+                                    <strong>How we protect your tokens:</strong>
+                                    <ul style="margin: 8px 0 0 20px; line-height: 1.6;">
+                                        <li><strong>Primary:</strong> Windows Credential Manager (most secure)</li>
+                                        <li><strong>Fallback:</strong> AES-128 encrypted file if Credential Manager unavailable</li>
+                                        <li><strong>Never:</strong> Plaintext storage</li>
+                                    </ul>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
                 <div id="status-message" class="status-message"></div>
             </div>
         </div>
@@ -10813,6 +10948,36 @@ class TimeTracker:
     </div>
 
     <script>
+        // Load security status
+        function loadSecurityStatus() {
+            fetch('/api/security-status')
+                .then(r => r.json())
+                .then(data => {
+                    if (data.success && data.status) {
+                        const s = data.status;
+                        
+                        document.getElementById('security-icon').textContent = s.icon || '⚪';
+                        document.getElementById('security-method').textContent = s.method || 'Unknown';
+                        document.getElementById('security-level').textContent = s.security_level || 'Unknown';
+                        document.getElementById('security-description').textContent = s.description || 'No information available';
+                        document.getElementById('encryption-type').textContent = s.encryption || 'N/A';
+                        
+                        // Show recommendation if exists
+                        if (s.recommendation) {
+                            document.getElementById('recommendation-text').textContent = s.recommendation;
+                            document.getElementById('security-recommendation').style.display = 'block';
+                        } else {
+                            document.getElementById('security-recommendation').style.display = 'none';
+                        }
+                    }
+                })
+                .catch(err => {
+                    console.error('Error loading security status:', err);
+                    document.getElementById('security-method').textContent = 'Error loading status';
+                    document.getElementById('security-level').textContent = 'Please check console';
+                });
+        }
+
         // Load settings on page load
         function loadSettings() {
             fetch('/api/pause-settings')
@@ -10889,6 +11054,7 @@ class TimeTracker:
 
         // Initialize
         loadSettings();
+        loadSecurityStatus();
     </script>
 </body>
 </html>'''
