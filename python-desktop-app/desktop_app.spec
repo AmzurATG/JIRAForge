@@ -95,6 +95,7 @@ else:
     print("[INFO] EasyOCR engine NOT configured - skipping EasyOCR bundling")
     engine_excludes += ['easyocr', 'torch', 'torchvision', 'torchaudio',
                         'tensorboard', 'torch.utils.tensorboard',
+                        'onnxruntime.transformers',
                         'ocr.engines.easyocr_engine']
 
 # ==============================================================================
