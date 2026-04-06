@@ -4,7 +4,7 @@ const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
 const path = require('node:path');
 const fs = require('node:fs');
-require('dotenv').config();
+require('dotenv').config({ path: path.join(__dirname, '..', '.env') });
 
 const authController = require('./controllers/auth-controller');
 const forgeProxyController = require('./controllers/forge-proxy-controller');
