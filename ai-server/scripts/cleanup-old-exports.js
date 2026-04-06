@@ -12,7 +12,7 @@
  * Created: April 3, 2026
  */
 
-const { getSupabaseClient } = require('../src/services/db/supabase-client');
+const { getClient } = require('../src/services/db/supabase-client');
 const logger = require('../src/utils/logger');
 
 const BUCKET_NAME = 'exports';
@@ -22,7 +22,7 @@ const MAX_AGE_DAYS = 7;
  * Delete files older than specified days from exports bucket
  */
 async function cleanupOldExports() {
-  const supabase = getSupabaseClient();
+  const supabase = getClient();
   
   try {
     logger.info('[Cleanup] Starting cleanup of old export files...');
