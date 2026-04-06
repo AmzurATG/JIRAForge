@@ -329,49 +329,25 @@ function shouldUpdateOrgInfo(orgName, existingOrg, cloudId) {
  * Update an existing org with better info, falling back to the original if update fails
  */
 async function resolveExistingOrg(supabase, existingOrg, orgName, jiraUrl, cloudId) {
-  // Handle reinstallation after pending deletion
-  if (existingOrg.status === 'pending_deletion') {
-    logger.info('[ForgeProxy] Reinstallation detected - reactivating organization', {
-      id: existingOrg.id,
-      orgName: existingOrg.org_name,
-      scheduledDeletionAt: existingOrg.scheduled_deletion_at
-    });
+  // Ensure org-level tracking_settings row exists (may be missing for orgs
+  // created before the desktop_admin_password migration or via desktop app).
+  try {
+    const { data: existingTS } = await supabase
+      .from('tracking_settings')
+      .select('id')
+      .eq('organization_id', existingOrg.id)
+      .is('project_key', null)
+      .limit(1);
 
-    // Reactivate the organization
-    const { data: reactivatedOrg, error: reactivateError } = await supabase
-      .from('organizations')
-      .update({
-        status: 'active',
-        scheduled_deletion_at: null,
-        uninstalled_at: null,
-        updated_at: getUTCISOString()
-      })
-      .eq('id', existingOrg.id)
-      .select()
-      .single();
-
-    if (reactivateError) {
-      logger.error('[ForgeProxy] Failed to reactivate organization', {
-        id: existingOrg.id,
-        error: reactivateError.message
-      });
-    } else {
-      // Cancel the deletion audit log
+    if (!existingTS || existingTS.length === 0) {
       await supabase
-        .from('deletion_audit_log')
-        .update({
-          status: 'cancelled',
-          updated_at: getUTCISOString()
-        })
-        .eq('organization_id', existingOrg.id)
-        .eq('status', 'pending');
-
-      logger.info('[ForgeProxy] Organization reactivated successfully', {
-        id: existingOrg.id
-      });
-
-      return reactivatedOrg;
+        .from('tracking_settings')
+        .insert({ organization_id: existingOrg.id });
+      logger.info('[ForgeProxy] Created default tracking_settings for org', { id: existingOrg.id });
     }
+  } catch (tsErr) {
+    // Non-critical — settings will be created when admin saves from UI
+    logger.warn('[ForgeProxy] Could not ensure tracking_settings:', tsErr.message);
   }
 
   if (!shouldUpdateOrgInfo(orgName, existingOrg, cloudId)) {
@@ -429,6 +405,12 @@ async function createOrganization(supabase, cloudId, orgName, jiraUrl) {
       screenshot_interval: 300,
       auto_worklog_enabled: true
     });
+
+  // Create default tracking_settings row so the desktop_admin_password
+  // column default is available immediately for the desktop app.
+  await supabase
+    .from('tracking_settings')
+    .insert({ organization_id: newOrg.id });
 
   logger.info('[ForgeProxy] Created new organization', { id: newOrg.id });
   return newOrg;

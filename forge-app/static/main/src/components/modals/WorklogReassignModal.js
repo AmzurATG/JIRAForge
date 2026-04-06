@@ -22,6 +22,8 @@ function WorklogReassignModal({
   if (!isOpen || !worklogToReassign) return null;
 
   const { fromIssueKey, timeSpentSeconds } = worklogToReassign;
+  const displayIssueKey = fromIssueKey || 'Unassigned';
+  const isUnassigned = !fromIssueKey;
   const totalMinutes = Math.floor(timeSpentSeconds / 60);
   // Jira requires minimum 60s — both split and remainder must be ≥ 1 min
   const maxSplitMinutes = totalMinutes;
@@ -81,11 +83,11 @@ function WorklogReassignModal({
         </div>
         <div className="modal-body">
           <p className="reassign-info">
-            <strong>{fromIssueKey}</strong> — Total: <strong>{formatTime(timeSpentSeconds)}</strong>
+            <strong>{displayIssueKey}</strong> — Total: <strong>{formatTime(timeSpentSeconds)}</strong>
           </p>
 
-          {/* Time split controls — only show if there's more than 1 minute */}
-          {totalMinutes > 1 && (
+          {/* Time split controls — only show if there's more than 1 minute and not unassigned */}
+          {totalMinutes > 1 && !isUnassigned && (
             <div className="split-time-section">
               <label className="split-label">Time to move:</label>
               <div className="split-slider-row">
@@ -113,7 +115,7 @@ function WorklogReassignModal({
                 {effectiveIsFullMove ? (
                   <>
                     ⚠ Moving all <strong>{formatTime(timeSpentSeconds)}</strong> to the selected issue.
-                    Worklog on {fromIssueKey} will be deleted.
+                    {fromIssueKey && <>Worklog on {fromIssueKey} will be deleted.</>}
                   </>
                 ) : (
                   <>
@@ -125,10 +127,10 @@ function WorklogReassignModal({
             </div>
           )}
 
-          {/* If only 1 minute total, show simple warning */}
-          {totalMinutes <= 1 && (
+          {/* If only 1 minute total or unassigned, show simple warning */}
+          {(totalMinutes <= 1 || isUnassigned) && (
             <p className="reassign-warning">
-              ⚠ This will move the entire worklog ({formatTime(timeSpentSeconds)}) to the selected issue.
+              ⚠ This will {isUnassigned ? 'assign' : 'move'} the entire worklog ({formatTime(timeSpentSeconds)}) to the selected issue.
             </p>
           )}
 

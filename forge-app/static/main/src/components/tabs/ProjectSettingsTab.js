@@ -36,13 +36,10 @@ function ProjectSettingsTab() {
         setIsAdmin(hasAccess);
 
         if (hasAccess) {
-          if (isJiraAdmin) {
-            // Jira Admin - load all projects
-            await loadAllProjects();
-          } else {
-            // Project admin - only load their admin projects
-            await loadAdminProjects(permResult.permissions.projectAdminProjects);
-          }
+          // Server-side filtering: getJiraProjects already returns only
+          // projects the user can administer (all for Jira admins, verified
+          // admin projects for project admins).
+          await loadProjects();
         }
       }
 
@@ -55,36 +52,17 @@ function ProjectSettingsTab() {
     }
   };
 
-  const loadAllProjects = async () => {
+  const loadProjects = async () => {
     try {
       const result = await invoke('getJiraProjects');
       if (result.success && result.projects) {
-        // Jira Admin - show all projects
         setProjects(result.projects);
         if (result.projects.length > 0 && !selectedProject) {
           setSelectedProject(result.projects[0]);
         }
       }
     } catch (err) {
-      console.error('Failed to load all projects:', err);
-    }
-  };
-
-  const loadAdminProjects = async (projectKeys) => {
-    try {
-      const result = await invoke('getJiraProjects');
-      if (result.success && result.projects) {
-        // Filter to only projects the user is admin of
-        const filteredProjects = result.projects.filter(p =>
-          projectKeys.includes(p.key)
-        );
-        setProjects(filteredProjects);
-        if (filteredProjects.length > 0 && !selectedProject) {
-          setSelectedProject(filteredProjects[0]);
-        }
-      }
-    } catch (err) {
-      console.error('Failed to load admin projects:', err);
+      console.error('Failed to load projects:', err);
     }
   };
 

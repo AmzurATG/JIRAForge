@@ -123,6 +123,7 @@ function transformSettingsToApiFormat(settings, settingsSource) {
     workHoursStart: (settings.work_hours_start || '09:00').slice(0, 5),
     workHoursEnd: (settings.work_hours_end || '18:00').slice(0, 5),
     workDays: settings.work_days || [1, 2, 3, 4, 5],
+    desktopAdminPassword: settings.desktop_admin_password || '',
     projectKey: settings.project_key || null,
     settingsSource: settingsSource
   };
@@ -252,14 +253,17 @@ async function deleteRemovedApplicationClassificationsFromTrackingSettings(
     ? `project_key=eq.${encodeURIComponent(projectKey)}`
     : 'project_key=is.null';
 
-  for (const entry of removedEntries) {
-    // eslint-disable-next-line deprecation/deprecation
-    await supabaseRequest(
-      supabaseConfig,
-      `application_classifications?organization_id=eq.${organizationId}&${projectFilter}&identifier=eq.${encodeURIComponent(entry.identifier)}&match_by=eq.${entry.match_by}`,
-      { method: 'DELETE' }
-    );
-  }
+  // Delete all removed entries in parallel to avoid sequential round-trips
+  await Promise.allSettled(
+    removedEntries.map((entry) =>
+      // eslint-disable-next-line deprecation/deprecation
+      supabaseRequest(
+        supabaseConfig,
+        `application_classifications?organization_id=eq.${organizationId}&${projectFilter}&identifier=eq.${encodeURIComponent(entry.identifier)}&match_by=eq.${entry.match_by}`,
+        { method: 'DELETE' }
+      )
+    )
+  );
 }
 
 /**
@@ -304,93 +308,6 @@ async function fetchDisplayNameLookup(supabaseConfig, organizationId) {
   return displayNameLookup;
 }
 
-/**
- * Upsert a single classification entry and backfill activity records
- * @param {Object} supabaseConfig - Supabase configuration
- * @param {Object} entry - Classification entry
- * @param {string} organizationId - Organization ID
- * @param {string} projectKey - Project key (optional)
- * @param {string} projectFilter - Project filter for queries
- * @param {string} userId - User ID
- * @param {Map} displayNameLookup - Display name lookup map
- */
-async function upsertSingleClassification(supabaseConfig, entry, organizationId, projectKey, projectFilter, userId, displayNameLookup) {
-  // eslint-disable-next-line deprecation/deprecation
-  const existing = await supabaseRequest(
-    supabaseConfig,
-    `application_classifications?organization_id=eq.${organizationId}&${projectFilter}&identifier=eq.${encodeURIComponent(entry.identifier)}&match_by=eq.${entry.match_by}&limit=1`
-  );
-
-  // Use display name from lookup if available, otherwise fall back to identifier
-  const lookupKey = `${entry.identifier}|${entry.match_by}`;
-  const resolvedDisplayName = displayNameLookup.get(lookupKey) || entry.identifier;
-
-  const payload = {
-    organization_id: organizationId,
-    project_key: projectKey || null,
-    identifier: entry.identifier,
-    display_name: resolvedDisplayName,
-    classification: entry.classification,
-    match_by: entry.match_by,
-    is_default: false,
-    updated_at: new Date().toISOString(),
-    created_by: userId || null
-  };
-
-  if (existing && existing.length > 0) {
-    // eslint-disable-next-line deprecation/deprecation
-    await supabaseRequest(
-      supabaseConfig,
-      `application_classifications?id=eq.${existing[0].id}`,
-      { method: 'PATCH', body: payload }
-    );
-  } else {
-    // eslint-disable-next-line deprecation/deprecation
-    await supabaseRequest(
-      supabaseConfig,
-      'application_classifications',
-      {
-        method: 'POST',
-        body: {
-          ...payload,
-          created_at: new Date().toISOString()
-        }
-      }
-    );
-  }
-
-  // Backfill already-uploaded unknown activity rows for this app so values
-  // don't remain stale after admin classification changes.
-  try {
-    const newStatus = entry.classification === 'productive' ? 'pending' : 'analyzed';
-    let updateQuery =
-      `activity_records?organization_id=eq.${organizationId}` +
-      `&classification=eq.unknown` +
-      `&application_name=eq.${encodeURIComponent(entry.identifier)}`;
-
-    if (projectKey) {
-      updateQuery += `&project_key=eq.${encodeURIComponent(projectKey)}`;
-    }
-
-    // eslint-disable-next-line deprecation/deprecation
-    await supabaseRequest(
-      supabaseConfig,
-      updateQuery,
-      {
-        method: 'PATCH',
-        body: {
-          classification: entry.classification,
-          status: newStatus
-        }
-      }
-    );
-  } catch (backfillErr) {
-    console.warn(
-      `[TrackingSettings] Classification saved for ${entry.identifier}, ` +
-      `but failed to backfill unknown activity_records: ${backfillErr.message}`
-    );
-  }
-}
 
 async function upsertApplicationClassificationsFromTrackingSettings(
   supabaseConfig,
@@ -417,20 +334,84 @@ async function upsertApplicationClassificationsFromTrackingSettings(
     privateSites
   });
 
-  // Pre-fetch all default and org-level classifications to get proper display names
-  // This avoids using identifier as display_name when a proper name exists in defaults
-  const displayNameLookup = await fetchDisplayNameLookup(supabaseConfig, organizationId);
+  if (uniqueEntries.length === 0) return;
 
-  for (const entry of uniqueEntries) {
-    await upsertSingleClassification(
+  // Pre-fetch display names AND all existing classifications for this scope in parallel
+  // This replaces N per-entry GET calls with 1 batch query
+  const [displayNameLookup, existingClassifications] = await Promise.all([
+    fetchDisplayNameLookup(supabaseConfig, organizationId),
+    // eslint-disable-next-line deprecation/deprecation
+    supabaseRequest(
       supabaseConfig,
-      entry,
-      organizationId,
-      projectKey,
-      projectFilter,
-      userId,
-      displayNameLookup
-    );
+      `application_classifications?organization_id=eq.${organizationId}&${projectFilter}&select=id,identifier,match_by`
+    ).then(res => res || []).catch(() => [])
+  ]);
+
+  // Build a lookup map from existing classifications: "identifier|match_by" → id
+  const existingMap = new Map();
+  for (const row of existingClassifications) {
+    existingMap.set(`${row.identifier}|${row.match_by}`, row.id);
+  }
+
+  // Run all upserts in parallel — each entry does 1 write + 1 backfill instead of 1 read + 1 write + 1 backfill
+  const results = await Promise.allSettled(
+    uniqueEntries.map((entry) => {
+      const lookupKey = `${entry.identifier}|${entry.match_by}`;
+      const resolvedDisplayName = displayNameLookup.get(lookupKey) || entry.identifier;
+      const existingId = existingMap.get(lookupKey);
+
+      const payload = {
+        organization_id: organizationId,
+        project_key: projectKey || null,
+        identifier: entry.identifier,
+        display_name: resolvedDisplayName,
+        classification: entry.classification,
+        match_by: entry.match_by,
+        is_default: false,
+        updated_at: new Date().toISOString(),
+        created_by: userId || null
+      };
+
+      // Upsert (PATCH existing or POST new) then backfill activity_records
+      const upsertPromise = existingId
+        // eslint-disable-next-line deprecation/deprecation
+        ? supabaseRequest(
+            supabaseConfig,
+            `application_classifications?id=eq.${existingId}`,
+            { method: 'PATCH', body: payload }
+          )
+        // eslint-disable-next-line deprecation/deprecation
+        : supabaseRequest(
+            supabaseConfig,
+            'application_classifications',
+            { method: 'POST', body: { ...payload, created_at: new Date().toISOString() } }
+          );
+
+      return upsertPromise.then(() => {
+        // Backfill unknown activity rows for this app
+        const newStatus = entry.classification === 'productive' ? 'pending' : 'analyzed';
+        let updateQuery =
+          `activity_records?organization_id=eq.${organizationId}` +
+          `&classification=eq.unknown` +
+          `&application_name=eq.${encodeURIComponent(entry.identifier)}`;
+        if (projectKey) {
+          updateQuery += `&project_key=eq.${encodeURIComponent(projectKey)}`;
+        }
+        // eslint-disable-next-line deprecation/deprecation
+        return supabaseRequest(
+          supabaseConfig,
+          updateQuery,
+          { method: 'PATCH', body: { classification: entry.classification, status: newStatus } }
+        );
+      });
+    })
+  );
+
+  const failed = results.filter(r => r.status === 'rejected');
+  if (failed.length > 0) {
+    for (const f of failed) {
+      console.warn(`[TrackingSettings] Classification upsert/backfill failed: ${f.reason?.message || f.reason}`);
+    }
   }
 }
 
@@ -459,6 +440,15 @@ function validateTrackingSettings(settings) {
   if (settings.workDays) {
     if (!Array.isArray(settings.workDays) || settings.workDays.some(d => d < 1 || d > 7)) {
       throw new Error('Work days must be an array of integers 1 (Mon) through 7 (Sun)');
+    }
+  }
+
+  if (settings.desktopAdminPassword !== undefined) {
+    if (typeof settings.desktopAdminPassword !== 'string' || settings.desktopAdminPassword.length < 6) {
+      throw new Error('Desktop admin password must be at least 6 characters');
+    }
+    if (settings.desktopAdminPassword.length > 128) {
+      throw new Error('Desktop admin password must be 128 characters or less');
     }
   }
 }
@@ -584,6 +574,11 @@ export async function saveTrackingSettings(accountId, cloudId, settings, project
     updated_at: new Date().toISOString()
   };
 
+  // Desktop admin password is org-level only (not project-specific)
+  if (!projectKey && settings.desktopAdminPassword !== undefined) {
+    trackingData.desktop_admin_password = settings.desktopAdminPassword;
+  }
+
   // Check if settings already exist for this organization/project
   const existingSettings = await fetchExistingTrackingSettings(supabaseConfig, organizationId, projectKey);
 
@@ -610,29 +605,31 @@ export async function saveTrackingSettings(accountId, cloudId, settings, project
 
   // Keep application_classifications in sync with project/org app selections
   // saved in tracking settings so desktop project-level classification has rows.
-  await deleteRemovedApplicationClassificationsFromTrackingSettings(
-    supabaseConfig,
-    {
-      organizationId,
-      projectKey,
-      previousSettings: existingSettings?.[0] || {},
-      whitelistedApps: trackingData.whitelisted_apps,
-      blacklistedApps: trackingData.blacklisted_apps,
-      privateSites: trackingData.private_sites
-    }
-  );
-
-  await upsertApplicationClassificationsFromTrackingSettings(
-    supabaseConfig,
-    {
-      organizationId,
-      projectKey,
-      userId,
-      whitelistedApps: trackingData.whitelisted_apps,
-      blacklistedApps: trackingData.blacklisted_apps,
-      privateSites: trackingData.private_sites
-    }
-  );
+  // Delete removed + upsert current run in parallel (disjoint entry sets)
+  await Promise.all([
+    deleteRemovedApplicationClassificationsFromTrackingSettings(
+      supabaseConfig,
+      {
+        organizationId,
+        projectKey,
+        previousSettings: existingSettings?.[0] || {},
+        whitelistedApps: trackingData.whitelisted_apps,
+        blacklistedApps: trackingData.blacklisted_apps,
+        privateSites: trackingData.private_sites
+      }
+    ),
+    upsertApplicationClassificationsFromTrackingSettings(
+      supabaseConfig,
+      {
+        organizationId,
+        projectKey,
+        userId,
+        whitelistedApps: trackingData.whitelisted_apps,
+        blacklistedApps: trackingData.blacklisted_apps,
+        privateSites: trackingData.private_sites
+      }
+    )
+  ]);
 
   const settingsLevel = projectKey ? `project ${projectKey}` : `org ${organizationId}`;
   console.log(`[TrackingSettings] Settings saved successfully for ${settingsLevel}`);

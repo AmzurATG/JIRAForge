@@ -2,6 +2,4 @@ export { default as DashboardTab } from './DashboardTab';
 export { default as TimeAnalyticsTab } from './TimeAnalyticsTab';
 export { default as TeamAnalyticsTab } from './TeamAnalyticsTab';
 export { default as OrgAnalyticsTab } from './OrgAnalyticsTab';
-export { default as ScreenshotsTab } from './ScreenshotsTab';
-export { default as BRDUploadTab } from './BRDUploadTab';
 export { default as ProjectSettingsTab } from './ProjectSettingsTab';

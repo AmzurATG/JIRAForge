@@ -763,29 +763,32 @@ function DayView({ loading, timeData, onTodayTotalReconciled, onOpenWorklogReass
                       {/* Expandable issue breakdown with worklog reassign button */}
                       {isOwnUser && expandedUsers[user.userId] && user.tasks.length > 0 && (
                         <div className="issue-breakdown">
-                          {user.tasks.map((task, taskIdx) => (
+                          {user.tasks.map((task, taskIdx) => {
+                            const issueKey = task.task_key || task.issue_key || task.active_task_key;
+                            return (
                             <div key={taskIdx} className="issue-row">
-                              <span className="issue-row-key">{task.issue_key || task.active_task_key || 'Unassigned'}</span>
+                              <span className="issue-row-key">{issueKey || 'Unassigned'}</span>
                               <span className="issue-row-summary">{task.issue_summary || ''}</span>
                               <span className="issue-row-time">{formatTime(task.total_seconds || 0)}</span>
-                              {onOpenWorklogReassignModal && (task.issue_key || task.active_task_key) && (
+                              {onOpenWorklogReassignModal && (
                                 <button
                                   className="reassign-worklog-btn"
                                   onClick={(e) => {
                                     e.stopPropagation();
                                     onOpenWorklogReassignModal({
-                                      fromIssueKey: task.issue_key || task.active_task_key,
+                                      fromIssueKey: issueKey || null,
                                       timeSpentSeconds: task.total_seconds || 0,
-                                      issueSummary: task.issue_summary || ''
+                                      issueSummary: task.issue_summary || (issueKey ? '' : 'Unassigned work')
                                     });
                                   }}
-                                  title="Reassign worklog to another issue"
+                                  title={issueKey ? 'Reassign worklog to another issue' : 'Assign to an issue'}
                                 >
-                                  ⇄
+                                  {issueKey ? '⇄' : '→'}
                                 </button>
                               )}
                             </div>
-                          ))}
+                            );
+                          })}
                         </div>
                       )}
                     </div>
