@@ -47,7 +47,7 @@ router.post('/status', forgeAuthMiddleware, async (req, res) => {
 
     res.json({ 
       success: true,
-      request 
+      data: { request }
     });
   } catch (error) {
     logger.error('[UserData] Status check error:', sanitizeLogData(error.message));
@@ -93,7 +93,7 @@ router.post('/create-request', forgeAuthMiddleware, async (req, res) => {
 
     res.status(201).json({
       success: true,
-      request
+      data: { request }
     });
   } catch (error) {
     logger.error('[UserData] Create request error:', sanitizeLogData(error.message));
@@ -168,10 +168,12 @@ router.post('/export', forgeAuthMiddleware, async (req, res) => {
 
     res.json({
       success: true,
-      requestId,
-      signedUrl,
-      expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
-      processingDurationMs: processingDuration
+      data: {
+        requestId,
+        signedUrl,
+        expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
+        processingDurationMs: processingDuration
+      }
     });
   } catch (error) {
     logger.error('[UserData] Export error:', sanitizeLogData(error.message));
@@ -246,9 +248,11 @@ router.post('/delete', forgeAuthMiddleware, async (req, res) => {
 
     res.json({
       success: true,
-      requestId,
-      summary: deletionSummary,
-      processingDurationMs: processingDuration
+      data: {
+        requestId,
+        summary: deletionSummary,
+        processingDurationMs: processingDuration
+      }
     });
   } catch (error) {
     logger.error('[UserData] Deletion error:', sanitizeLogData(error.message));
