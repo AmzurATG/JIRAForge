@@ -3,8 +3,11 @@ Verify SQLite Tables for Offline Activity Tracking
 Run this script to check if the tables are properly created
 """
 
-import sqlite3
 import os
+import sys
+
+sys.path.insert(0, os.path.dirname(__file__))
+from db_connection import DatabaseConnectionManager
 
 def get_app_data_dir():
     """Get application data directory"""
@@ -23,9 +26,9 @@ def verify_tables():
     
     print(f"✅ Database found at: {db_path}\n")
     
-    conn = sqlite3.connect(db_path)
+    conn = DatabaseConnectionManager.open_diagnostic_connection(db_path)
     cursor = conn.cursor()
-    
+
     # Check active_sessions table
     print("=" * 60)
     print("Checking 'active_sessions' table...")

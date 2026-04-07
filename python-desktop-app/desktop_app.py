@@ -330,10 +330,10 @@ SCREENSHOT_MONITORING_HARD_DISABLED = True
 # Embedded credentials (for production builds - no .env file needed)
 # SECURITY: All sensitive keys moved to AI Server - fetched at runtime after authentication
 EMBEDDED_CONFIG = {
-    'ATLASSIAN_CLIENT_ID': 'k2Xwzy8c1g3Wk6Xpbeev0x70CXEp9lJH',
+    'ATLASSIAN_CLIENT_ID': 'Q8HT4Jn205AuTiAarj088oWNDrOqwvM5',
     # REMOVED: ATLASSIAN_CLIENT_SECRET - now on AI Server only (security fix)
     # REMOVED: SUPABASE_URL, SUPABASE_ANON_KEY, SUPABASE_SERVICE_ROLE_KEY - fetched from AI Server
-    'AI_SERVER_URL': 'https://timetracker-forge.amzur.com',  # AI Server for secure token exchange & config
+    'AI_SERVER_URL': 'https://forgesync.amzur.com',  # AI Server for secure token exchange & config
     'CAPTURE_INTERVAL': '300',
     'WEB_PORT': '51777',
 }
@@ -1419,7 +1419,7 @@ class AtlassianAuthManager:
         self.redirect_uri = f'http://localhost:{web_port}/auth/callback'
         self.authorization_url = 'https://auth.atlassian.com/authorize'
         # Token exchange now goes through AI Server
-        self.ai_server_url = get_env_var('AI_SERVER_URL', 'https://timetracker-forge.amzur.com')
+        self.ai_server_url = get_env_var('AI_SERVER_URL', 'https://forgesync.amzur.com')
         self.store_path = store_path or os.path.join(get_app_data_dir(), 'time_tracker_auth.json')
         self.metadata_path = os.path.join(get_app_data_dir(), 'auth_metadata.json')  # For non-sensitive data
 
@@ -1934,7 +1934,7 @@ class AtlassianAuthManager:
             print("[ERROR] No valid Atlassian token - cannot fetch OCR config")
             return False
 
-        ai_server_url = get_env_var('AI_SERVER_URL', 'https://timetracker-forge.amzur.com')
+        ai_server_url = get_env_var('AI_SERVER_URL', 'https://forgesync.amzur.com')
         
         try:
             print("[INFO] Fetching OCR config from AI Server...")
@@ -2091,137 +2091,18 @@ def send_login_diagnostics(auth_manager, status: str, step: str, error: str = No
 class OfflineManager:
     """Manages offline data storage and synchronization with Supabase"""
     
-    def __init__(self, db_path=None):
-        """Initialize offline manager with SQLite database"""
-        self.db_path = db_path or os.path.join(get_app_data_dir(), 'time_tracker_offline.db')
+    def __init__(self, db_manager):
+        """Initialize offline manager with shared database connection manager"""
+        self.db_manager = db_manager
+        self.db_path = db_manager.db_path  # backward compat
         self.is_online = True
         self._last_connectivity_check = 0
         self._connectivity_check_interval = 30  # Check every 30 seconds
         self._sync_lock = threading.Lock()
         self._syncing = False
-        
-        # Initialize database
-        self._init_database()
+
+        # Schema initialization handled by db_manager
         print(f"[OK] Offline manager initialized (DB: {self.db_path})")
-    
-    def _init_database(self):
-        """Initialize SQLite database for offline storage"""
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        
-        # Create screenshots table for offline storage
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS offline_screenshots (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id TEXT NOT NULL,
-                organization_id TEXT,
-                timestamp TEXT NOT NULL,
-                storage_path TEXT,
-                window_title TEXT,
-                application_name TEXT,
-                file_size_bytes INTEGER,
-                start_time TEXT,
-                end_time TEXT,
-                duration_seconds INTEGER,
-                project_key TEXT,
-                user_assigned_issues TEXT,
-                metadata TEXT,
-                image_data BLOB,
-                thumbnail_data BLOB,
-                synced INTEGER DEFAULT 0,
-                sync_attempts INTEGER DEFAULT 0,
-                last_sync_error TEXT,
-                created_at TEXT DEFAULT CURRENT_TIMESTAMP
-            )
-        ''')
-
-        # Add project_key column if it doesn't exist (for existing databases)
-        try:
-            cursor.execute('ALTER TABLE offline_screenshots ADD COLUMN project_key TEXT')
-        except sqlite3.OperationalError:
-            pass  # Column already exists
-        
-        # Create index for faster queries
-        cursor.execute('''
-            CREATE INDEX IF NOT EXISTS idx_offline_screenshots_synced 
-            ON offline_screenshots(synced)
-        ''')
-        
-        cursor.execute('''
-            CREATE INDEX IF NOT EXISTS idx_offline_screenshots_user 
-            ON offline_screenshots(user_id)
-        ''')
-
-        # Create project_settings_cache table for offline caching
-        # This caches admin-configured tracked statuses per project
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS project_settings_cache (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                organization_id TEXT NOT NULL,
-                project_key TEXT NOT NULL,
-                project_name TEXT,
-                tracked_statuses TEXT,
-                cached_at TEXT DEFAULT CURRENT_TIMESTAMP,
-                UNIQUE(organization_id, project_key)
-            )
-        ''')
-
-        cursor.execute('''
-            CREATE INDEX IF NOT EXISTS idx_project_settings_org 
-            ON project_settings_cache(organization_id)
-        ''')
-
-        # ====================================================================
-        # App classifications cache (synced from Supabase)
-        # ====================================================================
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS app_classifications_cache (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                organization_id TEXT,
-                project_key TEXT,
-                identifier TEXT NOT NULL,
-                display_name TEXT,
-                classification TEXT NOT NULL,
-                match_by TEXT NOT NULL,
-                cached_at TEXT DEFAULT CURRENT_TIMESTAMP,
-                UNIQUE(organization_id, project_key, identifier, match_by)
-            )
-        ''')
-
-        cursor.execute('''
-            CREATE INDEX IF NOT EXISTS idx_app_class_cache_identifier
-            ON app_classifications_cache(identifier)
-        ''')
-
-        cursor.execute('''
-            CREATE INDEX IF NOT EXISTS idx_app_class_cache_match_by
-            ON app_classifications_cache(match_by)
-        ''')
-
-        # ====================================================================
-        # Active sessions (real-time activity tracking between batches)
-        # ====================================================================
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS active_sessions (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                window_title TEXT,
-                application_name TEXT,
-                classification TEXT,
-                ocr_text TEXT,
-                ocr_method TEXT,
-                ocr_confidence REAL,
-                ocr_error_message TEXT,
-                total_time_seconds REAL DEFAULT 0,
-                visit_count INTEGER DEFAULT 1,
-                first_seen TEXT,
-                last_seen TEXT,
-                timer_started_at TEXT,
-                UNIQUE(window_title, application_name)
-            )
-        ''')
-        
-        conn.commit()
-        conn.close()
     
     def check_connectivity(self, force=False):
         """Check if we have internet connectivity"""
@@ -2278,13 +2159,13 @@ class OfflineManager:
             int: Local record ID
         """
         try:
-            conn = sqlite3.connect(self.db_path)
+            conn = self.db_manager.get_connection()
             cursor = conn.cursor()
-            
+
             # Convert complex objects to JSON strings
             user_issues = json.dumps(screenshot_data.get('user_assigned_issues', []))
             metadata = json.dumps(screenshot_data.get('metadata', {}))
-            
+
             cursor.execute('''
                 INSERT INTO offline_screenshots (
                     user_id, organization_id, timestamp, storage_path,
@@ -2309,15 +2190,15 @@ class OfflineManager:
                 image_bytes,
                 thumbnail_bytes
             ))
-            
+
             local_id = cursor.lastrowid
             conn.commit()
-            conn.close()
-            
+
             print(f"[OK] Screenshot saved offline (local ID: {local_id})")
             return local_id
-            
+
         except Exception as e:
+            conn.rollback()
             print(f"[ERROR] Failed to save screenshot offline: {e}")
             traceback.print_exc()
             return None
@@ -2332,29 +2213,27 @@ class OfflineManager:
             List of dictionaries with screenshot data
         """
         try:
-            conn = sqlite3.connect(self.db_path)
-            conn.row_factory = sqlite3.Row
+            conn = self.db_manager.get_connection()
             cursor = conn.cursor()
-            
+
             # Only get records with valid UUID user_id (not anonymous)
             # UUID format: 8-4-4-4-12 hex characters
             cursor.execute('''
-                SELECT * FROM offline_screenshots 
-                WHERE synced = 0 
+                SELECT * FROM offline_screenshots
+                WHERE synced = 0
                 AND sync_attempts < 5
-                AND user_id IS NOT NULL 
+                AND user_id IS NOT NULL
                 AND user_id != ''
                 AND user_id NOT LIKE 'anonymous_%'
                 AND length(user_id) = 36
                 ORDER BY created_at ASC
                 LIMIT ?
             ''', (limit,))
-            
+
+            columns = [desc[0] for desc in cursor.description]
             rows = cursor.fetchall()
-            conn.close()
-            
-            return [dict(row) for row in rows]
-            
+            return [dict(zip(columns, row)) for row in rows]
+
         except Exception as e:
             print(f"[ERROR] Failed to get pending screenshots: {e}")
             return []
@@ -2366,19 +2245,19 @@ class OfflineManager:
             local_id: Local database ID
         """
         try:
-            conn = sqlite3.connect(self.db_path)
+            conn = self.db_manager.get_connection()
             cursor = conn.cursor()
-            
+
             cursor.execute('''
-                UPDATE offline_screenshots 
+                UPDATE offline_screenshots
                 SET synced = 1, last_sync_error = NULL
                 WHERE id = ?
             ''', (local_id,))
-            
+
             conn.commit()
-            conn.close()
-            
+
         except Exception as e:
+            conn.rollback()
             print(f"[ERROR] Failed to mark screenshot as synced: {e}")
     
     def mark_sync_failed(self, local_id, error_message):
@@ -2389,20 +2268,20 @@ class OfflineManager:
             error_message: Error message from sync attempt
         """
         try:
-            conn = sqlite3.connect(self.db_path)
+            conn = self.db_manager.get_connection()
             cursor = conn.cursor()
-            
+
             cursor.execute('''
-                UPDATE offline_screenshots 
-                SET sync_attempts = sync_attempts + 1, 
+                UPDATE offline_screenshots
+                SET sync_attempts = sync_attempts + 1,
                     last_sync_error = ?
                 WHERE id = ?
             ''', (error_message, local_id))
-            
+
             conn.commit()
-            conn.close()
-            
+
         except Exception as e:
+            conn.rollback()
             print(f"[ERROR] Failed to mark sync as failed: {e}")
     
     def get_pending_count(self, include_anonymous=True):
@@ -2412,24 +2291,23 @@ class OfflineManager:
             include_anonymous: If True, includes records without user_id
         """
         try:
-            conn = sqlite3.connect(self.db_path)
+            conn = self.db_manager.get_connection()
             cursor = conn.cursor()
-            
+
             if include_anonymous:
                 cursor.execute('''
-                    SELECT COUNT(*) FROM offline_screenshots 
+                    SELECT COUNT(*) FROM offline_screenshots
                     WHERE synced = 0 AND sync_attempts < 5
                 ''')
             else:
                 cursor.execute('''
-                    SELECT COUNT(*) FROM offline_screenshots 
+                    SELECT COUNT(*) FROM offline_screenshots
                     WHERE synced = 0 AND sync_attempts < 5 AND user_id IS NOT NULL AND user_id != ''
                 ''')
-            
+
             count = cursor.fetchone()[0]
-            conn.close()
             return count
-            
+
         except Exception as e:
             print(f"[ERROR] Failed to get pending count: {e}")
             return 0
@@ -2437,18 +2315,17 @@ class OfflineManager:
     def get_anonymous_count(self):
         """Get count of screenshots captured without user authentication"""
         try:
-            conn = sqlite3.connect(self.db_path)
+            conn = self.db_manager.get_connection()
             cursor = conn.cursor()
-            
+
             cursor.execute('''
-                SELECT COUNT(*) FROM offline_screenshots 
+                SELECT COUNT(*) FROM offline_screenshots
                 WHERE synced = 0 AND (user_id IS NULL OR user_id = '' OR user_id LIKE 'anonymous_%')
             ''')
-            
+
             count = cursor.fetchone()[0]
-            conn.close()
             return count
-            
+
         except Exception as e:
             print(f"[ERROR] Failed to get anonymous count: {e}")
             return 0
@@ -2464,33 +2341,33 @@ class OfflineManager:
             int: Number of records updated
         """
         try:
-            conn = sqlite3.connect(self.db_path)
+            conn = self.db_manager.get_connection()
             cursor = conn.cursor()
-            
+
             # Update all anonymous records with the real user_id
             if organization_id:
                 cursor.execute('''
-                    UPDATE offline_screenshots 
+                    UPDATE offline_screenshots
                     SET user_id = ?, organization_id = ?
                     WHERE synced = 0 AND (user_id IS NULL OR user_id = '' OR user_id LIKE 'anonymous_%')
                 ''', (user_id, organization_id))
             else:
                 cursor.execute('''
-                    UPDATE offline_screenshots 
+                    UPDATE offline_screenshots
                     SET user_id = ?
                     WHERE synced = 0 AND (user_id IS NULL OR user_id = '' OR user_id LIKE 'anonymous_%')
                 ''', (user_id,))
-            
+
             updated = cursor.rowcount
             conn.commit()
-            conn.close()
-            
+
             if updated > 0:
                 secure_log(f"[OK] Associated {updated} anonymous screenshots with user", user_id=user_id)
-            
+
             return updated
-            
+
         except Exception as e:
+            conn.rollback()
             print(f"[ERROR] Failed to associate anonymous records: {e}")
             return 0
 
@@ -2501,30 +2378,30 @@ class OfflineManager:
             days_old: Number of days after which to delete synced records (0 = immediate)
         """
         try:
-            conn = sqlite3.connect(self.db_path)
+            conn = self.db_manager.get_connection()
             cursor = conn.cursor()
-            
+
             if days_old == 0:
                 # Delete immediately after sync
                 cursor.execute('''
-                    DELETE FROM offline_screenshots 
+                    DELETE FROM offline_screenshots
                     WHERE synced = 1
                 ''')
             else:
                 cursor.execute('''
-                    DELETE FROM offline_screenshots 
-                    WHERE synced = 1 
+                    DELETE FROM offline_screenshots
+                    WHERE synced = 1
                     AND datetime(created_at) < datetime('now', ? || ' days')
                 ''', (f'-{days_old}',))
-            
+
             deleted = cursor.rowcount
             conn.commit()
-            conn.close()
-            
+
             if deleted > 0:
                 print(f"[OK] Deleted {deleted} synced screenshots from local storage")
-            
+
         except Exception as e:
+            conn.rollback()
             print(f"[ERROR] Failed to cleanup synced screenshots: {e}")
     
     def sync_all(self, supabase_client, storage_client):
@@ -2725,25 +2602,25 @@ class OfflineManager:
             project_settings: Dict of {project_key: {tracked_statuses: [...], project_name: '...'}}
         """
         try:
-            conn = sqlite3.connect(self.db_path)
+            conn = self.db_manager.get_connection()
             cursor = conn.cursor()
-            
+
             for project_key, settings in project_settings.items():
                 tracked_statuses = json.dumps(settings.get('tracked_statuses', ['In Progress']))
                 project_name = settings.get('project_name', project_key)
-                
+
                 # Upsert: Insert or replace
                 cursor.execute('''
-                    INSERT OR REPLACE INTO project_settings_cache 
+                    INSERT OR REPLACE INTO project_settings_cache
                     (organization_id, project_key, project_name, tracked_statuses, cached_at)
                     VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
                 ''', (organization_id, project_key, project_name, tracked_statuses))
-            
+
             conn.commit()
-            conn.close()
             print(f"[OK] Cached project settings for {len(project_settings)} projects")
-            
+
         except Exception as e:
+            conn.rollback()
             print(f"[ERROR] Failed to cache project settings: {e}")
 
     def load_project_settings_cache(self, organization_id):
@@ -2756,32 +2633,29 @@ class OfflineManager:
             dict: {project_key: {tracked_statuses: [...], project_name: '...'}} or empty dict
         """
         try:
-            conn = sqlite3.connect(self.db_path)
-            conn.row_factory = sqlite3.Row
+            conn = self.db_manager.get_connection()
             cursor = conn.cursor()
-            
+
             cursor.execute('''
                 SELECT project_key, project_name, tracked_statuses
                 FROM project_settings_cache
                 WHERE organization_id = ?
             ''', (organization_id,))
-            
+
             rows = cursor.fetchall()
-            conn.close()
-            
+
             if rows:
                 result = {}
                 for row in rows:
-                    project_key = row['project_key']
-                    result[project_key] = {
-                        'tracked_statuses': json.loads(row['tracked_statuses']) if row['tracked_statuses'] else ['In Progress'],
-                        'project_name': row['project_name'] or project_key
+                    result[row[0]] = {
+                        'tracked_statuses': json.loads(row[2]) if row[2] else ['In Progress'],
+                        'project_name': row[1] or row[0]
                     }
                 print(f"[OK] Loaded {len(result)} project settings from local cache")
                 return result
-            
+
             return {}
-            
+
         except Exception as e:
             print(f"[ERROR] Failed to load project settings cache: {e}")
             return {}
@@ -2793,22 +2667,22 @@ class OfflineManager:
             organization_id: If provided, only clear for this org. Otherwise clear all.
         """
         try:
-            conn = sqlite3.connect(self.db_path)
+            conn = self.db_manager.get_connection()
             cursor = conn.cursor()
-            
+
             if organization_id:
                 cursor.execute('DELETE FROM project_settings_cache WHERE organization_id = ?', (organization_id,))
             else:
                 cursor.execute('DELETE FROM project_settings_cache')
-            
+
             deleted = cursor.rowcount
             conn.commit()
-            conn.close()
-            
+
             if deleted > 0:
                 print(f"[OK] Cleared {deleted} cached project settings")
-                
+
         except Exception as e:
+            conn.rollback()
             print(f"[ERROR] Failed to clear project settings cache: {e}")
 
 # ============================================================================
@@ -3523,8 +3397,8 @@ class AppClassificationManager:
     In-memory dicts provide O(1) lookup during tracking.
     """
 
-    def __init__(self, db_path):
-        self.db_path = db_path
+    def __init__(self, db_manager):
+        self.db_manager = db_manager
         # In-memory lookup dicts (populated from SQLite)
         self.process_classifications = {}  # exact identifier (lower) -> classification
         self.normalized_process_classifications = {}  # canonical identifier -> classification
@@ -3544,29 +3418,35 @@ class AppClassificationManager:
         return PROCESS_IDENTIFIER_ALIASES.get(normalized, normalized)
 
     def reload_from_cache(self):
-        """Load classifications from SQLite into memory for fast lookup."""
-        self.process_classifications = {}
-        self.normalized_process_classifications = {}
-        self.url_classifications = {}
-        self.url_wildcard_patterns = []
+        """Load classifications from SQLite into memory for fast lookup.
+        Uses copy-on-write pattern: builds new dicts in locals, then atomically
+        swaps references (single assignment is GIL-atomic)."""
+        new_process = {}
+        new_normalized = {}
+        new_url = {}
+        new_wildcard = []
         try:
-            conn = sqlite3.connect(self.db_path)
+            conn = self.db_manager.get_connection()
             cursor = conn.cursor()
             cursor.execute('SELECT identifier, classification, match_by FROM app_classifications_cache')
             for identifier, classification, match_by in cursor.fetchall():
                 key = (identifier or '').lower().strip()
                 if match_by == 'process':
-                    self.process_classifications[key] = classification
+                    new_process[key] = classification
                     canonical_key = self._canonical_process_key(identifier)
                     if canonical_key:
-                        self.normalized_process_classifications[canonical_key] = classification
+                        new_normalized[canonical_key] = classification
                 elif match_by == 'url':
                     if '*' in identifier:
-                        self.url_wildcard_patterns.append((key, classification))
+                        new_wildcard.append((key, classification))
                     else:
-                        self.url_classifications[key] = classification
-            conn.close()
-            total = len(self.process_classifications) + len(self.url_classifications) + len(self.url_wildcard_patterns)
+                        new_url[key] = classification
+            # Atomic swap — single reference assignment is GIL-atomic
+            self.process_classifications = new_process
+            self.normalized_process_classifications = new_normalized
+            self.url_classifications = new_url
+            self.url_wildcard_patterns = new_wildcard
+            total = len(new_process) + len(new_url) + len(new_wildcard)
             if total > 0:
                 print(f"[OK] Loaded {total} app classifications into memory")
         except Exception as e:
@@ -3685,25 +3565,22 @@ class AppClassificationManager:
                         print(f"[WARN] Project-level classification fetch failed for {pk}: {project_err}")
 
             # Write merged results to SQLite cache
-            conn = sqlite3.connect(self.db_path)
-            try:
-                cursor = conn.cursor()
-                cursor.execute('DELETE FROM app_classifications_cache')
-                for (identifier_lower, match_by), row in merged.items():
-                    cursor.execute('''
-                        INSERT OR REPLACE INTO app_classifications_cache
-                        (organization_id, identifier, display_name, classification, match_by, cached_at)
-                        VALUES (?, ?, ?, ?, ?, datetime('now'))
-                    ''', (
-                        organization_id,
-                        row['identifier'],
-                        row.get('display_name', ''),
-                        row['classification'],
-                        row['match_by']
-                    ))
-                conn.commit()
-            finally:
-                conn.close()
+            conn = self.db_manager.get_connection()
+            cursor = conn.cursor()
+            cursor.execute('DELETE FROM app_classifications_cache')
+            for (identifier_lower, match_by), row in merged.items():
+                cursor.execute('''
+                    INSERT OR REPLACE INTO app_classifications_cache
+                    (organization_id, identifier, display_name, classification, match_by, cached_at)
+                    VALUES (?, ?, ?, ?, ?, datetime('now'))
+                ''', (
+                    organization_id,
+                    row['identifier'],
+                    row.get('display_name', ''),
+                    row['classification'],
+                    row['match_by']
+                ))
+            conn.commit()
 
             if project_keys_to_load:
                 print(
@@ -3718,6 +3595,10 @@ class AppClassificationManager:
             self.reload_from_cache()
 
         except Exception as e:
+            try:
+                self.db_manager.get_connection().rollback()
+            except Exception:
+                pass
             print(f"[WARN] Failed to sync classifications from Supabase: {e}")
 
 
@@ -3728,8 +3609,8 @@ class ActiveSessionManager:
     Thread-safe with a lock.
     """
 
-    def __init__(self, db_path):
-        self.db_path = db_path
+    def __init__(self, db_manager):
+        self.db_manager = db_manager
         self._lock = threading.Lock()
         self._current_key = None  # (window_title, application_name)
         self._pending_ocr_keys = set()  # Sessions that need OCR backfill
@@ -3765,7 +3646,7 @@ class ActiveSessionManager:
         if not ocr_result or ocr_result.get('throttled'):
             return
         with self._lock:
-            conn = sqlite3.connect(self.db_path)
+            conn = self.db_manager.get_connection()
             cursor = conn.cursor()
             try:
                 cursor.execute(
@@ -3784,9 +3665,8 @@ class ActiveSessionManager:
                     )
                     conn.commit()
             except Exception as e:
+                conn.rollback()
                 print(f"[WARN] OCR backfill failed: {e}")
-            finally:
-                conn.close()
 
     def on_window_switch(self, title, app_name, classification, ocr_result=None):
         """Handle a window switch event.
@@ -3825,7 +3705,7 @@ class ActiveSessionManager:
 
             has_ocr_data = ocr_text or ocr_method
 
-            conn = sqlite3.connect(self.db_path)
+            conn = self.db_manager.get_connection()
             cursor = conn.cursor()
 
             try:
@@ -3870,8 +3750,6 @@ class ActiveSessionManager:
             except Exception as e:
                 print(f"[ERROR] ActiveSessionManager.on_window_switch: {e}")
                 conn.rollback()
-            finally:
-                conn.close()
 
     def _stop_timer_internal(self, cursor, now):
         """Stop the timer on the currently active session (internal, must hold lock)."""
@@ -3901,34 +3779,37 @@ class ActiveSessionManager:
     def stop_current_timer(self):
         """Stop timer on the current session (public, acquires lock)."""
         with self._lock:
-            now = datetime.now(timezone.utc).isoformat()
-            conn = sqlite3.connect(self.db_path)
-            cursor = conn.cursor()
+            conn = self.db_manager.get_connection()
             try:
+                now = datetime.now(timezone.utc).isoformat()
+                cursor = conn.cursor()
                 self._stop_timer_internal(cursor, now)
                 conn.commit()
-            finally:
-                conn.close()
+            except Exception as e:
+                conn.rollback()
+                print(f"[ERROR] stop_current_timer failed: {e}")
 
     def get_all_sessions(self):
         """Get all sessions for batch upload."""
         with self._lock:
-            conn = sqlite3.connect(self.db_path)
+            conn = self.db_manager.get_connection()
             cursor = conn.cursor()
             cursor.execute('SELECT * FROM active_sessions')
             columns = [desc[0] for desc in cursor.description]
             rows = cursor.fetchall()
-            conn.close()
             return [dict(zip(columns, row)) for row in rows]
 
     def clear_all(self):
         """Clear all sessions after successful batch upload."""
         with self._lock:
-            conn = sqlite3.connect(self.db_path)
+            conn = self.db_manager.get_connection()
             cursor = conn.cursor()
-            cursor.execute('DELETE FROM active_sessions')
-            conn.commit()
-            conn.close()
+            try:
+                cursor.execute('DELETE FROM active_sessions')
+                conn.commit()
+            except Exception as e:
+                conn.rollback()
+                print(f"[ERROR] clear_all failed: {e}")
             self._current_key = None
 
     def harvest_and_clear(self, min_duration_seconds=0):
@@ -3942,7 +3823,7 @@ class ActiveSessionManager:
         inserted between separate get_all_sessions() and clear_all() calls.
         """
         with self._lock:
-            conn = sqlite3.connect(self.db_path)
+            conn = self.db_manager.get_connection()
             cursor = conn.cursor()
             try:
                 # Stop any running timer first so accumulated time is accurate
@@ -3961,8 +3842,6 @@ class ActiveSessionManager:
                 print(f"[ERROR] harvest_and_clear failed: {e}")
                 conn.rollback()
                 return []
-            finally:
-                conn.close()
 
             self._current_key = None
             all_sessions = [dict(zip(columns, row)) for row in rows]
@@ -3985,7 +3864,7 @@ class ActiveSessionManager:
         if not sessions:
             return
         with self._lock:
-            conn = sqlite3.connect(self.db_path)
+            conn = self.db_manager.get_connection()
             cursor = conn.cursor()
             try:
                 for s in sessions:
@@ -4007,13 +3886,11 @@ class ActiveSessionManager:
             except Exception as e:
                 print(f"[ERROR] Failed to restore sessions: {e}")
                 conn.rollback()
-            finally:
-                conn.close()
 
     def update_classification(self, app_name, old_classification, new_classification):
         """Thread-safe update of classification for an app (called from async classify thread)."""
         with self._lock:
-            conn = sqlite3.connect(self.db_path)
+            conn = self.db_manager.get_connection()
             cursor = conn.cursor()
             try:
                 cursor.execute(
@@ -4022,9 +3899,8 @@ class ActiveSessionManager:
                 )
                 conn.commit()
             except Exception as e:
+                conn.rollback()
                 print(f"[WARN] Failed to update classification: {e}")
-            finally:
-                conn.close()
 
 
 class LocalOCRProcessor:
@@ -4515,8 +4391,10 @@ class TimeTracker:
         self.organization_name = None  # Organization name (Jira site name)
         self.jira_instance_url = None  # Jira instance URL
         
-        # Offline mode support
-        self.offline_manager = OfflineManager()
+        # Offline mode support (encrypted SQLite via DatabaseConnectionManager)
+        from db_connection import DatabaseConnectionManager
+        self.db_manager = DatabaseConnectionManager()
+        self.offline_manager = OfflineManager(self.db_manager)
         self._sync_thread = None
         self._last_sync_time = 0
         self._sync_interval = 60  # Try to sync every 60 seconds when online
@@ -4527,8 +4405,8 @@ class TimeTracker:
         # ====================================================================
         # NEW: Event-based activity tracking components
         # ====================================================================
-        self.classification_manager = AppClassificationManager(self.offline_manager.db_path)
-        self.session_manager = ActiveSessionManager(self.offline_manager.db_path)
+        self.classification_manager = AppClassificationManager(self.db_manager)
+        self.session_manager = ActiveSessionManager(self.db_manager)
         
         # OCR engine setup is deferred until after authentication so it uses
         # the correct engine config fetched from the AI server.
@@ -5380,29 +5258,6 @@ class TimeTracker:
 
                 except Exception as e:
                     return jsonify({'success': False, 'error': str(e)}), 500
-
-        @self.app.route('/api/security-status', methods=['GET'])
-        def security_status_api():
-            """Get current security/token storage status"""
-            try:
-                status = self.auth_manager.secure_storage.get_storage_status()
-                return jsonify({
-                    'success': True,
-                    'status': status
-                })
-            except Exception as e:
-                return jsonify({
-                    'success': False,
-                    'error': str(e),
-                    'status': {
-                        'method': 'Error',
-                        'security_level': 'Unknown',
-                        'icon': '⚠️',
-                        'description': 'Could not determine security status',
-                        'encryption': 'N/A',
-                        'recommendation': None
-                    }
-                }), 200  # Still return 200 so UI can display error state
 
         # ============================================================================
         # CONSENT ROUTES (GDPR/Privacy Compliance)
@@ -9383,14 +9238,7 @@ class TimeTracker:
                 new_icon = self.create_tray_icon(state, show_update_badge=show_badge)
                 self.tray.icon = new_icon
                 
-                # Update tooltip with security status
-                try:
-                    storage_status = self.auth_manager.secure_storage.get_storage_status()
-                    icon = storage_status.get('icon', '⚪')
-                    method = storage_status.get('method', 'Unknown').replace('Windows Credential Manager', 'WCM')
-                    self.tray.title = f"TimeTracker - Security: {icon} {method}"
-                except:
-                    self.tray.title = "TimeTracker"
+                self.tray.title = "TimeTracker"
                     
             except Exception as e:
                 print(f"[WARN] Failed to update tray icon: {e}")
@@ -9423,55 +9271,6 @@ class TimeTracker:
             self._open_feedback_form()
 
         menu_items.append(item('Send Feedback', send_feedback_action))
-
-        # Add Security Status menu item
-        def get_security_status_label():
-            """Get security status label for tray menu"""
-            try:
-                storage_status = self.auth_manager.secure_storage.get_storage_status()
-                icon = storage_status.get('icon', '⚪')
-                method = storage_status.get('method', 'Unknown')
-                return f"{icon} Security: {method}"
-            except:
-                return "⚪ Security: Unknown"
-        
-        def show_security_info_action():
-            """Show detailed security status information"""
-            try:
-                storage_status = self.auth_manager.secure_storage.get_storage_status()
-                
-                icon = storage_status.get('icon', '⚪')
-                method = storage_status.get('method', 'Unknown')
-                security_level = storage_status.get('security_level', 'Unknown')
-                description = storage_status.get('description', 'No information available')
-                encryption = storage_status.get('encryption', 'N/A')
-                recommendation = storage_status.get('recommendation', '')
-                
-                message = f"{icon} Security Status\\n\\n"
-                message += f"Storage Method: {method}\\n"
-                message += f"Security Level: {security_level}\\n\\n"
-                message += f"{description}\\n\\n"
-                message += f"Encryption: {encryption}"
-                
-                if recommendation:
-                    message += f"\\n\\n💡 Recommendation:\\n{recommendation}"
-                
-                # Show Windows notification
-                if WINOTIFY_AVAILABLE:
-                    from winotify import Notification
-                    notification = Notification(
-                        app_id="TimeTracker Security",
-                        title="Security Status",
-                        msg=message,
-                        duration="long"
-                    )
-                    notification.show()
-                else:
-                    print(message)
-            except Exception as e:
-                print(f"[ERROR] Could not retrieve security status: {e}")
-        
-        menu_items.append(item(lambda text: get_security_status_label(), show_security_info_action))
 
         # Add separator and update-related menu items
         menu_items.append(pystray.Menu.SEPARATOR)
@@ -9570,7 +9369,7 @@ class TimeTracker:
             print(f"[ERROR] Failed to open feedback form: {e}")
 
     def _shutdown_cleanup(self):
-        """Gracefully shut down OCR worker and flush remaining sessions."""
+        """Gracefully shut down OCR worker, flush sessions, and close DB connections."""
         if getattr(self, '_shutdown_done', False):
             return
         self._shutdown_done = True
@@ -9585,6 +9384,12 @@ class TimeTracker:
             self.upload_activity_batch()
         except Exception as e:
             print(f"[SHUTDOWN] Final batch upload error: {e}")
+        try:
+            if hasattr(self, 'db_manager'):
+                self.db_manager.close_all()
+                print("[SHUTDOWN] Database connections closed")
+        except Exception as e:
+            print(f"[SHUTDOWN] DB connection cleanup error: {e}")
 
     def _exit_app(self):
         """Exit the application from tray menu"""
@@ -9616,14 +9421,7 @@ class TimeTracker:
 
             self.tray = pystray.Icon("Time Tracker", icon_image, menu=menu)
             
-            # Set initial tooltip with security status
-            try:
-                storage_status = self.auth_manager.secure_storage.get_storage_status()
-                icon = storage_status.get('icon', '⚪')
-                method = storage_status.get('method', 'Unknown').replace('Windows Credential Manager', 'WCM')
-                self.tray.title = f"TimeTracker - Security: {icon} {method}"
-            except:
-                self.tray.title = "TimeTracker"
+            self.tray.title = "TimeTracker"
 
             # Start a thread to periodically update the icon
             def update_icon_periodically():
@@ -10940,41 +10738,6 @@ class TimeTracker:
                 </div>
                 -->
 
-                <!-- Security Status Section -->
-                <div class="setting-section" id="security-status-section">
-                    <h3>🔒 Security Status</h3>
-                    <div class="setting-row" style="flex-direction: column; align-items: flex-start;">
-                        <div class="setting-info" style="padding-right: 0; width: 100%;">
-                            <div id="security-status-container" style="padding: 16px; background: #f9fafb; border-radius: 8px; border: 1px solid #e5e7eb;">
-                                <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 12px;">
-                                    <span id="security-icon" style="font-size: 24px;">⚪</span>
-                                    <div>
-                                        <div id="security-method" style="font-weight: 600; color: #1f2937; font-size: 15px;">Loading...</div>
-                                        <div id="security-level" style="font-size: 13px; color: #6b7280; margin-top: 2px;">Checking security status...</div>
-                                    </div>
-                                </div>
-                                <div id="security-description" style="font-size: 13px; color: #4b5563; margin-bottom: 8px; line-height: 1.5;">
-                                    Please wait while we check your security settings...
-                                </div>
-                                <div id="security-encryption" style="font-size: 12px; color: #6b7280; padding: 8px 12px; background: white; border-radius: 6px; margin-bottom: 8px;">
-                                    <strong>Encryption:</strong> <span id="encryption-type">N/A</span>
-                                </div>
-                                <div id="security-recommendation" style="display: none; padding: 12px; background: #fef3c7; border-left: 3px solid #f59e0b; border-radius: 6px; font-size: 13px; color: #92400e;">
-                                    💡 <span id="recommendation-text"></span>
-                                </div>
-                                <div style="margin-top: 12px; font-size: 12px; color: #9ca3af;">
-                                    <strong>How we protect your tokens:</strong>
-                                    <ul style="margin: 8px 0 0 20px; line-height: 1.6;">
-                                        <li><strong>Primary:</strong> Windows Credential Manager (most secure)</li>
-                                        <li><strong>Fallback:</strong> AES-128 encrypted file if Credential Manager unavailable</li>
-                                        <li><strong>Never:</strong> Plaintext storage</li>
-                                    </ul>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-
                 <div id="status-message" class="status-message"></div>
             </div>
         </div>
@@ -10982,36 +10745,6 @@ class TimeTracker:
     </div>
 
     <script>
-        // Load security status
-        function loadSecurityStatus() {
-            fetch('/api/security-status')
-                .then(r => r.json())
-                .then(data => {
-                    if (data.success && data.status) {
-                        const s = data.status;
-                        
-                        document.getElementById('security-icon').textContent = s.icon || '⚪';
-                        document.getElementById('security-method').textContent = s.method || 'Unknown';
-                        document.getElementById('security-level').textContent = s.security_level || 'Unknown';
-                        document.getElementById('security-description').textContent = s.description || 'No information available';
-                        document.getElementById('encryption-type').textContent = s.encryption || 'N/A';
-                        
-                        // Show recommendation if exists
-                        if (s.recommendation) {
-                            document.getElementById('recommendation-text').textContent = s.recommendation;
-                            document.getElementById('security-recommendation').style.display = 'block';
-                        } else {
-                            document.getElementById('security-recommendation').style.display = 'none';
-                        }
-                    }
-                })
-                .catch(err => {
-                    console.error('Error loading security status:', err);
-                    document.getElementById('security-method').textContent = 'Error loading status';
-                    document.getElementById('security-level').textContent = 'Please check console';
-                });
-        }
-
         // Load settings on page load
         function loadSettings() {
             fetch('/api/pause-settings')
@@ -11088,7 +10821,6 @@ class TimeTracker:
 
         // Initialize
         loadSettings();
-        loadSecurityStatus();
     </script>
 </body>
 </html>'''

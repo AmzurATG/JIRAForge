@@ -249,7 +249,7 @@ runtime_hooks_list = []
 
 a = Analysis(
     ['desktop_app.py'],
-    pathex=[],
+    pathex=[os.path.abspath('.')],
     binaries=engine_binaries,
     datas=[
         *engine_datas,
@@ -332,8 +332,12 @@ a = Analysis(
         # Tkinter (for pause popup)
         'tkinter',
         'tkinter.ttk',
-        # SQLite
+        # SQLite / SQLCipher (encrypted SQLite)
         'sqlite3',
+        'sqlcipher3',
+        'sqlcipher3.dbapi2',
+        # Database connection manager
+        'db_connection',
         # jaraco (required by pkg_resources)
         'jaraco',
         'jaraco.text',
