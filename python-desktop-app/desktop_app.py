@@ -9711,6 +9711,27 @@ class TimeTracker:
             # We don't remove existing entries as they may be valid (pointing to installed exe).
             print("[INFO] Running in development mode - auto-start is only configured for the built exe.")
 
+        # BUGFIX: Load cached user info EARLY to restore organization_id immediately
+        # This ensures admin panel and tracking work even before server verification completes.
+        # Without this, routes are initialized with organization_id=None, causing admin panel
+        # to show "locked" message even when user has valid cached credentials.
+        if self.auth_manager.is_authenticated():
+            try:
+                cached_user = self._load_cached_user_info()
+                if cached_user and cached_user.get('organization_id'):
+                    self.organization_id = cached_user.get('organization_id')
+                    self.current_user_id = cached_user.get('user_id')
+                    self.current_user = cached_user
+                    print(f"[OK] Restored organization_id from cache: {self.organization_id}")
+                    # Initialize Supabase with cached credentials
+                    try:
+                        if self.initialize_supabase():
+                            print("[OK] Supabase initialized successfully from cache")
+                    except Exception as e:
+                        print(f"[WARN] Could not initialize Supabase from cache: {e}")
+            except Exception as e:
+                print(f"[WARN] Could not load cached user info early: {e}")
+
         # Check network connectivity first
         is_online = self.offline_manager.check_connectivity(force=True)
         
