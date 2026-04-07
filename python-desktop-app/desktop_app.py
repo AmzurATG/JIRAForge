@@ -179,13 +179,12 @@ def secure_log(message: str, level: str = "INFO", **kwargs) -> None:
 
 # Secure credential storage
 try:
-    from auth import SecureTokenStorage, SecurityError, KEYRING_AVAILABLE
-    SECURE_STORAGE_AVAILABLE = True
-    print("[OK] Secure token storage initialized")
+    print("!!!DEBUG!!! About to execute main JQL query for Jira issues.")
+    import keyring
+    KEYRING_AVAILABLE = True
 except ImportError:
-    SECURE_STORAGE_AVAILABLE = False
-    print("[ERROR] Secure token storage module not found - this should not happen")
-    raise
+    KEYRING_AVAILABLE = False
+    print("[WARN] keyring module not available - tokens will be stored in plain text")
 
 # Windows-specific imports
 try:
@@ -321,7 +320,7 @@ load_dotenv()
 
 # Application version - IMPORTANT: Update this when releasing new versions
 # This is used for update checking and notifications
-APP_VERSION = "1.3.5"
+APP_VERSION = "1.3.3"
 
 # Hard-disable screenshot monitoring/storage in desktop app.
 # OCR text extraction for activity records still runs via event-based flow.
@@ -330,10 +329,10 @@ SCREENSHOT_MONITORING_HARD_DISABLED = True
 # Embedded credentials (for production builds - no .env file needed)
 # SECURITY: All sensitive keys moved to AI Server - fetched at runtime after authentication
 EMBEDDED_CONFIG = {
-    'ATLASSIAN_CLIENT_ID': 'k2Xwzy8c1g3Wk6Xpbeev0x70CXEp9lJH',
+    'ATLASSIAN_CLIENT_ID': 'Q8HT4Jn205AuTiAarj088oWNDrOqwvM5',
     # REMOVED: ATLASSIAN_CLIENT_SECRET - now on AI Server only (security fix)
     # REMOVED: SUPABASE_URL, SUPABASE_ANON_KEY, SUPABASE_SERVICE_ROLE_KEY - fetched from AI Server
-    'AI_SERVER_URL': 'https://timetracker-forge.amzur.com',  # AI Server for secure token exchange & config
+    'AI_SERVER_URL': 'https://forgesync.amzur.com',  # AI Server for secure token exchange & config
     'CAPTURE_INTERVAL': '300',
     'WEB_PORT': '51777',
 }
@@ -1298,7 +1297,6 @@ def _keyring_set(service, key, value):
     in JWT tokens that can cause error 1783 'The stub received bad data'.
     """
     import base64
-    import keyring
     # Base64 encode to avoid special character issues
     encoded = base64.b64encode(value.encode('utf-8')).decode('ascii')
     encoded_with_marker = f"__b64__:{encoded}"
@@ -1332,7 +1330,6 @@ def _keyring_set(service, key, value):
 def _keyring_get(service, key):
     """Load a value from keyring, decoding base64 and reassembling chunks if needed."""
     import base64
-    import keyring
     value = keyring.get_password(service, key)
     if value is None:
         return None
@@ -1393,7 +1390,6 @@ def _keyring_get(service, key):
 
 def _keyring_delete(service, key):
     """Delete a value from keyring, including any chunks."""
-    import keyring
     try:
         value = keyring.get_password(service, key)
         if value and (value.startswith("__chunked__:") or value.startswith("__b64_chunked__:")):
@@ -1419,9 +1415,8 @@ class AtlassianAuthManager:
         self.redirect_uri = f'http://localhost:{web_port}/auth/callback'
         self.authorization_url = 'https://auth.atlassian.com/authorize'
         # Token exchange now goes through AI Server
-        self.ai_server_url = get_env_var('AI_SERVER_URL', 'https://timetracker-forge.amzur.com')
+        self.ai_server_url = get_env_var('AI_SERVER_URL', 'https://forgesync.amzur.com')
         self.store_path = store_path or os.path.join(get_app_data_dir(), 'time_tracker_auth.json')
-        self.metadata_path = os.path.join(get_app_data_dir(), 'auth_metadata.json')  # For non-sensitive data
 
         # Prevents concurrent token refreshes from burning the same refresh_token twice.
         # Atlassian uses token rotation: each refresh invalidates the old refresh_token.
@@ -1429,86 +1424,80 @@ class AtlassianAuthManager:
         # refresh_token — the second call arrives after rotation and gets "token invalid".
         self._refresh_lock = threading.Lock()
 
-        # Initialize secure storage
-        self.secure_storage = SecureTokenStorage(get_app_data_dir())
+        # Migrate from plain-text to keyring if needed
+        self._migrate_to_keyring()
 
-        # Migrate from plain-text JSON to secure storage if needed
-        self._migrate_from_plaintext()
-
-        # Load tokens (from secure storage)
+        # Load tokens (from keyring + JSON)
         self.tokens = self._load_tokens()
 
-    def _migrate_from_plaintext(self):
-        """Migrate sensitive tokens from plain-text JSON to secure storage.
-        
-        This handles migration from the old insecure system that stored tokens
-        in plaintext JSON when keyring was unavailable.
+    def _migrate_to_keyring(self):
+        """Migrate sensitive tokens from plain-text JSON to secure keyring storage.
+
+        JSON file is kept as a backup (not cleaned) because keyring can lose data
+        if the app is killed during a chunked write (e.g., system shutdown/reboot).
         """
+        if not KEYRING_AVAILABLE:
+            return
+
         try:
-            # Check if old JSON file exists
+            # Check if old JSON file has plain-text tokens
             if not os.path.exists(self.store_path):
                 return
 
-            # Use SecureTokenStorage's migration method
-            migrated = self.secure_storage.migrate_from_plaintext(self.store_path)
-            
-            if migrated:
-                print("[OK] Migrated tokens from plaintext to secure storage")
-                
-                # Extract metadata (non-sensitive data) and save separately
-                try:
-                    with open(self.store_path, 'r') as f:
-                        old_data = json.load(f)
-                    
-                    # Save non-sensitive metadata separately
-                    metadata = {k: v for k, v in old_data.items() if k not in SENSITIVE_TOKEN_KEYS}
-                    if metadata:
-                        with open(self.metadata_path, 'w') as f:
-                            json.dump(metadata, f)
-                        print(f"[OK] Saved non-sensitive metadata separately")
-                except Exception:
-                    pass  # Non-critical
+            with open(self.store_path, 'r') as f:
+                old_data = json.load(f)
+
+            for key in SENSITIVE_TOKEN_KEYS:
+                if key in old_data and old_data[key]:
+                    # Check if already in keyring
+                    existing = _keyring_get(KEYRING_SERVICE, key)
+                    if existing is None:
+                        # Copy to keyring (keep JSON as backup)
+                        _keyring_set(KEYRING_SERVICE, key, old_data[key])
+                        print(f"[OK] Migrated {key} to secure storage")
 
         except Exception as e:
             print(f"[WARN] Migration to secure storage failed: {e}")
 
     def _load_tokens(self):
-        """Load tokens from secure storage (keyring or encrypted file).
-        
-        Sensitive tokens are loaded from SecureTokenStorage (keyring → encrypted fallback).
-        Non-sensitive metadata (oauth_state, code_verifier) is loaded from metadata JSON.
+        """Load tokens from secure keyring (sensitive) and JSON file (backup).
+
+        Priority: keyring > JSON backup. If keyring is missing a token
+        (e.g., corrupted by interrupted shutdown), fall back to JSON.
         """
         tokens = {}
 
-        # Load non-sensitive metadata from JSON file
+        # Load all tokens from JSON file (includes backup of sensitive tokens)
         try:
-            if os.path.exists(self.metadata_path):
-                with open(self.metadata_path, 'r') as f:
+            if os.path.exists(self.store_path):
+                with open(self.store_path, 'r') as f:
                     tokens = json.load(f)
-                    print(f"[OK] Loaded metadata from {self.metadata_path}")
         except Exception as e:
-            print(f"[WARN] Failed to load metadata: {e}")
+            print(f"[WARN] Failed to load token metadata: {e}")
 
-        # Load sensitive tokens from secure storage
-        try:
-            secure_tokens = self.secure_storage.load_tokens()
-            if secure_tokens:
-                tokens.update(secure_tokens)
-                print(f"[OK] Loaded {len(secure_tokens)} tokens from secure storage")
-        except Exception as e:
-            print(f"[ERROR] Failed to load from secure storage: {e}")
+        # Override with keyring values (more secure, preferred source)
+        if KEYRING_AVAILABLE:
+            try:
+                for key in SENSITIVE_TOKEN_KEYS:
+                    value = _keyring_get(KEYRING_SERVICE, key)
+                    if value:
+                        tokens[key] = value
+                    elif tokens.get(key):
+                        # Keyring lost this token (corrupted chunks from interrupted shutdown)
+                        # but JSON backup has it — re-save to keyring for next time
+                        print(f"[WARN] Keyring missing {key}, recovered from JSON backup")
+                        try:
+                            _keyring_set(KEYRING_SERVICE, key, tokens[key])
+                        except Exception:
+                            pass
+            except Exception as e:
+                print(f"[WARN] Failed to load tokens from secure storage: {e}")
+                # JSON backup tokens are already in `tokens` dict — will be used
 
         return tokens
 
     def _save_tokens(self):
-        """Save tokens to secure storage (keyring or encrypted file).
-        
-        Sensitive tokens (access_token, refresh_token, supabase_token) are saved to
-        SecureTokenStorage (keyring with automatic encrypted fallback).
-        Non-sensitive metadata (oauth_state, code_verifier) is saved to JSON.
-        
-        SECURITY NOTE: No plaintext backup for sensitive tokens.
-        """
+        """Save tokens to secure keyring (sensitive) and JSON file (metadata + backup)"""
         # Separate sensitive and non-sensitive data
         sensitive_data = {}
         metadata = {}
@@ -1519,27 +1508,26 @@ class AtlassianAuthManager:
             else:
                 metadata[key] = value
 
-        # Save sensitive tokens to secure storage (keyring → encrypted fallback)
-        if sensitive_data:
+        # Save sensitive tokens to keyring
+        if KEYRING_AVAILABLE:
             try:
-                self.secure_storage.save_tokens(sensitive_data)
-                print(f"[OK] Saved {len(sensitive_data)} tokens to secure storage")
-            except SecurityError as e:
-                print(f"[ERROR] Cannot save tokens securely: {e}")
-                # This is a critical error - do not fall back to plaintext
-                raise
+                for key, value in sensitive_data.items():
+                    if value:
+                        _keyring_set(KEYRING_SERVICE, key, value)
             except Exception as e:
-                print(f"[ERROR] Failed to save tokens: {e}")
-                raise
+                print(f"[WARN] Failed to save tokens to secure storage: {e}")
 
-        # Save non-sensitive metadata to JSON file
-        if metadata:
-            try:
-                with open(self.metadata_path, 'w') as f:
-                    json.dump(metadata, f)
-                print(f"[OK] Saved metadata to {self.metadata_path}")
-            except Exception as e:
-                print(f"[WARN] Failed to save metadata: {e}")
+        # Always save tokens to JSON as backup — keyring can lose data if the app
+        # is killed during a chunked write (e.g., system shutdown/reboot).
+        # The JSON file in AppData is the resilient fallback.
+        metadata.update(sensitive_data)
+
+        # Save to JSON file
+        try:
+            with open(self.store_path, 'w') as f:
+                json.dump(metadata, f)
+        except Exception as e:
+            print(f"[WARN] Failed to save token metadata: {e}")
     
     def get_auth_url(self):
         """Generate Atlassian OAuth authorization URL with PKCE"""
@@ -1934,7 +1922,7 @@ class AtlassianAuthManager:
             print("[ERROR] No valid Atlassian token - cannot fetch OCR config")
             return False
 
-        ai_server_url = get_env_var('AI_SERVER_URL', 'https://timetracker-forge.amzur.com')
+        ai_server_url = get_env_var('AI_SERVER_URL', 'https://forgesync.amzur.com')
         
         try:
             print("[INFO] Fetching OCR config from AI Server...")
@@ -4553,6 +4541,7 @@ class TimeTracker:
         self.tray = None
 
         # Admin configuration
+        self.admin_password = None  # Fetched from server after auth; admin panel locked until then
         self.admin_session_token = None
         self.admin_logs = []  # In-memory log storage
         self.max_log_entries = 500  # Maximum log entries to keep
@@ -5110,7 +5099,7 @@ class TimeTracker:
         @self.app.route('/admin')
         def admin_login_page():
             """Admin login page"""
-            if not self.supabase or not self.organization_id:
+            if self.admin_password is None:
                 return self.render_admin_locked_page()
             # Check if already authenticated
             session_token = request.cookies.get('admin_session')
@@ -5121,17 +5110,11 @@ class TimeTracker:
         @self.app.route('/admin/login', methods=['POST'])
         def admin_login():
             """Handle admin login"""
-            if not self.supabase or not self.organization_id:
+            if self.admin_password is None:
                 return self.render_admin_locked_page()
             password = request.form.get('password', '')
 
-            # Always fetch the latest password from the server — never use a cached value
-            current_password = self._fetch_admin_password()
-            if current_password is None:
-                self.add_admin_log('WARN', 'Admin login failed: could not fetch password from server')
-                return self.render_admin_login_page(error='Could not verify password. Please try again.')
-
-            if password == current_password:
+            if password == self.admin_password:
                 # Generate session token
                 self.admin_session_token = secrets.token_hex(32)
                 self.add_admin_log('INFO', 'Admin logged in successfully')
@@ -5380,29 +5363,6 @@ class TimeTracker:
 
                 except Exception as e:
                     return jsonify({'success': False, 'error': str(e)}), 500
-
-        @self.app.route('/api/security-status', methods=['GET'])
-        def security_status_api():
-            """Get current security/token storage status"""
-            try:
-                status = self.auth_manager.secure_storage.get_storage_status()
-                return jsonify({
-                    'success': True,
-                    'status': status
-                })
-            except Exception as e:
-                return jsonify({
-                    'success': False,
-                    'error': str(e),
-                    'status': {
-                        'method': 'Error',
-                        'security_level': 'Unknown',
-                        'icon': '⚠️',
-                        'description': 'Could not determine security status',
-                        'encryption': 'N/A',
-                        'recommendation': None
-                    }
-                }), 200  # Still return 200 so UI can display error state
 
         # ============================================================================
         # CONSENT ROUTES (GDPR/Privacy Compliance)
@@ -5955,6 +5915,12 @@ class TimeTracker:
 
                     # Register organization in database
                     self.register_organization()
+
+                    # Fetch org-level tracking settings early to load admin password
+                    try:
+                        self.fetch_tracking_settings(project_key=None)
+                    except Exception as e:
+                        print(f"[WARN] Early tracking settings fetch failed: {e}")
 
                     return self.jira_cloud_id
             else:
@@ -6770,6 +6736,12 @@ class TimeTracker:
 
                 if SCREENSHOT_MONITORING_HARD_DISABLED:
                     fetched_settings['screenshot_monitoring_enabled'] = False
+
+                # Update admin password from org-wide settings
+                if settings_source in ('organization', 'global') or project_key is None:
+                    raw_password = settings.get('desktop_admin_password')
+                    if raw_password:
+                        self.admin_password = raw_password
 
                 # Cache the settings
                 self.tracking_settings_cache[cache_key] = fetched_settings
@@ -9382,16 +9354,6 @@ class TimeTracker:
                 show_badge = getattr(self, 'update_available', False)
                 new_icon = self.create_tray_icon(state, show_update_badge=show_badge)
                 self.tray.icon = new_icon
-                
-                # Update tooltip with security status
-                try:
-                    storage_status = self.auth_manager.secure_storage.get_storage_status()
-                    icon = storage_status.get('icon', '⚪')
-                    method = storage_status.get('method', 'Unknown').replace('Windows Credential Manager', 'WCM')
-                    self.tray.title = f"TimeTracker - Security: {icon} {method}"
-                except:
-                    self.tray.title = "TimeTracker"
-                    
             except Exception as e:
                 print(f"[WARN] Failed to update tray icon: {e}")
 
@@ -9423,55 +9385,6 @@ class TimeTracker:
             self._open_feedback_form()
 
         menu_items.append(item('Send Feedback', send_feedback_action))
-
-        # Add Security Status menu item
-        def get_security_status_label():
-            """Get security status label for tray menu"""
-            try:
-                storage_status = self.auth_manager.secure_storage.get_storage_status()
-                icon = storage_status.get('icon', '⚪')
-                method = storage_status.get('method', 'Unknown')
-                return f"{icon} Security: {method}"
-            except:
-                return "⚪ Security: Unknown"
-        
-        def show_security_info_action():
-            """Show detailed security status information"""
-            try:
-                storage_status = self.auth_manager.secure_storage.get_storage_status()
-                
-                icon = storage_status.get('icon', '⚪')
-                method = storage_status.get('method', 'Unknown')
-                security_level = storage_status.get('security_level', 'Unknown')
-                description = storage_status.get('description', 'No information available')
-                encryption = storage_status.get('encryption', 'N/A')
-                recommendation = storage_status.get('recommendation', '')
-                
-                message = f"{icon} Security Status\\n\\n"
-                message += f"Storage Method: {method}\\n"
-                message += f"Security Level: {security_level}\\n\\n"
-                message += f"{description}\\n\\n"
-                message += f"Encryption: {encryption}"
-                
-                if recommendation:
-                    message += f"\\n\\n💡 Recommendation:\\n{recommendation}"
-                
-                # Show Windows notification
-                if WINOTIFY_AVAILABLE:
-                    from winotify import Notification
-                    notification = Notification(
-                        app_id="TimeTracker Security",
-                        title="Security Status",
-                        msg=message,
-                        duration="long"
-                    )
-                    notification.show()
-                else:
-                    print(message)
-            except Exception as e:
-                print(f"[ERROR] Could not retrieve security status: {e}")
-        
-        menu_items.append(item(lambda text: get_security_status_label(), show_security_info_action))
 
         # Add separator and update-related menu items
         menu_items.append(pystray.Menu.SEPARATOR)
@@ -9615,15 +9528,6 @@ class TimeTracker:
             menu = self._build_tray_menu()
 
             self.tray = pystray.Icon("Time Tracker", icon_image, menu=menu)
-            
-            # Set initial tooltip with security status
-            try:
-                storage_status = self.auth_manager.secure_storage.get_storage_status()
-                icon = storage_status.get('icon', '⚪')
-                method = storage_status.get('method', 'Unknown').replace('Windows Credential Manager', 'WCM')
-                self.tray.title = f"TimeTracker - Security: {icon} {method}"
-            except:
-                self.tray.title = "TimeTracker"
 
             # Start a thread to periodically update the icon
             def update_icon_periodically():
@@ -9710,27 +9614,6 @@ class TimeTracker:
             # Auto-start is only configured when running the built executable.
             # We don't remove existing entries as they may be valid (pointing to installed exe).
             print("[INFO] Running in development mode - auto-start is only configured for the built exe.")
-
-        # BUGFIX: Load cached user info EARLY to restore organization_id immediately
-        # This ensures admin panel and tracking work even before server verification completes.
-        # Without this, routes are initialized with organization_id=None, causing admin panel
-        # to show "locked" message even when user has valid cached credentials.
-        if self.auth_manager.is_authenticated():
-            try:
-                cached_user = self._load_cached_user_info()
-                if cached_user and cached_user.get('organization_id'):
-                    self.organization_id = cached_user.get('organization_id')
-                    self.current_user_id = cached_user.get('user_id')
-                    self.current_user = cached_user
-                    print(f"[OK] Restored organization_id from cache: {self.organization_id}")
-                    # Initialize Supabase with cached credentials
-                    try:
-                        if self.initialize_supabase():
-                            print("[OK] Supabase initialized successfully from cache")
-                    except Exception as e:
-                        print(f"[WARN] Could not initialize Supabase from cache: {e}")
-            except Exception as e:
-                print(f"[WARN] Could not load cached user info early: {e}")
 
         # Check network connectivity first
         is_online = self.offline_manager.check_connectivity(force=True)
@@ -10452,23 +10335,6 @@ class TimeTracker:
 </html>'''
         return html
 
-    def _fetch_admin_password(self):
-        """Fetch the current admin password directly from Supabase (no cache).
-        Returns the password string, or None if the fetch fails."""
-        try:
-            result = self.supabase.table('tracking_settings') \
-                .select('desktop_admin_password') \
-                .eq('organization_id', self.organization_id) \
-                .is_('project_key', 'null') \
-                .limit(1) \
-                .execute()
-            if result.data and len(result.data) > 0:
-                return result.data[0].get('desktop_admin_password')
-            return None
-        except Exception as e:
-            print(f"[ERROR] [Admin] Failed to fetch admin password from server: {e}")
-            return None
-
     def render_admin_locked_page(self):
         html = '''<!DOCTYPE html>
 <html>
@@ -10940,41 +10806,6 @@ class TimeTracker:
                 </div>
                 -->
 
-                <!-- Security Status Section -->
-                <div class="setting-section" id="security-status-section">
-                    <h3>🔒 Security Status</h3>
-                    <div class="setting-row" style="flex-direction: column; align-items: flex-start;">
-                        <div class="setting-info" style="padding-right: 0; width: 100%;">
-                            <div id="security-status-container" style="padding: 16px; background: #f9fafb; border-radius: 8px; border: 1px solid #e5e7eb;">
-                                <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 12px;">
-                                    <span id="security-icon" style="font-size: 24px;">⚪</span>
-                                    <div>
-                                        <div id="security-method" style="font-weight: 600; color: #1f2937; font-size: 15px;">Loading...</div>
-                                        <div id="security-level" style="font-size: 13px; color: #6b7280; margin-top: 2px;">Checking security status...</div>
-                                    </div>
-                                </div>
-                                <div id="security-description" style="font-size: 13px; color: #4b5563; margin-bottom: 8px; line-height: 1.5;">
-                                    Please wait while we check your security settings...
-                                </div>
-                                <div id="security-encryption" style="font-size: 12px; color: #6b7280; padding: 8px 12px; background: white; border-radius: 6px; margin-bottom: 8px;">
-                                    <strong>Encryption:</strong> <span id="encryption-type">N/A</span>
-                                </div>
-                                <div id="security-recommendation" style="display: none; padding: 12px; background: #fef3c7; border-left: 3px solid #f59e0b; border-radius: 6px; font-size: 13px; color: #92400e;">
-                                    💡 <span id="recommendation-text"></span>
-                                </div>
-                                <div style="margin-top: 12px; font-size: 12px; color: #9ca3af;">
-                                    <strong>How we protect your tokens:</strong>
-                                    <ul style="margin: 8px 0 0 20px; line-height: 1.6;">
-                                        <li><strong>Primary:</strong> Windows Credential Manager (most secure)</li>
-                                        <li><strong>Fallback:</strong> AES-128 encrypted file if Credential Manager unavailable</li>
-                                        <li><strong>Never:</strong> Plaintext storage</li>
-                                    </ul>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-
                 <div id="status-message" class="status-message"></div>
             </div>
         </div>
@@ -10982,36 +10813,6 @@ class TimeTracker:
     </div>
 
     <script>
-        // Load security status
-        function loadSecurityStatus() {
-            fetch('/api/security-status')
-                .then(r => r.json())
-                .then(data => {
-                    if (data.success && data.status) {
-                        const s = data.status;
-                        
-                        document.getElementById('security-icon').textContent = s.icon || '⚪';
-                        document.getElementById('security-method').textContent = s.method || 'Unknown';
-                        document.getElementById('security-level').textContent = s.security_level || 'Unknown';
-                        document.getElementById('security-description').textContent = s.description || 'No information available';
-                        document.getElementById('encryption-type').textContent = s.encryption || 'N/A';
-                        
-                        // Show recommendation if exists
-                        if (s.recommendation) {
-                            document.getElementById('recommendation-text').textContent = s.recommendation;
-                            document.getElementById('security-recommendation').style.display = 'block';
-                        } else {
-                            document.getElementById('security-recommendation').style.display = 'none';
-                        }
-                    }
-                })
-                .catch(err => {
-                    console.error('Error loading security status:', err);
-                    document.getElementById('security-method').textContent = 'Error loading status';
-                    document.getElementById('security-level').textContent = 'Please check console';
-                });
-        }
-
         // Load settings on page load
         function loadSettings() {
             fetch('/api/pause-settings')
@@ -11088,7 +10889,6 @@ class TimeTracker:
 
         // Initialize
         loadSettings();
-        loadSecurityStatus();
     </script>
 </body>
 </html>'''
