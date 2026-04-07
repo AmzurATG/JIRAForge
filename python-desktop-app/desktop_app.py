@@ -321,7 +321,7 @@ load_dotenv()
 
 # Application version - IMPORTANT: Update this when releasing new versions
 # This is used for update checking and notifications
-APP_VERSION = "1.3.3"
+APP_VERSION = "1.3.4"
 
 # Hard-disable screenshot monitoring/storage in desktop app.
 # OCR text extraction for activity records still runs via event-based flow.
@@ -330,10 +330,10 @@ SCREENSHOT_MONITORING_HARD_DISABLED = True
 # Embedded credentials (for production builds - no .env file needed)
 # SECURITY: All sensitive keys moved to AI Server - fetched at runtime after authentication
 EMBEDDED_CONFIG = {
-    'ATLASSIAN_CLIENT_ID': 'Q8HT4Jn205AuTiAarj088oWNDrOqwvM5',
+    'ATLASSIAN_CLIENT_ID': 'k2Xwzy8c1g3Wk6Xpbeev0x70CXEp9lJH',
     # REMOVED: ATLASSIAN_CLIENT_SECRET - now on AI Server only (security fix)
     # REMOVED: SUPABASE_URL, SUPABASE_ANON_KEY, SUPABASE_SERVICE_ROLE_KEY - fetched from AI Server
-    'AI_SERVER_URL': 'https://forgesync.amzur.com',  # AI Server for secure token exchange & config
+    'AI_SERVER_URL': 'https://timetracker-forge.amzur.com',  # AI Server for secure token exchange & config
     'CAPTURE_INTERVAL': '300',
     'WEB_PORT': '51777',
 }
@@ -1416,7 +1416,7 @@ class AtlassianAuthManager:
         self.redirect_uri = f'http://localhost:{web_port}/auth/callback'
         self.authorization_url = 'https://auth.atlassian.com/authorize'
         # Token exchange now goes through AI Server
-        self.ai_server_url = get_env_var('AI_SERVER_URL', 'https://forgesync.amzur.com')
+        self.ai_server_url = get_env_var('AI_SERVER_URL', 'https://timetracker-forge.amzur.com')
         self.store_path = store_path or os.path.join(get_app_data_dir(), 'time_tracker_auth.json')
         self.metadata_path = os.path.join(get_app_data_dir(), 'auth_metadata.json')  # For non-sensitive data
 
@@ -1931,7 +1931,7 @@ class AtlassianAuthManager:
             print("[ERROR] No valid Atlassian token - cannot fetch OCR config")
             return False
 
-        ai_server_url = get_env_var('AI_SERVER_URL', 'https://forgesync.amzur.com')
+        ai_server_url = get_env_var('AI_SERVER_URL', 'https://timetracker-forge.amzur.com')
         
         try:
             print("[INFO] Fetching OCR config from AI Server...")
@@ -4550,7 +4550,6 @@ class TimeTracker:
         self.tray = None
 
         # Admin configuration
-        self.admin_password = None  # Fetched from server after auth; admin panel locked until then
         self.admin_session_token = None
         self.admin_logs = []  # In-memory log storage
         self.max_log_entries = 500  # Maximum log entries to keep
@@ -5108,7 +5107,7 @@ class TimeTracker:
         @self.app.route('/admin')
         def admin_login_page():
             """Admin login page"""
-            if self.admin_password is None:
+            if not self.supabase or not self.organization_id:
                 return self.render_admin_locked_page()
             # Check if already authenticated
             session_token = request.cookies.get('admin_session')
@@ -5119,11 +5118,17 @@ class TimeTracker:
         @self.app.route('/admin/login', methods=['POST'])
         def admin_login():
             """Handle admin login"""
-            if self.admin_password is None:
+            if not self.supabase or not self.organization_id:
                 return self.render_admin_locked_page()
             password = request.form.get('password', '')
 
-            if password == self.admin_password:
+            # Always fetch the latest password from the server — never use a cached value
+            current_password = self._fetch_admin_password()
+            if current_password is None:
+                self.add_admin_log('WARN', 'Admin login failed: could not fetch password from server')
+                return self.render_admin_login_page(error='Could not verify password. Please try again.')
+
+            if password == current_password:
                 # Generate session token
                 self.admin_session_token = secrets.token_hex(32)
                 self.add_admin_log('INFO', 'Admin logged in successfully')
@@ -5948,12 +5953,6 @@ class TimeTracker:
                     # Register organization in database
                     self.register_organization()
 
-                    # Fetch org-level tracking settings early to load admin password
-                    try:
-                        self.fetch_tracking_settings(project_key=None)
-                    except Exception as e:
-                        print(f"[WARN] Early tracking settings fetch failed: {e}")
-
                     return self.jira_cloud_id
             else:
                 print(f"[ERROR] Failed to get resources: {response.status_code} - {response.text}")
@@ -6768,12 +6767,6 @@ class TimeTracker:
 
                 if SCREENSHOT_MONITORING_HARD_DISABLED:
                     fetched_settings['screenshot_monitoring_enabled'] = False
-
-                # Update admin password from org-wide settings
-                if settings_source in ('organization', 'global') or project_key is None:
-                    raw_password = settings.get('desktop_admin_password')
-                    if raw_password:
-                        self.admin_password = raw_password
 
                 # Cache the settings
                 self.tracking_settings_cache[cache_key] = fetched_settings
@@ -10434,6 +10427,23 @@ class TimeTracker:
 </body>
 </html>'''
         return html
+
+    def _fetch_admin_password(self):
+        """Fetch the current admin password directly from Supabase (no cache).
+        Returns the password string, or None if the fetch fails."""
+        try:
+            result = self.supabase.table('tracking_settings') \
+                .select('desktop_admin_password') \
+                .eq('organization_id', self.organization_id) \
+                .is_('project_key', 'null') \
+                .limit(1) \
+                .execute()
+            if result.data and len(result.data) > 0:
+                return result.data[0].get('desktop_admin_password')
+            return None
+        except Exception as e:
+            print(f"[ERROR] [Admin] Failed to fetch admin password from server: {e}")
+            return None
 
     def render_admin_locked_page(self):
         html = '''<!DOCTYPE html>
