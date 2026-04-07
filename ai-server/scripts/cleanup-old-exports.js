@@ -12,6 +12,10 @@
  * Created: April 3, 2026
  */
 
+// Load environment variables from .env file
+const path = require('path');
+require('dotenv').config({ path: path.join(__dirname, '..', '.env') });
+
 const { getClient } = require('../src/services/db/supabase-client');
 const logger = require('../src/utils/logger');
 
