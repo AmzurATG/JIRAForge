@@ -321,7 +321,7 @@ load_dotenv()
 
 # Application version - IMPORTANT: Update this when releasing new versions
 # This is used for update checking and notifications
-APP_VERSION = "1.3.4"
+APP_VERSION = "1.3.5"
 
 # Hard-disable screenshot monitoring/storage in desktop app.
 # OCR text extraction for activity records still runs via event-based flow.
@@ -1298,6 +1298,7 @@ def _keyring_set(service, key, value):
     in JWT tokens that can cause error 1783 'The stub received bad data'.
     """
     import base64
+    import keyring
     # Base64 encode to avoid special character issues
     encoded = base64.b64encode(value.encode('utf-8')).decode('ascii')
     encoded_with_marker = f"__b64__:{encoded}"
@@ -1331,6 +1332,7 @@ def _keyring_set(service, key, value):
 def _keyring_get(service, key):
     """Load a value from keyring, decoding base64 and reassembling chunks if needed."""
     import base64
+    import keyring
     value = keyring.get_password(service, key)
     if value is None:
         return None
@@ -1391,6 +1393,7 @@ def _keyring_get(service, key):
 
 def _keyring_delete(service, key):
     """Delete a value from keyring, including any chunks."""
+    import keyring
     try:
         value = keyring.get_password(service, key)
         if value and (value.startswith("__chunked__:") or value.startswith("__b64_chunked__:")):
