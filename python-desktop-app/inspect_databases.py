@@ -15,9 +15,11 @@ import os
 import sys
 import time
 import json
-import sqlite3
 import argparse
 from datetime import datetime, timezone
+
+sys.path.insert(0, os.path.dirname(__file__))
+from db_connection import DatabaseConnectionManager
 from pathlib import Path
 
 try:
@@ -34,9 +36,9 @@ load_dotenv()
 def find_sqlite_db():
     """Find SQLite database"""
     possible_paths = [
-        Path.home() / 'AppData' / 'Local' / 'TimeTracker' / 'offline_screenshots.db',
-        Path.home() / '.timetracker' / 'offline_screenshots.db',
-        Path(__file__).parent / 'offline_screenshots.db',
+        Path.home() / 'AppData' / 'Local' / 'TimeTracker' / 'time_tracker_offline.db',
+        Path.home() / '.timetracker' / 'time_tracker_offline.db',
+        Path(__file__).parent / 'time_tracker_offline.db',
     ]
     
     for path in possible_paths:
@@ -51,11 +53,11 @@ def get_sqlite_sessions(db_path):
         return None
     
     try:
-        conn = sqlite3.connect(db_path)
+        conn = DatabaseConnectionManager.open_diagnostic_connection(db_path)
         cursor = conn.cursor()
-        
+
         cursor.execute("""
-            SELECT name FROM sqlite_master 
+            SELECT name FROM sqlite_master
             WHERE type='table' AND name='active_sessions'
         """)
         

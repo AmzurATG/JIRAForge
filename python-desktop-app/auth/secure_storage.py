@@ -29,7 +29,7 @@ import threading
 from typing import Dict, Optional, List
 from cryptography.fernet import Fernet
 from cryptography.hazmat.primitives import hashes
-from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2
+from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 import logging
 
 logger = logging.getLogger(__name__)
@@ -556,7 +556,7 @@ class SecureTokenStorage:
         """
         salt = self._get_machine_salt()
         
-        kdf = PBKDF2(
+        kdf = PBKDF2HMAC(
             algorithm=hashes.SHA256(),
             length=32,
             salt=salt,
@@ -630,30 +630,9 @@ class SecureTokenStorage:
     
     def _show_fallback_notification(self):
         """
-        Show non-blocking notification about encrypted storage usage.
-        
-        This is shown ONCE when encryption is first used instead of keyring.
-        No blocking dialog, no user decision required.
+        Log encrypted storage usage (no user-facing notification).
         """
-        try:
-            # Try to use system notifications
-            if platform.system() == 'Windows':
-                try:
-                    from winotify import Notification
-                    toast = Notification(
-                        app_id="TimeTracker",
-                        title="TimeTracker Security Info",
-                        msg="Using encrypted storage (Windows Credential Manager unavailable). Your data is still secure.",
-                        duration="short"
-                    )
-                    toast.show()
-                except ImportError:
-                    # Fallback: Just log it
-                    logger.info("Using encrypted storage (system credential manager unavailable)")
-            else:
-                logger.info("Using encrypted storage (system credential manager unavailable)")
-        except Exception as e:
-            logger.debug(f"Notification failed (non-critical): {e}")
+        logger.info("Using encrypted storage (system credential manager unavailable)")
     
     def _load_notification_status(self):
         """Load whether notification has been shown."""

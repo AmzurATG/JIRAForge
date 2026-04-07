@@ -3,8 +3,11 @@ Standalone script to create SQLite tables for offline activity tracking
 Run this script to create all required tables WITHOUT running the full desktop app
 """
 
-import sqlite3
 import os
+import sys
+
+sys.path.insert(0, os.path.dirname(__file__))
+from db_connection import DatabaseConnectionManager
 
 def get_app_data_dir():
     """Get application data directory"""
@@ -24,8 +27,8 @@ def create_tables():
     db_path = os.path.join(app_dir, 'time_tracker_offline.db')
     print(f"📁 Database path: {db_path}")
     
-    # Connect to database (creates file if doesn't exist)
-    conn = sqlite3.connect(db_path)
+    # Connect to database (auto-detects encrypted vs plaintext)
+    conn = DatabaseConnectionManager.open_diagnostic_connection(db_path)
     cursor = conn.cursor()
     
     print("\n" + "=" * 60)
@@ -43,6 +46,9 @@ def create_tables():
             application_name TEXT,
             classification TEXT,
             ocr_text TEXT,
+            ocr_method TEXT,
+            ocr_confidence REAL,
+            ocr_error_message TEXT,
             total_time_seconds REAL DEFAULT 0,
             visit_count INTEGER DEFAULT 1,
             first_seen TEXT,
@@ -119,10 +125,6 @@ def create_tables():
             duration_seconds INTEGER,
             project_key TEXT,
             user_assigned_issues TEXT,
-            extracted_text TEXT,
-            ocr_confidence REAL,
-            ocr_method TEXT,
-            ocr_line_count INTEGER,
             metadata TEXT,
             image_data BLOB,
             thumbnail_data BLOB,
@@ -149,7 +151,6 @@ def create_tables():
     ''')
     
     print("   ✅ Table 'offline_screenshots' created with indexes")
-    print("   ✅ OCR fields included (extracted_text, ocr_confidence, etc.)")
     
     # ========================================================================
     # TABLE 4: project_settings_cache (Project settings cache)

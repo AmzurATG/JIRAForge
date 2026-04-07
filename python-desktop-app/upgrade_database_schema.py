@@ -5,7 +5,9 @@ Adds the missing tables: app_classifications_cache and active_sessions
 
 import os
 import sys
-import sqlite3
+
+sys.path.insert(0, os.path.dirname(__file__))
+from db_connection import DatabaseConnectionManager
 
 def get_app_data_dir():
     """Get the application data directory"""
@@ -29,9 +31,9 @@ def upgrade_database():
     print(f"🔧 Upgrading database: {db_path}")
     print()
     
-    conn = sqlite3.connect(db_path)
+    conn = DatabaseConnectionManager.open_diagnostic_connection(db_path)
     cursor = conn.cursor()
-    
+
     # Check existing tables
     cursor.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
     existing_tables = [row[0] for row in cursor.fetchall()]
