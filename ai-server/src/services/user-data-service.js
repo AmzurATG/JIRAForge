@@ -11,6 +11,7 @@
 const { getClient } = require('./db/supabase-client');
 const logger = require('../utils/logger');
 const crypto = require('crypto');
+const userDataConfig = require('../config/user-data-config');
 
 /**
  * Get status of existing data request
@@ -168,44 +169,146 @@ async function getUserByAccountId(accountId) {
 }
 
 /**
- * Export all user personal data
+ * Discover all tables with user_id column dynamically
  * 
- * ⚠️ CRITICAL MAINTENANCE WARNING ⚠️
- * This function exports data from a HARDCODED list of tables.
- * When adding NEW tables with user data, you MUST update this function!
+ * ✅ DYNAMIC SOLUTION (April 2026)
+ * This function automatically discovers ALL tables with user_id column.
+ * When you add new tables in the future, they'll be automatically included!
  * 
- * CURRENT TABLE LIST (as of April 2026):
- * ✓ users
- * ✓ organization_members
- * ✓ screenshots
- * ✓ analysis_results
- * ✓ activity_records
- * ✓ worklogs
- * ✓ documents
- * ✓ feedback
- * ✓ tracking_settings
- * ✓ notification_preferences
- * ✓ activity_log
- * ✓ user_jira_issues_cache
- * ✓ unassigned_activity
- * ✓ worklog_sync
- * ✓ notification_logs
- * ✓ notification_cooldowns
+ * @returns {Promise<Array<string>>} List of table names
+ */
+async function discoverUserDataTables() {
+  try {
+    const supabase = getClient();
+    
+    // Call the database function to discover tables
+    const { data, error } = await supabase.rpc('discover_user_data_tables');
+    
+    if (error) {
+      logger.error('[UserData] Failed to discover tables:', error);
+      // Fallback to configuration if discovery fails
+      return userDataConfig.deletionOrder;
+    }
+    
+    // Extract table names and filter out excluded tables
+    const tables = data
+      .map(row => row.table_name)
+      .filter(table => !userDataConfig.isExcluded(table));
+    
+    logger.info('[UserData] Discovered user data tables:', {
+      count: tables.length,
+      tables: tables
+    });
+    
+    return tables;
+  } catch (error) {
+    logger.error('[UserData] Error in table discovery:', error);
+    // Fallback to configuration
+    return userDataConfig.deletionOrder;
+  }
+}
+
+/**
+ * Export data from a single table dynamically
  * 
- * STORAGE BUCKETS:
- * ✓ screenshots (org_id/user_id/* and user_id/*)
- * ✓ documents (org_id/user_id/* and user_id/*)
- * ✓ feedback-images (user_id/*)
+ * @param {Object} supabase - Supabase client
+ * @param {string} tableName - Table name to export from
+ * @param {string} userId - User UUID
+ * @returns {Promise<Object>} Export result { tableName, data, count }
+ */
+async function exportFromTable(supabase, tableName, userId) {
+  try {
+    const rowLimit = userDataConfig.getExportRowLimit(tableName);
+    
+    const { data, error, count } = await supabase
+      .from(tableName)
+      .select('*', { count: 'exact' })
+      .eq('user_id', userId)
+      .limit(rowLimit);
+    
+    if (error) {
+      logger.warn(`[UserData] Failed to export from ${tableName}:`, error.message);
+      return { tableName, data: [], count: 0, error: error.message };
+    }
+    
+    logger.info(`[UserData] Exported from ${tableName}:`, { 
+      rows: data?.length || 0,
+      total: count 
+    });
+    
+    return { 
+      tableName, 
+      data: data || [], 
+      count: data?.length || 0,
+      totalAvailable: count 
+    };
+  } catch (error) {
+    logger.error(`[UserData] Error exporting from ${tableName}:`, error);
+    return { tableName, data: [], count: 0, error: error.message };
+  }
+}
+
+/**
+ * Delete data from a single table dynamically
  * 
- * CHECKLIST WHEN ADDING NEW TABLES WITH user_id COLUMN:
- * [ ] Add export query in this function (section by section)
- * [ ] Add deletion query in deleteUserData() function
- * [ ] Update export data structure
- * [ ] Update documentation (PERSONAL_DATA_REPORTING_API_README.md)
- * [ ] Update implementation plan data coverage section
- * [ ] Test export includes new table data
- * [ ] Test deletion removes new table data
- * [ ] Update Privacy Policy if data type is new
+ * @param {Object} supabase - Supabase client
+ * @param {string} tableName - Table name to delete from
+ * @param {string} userId - User UUID
+ * @returns {Promise<Object>} Deletion result { tableName, count, error? }
+ */
+async function deleteFromTable(supabase, tableName, userId) {
+  try {
+    // Check if table should be anonymized instead
+    if (userDataConfig.shouldAnonymize(tableName)) {
+      const anonymizeConfig = userDataConfig.anonymizeTables[tableName];
+      const { count, error } = await supabase
+        .from(tableName)
+        .update({
+          ...anonymizeConfig.anonymize,
+          ...(anonymizeConfig.redactEventData ? {
+            event_data: { redacted: true, reason: 'user_data_deletion' }
+          } : {})
+        })
+        .eq('user_id', userId);
+      
+      if (error) {
+        throw error;
+      }
+      
+      logger.info(`[UserData] Anonymized ${tableName}:`, { rows: count });
+      return { tableName, count: count || 0, action: 'anonymized' };
+    }
+    
+    // Regular deletion
+    const { count, error } = await supabase
+      .from(tableName)
+      .delete({ count: 'exact' })
+      .eq('user_id', userId);
+    
+    if (error) {
+      throw error;
+    }
+    
+    logger.info(`[UserData] Deleted from ${tableName}:`, { rows: count });
+    return { tableName, count: count || 0, action: 'deleted' };
+  } catch (error) {
+    logger.error(`[UserData] Error deleting from ${tableName}:`, error);
+    return { tableName, count: 0, error: error.message };
+  }
+}
+
+/**
+ * Export all user personal data (DYNAMIC VERSION)
+ * 
+ * ✅ NOW USES DYNAMIC TABLE DISCOVERY!
+ * This function automatically detects all tables with user_id column.
+ * When you add new tables, they'll be included automatically!
+ * 
+ * Configuration handled in: ai-server/src/config/user-data-config.js
+ * - Deletion order for FK constraints
+ * - Storage bucket associations
+ * - Row limits for large tables
+ * - Special handling rules
  * 
  * @param {string} accountId - Atlassian account ID
  * @param {string} cloudId - Jira cloud instance ID
@@ -238,191 +341,85 @@ async function exportUserData(accountId, cloudId) {
         settings: user.settings,
         desktopAppVersion: user.desktop_app_version,
         desktopLastHeartbeat: user.desktop_last_heartbeat
-      }
+      },
+      tables: {},
+      tableSummary: {}
     };
 
-    // 3. Organization memberships
-    const { data: orgMembers } = await supabase
-      .from('organization_members')
-      .select(`
-        *,
-        organization:organizations(
-          jira_cloud_id,
-          org_name,
-          jira_instance_url
-        )
-      `)
-      .eq('user_id', userId);
+    // 3. Discover all tables with user_id dynamically
+    const userDataTables = await discoverUserDataTables();
+    logger.info('[UserData] Exporting from tables:', { count: userDataTables.length }); 
 
-    exportData.organizationMemberships = (orgMembers || []).map(om => ({
-      organizationId: om.organization_id,
-      orgName: om.organization?.org_name,
-      jiraCloudId: om.organization?.jira_cloud_id,
-      jiraInstanceUrl: om.organization?.jira_instance_url,
-      role: om.role,
-      joinedAt: om.joined_at,
-      permissions: {
-        canManageSettings: om.can_manage_settings,
-        canViewTeamAnalytics: om.can_view_team_analytics,
-        canManageMembers: om.can_manage_members,
-        canDeleteScreenshots: om.can_delete_screenshots,
-        canManageBilling: om.can_manage_billing
+    // 4. Export from each table dynamically
+    for (const tableName of userDataTables) {
+      // Skip 'users' table - already exported above
+      if (tableName === 'users') continue;
+      
+      // Handle organization_members specially (needs JOIN)
+      if (tableName === 'organization_members') {
+        const { data: orgMembers } = await supabase
+          .from('organization_members')
+          .select(`
+            *,
+            organization:organizations(
+              jira_cloud_id,
+              org_name,
+              jira_instance_url
+            )
+          `)
+          .eq('user_id', userId);
+        
+        exportData.tables.organizationMemberships = (orgMembers || []).map(om => ({
+          organizationId: om.organization_id,
+          orgName: om.organization?.org_name,
+          jiraCloudId: om.organization?.jira_cloud_id,
+          jiraInstanceUrl: om.organization?.jira_instance_url,
+          role: om.role,
+          joinedAt: om.joined_at,
+          permissions: {
+            canManageSettings: om.can_manage_settings,
+            canViewTeamAnalytics: om.can_view_team_analytics,
+            canManageMembers: om.can_manage_members,
+            canDeleteScreenshots: om.can_delete_screenshots,
+            canManageBilling: om.can_manage_billing
+          }
+        }));
+        exportData.tableSummary.organizationMemberships = orgMembers?.length || 0;
+        continue;
       }
-    }));
+      
+      // Export from table dynamically
+      const result = await exportFromTable(supabase, tableName, userId);
+      exportData.tables[tableName] = result.data;
+      exportData.tableSummary[tableName] = {
+        count: result.count,
+        totalAvailable: result.totalAvailable,
+        error: result.error
+      };
+    }
 
-    // 4. Screenshots
-    const { data: screenshots } = await supabase
-      .from('screenshots')
-      .select('*')
-      .eq('user_id', userId)
-      .order('timestamp', { ascending: false })
-      .limit(10000); // Safety limit
-
-    exportData.screenshots = screenshots || [];
-    exportData.screenshotCount = screenshots?.length || 0;
-
-    // 5. Analysis results
-    const { data: analysisResults } = await supabase
-      .from('analysis_results')
-      .select('*')
-      .eq('user_id', userId)
-      .order('created_at', { ascending: false })
-      .limit(10000);
-
-    exportData.analysisResults = analysisResults || [];
-    exportData.analysisResultCount = analysisResults?.length || 0;
-
-    // 6. Activity records
-    const { data: activityRecords } = await supabase
-      .from('activity_records')
-      .select('*')
-      .eq('user_id', userId)
-      .order('session_start', { ascending: false })
-      .limit(10000);
-
-    exportData.activityRecords = activityRecords || [];
-    exportData.activityRecordCount = activityRecords?.length || 0;
-
-    // 7. Worklogs
-    const { data: worklogs } = await supabase
-      .from('worklogs')
-      .select('*')
-      .eq('user_id', userId)
-      .order('started_at', { ascending: false })
-      .limit(10000);
-
-    exportData.worklogs = worklogs || [];
-    exportData.worklogCount = worklogs?.length || 0;
-
-    // 8. Documents
-    const { data: documents } = await supabase
-      .from('documents')
-      .select('*')
-      .eq('user_id', userId)
-      .order('created_at', { ascending: false });
-
-    exportData.documents = documents || [];
-    exportData.documentCount = documents?.length || 0;
-
-    // 9. Feedback
-    const { data: feedback } = await supabase
-      .from('feedback')
-      .select('*')
-      .eq('user_id', userId)
-      .order('created_at', { ascending: false });
-
-    exportData.feedback = feedback || [];
-    exportData.feedbackCount = feedback?.length || 0;
-
-    // 10. Tracking settings
-    const { data: trackingSettings } = await supabase
-      .from('tracking_settings')
-      .select('*')
-      .eq('user_id', userId)
-      .maybeSingle();
-
-    exportData.trackingSettings = trackingSettings || null;
-
-    // 11. Notification preferences
-    const { data: notificationPrefs } = await supabase
-      .from('notification_preferences')
-      .select('*')
-      .eq('user_id', userId)
-      .maybeSingle();
-
-    exportData.notificationPreferences = notificationPrefs || null;
-
-    // 12. Activity log (limited to last 1000 entries, sanitized)
-    const { data: activityLog } = await supabase
-      .from('activity_log')
-      .select('id, event_type, event_data, ip_address, user_agent, created_at')
-      .eq('user_id', userId)
-      .order('created_at', { ascending: false })
-      .limit(1000);
-
-    exportData.activityLog = activityLog || [];
-    exportData.activityLogCount = activityLog?.length || 0;
-
-    // 13. User Jira issues cache
-    const { data: issuesCache } = await supabase
-      .from('user_jira_issues_cache')
-      .select('*')
-      .eq('user_id', userId);
-
-    exportData.cachedJiraIssues = issuesCache || [];
-    exportData.cachedJiraIssueCount = issuesCache?.length || 0;
-
-    // 14. Unassigned activity
-    const { data: unassignedActivity } = await supabase
-      .from('unassigned_activity')
-      .select('*')
-      .eq('user_id', userId);
-
-    exportData.unassignedActivity = unassignedActivity || [];
-    exportData.unassignedActivityCount = unassignedActivity?.length || 0;
-
-    // 15. Worklog sync state
-    const { data: worklogSync } = await supabase
-      .from('worklog_sync')
-      .select('*')
-      .eq('user_id', userId)
-      .maybeSingle();
-
-    exportData.worklogSync = worklogSync || null;
-
-    // 16. Notification logs (last 1000)
-    const { data: notificationLogs } = await supabase
-      .from('notification_logs')
-      .select('*')
-      .eq('user_id', userId)
-      .order('sent_at', { ascending: false })
-      .limit(1000);
-
-    exportData.notificationLogs = notificationLogs || [];
-    exportData.notificationLogCount = notificationLogs?.length || 0;
-
-    // 17. Notification cooldowns
-    const { data: notificationCooldowns } = await supabase
-      .from('notification_cooldowns')
-      .select('*')
-      .eq('user_id', userId);
-
-    exportData.notificationCooldowns = notificationCooldowns || [];
-
-    // 18. Storage files (generate signed URLs)
+    // 5. Storage files (generate signed URLs)
     const storageSummary = await exportStorageFiles(userId, user.organization_id);
     exportData.storageSummary = storageSummary;
 
+    // 6. Add backward compatibility aliases for common tables
+    // This ensures existing code expecting specific properties still works
+    exportData.screenshots = exportData.tables.screenshots || [];
+    exportData.screenshotCount = exportData.tableSummary.screenshots?.count || 0;
+    exportData.analysisResults = exportData.tables.analysis_results || [];
+    exportData.analysisResultCount = exportData.tableSummary.analysis_results?.count || 0;
+    exportData.activityRecords = exportData.tables.activity_records || [];
+    exportData.activityRecordCount = exportData.tableSummary.activity_records?.count || 0;
+    exportData.worklogs = exportData.tables.worklogs || [];
+    exportData.worklogCount = exportData.tableSummary.worklogs?.count || 0;
+    exportData.documents = exportData.tables.documents || [];
+    exportData.documentCount = exportData.tableSummary.documents?.count || 0;
+
     logger.info('[UserData] Export completed:', {
       userId,
-      totalRecords: {
-        screenshots: exportData.screenshotCount,
-        analysisResults: exportData.analysisResultCount,
-        activityRecords: exportData.activityRecordCount,
-        worklogs: exportData.worklogCount,
-        documents: exportData.documentCount,
-        storageFiles: storageSummary.totalFiles
-      }
+      tablesExported: Object.keys(exportData.tables).length,
+      totalRecords: Object.values(exportData.tableSummary).reduce((sum, t) => sum + (t.count || 0), 0),
+      storageFiles: storageSummary.totalFiles
     });
 
     return exportData;
@@ -607,43 +604,28 @@ async function generateSignedUrlForExport(exportData, requestId) {
 }
 
 /**
- * Permanently delete all user personal data
+ * Permanently delete all user personal data (DYNAMIC VERSION)
  * 
- * ⚠️ CRITICAL MAINTENANCE WARNING ⚠️
- * This function deletes data from a HARDCODED list of tables.
- * When adding NEW tables with user data, you MUST update this function!
+ * ✅ NOW USES DYNAMIC TABLE DISCOVERY!
+ * This function automatically detects all tables with user_id column.
+ * When you add new tables, they'll be included automatically!
  * 
- * DELETION ORDER (child → parent to avoid FK violations):
- * 1. activity_records
- * 2. unassigned_activity
- * 3. analysis_results (FK to screenshots)
- * 4. screenshots
- * 5. worklogs
- * 6. documents
- * 7. feedback
- * 8. tracking_settings
- * 9. worklog_sync
- * 10. user_jira_issues_cache
- * 11. notification_logs
- * 12. notification_preferences
- * 13. notification_cooldowns
- * 14. organization_members
- * 15. activity_log (anonymize, don't delete)
- * 16. users (CASCADE handles remaining)
+ * DELETION PROCESS:
+ * 1. Delete storage files first (preserves DB references for verification)
+ * 2. Discover all tables with user_id dynamically
+ * 3. Sort tables by configured deletion order (prevents FK violations)
+ * 4. Delete from each table (some are anonymized, not deleted)
+ * 5. Create audit log entry
  * 
- * STORAGE FILES DELETED FIRST (before DB records):
- * - screenshots/* (all paths)
- * - documents/* (all paths)
- * - feedback-images/*
+ * Configuration handled in: ai-server/src/config/user-data-config.js
+ * - deletionOrder: Defines sequence to avoid FK violations
+ * - anonymizeTables: Tables to anonymize instead of delete (audit logs)
+ * - storageAssociations: Which files to delete from storage
  * 
- * CHECKLIST WHEN ADDING NEW TABLES WITH user_id:
- * [ ] Add deletion query in correct order (child before parent)
- * [ ] Add to deletion summary recordsDeleted object
- * [ ] If table has storage files, delete in deleteStorageFiles()
- * [ ] Test deletion removes all data for user
- * [ ] Verify CASCADE relationships are correct
- * [ ] Update exportUserData() function
- * [ ] Update documentation
+ * IMPORTANT:
+ * - If you add a new table with foreign key constraints, add it to
+ *   the deletionOrder array in user-data-config.js
+ * - 'users' table MUST be deleted last (CASCADE cleans up stragglers)
  * 
  * @param {string} accountId - Atlassian account ID
  * @param {string} cloudId - Jira cloud instance ID
@@ -674,126 +656,35 @@ async function deleteUserData(accountId, cloudId) {
     const filesDeleted = await deleteStorageFiles(userId, organizationId);
     deletionSummary.filesDeleted = filesDeleted;
 
-    // 3. Delete database records in correct order (child → parent to avoid FK violations)
+    // 3. Discover all tables with user_id dynamically
+    const userDataTables = await discoverUserDataTables();
     
-    // Delete activity records
-    const { count: activityRecordsCount } = await supabase
-      .from('activity_records')
-      .delete({ count: 'exact' })
-      .eq('user_id', userId);
-    deletionSummary.recordsDeleted.activity_records = activityRecordsCount || 0;
+    // 4. Sort tables by deletion order (critical for FK constraints!)
+    const sortedTables = userDataTables.sort((a, b) => {
+      return userDataConfig.getDeletionOrderIndex(a) - userDataConfig.getDeletionOrderIndex(b);
+    });
+    
+    logger.info('[UserData] Deleting from tables in order:', {
+      tables: sortedTables
+    });
 
-    // Delete unassigned activity
-    const { count: unassignedCount } = await supabase
-      .from('unassigned_activity')
-      .delete({ count: 'exact' })
-      .eq('user_id', userId);
-    deletionSummary.recordsDeleted.unassigned_activity = unassignedCount || 0;
+    // 5. Delete from each table in order
+    for (const tableName of sortedTables) {
+      const result = await deleteFromTable(supabase, tableName, userId);
+      
+      if (result.action === 'anonymized') {
+        deletionSummary.recordsDeleted[`${tableName}_anonymized`] = result.count;
+      } else {
+        deletionSummary.recordsDeleted[tableName] = result.count;
+      }
+      
+      if (result.error) {
+        logger.warn(`[UserData] Error deleting from ${tableName}:`, result.error);
+        deletionSummary.recordsDeleted[`${tableName}_error`] = result.error;
+      }
+    }
 
-    // Delete analysis results (FK to screenshots, so delete before screenshots)
-    const { count: analysisCount } = await supabase
-      .from('analysis_results')
-      .delete({ count: 'exact' })
-      .eq('user_id', userId);
-    deletionSummary.recordsDeleted.analysis_results = analysisCount || 0;
-
-    // Delete screenshots
-    const { count: screenshotsCount } = await supabase
-      .from('screenshots')
-      .delete({ count: 'exact' })
-      .eq('user_id', userId);
-    deletionSummary.recordsDeleted.screenshots = screenshotsCount || 0;
-
-    // Delete worklogs
-    const { count: worklogsCount } = await supabase
-      .from('worklogs')
-      .delete({ count: 'exact' })
-      .eq('user_id', userId);
-    deletionSummary.recordsDeleted.worklogs = worklogsCount || 0;
-
-    // Delete documents
-    const { count: documentsCount } = await supabase
-      .from('documents')
-      .delete({ count: 'exact' })
-      .eq('user_id', userId);
-    deletionSummary.recordsDeleted.documents = documentsCount || 0;
-
-    // Delete feedback
-    const { count: feedbackCount } = await supabase
-      .from('feedback')
-      .delete({ count: 'exact' })
-      .eq('user_id', userId);
-    deletionSummary.recordsDeleted.feedback = feedbackCount || 0;
-
-    // Delete tracking settings
-    const { count: trackingSettingsCount } = await supabase
-      .from('tracking_settings')
-      .delete({ count: 'exact' })
-      .eq('user_id', userId);
-    deletionSummary.recordsDeleted.tracking_settings = trackingSettingsCount || 0;
-
-    // Delete worklog sync
-    const { count: worklogSyncCount } = await supabase
-      .from('worklog_sync')
-      .delete({ count: 'exact' })
-      .eq('user_id', userId);
-    deletionSummary.recordsDeleted.worklog_sync = worklogSyncCount || 0;
-
-    // Delete user Jira issues cache
-    const { count: issuesCacheCount } = await supabase
-      .from('user_jira_issues_cache')
-      .delete({ count: 'exact' })
-      .eq('user_id', userId);
-    deletionSummary.recordsDeleted.user_jira_issues_cache = issuesCacheCount || 0;
-
-    // Delete notification logs
-    const { count: notificationLogsCount } = await supabase
-      .from('notification_logs')
-      .delete({ count: 'exact' })
-      .eq('user_id', userId);
-    deletionSummary.recordsDeleted.notification_logs = notificationLogsCount || 0;
-
-    // Delete notification preferences
-    const { count: notificationPrefsCount } = await supabase
-      .from('notification_preferences')
-      .delete({ count: 'exact' })
-      .eq('user_id', userId);
-    deletionSummary.recordsDeleted.notification_preferences = notificationPrefsCount || 0;
-
-    // Delete notification cooldowns
-    const { count: cooldownsCount } = await supabase
-      .from('notification_cooldowns')
-      .delete({ count: 'exact' })
-      .eq('user_id', userId);
-    deletionSummary.recordsDeleted.notification_cooldowns = cooldownsCount || 0;
-
-    // Delete organization memberships
-    const { count: orgMembersCount } = await supabase
-      .from('organization_members')
-      .delete({ count: 'exact' })
-      .eq('user_id', userId);
-    deletionSummary.recordsDeleted.organization_members = orgMembersCount || 0;
-
-    // Anonymize activity log (keep for audit, but remove PII)
-    const { count: activityLogCount } = await supabase
-      .from('activity_log')
-      .update({
-        user_id: null,
-        ip_address: null,
-        user_agent: 'REDACTED',
-        event_data: { redacted: true, reason: 'user_data_deletion' }
-      })
-      .eq('user_id', userId);
-    deletionSummary.recordsDeleted.activity_log_anonymized = activityLogCount || 0;
-
-    // Delete user record (CASCADE will handle any remaining FKs)
-    const { count: usersCount } = await supabase
-      .from('users')
-      .delete({ count: 'exact' })
-      .eq('id', userId);
-    deletionSummary.recordsDeleted.users = usersCount || 0;
-
-    // 4. Create audit log entry (after user deletion, so user_id is null)
+    // 6. Create audit log entry (after user deletion, so user_id is null)
     await supabase
       .from('activity_log')
       .insert({
