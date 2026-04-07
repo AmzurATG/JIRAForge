@@ -62,7 +62,16 @@ const corsOptions = {
 };
 
 // Middleware
-app.use(helmet());
+app.use(helmet({
+  contentSecurityPolicy: {
+    directives: {
+      defaultSrc: ["'self'"],
+      scriptSrc: ["'self'", "'unsafe-inline'"], // Allow inline scripts for admin dashboard
+      styleSrc: ["'self'", "'unsafe-inline'"],   // Allow inline styles
+      imgSrc: ["'self'", "data:", "https:"],
+    }
+  }
+}));
 app.use(cors(corsOptions));
 app.use(express.json({ limit: '1mb' }));
 
