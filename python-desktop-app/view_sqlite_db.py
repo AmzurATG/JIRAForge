@@ -16,6 +16,9 @@ import sqlite3
 import argparse
 from datetime import datetime
 
+sys.path.insert(0, os.path.dirname(__file__))
+from db_connection import DatabaseConnectionManager
+
 def get_app_data_dir():
     """Get the application data directory"""
     if sys.platform == 'win32':
@@ -44,7 +47,7 @@ def list_tables(db_path):
         print("\nRun the desktop app first to create the database.")
         return
     
-    conn = sqlite3.connect(db_path)
+    conn = DatabaseConnectionManager.open_diagnostic_connection(db_path)
     cursor = conn.cursor()
     
     # Get all tables
@@ -84,7 +87,7 @@ def show_table_schema(db_path, table_name=None):
         print("❌ Database file not found!")
         return
     
-    conn = sqlite3.connect(db_path)
+    conn = DatabaseConnectionManager.open_diagnostic_connection(db_path)
     cursor = conn.cursor()
     
     # Get tables to show
@@ -135,7 +138,7 @@ def view_table_data(db_path, table_name, limit=10):
         print("❌ Database file not found!")
         return
     
-    conn = sqlite3.connect(db_path)
+    conn = DatabaseConnectionManager.open_diagnostic_connection(db_path)
     cursor = conn.cursor()
     
     try:
@@ -217,7 +220,7 @@ def show_stats(db_path):
     mod_date = datetime.fromtimestamp(mod_time).strftime('%Y-%m-%d %H:%M:%S')
     print(f"🕐 Last Modified: {mod_date}\n")
     
-    conn = sqlite3.connect(db_path)
+    conn = DatabaseConnectionManager.open_diagnostic_connection(db_path)
     cursor = conn.cursor()
     
     # Table statistics

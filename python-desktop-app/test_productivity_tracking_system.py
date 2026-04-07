@@ -64,13 +64,23 @@ class MockImage:
 
 
 class TestDatabase:
-    """Helper class to create and manage test databases"""
-    
+    """Helper class to create and manage test databases.
+    Also acts as a duck-typed db_manager (has get_connection() and db_path)
+    so it can be passed directly to AppClassificationManager, ActiveSessionManager, etc.
+    """
+
     def __init__(self):
         self.db_file = tempfile.NamedTemporaryFile(delete=False, suffix='.db')
         self.db_path = self.db_file.name
         self.db_file.close()
+        self._conn = None
         self._init_database()
+
+    def get_connection(self):
+        """Return a reusable connection (duck-typed db_manager interface)."""
+        if self._conn is None:
+            self._conn = sqlite3.connect(self.db_path, check_same_thread=False)
+        return self._conn
     
     def _init_database(self):
         """Initialize test database with required tables"""
@@ -154,6 +164,9 @@ class TestDatabase:
     def cleanup(self):
         """Clean up test database"""
         try:
+            if self._conn:
+                self._conn.close()
+                self._conn = None
             os.unlink(self.db_path)
         except:
             pass
@@ -173,7 +186,7 @@ class TestAppClassificationManager(unittest.TestCase):
         
         # Import manager class (mock it for testing)
         from desktop_app import AppClassificationManager
-        self.manager = AppClassificationManager(self.test_db.db_path)
+        self.manager = AppClassificationManager(self.test_db)
     
     def tearDown(self):
         """Clean up test database"""
@@ -419,7 +432,7 @@ class TestSessionManagement(unittest.TestCase):
         
         # Import session manager (mock it for testing)
         from desktop_app import ActiveSessionManager
-        self.session_manager = ActiveSessionManager(self.test_db.db_path)
+        self.session_manager = ActiveSessionManager(self.test_db)
     
     def tearDown(self):
         """Clean up test database"""
@@ -620,11 +633,22 @@ class TestBatchAnalysis(unittest.TestCase):
                 ]
                 self.batch_start_time = datetime.now(timezone.utc) - timedelta(minutes=5)
                 self.app_version = '1.0.0'
-                
+
+                # Create duck-typed db_manager for test
+                class _TestDbManager:
+                    def __init__(self, path):
+                        self.db_path = path
+                        self._conn = None
+                    def get_connection(self):
+                        if self._conn is None:
+                            self._conn = sqlite3.connect(self.db_path, check_same_thread=False)
+                        return self._conn
+                self._db_manager = _TestDbManager(db_path)
+
                 from desktop_app import ActiveSessionManager
-                self.session_manager = ActiveSessionManager(db_path)
+                self.session_manager = ActiveSessionManager(self._db_manager)
                 from desktop_app import OfflineManager
-                self.offline_manager = OfflineManager(db_path)
+                self.offline_manager = OfflineManager(self._db_manager)
             
             def get_user_project_key(self):
                 return 'PROJ'
@@ -633,7 +657,7 @@ class TestBatchAnalysis(unittest.TestCase):
         
         # Import and call batch upload logic (simplified)
         from desktop_app import ActiveSessionManager
-        session_mgr = ActiveSessionManager(self.test_db.db_path)
+        session_mgr = ActiveSessionManager(self.test_db)
         
         # Get all sessions
         conn = sqlite3.connect(self.test_db.db_path)
@@ -750,7 +774,7 @@ class TestBatchAnalysis(unittest.TestCase):
         
         # Simulate successful upload and clear
         from desktop_app import ActiveSessionManager
-        session_mgr = ActiveSessionManager(self.test_db.db_path)
+        session_mgr = ActiveSessionManager(self.test_db)
         session_mgr.clear_all()
         
         # Verify sessions cleared
@@ -799,8 +823,8 @@ class TestIntegrationFlow(unittest.TestCase):
         # Import managers
         from desktop_app import AppClassificationManager, ActiveSessionManager, LocalOCRProcessor
         
-        classification_mgr = AppClassificationManager(self.test_db.db_path)
-        session_mgr = ActiveSessionManager(self.test_db.db_path)
+        classification_mgr = AppClassificationManager(self.test_db)
+        session_mgr = ActiveSessionManager(self.test_db)
         ocr_processor = LocalOCRProcessor()
         
         # STEP 1: Capture window and classify

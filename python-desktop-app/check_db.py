@@ -1,11 +1,14 @@
 """Check local SQLite database for activity records"""
-import sqlite3
 import os
+import sys
 
-db_path = os.path.join(os.getenv('APPDATA'), 'TimeTracker', 'time_tracker_offline.db')
+sys.path.insert(0, os.path.dirname(__file__))
+from db_connection import DatabaseConnectionManager
+
+db_path = os.path.join(os.environ.get('LOCALAPPDATA', os.path.expanduser('~')), 'TimeTracker', 'time_tracker_offline.db')
 print(f'DB: {db_path}')
 
-conn = sqlite3.connect(db_path)
+conn = DatabaseConnectionManager.open_diagnostic_connection(db_path)
 cursor = conn.cursor()
 
 # Get tables
@@ -28,21 +31,23 @@ print(f'Columns: {cols}')
 for row in rows:
     print(dict(zip(cols, row)))
 
-# Check pending_uploads
-print('\n=== Pending uploads ===')
-cursor.execute("SELECT COUNT(*) FROM pending_uploads WHERE sync_status != 'synced'")
+# Check offline_screenshots
+print('\n=== Pending offline screenshots ===')
+cursor.execute("SELECT COUNT(*) FROM offline_screenshots WHERE synced = 0")
 print(f'Pending: {cursor.fetchone()[0]}')
 
-cursor.execute("SELECT * FROM pending_uploads ORDER BY created_at DESC LIMIT 3")
+cursor.execute("SELECT * FROM offline_screenshots ORDER BY created_at DESC LIMIT 3")
 rows = cursor.fetchall()
 if rows:
-    cursor.execute('PRAGMA table_info(pending_uploads)')
+    cursor.execute('PRAGMA table_info(offline_screenshots)')
     cols = [c[1] for c in cursor.fetchall()]
     print(f'Columns: {cols}')
     for row in rows:
         data = dict(zip(cols, row))
-        if data.get('data'):
-            data['data'] = data['data'][:100] + '...' if len(data.get('data', '')) > 100 else data['data']
+        # Truncate large blob data for display
+        for blob_col in ('image_data', 'thumbnail_data'):
+            if data.get(blob_col):
+                data[blob_col] = f'<{len(data[blob_col])} bytes>'
         print(data)
 
 conn.close()
