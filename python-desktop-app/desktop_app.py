@@ -4279,6 +4279,7 @@ class TimeTracker:
         # User state
         self.current_user = None
         self.current_user_id = None  # UUID from public.users table
+        self._login_reminder_last_shown = time.time()  # Don't remind immediately on startup
         
         # ============================================================================
         # TRACKING SETTINGS (loaded from Supabase, configurable by admins)
@@ -4733,9 +4734,9 @@ class TimeTracker:
                 print("[INFO] Sending OCR diagnostics to server...")
                 send_ocr_diagnostics(self.auth_manager)
 
-                # Reset reauth notification flag on successful login
-                self._reauth_notification_shown = False
-                self._reauth_notification_shown = False
+                # Reset notification timestamps on successful login
+                self._reauth_notification_last_shown = 0
+                self._login_reminder_last_shown = 0
 
                 # Update desktop app status to logged in
                 self._update_desktop_status(logged_in=True)
@@ -6821,10 +6822,12 @@ class TimeTracker:
             print(f"[WARN] Failed to show notification: {e}")
 
     def _show_reauth_notification(self):
-        """Show a one-time notification that the user needs to re-authenticate"""
-        if getattr(self, '_reauth_notification_shown', False):
-            return  # Already shown, don't spam
-        self._reauth_notification_shown = True
+        """Show a periodic notification that the user needs to re-authenticate (every 15 minutes)"""
+        now = time.time()
+        last_shown = getattr(self, '_reauth_notification_last_shown', 0)
+        if now - last_shown < 900:  # 15 minutes
+            return
+        self._reauth_notification_last_shown = now
 
         if not WINOTIFY_AVAILABLE:
             print("[WARN] Re-authentication required (notification unavailable)")
@@ -6842,6 +6845,31 @@ class TimeTracker:
             print("[OK] Re-authentication notification shown to user")
         except Exception as e:
             print(f"[WARN] Failed to show reauth notification: {e}")
+
+    def _show_login_reminder(self):
+        """Show a periodic notification reminding the user to log in (every 15 minutes)"""
+        now = time.time()
+        last_shown = getattr(self, '_login_reminder_last_shown', 0)
+        if now - last_shown < 900:  # 15 minutes
+            return
+        self._login_reminder_last_shown = now
+
+        if not WINOTIFY_AVAILABLE:
+            print("[WARN] Login reminder skipped - winotify not available")
+            return
+
+        try:
+            notification = Notification(
+                app_id="Time Tracker",
+                title="Time Tracker - Not Logged In",
+                msg="You are not logged in. Please log in to start tracking your work time.",
+                duration="long"
+            )
+            notification.set_audio(audio.Default, loop=False)
+            notification.show()
+            print("[OK] Login reminder notification shown to user")
+        except Exception as e:
+            print(f"[WARN] Failed to show login reminder: {e}")
 
     def show_pause_reminder_notification(self):
         """Show notification reminding user they have paused tracking"""
@@ -7004,6 +7032,9 @@ class TimeTracker:
         Called every 5 minutes (batch_upload_interval).
         Uses custom JWT for RLS-scoped access (Atlassian OAuth → AI server JWT).
         """
+        sessions = None
+        records = None
+        batch_timestamp = None
         try:
             # Wait briefly for any in-flight async OCR to finish before uploading
             if self.ocr_processor and not self.ocr_processor.wait_for_ocr(timeout=5.0):
@@ -7055,18 +7086,34 @@ class TimeTracker:
 
             # Supabase client with custom JWT required for RLS-scoped batch insert
             if not self.supabase:
-                print("[BATCH] No Supabase client — records stay in SQLite")
+                print("[BATCH] No Supabase client — restoring sessions to SQLite")
+                self.session_manager.restore_sessions(sessions)
+                self.last_batch_upload_time = time.time()
                 return
 
             if not self.current_user_id:
-                print("[BATCH] No current user ID — cannot upload activity records")
+                print("[BATCH] No current user ID — restoring sessions to SQLite")
+                self.session_manager.restore_sessions(sessions)
                 self.last_batch_upload_time = time.time()
                 return
 
             # Check connectivity
             if not self.offline_manager.check_connectivity():
-                print(f"[BATCH] Offline — {len(sessions)} records stay in SQLite for retry")
+                print(f"[BATCH] Offline — restoring {len(sessions)} sessions to SQLite for retry")
+                self.session_manager.restore_sessions(sessions)
+                self.last_batch_upload_time = time.time()
                 return
+
+            # Ensure Supabase JWT is valid before uploading
+            # (JWT expires after ~1 hour; without this check, all uploads silently fail)
+            sb_expires_at = self.auth_manager.tokens.get('supabase_token_expires_at', 0)
+            if sb_expires_at and time.time() > (sb_expires_at - 300):
+                print("[BATCH] Supabase JWT expired — refreshing before upload...")
+                if not self._set_supabase_jwt():
+                    print("[BATCH] JWT refresh failed — restoring sessions to SQLite for retry")
+                    self.session_manager.restore_sessions(sessions)
+                    self.last_batch_upload_time = time.time()
+                    return
 
             batch_timestamp = datetime.now(timezone.utc).isoformat()
             batch_end = datetime.now(timezone.utc)
@@ -7212,16 +7259,53 @@ class TimeTracker:
             self.last_batch_upload_time = time.time()
 
         except Exception as e:
-            print(f"[ERROR] Activity batch upload failed: {e}")
-            # Log detailed error info from Supabase response
-            if hasattr(e, 'message'):
-                print(f"       Supabase error: {e.message}")
-            if hasattr(e, 'code'):
-                print(f"       Error code: {e.code}")
-            if hasattr(e, 'details'):
-                print(f"       Details: {e.details}")
+            error_str = str(e).lower()
+            is_auth_error = any(kw in error_str for kw in ('jwt expired', 'jwt', '401', 'unauthorized', 'invalid token', 'token is expired', 'not authenticated'))
+
+            if is_auth_error and records:
+                print(f"[BATCH] Auth error during upload: {e}")
+                print("[BATCH] Refreshing Supabase JWT and retrying once...")
+                if self._set_supabase_jwt():
+                    try:
+                        # Check if records were partially inserted before the error
+                        # (e.g., HTTP timeout after server committed). batch_timestamp
+                        # is unique per upload cycle, so we can detect duplicates.
+                        if batch_timestamp:
+                            existing = self.supabase.table('activity_records') \
+                                .select('id') \
+                                .eq('user_id', self.current_user_id) \
+                                .eq('batch_timestamp', batch_timestamp) \
+                                .execute()
+                            if existing.data and len(existing.data) > 0:
+                                print(f"[BATCH] {len(existing.data)} records already inserted before error — skipping retry to avoid duplicates")
+                                self._pending_idle_records.clear()
+                                self.current_window_key = None
+                                self.batch_start_time = datetime.now(timezone.utc)
+                                self.last_batch_upload_time = time.time()
+                                return
+
+                        result = self.supabase.table('activity_records').insert(records).execute()
+                        if result.data:
+                            print(f"[BATCH] Retry succeeded — {len(result.data)} records uploaded after JWT refresh")
+                            self._pending_idle_records.clear()
+                            self.current_window_key = None
+                            self.batch_start_time = datetime.now(timezone.utc)
+                            self.last_batch_upload_time = time.time()
+                            return
+                    except Exception as retry_e:
+                        print(f"[ERROR] Retry also failed: {retry_e}")
+
+            else:
+                print(f"[ERROR] Activity batch upload failed: {e}")
+                if hasattr(e, 'message'):
+                    print(f"       Supabase error: {e.message}")
+                if hasattr(e, 'code'):
+                    print(f"       Error code: {e.code}")
+                if hasattr(e, 'details'):
+                    print(f"       Details: {e.details}")
+
             # Restore sessions to SQLite so they can be retried on next cycle
-            if 'sessions' in dir() and sessions:
+            if sessions:
                 self.session_manager.restore_sessions(sessions)
                 print(f"       {len(sessions)} records restored to SQLite for retry on next cycle")
             self.last_batch_upload_time = time.time()
@@ -7828,6 +7912,19 @@ class TimeTracker:
                     print("[ERROR] Failed to save screenshot offline")
                     return None
             
+            # Ensure Supabase JWT is valid before uploading
+            sb_expires_at = self.auth_manager.tokens.get('supabase_token_expires_at', 0)
+            if sb_expires_at and time.time() > (sb_expires_at - 300):
+                if not self._set_supabase_jwt():
+                    # JWT refresh failed — save offline
+                    local_id = self.offline_manager.save_screenshot_offline(
+                        screenshot_data, img_bytes, thumb_bytes
+                    )
+                    if local_id:
+                        self.last_screenshot_end_time = end_time
+                        return f"offline_{local_id}"
+                    return None
+
             # ONLINE MODE: Upload to Supabase
             screenshot_result = storage_client.storage.from_('screenshots').upload(
                 storage_path, img_bytes, file_options={'content-type': 'image/png'}
@@ -8333,7 +8430,7 @@ class TimeTracker:
             heartbeat_counter = 0
             heartbeat_interval = 480  # Send heartbeat every 480 iterations (4 hours at 30s interval)
             token_refresh_counter = 0
-            token_refresh_interval = 100  # Check token expiry every 100 iterations (~50 min at 30s)
+            token_refresh_interval = 20  # Check token expiry every 20 iterations (~10 min at 30s)
 
             # Send initial heartbeat immediately on thread start
             if self.current_user_id and not self.current_user_id.startswith('anonymous_'):
@@ -8382,7 +8479,7 @@ class TimeTracker:
                                     print("[WARN] Supabase JWT refresh failed — will retry on next cycle")
 
                     elif getattr(self.auth_manager, '_refresh_token_invalid', False):
-                        # Refresh token is permanently invalid — show reauth notification once
+                        # Refresh token is permanently invalid — remind user every 15 min
                         self._show_reauth_notification()
 
                 except Exception as e:
@@ -9423,19 +9520,28 @@ class TimeTracker:
             
             self.tray.title = "TimeTracker"
 
-            # Start a thread to periodically update the icon
-            def update_icon_periodically():
-                while self.tray and self.tray.visible:
-                    try:
-                        self.update_tray_icon()
-                        time.sleep(2)  # Update every 2 seconds
-                    except Exception as e:
-                        break
+            # Use pystray's setup callback to start periodic icon updates
+            # AFTER the tray is visible. Without this, the update thread exits
+            # immediately because self.tray.visible is False before .run() starts.
+            def on_tray_ready(icon):
+                icon.visible = True
+                # Start periodic icon update in a separate daemon thread
+                def update_icon_periodically():
+                    while self.tray and self.tray.visible:
+                        try:
+                            self.update_tray_icon()
+                            # Remind user to log in every 15 minutes if not logged in
+                            # (skip for anonymous/offline users — they can't log in)
+                            if not self.current_user and not (self.current_user_id and self.current_user_id.startswith('anonymous_')):
+                                self._show_login_reminder()
+                        except Exception as e:
+                            print(f"[WARN] Periodic icon update error: {e}")
+                        time.sleep(2)
 
-            update_thread = threading.Thread(target=update_icon_periodically, daemon=True)
-            update_thread.start()
+                update_thread = threading.Thread(target=update_icon_periodically, daemon=True)
+                update_thread.start()
 
-            self.tray.run()
+            self.tray.run(setup=on_tray_ready)
         except Exception as e:
             print(f"[WARN] System tray setup failed: {e}")
             # Fallback to simple colored icon
