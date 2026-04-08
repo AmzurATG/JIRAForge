@@ -7304,6 +7304,25 @@ class TimeTracker:
                 if hasattr(e, 'details'):
                     print(f"       Details: {e.details}")
 
+            # Before restoring sessions, check if the insert actually succeeded
+            # (e.g., server committed but response timed out — restoring would cause duplicates)
+            if sessions and batch_timestamp and self.supabase:
+                try:
+                    existing = self.supabase.table('activity_records') \
+                        .select('id') \
+                        .eq('user_id', self.current_user_id) \
+                        .eq('batch_timestamp', batch_timestamp) \
+                        .execute()
+                    if existing.data and len(existing.data) > 0:
+                        print(f"[BATCH] {len(existing.data)} records already in database despite error — skipping restore to avoid duplicates")
+                        self._pending_idle_records.clear()
+                        self.current_window_key = None
+                        self.batch_start_time = datetime.now(timezone.utc)
+                        self.last_batch_upload_time = time.time()
+                        return
+                except Exception:
+                    pass  # Can't verify — fall through to restore
+
             # Restore sessions to SQLite so they can be retried on next cycle
             if sessions:
                 self.session_manager.restore_sessions(sessions)
