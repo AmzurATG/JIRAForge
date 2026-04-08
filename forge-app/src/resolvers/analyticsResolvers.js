@@ -3,7 +3,7 @@
  * Resolver definitions for time analytics endpoints
  */
 
-import { fetchTimeAnalytics, fetchTimeAnalyticsBatch, fetchAllAnalytics, fetchProjectAnalytics, fetchProjectTeamAnalytics, fetchTeamDayTimeline, fetchMyDayTimeline, convertIdleToWorklog } from '../services/analyticsService.js';
+import { fetchTimeAnalytics, fetchTimeAnalyticsBatch, fetchAllAnalytics, fetchProjectAnalytics, fetchProjectTeamAnalytics, fetchTeamDayTimeline, fetchMyDayTimeline, convertIdleToWorklog, fetchMemberDayDetails, fetchMemberWeekDetails, fetchMemberMonthDetails, generateTeamExportData } from '../services/analyticsService.js';
 import { isJiraAdmin, checkUserPermissions, createJiraIssue, getIssueTransitions, transitionIssue, createJiraWorklog } from '../utils/jira.js';
 
 // Feature flag for using batch API (set to true for production)
@@ -230,6 +230,124 @@ export function registerAnalyticsResolvers(resolver) {
       return { success: true, data };
     } catch (error) {
       console.error('Error converting idle to worklog:', error);
+      return { success: false, error: error.message };
+    }
+  });
+
+  /**
+   * Resolver for fetching member day details
+   * Shows issues worked on a specific day by a team member
+   */
+  resolver.define('getMemberDayDetails', async (req) => {
+    const { payload, context } = req;
+    const { projectKey, userId, date } = payload;
+    const accountId = context.accountId;
+    const cloudId = context.cloudId;
+
+    try {
+      // Verify admin or project admin permissions
+      const perms = await checkUserPermissions(['ADMINISTER', 'ADMINISTER_PROJECTS'], projectKey);
+      const adminCheck = perms.permissions?.ADMINISTER?.havePermission || false;
+      const isProjectAdmin = perms.permissions?.ADMINISTER_PROJECTS?.havePermission || false;
+
+      if (!adminCheck && !isProjectAdmin) {
+        return { success: false, error: 'Access denied: Project Admin or Jira Administrator required' };
+      }
+
+      const data = await fetchMemberDayDetails(accountId, cloudId, projectKey, userId, date);
+      return { success: true, data };
+    } catch (error) {
+      console.error('Error fetching member day details:', error);
+      return { success: false, error: error.message };
+    }
+  });
+
+  /**
+   * Resolver for fetching member week details
+   * Shows day-by-day breakdown for a week for a team member
+   */
+  resolver.define('getMemberWeekDetails', async (req) => {
+    const { payload, context } = req;
+    const { projectKey, userId, weekStartDate } = payload;
+    const accountId = context.accountId;
+    const cloudId = context.cloudId;
+
+    try {
+      // Verify admin or project admin permissions
+      const perms = await checkUserPermissions(['ADMINISTER', 'ADMINISTER_PROJECTS'], projectKey);
+      const adminCheck = perms.permissions?.ADMINISTER?.havePermission || false;
+      const isProjectAdmin = perms.permissions?.ADMINISTER_PROJECTS?.havePermission || false;
+
+      if (!adminCheck && !isProjectAdmin) {
+        return { success: false, error: 'Access denied: Project Admin or Jira Administrator required' };
+      }
+
+      const data = await fetchMemberWeekDetails(accountId, cloudId, projectKey, userId, weekStartDate);
+      return { success: true, data };
+    } catch (error) {
+      console.error('Error fetching member week details:', error);
+      return { success: false, error: error.message };
+    }
+  });
+
+  /**
+   * Resolver for fetching member month details
+   * Shows week-by-week and day-by-day breakdown for a month for a team member
+   */
+  resolver.define('getMemberMonthDetails', async (req) => {
+    const { payload, context } = req;
+    const { projectKey, userId, month } = payload;
+    const accountId = context.accountId;
+    const cloudId = context.cloudId;
+
+    try {
+      // Verify admin or project admin permissions
+      const perms = await checkUserPermissions(['ADMINISTER', 'ADMINISTER_PROJECTS'], projectKey);
+      const adminCheck = perms.permissions?.ADMINISTER?.havePermission || false;
+      const isProjectAdmin = perms.permissions?.ADMINISTER_PROJECTS?.havePermission || false;
+
+      if (!adminCheck && !isProjectAdmin) {
+        return { success: false, error: 'Access denied: Project Admin or Jira Administrator required' };
+      }
+
+      const data = await fetchMemberMonthDetails(accountId, cloudId, projectKey, userId, month);
+      return { success: true, data };
+    } catch (error) {
+      console.error('Error fetching member month details:', error);
+      return { success: false, error: error.message };
+    }
+  });
+
+  /**
+   * Resolver for exporting team analytics
+   * Generates CSV data for download
+   */
+  resolver.define('exportTeamAnalytics', async (req) => {
+    const { payload, context } = req;
+    const { projectKey, startDate, endDate, format } = payload;
+    const accountId = context.accountId;
+    const cloudId = context.cloudId;
+
+    try {
+      // Verify admin or project admin permissions
+      const perms = await checkUserPermissions(['ADMINISTER', 'ADMINISTER_PROJECTS'], projectKey);
+      const adminCheck = perms.permissions?.ADMINISTER?.havePermission || false;
+      const isProjectAdmin = perms.permissions?.ADMINISTER_PROJECTS?.havePermission || false;
+
+      if (!adminCheck && !isProjectAdmin) {
+        return { success: false, error: 'Access denied: Project Admin or Jira Administrator required' };
+      }
+
+      const data = await generateTeamExportData(accountId, cloudId, projectKey, startDate, endDate);
+      
+      return { 
+        success: true, 
+        data,
+        format: format || 'csv',
+        filename: `team-analytics-${projectKey || 'all'}-${endDate}.csv`
+      };
+    } catch (error) {
+      console.error('Error exporting team analytics:', error);
       return { success: false, error: error.message };
     }
   });

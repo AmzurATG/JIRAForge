@@ -10,4 +10,15 @@
 
 export { fetchTimeAnalytics, fetchTimeAnalyticsBatch } from './analytics/userAnalyticsService.js';
 export { fetchAllAnalytics } from './analytics/orgAnalyticsService.js';
-export { fetchProjectAnalytics, fetchProjectTeamAnalytics, fetchTeamDayTimeline, fetchMyDayTimeline, convertIdleToWorklog, getIdleRecordProjectKey } from './analytics/teamAnalyticsService.js';
+export { 
+  fetchProjectAnalytics, 
+  fetchProjectTeamAnalytics, 
+  fetchTeamDayTimeline, 
+  fetchMyDayTimeline, 
+  convertIdleToWorklog, 
+  getIdleRecordProjectKey,
+  fetchMemberDayDetails,
+  fetchMemberWeekDetails,
+  fetchMemberMonthDetails,
+  generateTeamExportData
+} from './analytics/teamAnalyticsService.js';

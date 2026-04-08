@@ -2,6 +2,8 @@ import React, { useState, useEffect } from 'react';
 import { invoke } from '@forge/bridge';
 import { useApp } from '../../context';
 import { navigateToIssue, formatTime } from '../../utils';
+import TeamMemberActivityModal from '../modals/TeamMemberActivityModal';
+import ExportTeamAnalyticsModal from '../modals/ExportTeamAnalyticsModal';
 import './TeamAnalyticsTab.css';
 
 function TeamAnalyticsTab() {
@@ -12,6 +14,12 @@ function TeamAnalyticsTab() {
   const [teamAnalytics, setTeamAnalytics] = useState(null);
   const [issueViewMode, setIssueViewMode] = useState('list'); // 'list' or 'grid'
   const [selectedTrendDay, setSelectedTrendDay] = useState(null); // Selected day from Activity Trend
+  
+  // Modal state
+  const [activityModalOpen, setActivityModalOpen] = useState(false);
+  const [selectedMember, setSelectedMember] = useState(null);
+  const [activityViewType, setActivityViewType] = useState('today');
+  const [exportModalOpen, setExportModalOpen] = useState(false);
 
   const getInitials = (name) => {
     if (!name) return '?';
@@ -127,10 +135,51 @@ function TeamAnalyticsTab() {
     });
   };
 
+  // Handler for clicking on "Today" hours
+  const handleTodayClick = (member) => {
+    setSelectedMember(member);
+    setActivityViewType('today');
+    setActivityModalOpen(true);
+  };
+
+  // Handler for clicking on "This Week" hours
+  const handleWeekClick = (member) => {
+    setSelectedMember(member);
+    setActivityViewType('week');
+    setActivityModalOpen(true);
+  };
+
+  // Handler for clicking on "This Month" hours
+  const handleMonthClick = (member) => {
+    setSelectedMember(member);
+    setActivityViewType('month');
+    setActivityModalOpen(true);
+  };
+
+  // Handler for clicking on member name
+  const handleMemberNameClick = (member) => {
+    setSelectedMember(member);
+    setActivityViewType('comprehensive');
+    setActivityModalOpen(true);
+  };
+
+  // Handler for export button
+  const handleExportClick = () => {
+    setExportModalOpen(true);
+  };
+
   return (
     <div className="team-analytics">
       <div className="team-analytics-header">
         <h2>Team Analytics Dashboard</h2>
+        <button className="export-btn" onClick={handleExportClick} title="Export Team Analytics">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <path d="M21 15V19C21 19.5304 20.7893 20.0391 20.4142 20.4142C20.0391 20.7893 19.5304 21 19 21H5C4.46957 21 3.96086 20.7893 3.58579 20.4142C3.21071 20.0391 3 19.5304 3 19V15" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+            <path d="M7 10L12 15L17 10" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+            <path d="M12 15V3" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+          </svg>
+          Export
+        </button>
         <div className="project-selector">
           <label htmlFor="team-project-select">Project: </label>
           <select
@@ -377,7 +426,7 @@ function TeamAnalyticsTab() {
                       {teamAnalytics?.teamMemberActivity?.length > 0 ? (
                         teamAnalytics.teamMemberActivity.map((member, idx) => (
                           <tr key={idx}>
-                            <td className="member-name-cell">
+                            <td className="member-name-cell clickable" onClick={() => handleMemberNameClick(member)}>
                               <div 
                                 className="member-avatar"
                                 style={{ backgroundColor: getAvatarColor(member.displayName) }}
@@ -387,9 +436,9 @@ function TeamAnalyticsTab() {
                               </div>
                               <span className="member-name">{member.displayName}</span>
                             </td>
-                            <td className="hours-cell"><strong>{member.todayHours}h</strong></td>
-                            <td className="hours-cell"><strong>{member.weekHours}h</strong></td>
-                            <td className="hours-cell"><strong>{member.monthHours}h</strong></td>
+                            <td className="hours-cell clickable" onClick={() => handleTodayClick(member)}><strong>{member.todayHours}h</strong></td>
+                            <td className="hours-cell clickable" onClick={() => handleWeekClick(member)}><strong>{member.weekHours}h</strong></td>
+                            <td className="hours-cell clickable" onClick={() => handleMonthClick(member)}><strong>{member.monthHours}h</strong></td>
                           </tr>
                         ))
                       ) : (
@@ -600,6 +649,26 @@ function TeamAnalyticsTab() {
             </div>
           </div>
         </>
+      )}
+      
+      {/* Team Member Activity Modal */}
+      {activityModalOpen && selectedMember && (
+        <TeamMemberActivityModal
+          isOpen={activityModalOpen}
+          onClose={() => setActivityModalOpen(false)}
+          member={selectedMember}
+          viewType={activityViewType}
+          projectKey={selectedProjectKey}
+        />
+      )}
+
+      {/* Export Team Analytics Modal */}
+      {exportModalOpen && (
+        <ExportTeamAnalyticsModal
+          isOpen={exportModalOpen}
+          onClose={() => setExportModalOpen(false)}
+          projectKey={selectedProjectKey}
+        />
       )}
     </div>
   );
