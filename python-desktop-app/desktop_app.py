@@ -7073,6 +7073,7 @@ class TimeTracker:
                 print("[BATCH] No activity records to upload")
                 self.current_window_key = None  # Force re-detection so tracking resumes on next loop
                 self.last_batch_upload_time = time.time()
+                self.add_admin_log('DEBUG', 'Batch upload: no activity records to upload')
                 return
 
             if not sessions:
@@ -7089,12 +7090,14 @@ class TimeTracker:
                 print("[BATCH] No Supabase client — restoring sessions to SQLite")
                 self.session_manager.restore_sessions(sessions)
                 self.last_batch_upload_time = time.time()
+                self.add_admin_log('ERROR', f'Batch upload failed: no Supabase client ({len(sessions)} records pending)')
                 return
 
             if not self.current_user_id:
                 print("[BATCH] No current user ID — restoring sessions to SQLite")
                 self.session_manager.restore_sessions(sessions)
                 self.last_batch_upload_time = time.time()
+                self.add_admin_log('ERROR', f'Batch upload failed: no user ID ({len(sessions)} records pending)')
                 return
 
             # Check connectivity
@@ -7102,6 +7105,7 @@ class TimeTracker:
                 print(f"[BATCH] Offline — restoring {len(sessions)} sessions to SQLite for retry")
                 self.session_manager.restore_sessions(sessions)
                 self.last_batch_upload_time = time.time()
+                self.add_admin_log('WARN', f'Batch upload deferred: offline ({len(sessions)} records pending)')
                 return
 
             # Ensure Supabase JWT is valid before uploading
@@ -7113,7 +7117,12 @@ class TimeTracker:
                     print("[BATCH] JWT refresh failed — restoring sessions to SQLite for retry")
                     self.session_manager.restore_sessions(sessions)
                     self.last_batch_upload_time = time.time()
+                    self.add_admin_log('ERROR', f'Batch upload failed: JWT refresh failed ({len(sessions)} records pending). Re-login may be required.')
                     return
+            elif not sb_expires_at:
+                # No expiry info stored — proactively refresh to be safe
+                print("[BATCH] No JWT expiry info — refreshing proactively...")
+                self._set_supabase_jwt()
 
             batch_timestamp = datetime.now(timezone.utc).isoformat()
             batch_end = datetime.now(timezone.utc)
@@ -7236,11 +7245,13 @@ class TimeTracker:
                         print(f"[ERROR] Insert returned data but verification found 0 records — possible RLS or trigger issue")
                         print(f"[BATCH] Restoring {len(sessions)} sessions to SQLite for retry on next cycle")
                         self.session_manager.restore_sessions(sessions)
+                        self.add_admin_log('ERROR', f'Batch upload failed: verification found 0/{len(records)} records (RLS or trigger issue). Records queued for retry.')
                     else:
                         upload_verified = True
                 except Exception as ve:
                     print(f"[ERROR] Verification query failed: {ve} — restoring sessions to SQLite for retry")
                     self.session_manager.restore_sessions(sessions)
+                    self.add_admin_log('ERROR', f'Batch upload verification failed: {ve}')
 
                 if upload_verified:
                     # Upload confirmed — safe to clear idle records and reset batch timer
@@ -7248,6 +7259,7 @@ class TimeTracker:
                     self.current_window_key = None  # Force re-detection so tracking resumes on next loop
                     self.batch_start_time = datetime.now(timezone.utc)
                     print(f"[BATCH] Upload verified and committed successfully")
+                    self.add_admin_log('INFO', f'Batch uploaded: {len(records)} records verified in database')
             else:
                 # Log detailed response for debugging
                 print(f"[WARN] Batch upload returned no data — restoring sessions to SQLite for retry")
@@ -7255,6 +7267,7 @@ class TimeTracker:
                     print(f"       result.count={result.count}")
                 print(f"       result={result}")
                 self.session_manager.restore_sessions(sessions)
+                self.add_admin_log('ERROR', f'Batch upload returned no data ({len(records)} records). Queued for retry.')
 
             self.last_batch_upload_time = time.time()
 
@@ -7265,6 +7278,7 @@ class TimeTracker:
             if is_auth_error and records:
                 print(f"[BATCH] Auth error during upload: {e}")
                 print("[BATCH] Refreshing Supabase JWT and retrying once...")
+                self.add_admin_log('WARN', f'Batch upload auth error: {e}. Refreshing JWT and retrying...')
                 if self._set_supabase_jwt():
                     try:
                         # Check if records were partially inserted before the error
@@ -7287,6 +7301,7 @@ class TimeTracker:
                         result = self.supabase.table('activity_records').insert(records).execute()
                         if result.data:
                             print(f"[BATCH] Retry succeeded — {len(result.data)} records uploaded after JWT refresh")
+                            self.add_admin_log('INFO', f'Batch uploaded after JWT refresh: {len(result.data)} records')
                             self._pending_idle_records.clear()
                             self.current_window_key = None
                             self.batch_start_time = datetime.now(timezone.utc)
@@ -7294,9 +7309,11 @@ class TimeTracker:
                             return
                     except Exception as retry_e:
                         print(f"[ERROR] Retry also failed: {retry_e}")
+                        self.add_admin_log('ERROR', f'Batch upload retry also failed: {retry_e}')
 
             else:
                 print(f"[ERROR] Activity batch upload failed: {e}")
+                self.add_admin_log('ERROR', f'Batch upload failed: {e}')
                 if hasattr(e, 'message'):
                     print(f"       Supabase error: {e.message}")
                 if hasattr(e, 'code'):
@@ -7327,6 +7344,7 @@ class TimeTracker:
             if sessions:
                 self.session_manager.restore_sessions(sessions)
                 print(f"       {len(sessions)} records restored to SQLite for retry on next cycle")
+                self.add_admin_log('WARN', f'{len(sessions)} records queued for retry on next cycle')
             self.last_batch_upload_time = time.time()
 
     def process_window_event(self, window_info):
@@ -8209,11 +8227,11 @@ class TimeTracker:
             'user_timezone': get_local_timezone_name(),
             'project_key': project_key,
             'status': 'analyzed',  # No AI analysis needed for idle records
-            'metadata': json.dumps({
+            'metadata': {
                 'tracking_mode': 'idle_detection',
                 'idle_reason': reason,
                 'app_version': self.app_version
-            })
+            }
         }
         self._pending_idle_records.append(record)
         print(f"[IDLE] Created idle record: {self.idle_start_time.strftime('%H:%M:%S')} → {idle_end.strftime('%H:%M:%S')} ({idle_duration}s, reason: {reason})")
@@ -8680,6 +8698,13 @@ class TimeTracker:
                         # This prevents idle time from being counted as work time
                         self._finalize_active_session("idle timeout")
                         self.session_manager.stop_current_timer()  # Stop SQLite activity timer so idle time isn't counted in activity_records
+
+                        # Flush accumulated sessions to database BEFORE entering idle
+                        # This prevents data sitting in SQLite for hours during long idle periods
+                        try:
+                            self.upload_activity_batch()
+                        except Exception as e:
+                            print(f"[WARN] Pre-idle batch upload failed: {e} — data remains in SQLite for next cycle")
 
                         # Record when idle started (backdate to last activity)
                         self.idle_start_time = last_activity
