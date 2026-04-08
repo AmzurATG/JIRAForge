@@ -199,3 +199,82 @@
     flex-direction: column;
   }
 }
+
+/* User Filter Styles */
+.user-filter-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.filter-chip {
+  padding: 4px 12px;
+  border: 1px solid #DFE1E6;
+  border-radius: 16px;
+  font-size: 12px;
+  font-weight: 500;
+  color: #42526E;
+  background: white;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.filter-chip:hover {
+  border-color: #0052CC;
+  color: #0052CC;
+}
+
+.filter-chip.active {
+  border-color: #0052CC;
+  background: #DEEBFF;
+  color: #0052CC;
+}
+
+.selected-count {
+  font-size: 12px;
+  color: #5E6C84;
+}
+
+.user-checkbox-list {
+  max-height: 180px;
+  overflow-y: auto;
+  border: 1px solid #DFE1E6;
+  border-radius: 4px;
+  padding: 4px 0;
+}
+
+.user-checkbox-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  cursor: pointer;
+  font-size: 13px;
+  transition: background 0.1s;
+}
+
+.user-checkbox-item:hover {
+  background: #F4F5F7;
+}
+
+.user-checkbox-item input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  cursor: pointer;
+  accent-color: #0052CC;
+}
+
+.user-checkbox-name {
+  flex: 1;
+  color: #172B4D;
+}
+
+.user-checkbox-hours {
+  font-size: 12px;
+  color: #5E6C84;
+  flex-shrink: 0;
+}
+
+.export-modal {
+  max-width: 560px;
+}

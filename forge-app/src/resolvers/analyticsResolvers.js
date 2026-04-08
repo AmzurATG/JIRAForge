@@ -324,7 +324,7 @@ export function registerAnalyticsResolvers(resolver) {
    */
   resolver.define('exportTeamAnalytics', async (req) => {
     const { payload, context } = req;
-    const { projectKey, startDate, endDate, format } = payload;
+    const { projectKey, startDate, endDate, format, filterUserIds } = payload;
     const accountId = context.accountId;
     const cloudId = context.cloudId;
 
@@ -338,7 +338,7 @@ export function registerAnalyticsResolvers(resolver) {
         return { success: false, error: 'Access denied: Project Admin or Jira Administrator required' };
       }
 
-      const data = await generateTeamExportData(accountId, cloudId, projectKey, startDate, endDate);
+      const data = await generateTeamExportData(accountId, cloudId, projectKey, startDate, endDate, filterUserIds || null);
       
       return { 
         success: true, 

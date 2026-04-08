@@ -1245,11 +1245,17 @@ export async function fetchMemberWeekDetails(accountId, cloudId, projectKey, use
         issueKey,
         projectKey: record.project_key,
         totalSeconds: 0,
-        sessionCount: 0
+        sessionCount: 0,
+        sessions: []
       };
     }
     dayMap[workDate][issueKey].totalSeconds += record.duration_seconds || 0;
     dayMap[workDate][issueKey].sessionCount++;
+    dayMap[workDate][issueKey].sessions.push({
+      startTime: record.start_time,
+      endTime: record.end_time,
+      seconds: record.duration_seconds
+    });
   });
   
   // Collect all unique issue keys for batch fetching
@@ -1342,7 +1348,7 @@ export async function fetchMemberMonthDetails(accountId, cloudId, projectKey, us
   const monthEndStr = monthEnd.toISOString().split('T')[0];
   
   // Build query for activity records for the entire month
-  let query = `activity_records?organization_id=eq.${organization.id}&user_id=eq.${userId}&work_date=gte.${monthStartStr}&work_date=lte.${monthEndStr}&classification=in.(productive,unknown)&user_assigned_issue_key=not.is.null&select=work_date,user_assigned_issue_key,project_key,duration_seconds&order=work_date.asc&limit=10000`;
+  let query = `activity_records?organization_id=eq.${organization.id}&user_id=eq.${userId}&work_date=gte.${monthStartStr}&work_date=lte.${monthEndStr}&classification=in.(productive,unknown)&user_assigned_issue_key=not.is.null&select=work_date,user_assigned_issue_key,project_key,duration_seconds,start_time,end_time&order=work_date.asc,start_time.asc&limit=10000`;
   
   if (projectKey && projectKey !== 'null') {
     query += `&project_key=eq.${projectKey}`;
@@ -1363,10 +1369,16 @@ export async function fetchMemberMonthDetails(accountId, cloudId, projectKey, us
       dayMap[workDate][issueKey] = {
         issueKey,
         projectKey: record.project_key,
-        totalSeconds: 0
+        totalSeconds: 0,
+        sessions: []
       };
     }
     dayMap[workDate][issueKey].totalSeconds += record.duration_seconds || 0;
+    dayMap[workDate][issueKey].sessions.push({
+      startTime: record.start_time,
+      endTime: record.end_time,
+      seconds: record.duration_seconds
+    });
   });
   
   // Collect all unique issue keys for batch fetching
@@ -1477,7 +1489,7 @@ export async function fetchMemberMonthDetails(accountId, cloudId, projectKey, us
  * @param {string} endDate - End date (YYYY-MM-DD)
  * @returns {Promise<string>} CSV formatted string
  */
-export async function generateTeamExportData(accountId, cloudId, projectKey, startDate, endDate) {
+export async function generateTeamExportData(accountId, cloudId, projectKey, startDate, endDate, filterUserIds) {
   validateDateFormat(startDate);
   validateDateFormat(endDate);
   
@@ -1490,78 +1502,114 @@ export async function generateTeamExportData(accountId, cloudId, projectKey, sta
   // Fetch team analytics for the period
   const teamAnalytics = await fetchProjectTeamAnalytics(accountId, cloudId, projectKey, endDate);
   
-  // Build CSV content
+  // Filter members if specific users requested
+  let members = teamAnalytics.teamMemberActivity || [];
+  if (filterUserIds && filterUserIds.length > 0) {
+    members = members.filter(m => filterUserIds.includes(m.userId));
+  }
+  
+  const isSingleUser = members.length === 1;
   const lines = [];
   
-  // Header section
+  // === HEADER ===
   lines.push(`Team Analytics Export - ${projectKey || 'All Projects'}`);
-  lines.push(`Generated: ${new Date().toLocaleString()}`);
-  lines.push(`Period: ${startDate} to ${endDate}`);
+  lines.push(`Generated,${new Date().toLocaleString()}`);
+  lines.push(`Period,${startDate} to ${endDate}`);
   lines.push('');
   
-  // Team Summary section
-  lines.push('TEAM SUMMARY');
-  lines.push('Metric,Value');
-  lines.push(`Active Members,${teamAnalytics.teamSummary.activeMembers}`);
-  lines.push(`Total Hours (Month),${teamAnalytics.teamSummary.totalHoursThisMonth}h`);
-  lines.push(`Issues Worked,${teamAnalytics.teamSummary.issuesWorked}`);
-  lines.push(`Average Hours/Member,${teamAnalytics.teamSummary.avgHoursPerMember}h`);
-  lines.push('');
-  
-  // Member Breakdown section
-  lines.push('MEMBER BREAKDOWN');
-  lines.push('Member Name,User ID,Today,This Week,This Month,Percentage of Total');
-  
-  const totalHours = teamAnalytics.teamSummary.totalHoursThisMonth;
-  (teamAnalytics.teamMemberActivity || []).forEach(member => {
-    const percentage = totalHours > 0 ? Math.round((member.monthHours / totalHours) * 100) : 0;
-    lines.push(`"${member.displayName}",${member.userId},${member.todayHours}h,${member.weekHours}h,${member.monthHours}h,${percentage}%`);
-  });
-  lines.push('');
-  
-  // Detailed Issue Breakdown section (for each member)
-  for (const member of (teamAnalytics.teamMemberActivity || [])) {
+  // === DETAILED ACTIVITY PER MEMBER (FIRST - consolidated per issue per date) ===
+  for (const member of members) {
     if (member.monthHours === 0) continue;
     
     lines.push(`DETAILED ACTIVITY - ${member.displayName}`);
-    lines.push('Date,Issues,Time Spent');
+    lines.push('Date,Issue Key,Session Timings,Total Duration');
     
-    // Fetch detailed data for this member
+    let memberTotalSeconds = 0;
+    
     try {
-      const memberDetails = await fetchMemberMonthDetails(accountId, cloudId, projectKey, member.userId, endDate.substring(0, 7));
+      let query = `activity_records?organization_id=eq.${organization.id}&user_id=eq.${member.userId}&work_date=gte.${startDate}&work_date=lte.${endDate}&classification=in.(productive,unknown)&user_assigned_issue_key=not.is.null&select=user_assigned_issue_key,work_date,start_time,end_time,duration_seconds&order=work_date.asc,start_time.asc&limit=5000`;
       
-      // Consolidate issues per day into single rows
-      memberDetails.weeklyBreakdown.forEach(week => {
-        week.dailyBreakdown.forEach(day => {
-          if (day.issues && day.issues.length > 0) {
-            const dayHours = Math.round(day.totalSeconds / 3600 * 10) / 10;
-            const issueList = day.issues.map(issue => {
-              const h = Math.round(issue.totalSeconds / 3600 * 10) / 10;
-              return `${issue.issueKey} (${h}h)`;
-            }).join(' | ');
-            lines.push(`${day.date},"${issueList}",${dayHours}h`);
-          }
-        });
+      if (projectKey && projectKey !== 'null') {
+        query += `&project_key=eq.${projectKey}`;
+      }
+      
+      const records = await supabaseRequest(supabaseConfig, query);
+      
+      // Group by date + issue key
+      const grouped = {};
+      (records || []).forEach(record => {
+        const workDate = typeof record.work_date === 'string' ? record.work_date.split('T')[0] : String(record.work_date);
+        const key = `${workDate}||${record.user_assigned_issue_key}`;
+        if (!grouped[key]) {
+          grouped[key] = { date: workDate, issueKey: record.user_assigned_issue_key, sessions: [], totalSeconds: 0 };
+        }
+        const startTime = record.start_time ? new Date(record.start_time).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true }) : '';
+        const endTime = record.end_time ? new Date(record.end_time).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true }) : '';
+        if (startTime && endTime) {
+          grouped[key].sessions.push(`${startTime}-${endTime}`);
+        }
+        grouped[key].totalSeconds += record.duration_seconds || 0;
+      });
+      
+      // Output one row per date+issue
+      Object.values(grouped).forEach(entry => {
+        memberTotalSeconds += entry.totalSeconds;
+        const hours = Math.floor(entry.totalSeconds / 3600);
+        const mins = Math.floor((entry.totalSeconds % 3600) / 60);
+        const durationStr = hours > 0 ? `${hours}h ${mins}m` : `${mins}m`;
+        const sessionsStr = entry.sessions.join(' | ');
+        lines.push(`${entry.date},${entry.issueKey},"${sessionsStr}",${durationStr}`);
       });
     } catch (error) {
       console.error(`Error fetching details for ${member.displayName}:`, error);
       lines.push(`Error: Could not fetch detailed data`);
     }
     
+    // Member total row
+    const totalH = Math.floor(memberTotalSeconds / 3600);
+    const totalM = Math.floor((memberTotalSeconds % 3600) / 60);
+    lines.push(`TOTAL,,,"${totalH}h ${totalM}m"`);
     lines.push('');
   }
   
-  // Time by Issue section
-  lines.push('TIME BY ISSUE (Top Issues)');
-  lines.push('Issue Key,Total Time,Contributors,Percentage');
+  // === TIME BY ISSUE (only for multi-user / team exports) ===
+  if (!isSingleUser) {
+    lines.push('TIME BY ISSUE');
+    lines.push('Issue Key,Total Time,Contributors,% of Total');
+    
+    const totalSeconds = teamAnalytics.teamTimeByIssue.reduce((sum, i) => sum + i.totalSeconds, 0);
+    (teamAnalytics.teamTimeByIssue || []).forEach(issue => {
+      const hours = Math.floor(issue.totalSeconds / 3600);
+      const mins = Math.floor((issue.totalSeconds % 3600) / 60);
+      const percentage = totalSeconds > 0 ? Math.round((issue.totalSeconds / totalSeconds) * 100) : 0;
+      const contributorNames = (issue.contributorDetails || []).map(c => c.displayName).join(' | ');
+      lines.push(`${issue.issueKey},"${hours}h ${mins}m","${contributorNames}",${percentage}%`);
+    });
+    const issueTotalH = Math.floor(totalSeconds / 3600);
+    const issueTotalM = Math.floor((totalSeconds % 3600) / 60);
+    lines.push(`TOTAL,"${issueTotalH}h ${issueTotalM}m",,100%`);
+    lines.push('');
+  }
   
-  const totalSeconds = teamAnalytics.teamTimeByIssue.reduce((sum, i) => sum + i.totalSeconds, 0);
-  (teamAnalytics.teamTimeByIssue || []).forEach(issue => {
-    const hours = Math.round(issue.totalSeconds / 3600 * 10) / 10;
-    const percentage = totalSeconds > 0 ? Math.round((issue.totalSeconds / totalSeconds) * 100) : 0;
-    const contributorNames = (issue.contributorDetails || []).map(c => c.displayName).join(' | ');
-    lines.push(`${issue.issueKey},${hours}h,"${contributorNames}",${percentage}%`);
+  // === SUMMARY (at the bottom) ===
+  lines.push('SUMMARY');
+  lines.push('Metric,Value');
+  lines.push(`Active Members,${members.length}`);
+  const totalMemberHours = members.reduce((sum, m) => sum + m.monthHours, 0);
+  lines.push(`Total Hours,${Math.round(totalMemberHours * 10) / 10}h`);
+  lines.push(`Issues Worked,${teamAnalytics.teamSummary.issuesWorked}`);
+  lines.push(`Average Hours/Member,${members.length > 0 ? Math.round(totalMemberHours / members.length * 10) / 10 : 0}h`);
+  lines.push('');
+  
+  lines.push('MEMBER SUMMARY');
+  lines.push('Member Name,Today,This Week,This Month,% of Total');
+  members.forEach(member => {
+    const percentage = totalMemberHours > 0 ? Math.round((member.monthHours / totalMemberHours) * 100) : 0;
+    lines.push(`"${member.displayName}",${member.todayHours}h,${member.weekHours}h,${member.monthHours}h,${percentage}%`);
   });
+  const todayTotal = members.reduce((s, m) => s + m.todayHours, 0);
+  const weekTotal = members.reduce((s, m) => s + m.weekHours, 0);
+  lines.push(`"TOTAL",${Math.round(todayTotal * 10) / 10}h,${Math.round(weekTotal * 10) / 10}h,${Math.round(totalMemberHours * 10) / 10}h,100%`);
   
   return lines.join('\n');
 }

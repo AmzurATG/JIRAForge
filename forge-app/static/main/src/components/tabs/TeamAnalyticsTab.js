@@ -670,6 +670,7 @@ function TeamAnalyticsTab() {
           isOpen={exportModalOpen}
           onClose={() => setExportModalOpen(false)}
           projectKey={selectedProjectKey}
+          teamAnalytics={teamAnalytics}
         />
       )}
     </div>

@@ -4,27 +4,42 @@ import './ExportTeamAnalyticsModal.css';
 
 /**
  * Export Team Analytics Modal
- * Allows admin to export team analytics data
+ * Allows admin to export team analytics data with user and period filters
  */
 function ExportTeamAnalyticsModal({ isOpen, onClose, projectKey, teamAnalytics }) {
   const [exporting, setExporting] = useState(false);
   const [error, setError] = useState(null);
-  const [dateRange, setDateRange] = useState('month'); // 'week' | 'month' | 'custom'
-  const [format, setFormat] = useState('csv'); // 'csv' | 'excel'
+  const [dateRange, setDateRange] = useState('month'); // 'today' | 'week' | 'month' | 'custom'
+  const [format, setFormat] = useState('csv');
   const [customStartDate, setCustomStartDate] = useState('');
   const [customEndDate, setCustomEndDate] = useState('');
+  const [selectedUserIds, setSelectedUserIds] = useState([]); // empty = all users
+
+  const members = (teamAnalytics && teamAnalytics.teamMemberActivity) || [];
+
+  const toggleUser = (userId) => {
+    setSelectedUserIds(prev =>
+      prev.includes(userId) ? prev.filter(id => id !== userId) : [...prev, userId]
+    );
+  };
+
+  const selectAllUsers = () => setSelectedUserIds([]);
 
   const handleExport = async () => {
     setExporting(true);
     setError(null);
 
     try {
-      // Calculate date range
       let startDate, endDate;
       const today = new Date();
       const todayStr = today.toLocaleDateString('sv-SE');
 
       switch (dateRange) {
+        case 'today':
+          startDate = todayStr;
+          endDate = todayStr;
+          break;
+
         case 'week':
           const weekStart = new Date(today);
           const dayOfWeek = weekStart.getDay();
@@ -55,11 +70,11 @@ function ExportTeamAnalyticsModal({ isOpen, onClose, projectKey, teamAnalytics }
         projectKey,
         startDate,
         endDate,
-        format
+        format,
+        filterUserIds: selectedUserIds.length > 0 ? selectedUserIds : null
       });
 
       if (result.success) {
-        // Convert data to CSV and download
         downloadFile(result.data, format, result.filename || `team-analytics-${projectKey}-${endDate}.csv`);
         onClose();
       } else {
@@ -97,13 +112,15 @@ function ExportTeamAnalyticsModal({ isOpen, onClose, projectKey, teamAnalytics }
 
         <div className="modal-content">
           <div className="export-options">
+            {/* Period Selection */}
             <div className="option-group">
-              <label htmlFor="date-range">Date Range:</label>
+              <label htmlFor="date-range">Period:</label>
               <select 
                 id="date-range"
                 value={dateRange} 
                 onChange={(e) => setDateRange(e.target.value)}
               >
+                <option value="today">Today</option>
                 <option value="week">This Week</option>
                 <option value="month">This Month</option>
                 <option value="custom">Custom Range</option>
@@ -133,6 +150,39 @@ function ExportTeamAnalyticsModal({ isOpen, onClose, projectKey, teamAnalytics }
               </div>
             )}
 
+            {/* User Selection */}
+            <div className="option-group">
+              <label>Users:</label>
+              <div className="user-filter-actions">
+                <button 
+                  type="button"
+                  className={`filter-chip ${selectedUserIds.length === 0 ? 'active' : ''}`}
+                  onClick={selectAllUsers}
+                >
+                  All Users
+                </button>
+                {selectedUserIds.length > 0 && (
+                  <span className="selected-count">{selectedUserIds.length} selected</span>
+                )}
+              </div>
+              {members.length > 0 && (
+                <div className="user-checkbox-list">
+                  {members.map((m) => (
+                    <label key={m.userId} className="user-checkbox-item">
+                      <input
+                        type="checkbox"
+                        checked={selectedUserIds.includes(m.userId)}
+                        onChange={() => toggleUser(m.userId)}
+                      />
+                      <span className="user-checkbox-name">{m.displayName}</span>
+                      <span className="user-checkbox-hours">{m.monthHours}h</span>
+                    </label>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* Format */}
             <div className="option-group">
               <label htmlFor="export-format">Format:</label>
               <select 
@@ -147,17 +197,11 @@ function ExportTeamAnalyticsModal({ isOpen, onClose, projectKey, teamAnalytics }
             <div className="export-preview">
               <h4>Export will include:</h4>
               <ul>
-                <li>✓ Team summary statistics</li>
-                <li>✓ Member breakdown (Today/Week/Month)</li>
-                <li>✓ Detailed activity by member</li>
-                <li>✓ Time by issue</li>
+                <li>Team summary statistics</li>
+                <li>Member breakdown (Today/Week/Month)</li>
+                <li>Detailed activity with session start & end times</li>
+                <li>Time by issue with total sums</li>
               </ul>
-              {teamAnalytics && (
-                <p className="preview-note">
-                  Exporting data for {teamAnalytics.teamSummary?.activeMembers || 0} members, 
-                  {teamAnalytics.teamSummary?.issuesWorked || 0} issues
-                </p>
-              )}
             </div>
           </div>
 

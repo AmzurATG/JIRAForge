@@ -3,6 +3,12 @@ import { invoke } from '@forge/bridge';
 import { formatTime } from '../../utils';
 import './TeamMemberActivityModal.css';
 
+function formatSessionTime(isoString) {
+  if (!isoString) return '';
+  const d = new Date(isoString);
+  return d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true });
+}
+
 /**
  * Team Member Activity Modal
  * Displays detailed activity breakdown for a team member
@@ -22,6 +28,7 @@ function TeamMemberActivityModal({
   const [activeTab, setActiveTab] = useState(
     viewType === 'comprehensive' ? 'today' : (viewType || 'today')
   );
+  const [exportingView, setExportingView] = useState(false);
 
   const loadActivityData = useCallback(async () => {
     setLoading(true);
@@ -89,6 +96,57 @@ function TeamMemberActivityModal({
     return monday.toLocaleDateString('sv-SE');
   };
 
+  const handleExportView = async () => {
+    setExportingView(true);
+    try {
+      const today = new Date();
+      const todayStr = today.toLocaleDateString('sv-SE');
+      let startDate, endDate;
+
+      switch (activeTab) {
+        case 'today':
+          startDate = initialDate || todayStr;
+          endDate = initialDate || todayStr;
+          break;
+        case 'week':
+          startDate = getWeekStartDate(initialDate || todayStr);
+          endDate = todayStr;
+          break;
+        case 'month':
+          startDate = new Date(today.getFullYear(), today.getMonth(), 1).toLocaleDateString('sv-SE');
+          endDate = todayStr;
+          break;
+        default:
+          startDate = new Date(today.getFullYear(), today.getMonth(), 1).toLocaleDateString('sv-SE');
+          endDate = todayStr;
+      }
+
+      const result = await invoke('exportTeamAnalytics', {
+        projectKey,
+        startDate,
+        endDate,
+        format: 'csv',
+        filterUserIds: [member.userId]
+      });
+
+      if (result.success) {
+        const blob = new Blob([result.data], { type: 'text/csv;charset=utf-8;' });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = `${member.displayName}-${activeTab}-${endDate}.csv`;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        URL.revokeObjectURL(url);
+      }
+    } catch (err) {
+      console.error('Export error:', err);
+    } finally {
+      setExportingView(false);
+    }
+  };
+
   if (!isOpen) return null;
 
   return (
@@ -127,9 +185,9 @@ function TeamMemberActivityModal({
           </div>
         ) : null}
 
-        <div className="modal-content">
+        <div className="modal-content" style={{width:'100%',boxSizing:'border-box'}}>
           {loading ? (
-            <div className="loading-state">
+            <div className="loading-state" style={{width:'100%',minHeight:'200px'}}>
               <div className="loading-spinner"></div>
               <p>Loading activity data...</p>
             </div>
@@ -147,6 +205,9 @@ function TeamMemberActivityModal({
         </div>
 
         <div className="modal-footer">
+          <button className="primary-btn" onClick={handleExportView} disabled={exportingView || loading}>
+            {exportingView ? 'Exporting...' : `Export ${activeTab === 'today' ? "Today's" : activeTab === 'week' ? "Week's" : "Month's"} Report`}
+          </button>
           <button className="secondary-btn" onClick={onClose}>Close</button>
         </div>
       </div>
@@ -158,6 +219,8 @@ function TeamMemberActivityModal({
  * Today Activity View Component
  */
 function TodayActivityView({ data }) {
+  const [expandedIssue, setExpandedIssue] = useState(null);
+
   if (!data || !data.issues || data.issues.length === 0) {
     return (
       <div className="empty-state">
@@ -170,10 +233,10 @@ function TodayActivityView({ data }) {
   const totalSeconds = data.totalSeconds;
 
   return (
-    <div className="today-activity-view">
-      <div className="summary-section">
+    <div className="today-activity-view" style={{width:'100%'}}>
+      <div className="summary-section" style={{width:'100%'}}>
         <h3>Today's Summary</h3>
-        <div className="summary-stats">
+        <div className="summary-stats" style={{width:'100%'}}>
           <div className="stat-item">
             <div className="stat-value">{formatTime(totalSeconds)}</div>
             <div className="stat-label">Total Time</div>
@@ -185,21 +248,25 @@ function TodayActivityView({ data }) {
         </div>
       </div>
 
-      <div className="issue-breakdown-section">
+      <div className="issue-breakdown-section" style={{width:'100%'}}>
         <h3>Issue Breakdown</h3>
-        <div className="issue-list">
+        <div className="issue-list" style={{width:'100%'}}>
           {data.issues.map((issue, idx) => {
             const percentage = totalSeconds > 0 ? Math.round((issue.totalSeconds / totalSeconds) * 100) : 0;
+            const isExpanded = expandedIssue === idx;
+            const sessionCount = issue.sessions ? issue.sessions.length : 0;
 
             return (
               <div key={idx} className="issue-item">
-                <div className="issue-header">
+                <div className="issue-header issue-header-clickable" onClick={() => setExpandedIssue(isExpanded ? null : idx)}>
                   <div className="issue-key-summary">
                     <span className="issue-key">{issue.issueKey}</span>
+                    {sessionCount > 0 && <span className="session-count">{sessionCount} sessions</span>}
                   </div>
                   <div className="issue-time">
                     <strong>{formatTime(issue.totalSeconds)}</strong>
                     <span className="issue-percentage">({percentage}%)</span>
+                    <span className="issue-expand-icon">{isExpanded ? '▲' : '▼'}</span>
                   </div>
                 </div>
                 <div className="issue-progress">
@@ -208,6 +275,18 @@ function TodayActivityView({ data }) {
                     style={{ width: `${percentage}%` }}
                   ></div>
                 </div>
+                {isExpanded && issue.sessions && issue.sessions.length > 0 && (
+                  <div className="session-list">
+                    {issue.sessions.map((session, sIdx) => (
+                      <div key={sIdx} className="session-row">
+                        <span className="session-time-range">
+                          {formatSessionTime(session.startTime)} — {formatSessionTime(session.endTime)}
+                        </span>
+                        <span className="session-duration">{formatTime(session.seconds)}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
             );
           })}
@@ -221,6 +300,8 @@ function TodayActivityView({ data }) {
  * Week Activity View Component
  */
 function WeekActivityView({ data }) {
+  const [expandedDayIssue, setExpandedDayIssue] = useState(null);
+
   if (!data || !data.dailyBreakdown || data.dailyBreakdown.length === 0) {
     return (
       <div className="empty-state">
@@ -231,11 +312,16 @@ function WeekActivityView({ data }) {
 
   const today = new Date().toLocaleDateString('sv-SE');
 
+  const toggleDayIssue = (dayIdx, issueIdx) => {
+    const key = `${dayIdx}-${issueIdx}`;
+    setExpandedDayIssue(prev => prev === key ? null : key);
+  };
+
   return (
-    <div className="week-activity-view">
-      <div className="summary-section">
+    <div className="week-activity-view" style={{width:'100%'}}>
+      <div className="summary-section" style={{width:'100%'}}>
         <h3>Week's Summary</h3>
-        <div className="summary-stats">
+        <div className="summary-stats" style={{width:'100%'}}>
           <div className="stat-item">
             <div className="stat-value">{formatTime(data.totalSeconds)}</div>
             <div className="stat-label">Total Time</div>
@@ -247,9 +333,9 @@ function WeekActivityView({ data }) {
         </div>
       </div>
 
-      <div className="daily-breakdown-section">
+      <div className="daily-breakdown-section" style={{width:'100%'}}>
         <h3>Daily Breakdown</h3>
-        <div className="day-list">
+        <div className="day-list" style={{width:'100%'}}>
           {data.dailyBreakdown.map((day, idx) => {
             const isToday = day.date === today;
             const hasActivity = day.totalSeconds > 0;
@@ -267,13 +353,32 @@ function WeekActivityView({ data }) {
                 </div>
                 {hasActivity && day.issues && day.issues.length > 0 && (
                   <div className="day-issues">
-                    {day.issues.map((issue, issueIdx) => (
-                      <div key={issueIdx} className="day-issue-item">
-                        <span className="day-issue-bullet">•</span>
-                        <span className="day-issue-key">{issue.issueKey}</span>
-                        <span className="day-issue-time">({formatTime(issue.totalSeconds)})</span>
-                      </div>
-                    ))}
+                    {day.issues.map((issue, issueIdx) => {
+                      const isIssueExpanded = expandedDayIssue === `${idx}-${issueIdx}`;
+                      const sessionCount = issue.sessions ? issue.sessions.length : 0;
+                      return (
+                        <div key={issueIdx} className="day-issue-item-block">
+                          <div className="day-issue-item day-issue-clickable" onClick={() => toggleDayIssue(idx, issueIdx)}>
+                            <span className="day-issue-key">{issue.issueKey}</span>
+                            <span className="day-issue-time">({formatTime(issue.totalSeconds)})</span>
+                            {sessionCount > 0 && <span className="session-count">{sessionCount} sessions</span>}
+                            <span className="issue-expand-icon">{isIssueExpanded ? '▲' : '▼'}</span>
+                          </div>
+                          {isIssueExpanded && issue.sessions && issue.sessions.length > 0 && (
+                            <div className="session-list compact">
+                              {issue.sessions.map((session, sIdx) => (
+                                <div key={sIdx} className="session-row">
+                                  <span className="session-time-range">
+                                    {formatSessionTime(session.startTime)} — {formatSessionTime(session.endTime)}
+                                  </span>
+                                  <span className="session-duration">{formatTime(session.seconds)}</span>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
                   </div>
                 )}
               </div>
@@ -290,6 +395,7 @@ function WeekActivityView({ data }) {
  */
 function MonthActivityView({ data }) {
   const [expandedWeek, setExpandedWeek] = useState(null);
+  const [expandedMonthIssue, setExpandedMonthIssue] = useState(null);
 
   if (!data || !data.weeklyBreakdown || data.weeklyBreakdown.length === 0) {
     return (
@@ -299,11 +405,16 @@ function MonthActivityView({ data }) {
     );
   }
 
+  const toggleMonthIssue = (weekIdx, dayIdx, issueIdx) => {
+    const key = `${weekIdx}-${dayIdx}-${issueIdx}`;
+    setExpandedMonthIssue(prev => prev === key ? null : key);
+  };
+
   return (
-    <div className="month-activity-view">
-      <div className="summary-section">
+    <div className="month-activity-view" style={{width:'100%'}}>
+      <div className="summary-section" style={{width:'100%'}}>
         <h3>Month's Summary</h3>
-        <div className="summary-stats">
+        <div className="summary-stats" style={{width:'100%'}}>
           <div className="stat-item">
             <div className="stat-value">{formatTime(data.totalSeconds)}</div>
             <div className="stat-label">Total Time</div>
@@ -315,9 +426,9 @@ function MonthActivityView({ data }) {
         </div>
       </div>
 
-      <div className="weekly-breakdown-section">
+      <div className="weekly-breakdown-section" style={{width:'100%'}}>
         <h3>Weekly Breakdown</h3>
-        <div className="week-list">
+        <div className="week-list" style={{width:'100%'}}>
           {data.weeklyBreakdown.map((week, idx) => {
             const isExpanded = expandedWeek === idx;
             const weekNum = idx + 1;
@@ -349,12 +460,32 @@ function MonthActivityView({ data }) {
                         </div>
                         {day.issues && day.issues.length > 0 && (
                           <div className="week-day-issues">
-                            {day.issues.map((issue, issueIdx) => (
-                              <div key={issueIdx} className="week-day-issue">
-                                <span className="week-issue-key">{issue.issueKey}</span>
-                                <span className="week-issue-time">({formatTime(issue.totalSeconds)})</span>
-                              </div>
-                            ))}
+                            {day.issues.map((issue, issueIdx) => {
+                              const isIssueExpanded = expandedMonthIssue === `${idx}-${dayIdx}-${issueIdx}`;
+                              const sessionCount = issue.sessions ? issue.sessions.length : 0;
+                              return (
+                                <div key={issueIdx} className="week-day-issue-block">
+                                  <div className="week-day-issue day-issue-clickable" onClick={() => toggleMonthIssue(idx, dayIdx, issueIdx)}>
+                                    <span className="week-issue-key">{issue.issueKey}</span>
+                                    <span className="week-issue-time">({formatTime(issue.totalSeconds)})</span>
+                                    {sessionCount > 0 && <span className="session-count">{sessionCount} sessions</span>}
+                                    <span className="issue-expand-icon">{isIssueExpanded ? '▲' : '▼'}</span>
+                                  </div>
+                                  {isIssueExpanded && issue.sessions && issue.sessions.length > 0 && (
+                                    <div className="session-list compact">
+                                      {issue.sessions.map((session, sIdx) => (
+                                        <div key={sIdx} className="session-row">
+                                          <span className="session-time-range">
+                                            {formatSessionTime(session.startTime)} — {formatSessionTime(session.endTime)}
+                                          </span>
+                                          <span className="session-duration">{formatTime(session.seconds)}</span>
+                                        </div>
+                                      ))}
+                                    </div>
+                                  )}
+                                </div>
+                              );
+                            })}
                           </div>
                         )}
                       </div>

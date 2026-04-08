@@ -27,11 +27,12 @@
   background: white;
   border-radius: 8px;
   box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15);
-  width: 92%;
-  max-width: 520px;
-  max-height: 85vh;
+  width: 96%;
+  max-width: none;
+  max-height: 90vh;
   display: flex;
   flex-direction: column;
+  align-items: stretch;
   animation: slideUp 0.2s cubic-bezier(0.4, 0.0, 0.2, 1);
   overflow: hidden;
 }
@@ -52,20 +53,20 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 24px;
+  padding: 12px 16px;
   border-bottom: 1px solid #DFE1E6;
 }
 
 .modal-header-content h2 {
   margin: 0;
-  font-size: 18px;
+  font-size: 22px;
   font-weight: 600;
   color: #172B4D;
 }
 
 .modal-subtitle {
   margin: 4px 0 0 0;
-  font-size: 14px;
+  font-size: 15px;
   color: #5E6C84;
 }
 
@@ -93,7 +94,7 @@
 .modal-tabs {
   display: flex;
   border-bottom: 2px solid #DFE1E6;
-  padding: 0 24px;
+  padding: 0 16px;
   gap: 4px;
 }
 
@@ -101,7 +102,7 @@
   background: none;
   border: none;
   padding: 12px 16px;
-  font-size: 14px;
+  font-size: 16px;
   font-weight: 500;
   color: #5E6C84;
   cursor: pointer;
@@ -120,12 +121,51 @@
   border-bottom-color: #0052CC;
 }
 
-/* Modal Content */
-.modal-content {
+/* Modal Content - scoped under .team-member-modal to override Modals.css */
+.team-member-modal .modal-content {
   flex: 1;
   overflow-y: auto;
-  overflow-x: hidden;
-  padding: 16px 20px;
+  padding: 12px 16px;
+  width: 100%;
+  max-width: none;
+  max-height: none;
+  align-self: stretch;
+  box-sizing: border-box;
+  background: transparent;
+  box-shadow: none;
+  border-radius: 0;
+  display: block;
+}
+
+.modal-content > * {
+  width: 100% !important;
+  max-width: 100% !important;
+  box-sizing: border-box;
+}
+
+/* Activity View containers - fill full width */
+.today-activity-view,
+.week-activity-view,
+.month-activity-view {
+  width: 100% !important;
+}
+
+.summary-stats {
+  display: flex;
+  gap: 16px;
+  width: 100%;
+}
+
+/* Issue Breakdown Section */
+.issue-breakdown-section {
+  width: 100%;
+}
+
+.issue-breakdown-section h3 {
+  font-size: 18px;
+  font-weight: 600;
+  color: #172B4D;
+  margin: 0 0 12px 0;
 }
 
 /* Loading State */
@@ -136,6 +176,8 @@
   justify-content: center;
   padding: 60px 20px;
   color: #5E6C84;
+  width: 100% !important;
+  min-height: 200px;
 }
 
 .loading-spinner {
@@ -163,7 +205,7 @@
 
 /* Empty State */
 .empty-state {
-  padding: 60px 20px;
+  padding: 40px 16px;
   text-align: center;
   color: #5E6C84;
 }
@@ -181,62 +223,53 @@
 
 /* Summary Section */
 .summary-section {
-  margin-bottom: 32px;
+  margin-bottom: 16px;
+  width: 100%;
 }
 
 .summary-section h3 {
-  font-size: 16px;
+  font-size: 18px;
   font-weight: 600;
   color: #172B4D;
-  margin: 0 0 16px 0;
-}
-
-.summary-stats {
-  display: flex;
-  gap: 16px;
+  margin: 0 0 10px 0;
 }
 
 .stat-item {
   flex: 1;
   background: #F4F5F7;
-  padding: 16px;
+  padding: 14px 16px;
   border-radius: 4px;
   text-align: center;
 }
 
 .stat-value {
-  font-size: 24px;
+  font-size: 28px;
   font-weight: 600;
   color: #0052CC;
   margin-bottom: 4px;
 }
 
 .stat-label {
-  font-size: 12px;
+  font-size: 14px;
   color: #5E6C84;
   text-transform: uppercase;
   letter-spacing: 0.5px;
 }
 
-/* Issue Breakdown Section */
-.issue-breakdown-section h3 {
-  font-size: 16px;
-  font-weight: 600;
-  color: #172B4D;
-  margin: 0 0 16px 0;
-}
-
 .issue-list {
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: 4px;
+  width: 100%;
 }
 
 .issue-item {
   border: 1px solid #DFE1E6;
   border-radius: 4px;
-  padding: 16px;
+  padding: 8px 12px;
   transition: all 0.2s ease;
+  width: 100%;
+  box-sizing: border-box;
 }
 
 .issue-item:hover {
@@ -246,8 +279,8 @@
 .issue-header {
   display: flex;
   justify-content: space-between;
-  align-items: flex-start;
-  margin-bottom: 12px;
+  align-items: center;
+  margin-bottom: 4px;
 }
 
 .issue-key-summary {
@@ -259,7 +292,7 @@
 }
 
 .issue-key {
-  font-size: 13px;
+  font-size: 15px;
   font-family: 'Roboto Mono', monospace;
   font-weight: 500;
   color: #0052CC;
@@ -288,21 +321,21 @@
 }
 
 .issue-time strong {
-  font-size: 14px;
+  font-size: 16px;
   color: #172B4D;
 }
 
 .issue-percentage {
-  font-size: 12px;
+  font-size: 13px;
   color: #5E6C84;
 }
 
 .issue-progress {
-  height: 8px;
+  height: 4px;
   background: #DFE1E6;
-  border-radius: 4px;
+  border-radius: 2px;
   overflow: hidden;
-  margin-bottom: 8px;
+  margin-bottom: 2px;
 }
 
 .progress-bar {
@@ -356,6 +389,10 @@
 }
 
 /* Week Activity View */
+.daily-breakdown-section {
+  width: 100%;
+}
+
 .daily-breakdown-section h3 {
   font-size: 16px;
   font-weight: 600;
@@ -367,6 +404,7 @@
   display: flex;
   flex-direction: column;
   gap: 12px;
+  width: 100%;
 }
 
 .day-card {
@@ -375,6 +413,8 @@
   border-radius: 4px;
   padding: 12px 16px;
   transition: all 0.2s ease;
+  width: 100%;
+  box-sizing: border-box;
 }
 
 .day-card.today {
@@ -400,7 +440,7 @@
 }
 
 .day-date strong {
-  font-size: 14px;
+  font-size: 16px;
   color: #172B4D;
 }
 
@@ -411,7 +451,7 @@
 }
 
 .day-total {
-  font-size: 14px;
+  font-size: 16px;
   font-weight: 600;
   color: #172B4D;
 }
@@ -426,8 +466,8 @@
 .day-issue-item {
   display: flex;
   align-items: baseline;
-  gap: 6px;
-  font-size: 13px;
+  gap: 8px;
+  font-size: 15px;
 }
 
 .day-issue-bullet {
@@ -455,6 +495,10 @@
 }
 
 /* Month Activity View */
+.weekly-breakdown-section {
+  width: 100%;
+}
+
 .weekly-breakdown-section h3 {
   font-size: 16px;
   font-weight: 600;
@@ -495,12 +539,12 @@
 }
 
 .week-title strong {
-  font-size: 14px;
+  font-size: 16px;
   color: #172B4D;
 }
 
 .week-range {
-  font-size: 13px;
+  font-size: 15px;
   color: #5E6C84;
 }
 
@@ -511,7 +555,7 @@
 }
 
 .week-total {
-  font-size: 14px;
+  font-size: 16px;
   font-weight: 600;
   color: #172B4D;
 }
@@ -556,13 +600,13 @@
 }
 
 .week-day-name {
-  font-size: 13px;
+  font-size: 15px;
   font-weight: 500;
   color: #172B4D;
 }
 
 .week-day-time {
-  font-size: 13px;
+  font-size: 15px;
   font-weight: 600;
   color: #5E6C84;
 }
@@ -577,8 +621,8 @@
 .week-day-issue {
   display: flex;
   align-items: baseline;
-  gap: 6px;
-  font-size: 12px;
+  gap: 8px;
+  font-size: 15px;
 }
 
 .week-issue-key {
@@ -601,14 +645,7 @@
   flex-shrink: 0;
 }
 
-/* Modal Footer */
-.modal-footer {
-  display: flex;
-  justify-content: flex-end;
-  gap: 12px;
-  padding: 16px 24px;
-  border-top: 1px solid #DFE1E6;
-}
+/* Modal Footer - defined in responsive section below */
 
 .secondary-btn,
 .primary-btn {
@@ -648,16 +685,16 @@
 /* Responsive Design */
 @media (max-width: 768px) {
   .team-member-modal {
-    width: 95%;
-    max-height: 90vh;
+    width: 98%;
+    max-height: 92vh;
   }
 
   .modal-header {
-    padding: 16px;
+    padding: 10px 12px;
   }
 
   .modal-content {
-    padding: 16px;
+    padding: 10px 12px;
   }
 
   .summary-stats {
@@ -673,4 +710,95 @@
   .issue-time {
     align-self: flex-end;
   }
+}
+
+/* Session List Styles */
+.session-list {
+  margin-top: 8px;
+  padding: 10px 16px;
+  background: #F4F5F7;
+  border-radius: 4px;
+  border-left: 3px solid #0052CC;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.session-list.compact {
+  margin-top: 6px;
+  margin-left: 0;
+  padding: 6px 12px;
+  font-size: 14px;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.session-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 5px 0;
+  border-bottom: 1px solid #EBECF0;
+}
+
+.session-row:last-child {
+  border-bottom: none;
+}
+
+.session-time-range {
+  font-family: 'Roboto Mono', monospace;
+  font-size: 15px;
+  color: #42526E;
+}
+
+.session-duration {
+  font-size: 15px;
+  font-weight: 500;
+  color: #5E6C84;
+}
+
+/* Day Issue Block (for nested sessions) */
+.day-issue-item-block {
+  margin-bottom: 4px;
+}
+
+.week-day-issue-block {
+  margin-bottom: 4px;
+}
+
+/* Clickable issue headers */
+.issue-header-clickable,
+.day-issue-clickable {
+  cursor: pointer;
+  user-select: none;
+  transition: background 0.15s ease;
+  border-radius: 4px;
+  padding: 2px 0;
+}
+
+.issue-header-clickable:hover,
+.day-issue-clickable:hover {
+  background: #F4F5F7;
+}
+
+.issue-expand-icon {
+  font-size: 12px;
+  color: #5E6C84;
+  margin-left: 8px;
+  flex-shrink: 0;
+}
+
+.session-count {
+  font-size: 12px;
+  color: #97A0AF;
+  margin-left: 4px;
+}
+
+/* Modal Footer updated */
+.modal-footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 16px;
+  border-top: 1px solid #DFE1E6;
 }
