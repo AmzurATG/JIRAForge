@@ -169,6 +169,31 @@ async function getUserByAccountId(accountId) {
 }
 
 /**
+ * Get organization by Jira Cloud ID
+ * @param {string} cloudId - Jira cloud instance ID
+ * @returns {Promise<Object>} Organization object
+ */
+async function getOrganizationByCloudId(cloudId) {
+  const supabase = getClient();
+  
+  const { data: org, error } = await supabase
+    .from('organizations')
+    .select('id, jira_cloud_id, org_name, jira_instance_url')
+    .eq('jira_cloud_id', cloudId)
+    .maybeSingle();
+
+  if (error) {
+    throw new Error(`Failed to fetch organization: ${error.message}`);
+  }
+
+  if (!org) {
+    throw new Error(`Organization not found for cloudId: ${cloudId}`);
+  }
+
+  return org;
+}
+
+/**
  * Discover all tables with user_id column dynamically
  * 
  * ✅ DYNAMIC SOLUTION (April 2026)
@@ -254,14 +279,15 @@ async function exportFromTable(supabase, tableName, userId) {
  * @param {Object} supabase - Supabase client
  * @param {string} tableName - Table name to delete from
  * @param {string} userId - User UUID
+ * @param {string|null} organizationId - Organization UUID (null for tables without org_id)
  * @returns {Promise<Object>} Deletion result { tableName, count, error? }
  */
-async function deleteFromTable(supabase, tableName, userId) {
+async function deleteFromTable(supabase, tableName, userId, organizationId = null) {
   try {
     // Check if table should be anonymized instead
     if (userDataConfig.shouldAnonymize(tableName)) {
       const anonymizeConfig = userDataConfig.anonymizeTables[tableName];
-      const { count, error } = await supabase
+      let query = supabase
         .from(tableName)
         .update({
           ...anonymizeConfig.anonymize,
@@ -270,6 +296,13 @@ async function deleteFromTable(supabase, tableName, userId) {
           } : {})
         })
         .eq('user_id', userId);
+      
+      // Filter by organization if specified and table has org column
+      if (organizationId && tableName !== 'users') {
+        query = query.eq('organization_id', organizationId);
+      }
+      
+      const { count, error } = await query;
       
       if (error) {
         throw error;
@@ -280,10 +313,17 @@ async function deleteFromTable(supabase, tableName, userId) {
     }
     
     // Regular deletion
-    const { count, error } = await supabase
+    let query = supabase
       .from(tableName)
       .delete({ count: 'exact' })
       .eq('user_id', userId);
+    
+    // Filter by organization if specified and table has org column
+    if (organizationId && tableName !== 'users') {
+      query = query.eq('organization_id', organizationId);
+    }
+    
+    const { count, error } = await query;
     
     if (error) {
       throw error;
@@ -641,22 +681,28 @@ async function deleteUserData(accountId, cloudId) {
   try {
     const supabase = getClient();
     
-    // 1. Get user record
+    // 1. Get user record by Atlassian account ID
     const user = await getUserByAccountId(accountId);
     const userId = user.id;
-    const organizationId = user.organization_id;
+    
+    // 2. Get organization by cloudId (NOT from user's primary org!)
+    // This ensures we delete from the CORRECT organization that Atlassian specified
+    const organization = await getOrganizationByCloudId(cloudId);
+    const organizationId = organization.id;
 
     logger.info('[UserData] Starting deletion for user:', {
       userId,
       accountId: accountId.substring(0, 10) + '...',
-      organizationId
+      cloudId,
+      organizationId,
+      organizationName: organization.org_name
     });
 
-    // 2. Delete storage files FIRST (before database records to preserve references)
+    // 3. Delete storage files FIRST (before database records to preserve references)
     const filesDeleted = await deleteStorageFiles(userId, organizationId);
     deletionSummary.filesDeleted = filesDeleted;
 
-    // 3. Discover all tables with user_id dynamically
+    // 4. Discover all tables with user_id dynamically
     const userDataTables = await discoverUserDataTables();
     
     // 4. Sort tables by deletion order (critical for FK constraints!)
@@ -668,9 +714,10 @@ async function deleteUserData(accountId, cloudId) {
       tables: sortedTables
     });
 
-    // 5. Delete from each table in order
+    // 5. Delete from each table in order (filtered by BOTH user_id AND organization_id)
     for (const tableName of sortedTables) {
-      const result = await deleteFromTable(supabase, tableName, userId);
+      // Pass organizationId to filter deletion to THIS org only
+      const result = await deleteFromTable(supabase, tableName, userId, organizationId);
       
       if (result.action === 'anonymized') {
         deletionSummary.recordsDeleted[`${tableName}_anonymized`] = result.count;
@@ -684,16 +731,17 @@ async function deleteUserData(accountId, cloudId) {
       }
     }
 
-    // 6. Create audit log entry (after user deletion, so user_id is null)
+    // 7. CREATE AUDIT LOG ENTRY (after deletion, user_id may still exist if multi-org)
     await supabase
       .from('activity_log')
       .insert({
-        user_id: null, // User is deleted
+        user_id: userId, // Keep user_id for audit trail
         organization_id: organizationId,
         event_type: 'user_data_deletion',
         event_data: {
           atlassian_account_id_hash: crypto.createHash('sha256').update(accountId).digest('hex').substring(0, 16),
           cloud_id: cloudId,
+          organization_name: organization.org_name,
           deletion_summary: deletionSummary,
           timestamp: new Date().toISOString()
         }

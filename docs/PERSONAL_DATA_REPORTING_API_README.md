@@ -206,23 +206,27 @@ WHERE status IN ('pending', 'processing')
 ## User Journey
 
 ### Export Request
-1. User: Jira Settings → Apps → Request Personal Data → Export
-2. Atlassian: Sends request to Forge app (first poll)
-3. Forge App: Creates request, returns PENDING
-4. AI Server: Processes export asynchronously
-5. Atlassian: Polls again (subsequent poll)
-6. Forge App: Returns COMPLETED with download URL
-7. User: Downloads JSON file (24-hour expiry)
+1. **User**: Submits support ticket at https://support.atlassian.com/contact/
+   - Selects "Personal data and GDPR" → "Request a copy of your personal data"
+2. **Atlassian Support**: Receives request and initiates backend polling
+3. **Atlassian Backend**: Polls your app's `userDataProvider` API (first poll)
+4. **Forge App**: Creates request, returns PENDING to Atlassian
+5. **AI Server**: Processes export asynchronously (queries 16 tables + storage)
+6. **Atlassian Backend**: Polls again after 7 days (subsequent poll)
+7. **Forge App**: Returns COMPLETED with signed download URL
+8. **Atlassian Support**: Provides download link to user via email/ticket
+9. **User**: Downloads JSON file (24-hour expiry)
 
 ### Deletion Request
-1. User: Jira Settings → Apps → Request Personal Data → Delete
-2. User: Confirms deletion (permanent action)
-3. Atlassian: Sends request to Forge app
-4. Forge App: Creates request, returns PENDING
-5. AI Server: Deletes all data and files
-6. Atlassian: Polls again
-7. Forge App: Returns COMPLETED with summary
-8. User: Sees confirmation
+1. **User**: Submits support ticket at https://support.atlassian.com/contact/
+   - Selects "Personal data and GDPR" → "Request to delete personal data"
+2. **User**: Confirms deletion via ticket (acknowledges permanent action)
+3. **Atlassian Support**: Initiates backend polling
+4. **Forge App**: Creates request, returns PENDING
+5. **AI Server**: Permanently deletes all data and files
+6. **Atlassian Backend**: Polls again
+7. **Forge App**: Returns COMPLETED with deletion summary
+8. **Atlassian Support**: Confirms deletion to user via email/ticket
 
 ## Privacy Policy Update
 
@@ -230,9 +234,9 @@ WHERE status IN ('pending', 'processing')
 > Export your data (contact support)
 
 **After this feature:**
-> **Export your data:** Request via Jira admin settings → Personal Data. You will receive a download link within 24 hours. The link expires after 24 hours.
+> **Export your data:** Submit a request via Atlassian Support at https://support.atlassian.com/contact/ by selecting "Personal data and GDPR" → "Request a copy of your personal data". You will receive a download link from Atlassian Support within 24-48 hours. The link expires after 24 hours.
 > 
-> **Delete your data:** Request via Jira admin settings → Personal Data. All your personal data will be permanently deleted within 24 hours. This action cannot be undone.
+> **Delete your data:** Submit a request via Atlassian Support at https://support.atlassian.com/contact/ by selecting "Personal data and GDPR" → "Request to delete personal data". All your personal data will be permanently deleted within 24-48 hours. This action cannot be undone.
 
 ## Troubleshooting
 
