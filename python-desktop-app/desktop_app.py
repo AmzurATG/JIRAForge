@@ -7032,6 +7032,9 @@ class TimeTracker:
         Called every 5 minutes (batch_upload_interval).
         Uses custom JWT for RLS-scoped access (Atlassian OAuth → AI server JWT).
         """
+        sessions = None
+        records = None
+        batch_timestamp = None
         try:
             # Wait briefly for any in-flight async OCR to finish before uploading
             if self.ocr_processor and not self.ocr_processor.wait_for_ocr(timeout=5.0):
@@ -7085,6 +7088,7 @@ class TimeTracker:
             if not self.supabase:
                 print("[BATCH] No Supabase client — restoring sessions to SQLite")
                 self.session_manager.restore_sessions(sessions)
+                self.last_batch_upload_time = time.time()
                 return
 
             if not self.current_user_id:
@@ -7097,6 +7101,7 @@ class TimeTracker:
             if not self.offline_manager.check_connectivity():
                 print(f"[BATCH] Offline — restoring {len(sessions)} sessions to SQLite for retry")
                 self.session_manager.restore_sessions(sessions)
+                self.last_batch_upload_time = time.time()
                 return
 
             # Ensure Supabase JWT is valid before uploading
@@ -7257,7 +7262,7 @@ class TimeTracker:
             error_str = str(e).lower()
             is_auth_error = any(kw in error_str for kw in ('jwt expired', 'jwt', '401', 'unauthorized', 'invalid token', 'token is expired', 'not authenticated'))
 
-            if is_auth_error and 'records' in dir() and records:
+            if is_auth_error and records:
                 print(f"[BATCH] Auth error during upload: {e}")
                 print("[BATCH] Refreshing Supabase JWT and retrying once...")
                 if self._set_supabase_jwt():
@@ -7265,7 +7270,7 @@ class TimeTracker:
                         # Check if records were partially inserted before the error
                         # (e.g., HTTP timeout after server committed). batch_timestamp
                         # is unique per upload cycle, so we can detect duplicates.
-                        if 'batch_timestamp' in dir() and batch_timestamp:
+                        if batch_timestamp:
                             existing = self.supabase.table('activity_records') \
                                 .select('id') \
                                 .eq('user_id', self.current_user_id) \
@@ -7300,7 +7305,7 @@ class TimeTracker:
                     print(f"       Details: {e.details}")
 
             # Restore sessions to SQLite so they can be retried on next cycle
-            if 'sessions' in dir() and sessions:
+            if sessions:
                 self.session_manager.restore_sessions(sessions)
                 print(f"       {len(sessions)} records restored to SQLite for retry on next cycle")
             self.last_batch_upload_time = time.time()
