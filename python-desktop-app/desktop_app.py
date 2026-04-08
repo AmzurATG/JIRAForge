@@ -6338,13 +6338,25 @@ class TimeTracker:
         return (time.time() - self.projects_cache_time) > self.projects_cache_ttl
 
     def _get_known_project_keys(self):
-        """Build set of all known project keys from issues + projects."""
+        """Build set of all known project keys from issues + projects.
+        
+        Ensures user_projects is populated so we have ALL project keys the user
+        is a member of — not just the ones from assigned issues. This is critical
+        for multi-project users: the AI server needs the full set to correctly
+        attribute activity records to the right project.
+        """
         known = set()
         if self.user_issues:
             for issue in self.user_issues:
                 proj = issue.get('project')
                 if proj:
                     known.add(proj)
+        # Ensure user_projects is loaded (it's only fetched on-demand as a fallback
+        # in get_user_project_key, so it may still be empty even when user has
+        # multiple projects). Fetch once and cache for 1 hour.
+        if not self.user_projects and self.should_refresh_projects_cache():
+            self.user_projects = self.fetch_jira_projects()
+            self.projects_cache_time = time.time()
         if self.user_projects:
             for proj in self.user_projects:
                 key = proj.get('key')
