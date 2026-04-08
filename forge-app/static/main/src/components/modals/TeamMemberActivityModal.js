@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { invoke } from '@forge/bridge';
 import { formatTime } from '../../utils';
+import { generateExcelReport } from '../../utils/excelExport';
 import './TeamMemberActivityModal.css';
 
 function formatSessionTime(isoString) {
@@ -121,24 +122,15 @@ function TeamMemberActivityModal({
           endDate = todayStr;
       }
 
-      const result = await invoke('exportTeamAnalytics', {
+      const result = await invoke('exportTeamAnalyticsExcel', {
         projectKey,
         startDate,
         endDate,
-        format: 'csv',
         filterUserIds: [member.userId]
       });
 
       if (result.success) {
-        const blob = new Blob([result.data], { type: 'text/csv;charset=utf-8;' });
-        const url = URL.createObjectURL(blob);
-        const link = document.createElement('a');
-        link.href = url;
-        link.download = `${member.displayName}-${activeTab}-${endDate}.csv`;
-        document.body.appendChild(link);
-        link.click();
-        document.body.removeChild(link);
-        URL.revokeObjectURL(url);
+        await generateExcelReport(result.data, `${member.displayName}-${activeTab}-${endDate}`);
       }
     } catch (err) {
       console.error('Export error:', err);

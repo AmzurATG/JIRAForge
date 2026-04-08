@@ -20,5 +20,6 @@ export {
   fetchMemberDayDetails,
   fetchMemberWeekDetails,
   fetchMemberMonthDetails,
-  generateTeamExportData
+  generateTeamExportData,
+  generateTeamExportDataStructured
 } from './analytics/teamAnalyticsService.js';

@@ -1613,3 +1613,107 @@ export async function generateTeamExportData(accountId, cloudId, projectKey, sta
   
   return lines.join('\n');
 }
+
+/**
+ * Generate structured export data for Excel generation on the frontend
+ * Returns JSON with grouped sessions by date + issue
+ */
+export async function generateTeamExportDataStructured(accountId, cloudId, projectKey, startDate, endDate, filterUserIds) {
+  validateDateFormat(startDate);
+  validateDateFormat(endDate);
+  
+  if (projectKey && !isValidProjectKey(projectKey)) {
+    throw new Error('Invalid project key format');
+  }
+  
+  const { supabaseConfig, organization } = await initializeContext(accountId, cloudId);
+  const teamAnalytics = await fetchProjectTeamAnalytics(accountId, cloudId, projectKey, endDate);
+  
+  let members = teamAnalytics.teamMemberActivity || [];
+  if (filterUserIds && filterUserIds.length > 0) {
+    members = members.filter(m => filterUserIds.includes(m.userId));
+  }
+  
+  const isSingleUser = members.length === 1;
+  const memberDetails = [];
+  
+  for (const member of members) {
+    if (member.monthHours === 0) continue;
+    
+    const memberData = {
+      displayName: member.displayName,
+      todayHours: member.todayHours,
+      weekHours: member.weekHours,
+      monthHours: member.monthHours,
+      entries: [], // {date, issueKey, totalSeconds, sessions:[{startTime, endTime, durationSeconds}]}
+      totalSeconds: 0
+    };
+    
+    try {
+      let query = `activity_records?organization_id=eq.${organization.id}&user_id=eq.${member.userId}&work_date=gte.${startDate}&work_date=lte.${endDate}&classification=in.(productive,unknown)&user_assigned_issue_key=not.is.null&select=user_assigned_issue_key,work_date,start_time,end_time,duration_seconds&order=work_date.asc,start_time.asc&limit=5000`;
+      
+      if (projectKey && projectKey !== 'null') {
+        query += `&project_key=eq.${projectKey}`;
+      }
+      
+      const records = await supabaseRequest(supabaseConfig, query);
+      
+      // Group by date + issue key
+      const grouped = {};
+      (records || []).forEach(record => {
+        const workDate = typeof record.work_date === 'string' ? record.work_date.split('T')[0] : String(record.work_date);
+        const key = `${workDate}||${record.user_assigned_issue_key}`;
+        if (!grouped[key]) {
+          grouped[key] = { date: workDate, issueKey: record.user_assigned_issue_key, sessions: [], totalSeconds: 0 };
+        }
+        grouped[key].sessions.push({
+          startTime: record.start_time || null,
+          endTime: record.end_time || null,
+          durationSeconds: record.duration_seconds || 0
+        });
+        grouped[key].totalSeconds += record.duration_seconds || 0;
+      });
+      
+      memberData.entries = Object.values(grouped);
+      memberData.totalSeconds = memberData.entries.reduce((s, e) => s + e.totalSeconds, 0);
+    } catch (error) {
+      console.error(`Error fetching details for ${member.displayName}:`, error);
+    }
+    
+    memberDetails.push(memberData);
+  }
+  
+  // Summary data
+  const totalMemberHours = members.reduce((sum, m) => sum + m.monthHours, 0);
+  
+  return {
+    projectKey,
+    startDate,
+    endDate,
+    generatedAt: new Date().toISOString(),
+    isSingleUser,
+    memberDetails,
+    summary: {
+      activeMembers: members.length,
+      totalHours: Math.round(totalMemberHours * 10) / 10,
+      issuesWorked: teamAnalytics.teamSummary.issuesWorked,
+      avgHoursPerMember: members.length > 0 ? Math.round(totalMemberHours / members.length * 10) / 10 : 0
+    },
+    memberSummary: members.map(m => ({
+      displayName: m.displayName,
+      todayHours: m.todayHours,
+      weekHours: m.weekHours,
+      monthHours: m.monthHours,
+      percentage: totalMemberHours > 0 ? Math.round((m.monthHours / totalMemberHours) * 100) : 0
+    })),
+    timeByIssue: !isSingleUser ? (teamAnalytics.teamTimeByIssue || []).map(issue => {
+      const totalSeconds = teamAnalytics.teamTimeByIssue.reduce((sum, i) => sum + i.totalSeconds, 0);
+      return {
+        issueKey: issue.issueKey,
+        totalSeconds: issue.totalSeconds,
+        contributors: (issue.contributorDetails || []).map(c => c.displayName),
+        percentage: totalSeconds > 0 ? Math.round((issue.totalSeconds / totalSeconds) * 100) : 0
+      };
+    }) : null
+  };
+}

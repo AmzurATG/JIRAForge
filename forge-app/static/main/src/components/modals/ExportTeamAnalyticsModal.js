@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { invoke } from '@forge/bridge';
+import { generateExcelReport } from '../../utils/excelExport';
 import './ExportTeamAnalyticsModal.css';
 
 /**
@@ -10,7 +11,7 @@ function ExportTeamAnalyticsModal({ isOpen, onClose, projectKey, teamAnalytics }
   const [exporting, setExporting] = useState(false);
   const [error, setError] = useState(null);
   const [dateRange, setDateRange] = useState('month'); // 'today' | 'week' | 'month' | 'custom'
-  const [format, setFormat] = useState('csv');
+  const [format, setFormat] = useState('xlsx');
   const [customStartDate, setCustomStartDate] = useState('');
   const [customEndDate, setCustomEndDate] = useState('');
   const [selectedUserIds, setSelectedUserIds] = useState([]); // empty = all users
@@ -66,19 +67,35 @@ function ExportTeamAnalyticsModal({ isOpen, onClose, projectKey, teamAnalytics }
           throw new Error('Invalid date range');
       }
 
-      const result = await invoke('exportTeamAnalytics', {
-        projectKey,
-        startDate,
-        endDate,
-        format,
-        filterUserIds: selectedUserIds.length > 0 ? selectedUserIds : null
-      });
+      if (format === 'xlsx') {
+        const result = await invoke('exportTeamAnalyticsExcel', {
+          projectKey,
+          startDate,
+          endDate,
+          filterUserIds: selectedUserIds.length > 0 ? selectedUserIds : null
+        });
 
-      if (result.success) {
-        downloadFile(result.data, format, result.filename || `team-analytics-${projectKey}-${endDate}.csv`);
-        onClose();
+        if (result.success) {
+          await generateExcelReport(result.data, `team-analytics-${projectKey || 'all'}-${endDate}`);
+          onClose();
+        } else {
+          setError(result.error || 'Export failed');
+        }
       } else {
-        setError(result.error || 'Export failed');
+        const result = await invoke('exportTeamAnalytics', {
+          projectKey,
+          startDate,
+          endDate,
+          format,
+          filterUserIds: selectedUserIds.length > 0 ? selectedUserIds : null
+        });
+
+        if (result.success) {
+          downloadFile(result.data, format, result.filename || `team-analytics-${projectKey}-${endDate}.csv`);
+          onClose();
+        } else {
+          setError(result.error || 'Export failed');
+        }
       }
     } catch (err) {
       setError(err.message);
@@ -190,6 +207,7 @@ function ExportTeamAnalyticsModal({ isOpen, onClose, projectKey, teamAnalytics }
                 value={format} 
                 onChange={(e) => setFormat(e.target.value)}
               >
+                <option value="xlsx">Excel (.xlsx)</option>
                 <option value="csv">CSV</option>
               </select>
             </div>

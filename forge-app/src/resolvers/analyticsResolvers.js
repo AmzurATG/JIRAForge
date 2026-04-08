@@ -3,7 +3,7 @@
  * Resolver definitions for time analytics endpoints
  */
 
-import { fetchTimeAnalytics, fetchTimeAnalyticsBatch, fetchAllAnalytics, fetchProjectAnalytics, fetchProjectTeamAnalytics, fetchTeamDayTimeline, fetchMyDayTimeline, convertIdleToWorklog, fetchMemberDayDetails, fetchMemberWeekDetails, fetchMemberMonthDetails, generateTeamExportData } from '../services/analyticsService.js';
+import { fetchTimeAnalytics, fetchTimeAnalyticsBatch, fetchAllAnalytics, fetchProjectAnalytics, fetchProjectTeamAnalytics, fetchTeamDayTimeline, fetchMyDayTimeline, convertIdleToWorklog, fetchMemberDayDetails, fetchMemberWeekDetails, fetchMemberMonthDetails, generateTeamExportData, generateTeamExportDataStructured } from '../services/analyticsService.js';
 import { isJiraAdmin, checkUserPermissions, createJiraIssue, getIssueTransitions, transitionIssue, createJiraWorklog } from '../utils/jira.js';
 
 // Feature flag for using batch API (set to true for production)
@@ -348,6 +348,30 @@ export function registerAnalyticsResolvers(resolver) {
       };
     } catch (error) {
       console.error('Error exporting team analytics:', error);
+      return { success: false, error: error.message };
+    }
+  });
+
+  resolver.define('exportTeamAnalyticsExcel', async (req) => {
+    const { payload, context } = req;
+    const { projectKey, startDate, endDate, filterUserIds } = payload;
+    const accountId = context.accountId;
+    const cloudId = context.cloudId;
+
+    try {
+      const perms = await checkUserPermissions(['ADMINISTER', 'ADMINISTER_PROJECTS'], projectKey);
+      const adminCheck = perms.permissions?.ADMINISTER?.havePermission || false;
+      const isProjectAdmin = perms.permissions?.ADMINISTER_PROJECTS?.havePermission || false;
+
+      if (!adminCheck && !isProjectAdmin) {
+        return { success: false, error: 'Access denied: Project Admin or Jira Administrator required' };
+      }
+
+      const data = await generateTeamExportDataStructured(accountId, cloudId, projectKey, startDate, endDate, filterUserIds || null);
+      
+      return { success: true, data };
+    } catch (error) {
+      console.error('Error exporting team analytics (Excel):', error);
       return { success: false, error: error.message };
     }
   });
