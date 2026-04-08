@@ -19,7 +19,9 @@ function TeamMemberActivityModal({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [activityData, setActivityData] = useState(null);
-  const [activeTab, setActiveTab] = useState(viewType || 'today');
+  const [activeTab, setActiveTab] = useState(
+    viewType === 'comprehensive' ? 'today' : (viewType || 'today')
+  );
 
   const loadActivityData = useCallback(async () => {
     setLoading(true);
@@ -87,50 +89,6 @@ function TeamMemberActivityModal({
     return monday.toLocaleDateString('sv-SE');
   };
 
-  const handleExport = async () => {
-    if (!activityData) return;
-
-    // Create CSV content
-    const lines = [];
-    lines.push(`Activity Report - ${member.displayName}`);
-    lines.push(`Generated: ${new Date().toLocaleString()}`);
-    lines.push('');
-
-    if (activeTab === 'today' && activityData.issues) {
-      lines.push(`Date: ${activityData.date}`);
-      lines.push(`Total Time: ${formatTime(activityData.totalSeconds)}`);
-      lines.push('');
-      lines.push('Issue Key,Issue Summary,Time Spent,Status,Sessions');
-      activityData.issues.forEach(issue => {
-        const hours = Math.round(issue.totalSeconds / 3600 * 10) / 10;
-        lines.push(`${issue.issueKey},"${(issue.summary || '').replace(/"/g, '""')}",${hours}h,${issue.status || ''},${issue.sessionCount}`);
-      });
-    } else if (activeTab === 'week' && activityData.dailyBreakdown) {
-      lines.push(`Week: ${activityData.weekStart} to ${activityData.weekEnd}`);
-      lines.push(`Total Time: ${formatTime(activityData.totalSeconds)}`);
-      lines.push( '');
-      lines.push('Date,Day,Issue Key,Issue Summary,Time Spent,Status');
-      activityData.dailyBreakdown.forEach(day => {
-        day.issues.forEach(issue => {
-          const hours = Math.round(issue.totalSeconds / 3600 * 10) / 10;
-          lines.push(`${day.date},${day.dayOfWeek},${issue.issueKey},"${(issue.summary || '').replace(/"/g, '""')}",${hours}h,${issue.status || ''}`);
-        });
-      });
-    }
-
-    // Download as CSV
-    const csvContent = lines.join('\n');
-    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = `activity-${member.displayName.replace(/\s+/g, '-')}-${new Date().toISOString().split('T')[0]}.csv`;
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-    URL.revokeObjectURL(url);
-  };
-
   if (!isOpen) return null;
 
   return (
@@ -190,9 +148,6 @@ function TeamMemberActivityModal({
 
         <div className="modal-footer">
           <button className="secondary-btn" onClick={onClose}>Close</button>
-          <button className="primary-btn" onClick={handleExport} disabled={loading || error}>
-            Export Report
-          </button>
         </div>
       </div>
     </div>
@@ -241,7 +196,6 @@ function TodayActivityView({ data }) {
                 <div className="issue-header">
                   <div className="issue-key-summary">
                     <span className="issue-key">{issue.issueKey}</span>
-                    <span className="issue-summary">{issue.summary || 'No summary'}</span>
                   </div>
                   <div className="issue-time">
                     <strong>{formatTime(issue.totalSeconds)}</strong>
@@ -253,10 +207,6 @@ function TodayActivityView({ data }) {
                     className="progress-bar" 
                     style={{ width: `${percentage}%` }}
                   ></div>
-                </div>
-                <div className="issue-meta">
-                  <span className="meta-item">Status: {issue.status || 'Unknown'}</span>
-                  <span className="meta-item">Sessions: {issue.sessionCount}</span>
                 </div>
               </div>
             );
@@ -322,7 +272,6 @@ function WeekActivityView({ data }) {
                         <span className="day-issue-bullet">•</span>
                         <span className="day-issue-key">{issue.issueKey}</span>
                         <span className="day-issue-time">({formatTime(issue.totalSeconds)})</span>
-                        <span className="day-issue-summary">- {issue.summary || 'No summary'}</span>
                       </div>
                     ))}
                   </div>
@@ -403,7 +352,6 @@ function MonthActivityView({ data }) {
                             {day.issues.map((issue, issueIdx) => (
                               <div key={issueIdx} className="week-day-issue">
                                 <span className="week-issue-key">{issue.issueKey}</span>
-                                <span className="week-issue-summary">- {issue.summary || 'No summary'}</span>
                                 <span className="week-issue-time">({formatTime(issue.totalSeconds)})</span>
                               </div>
                             ))}

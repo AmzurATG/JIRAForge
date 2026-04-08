@@ -58,7 +58,12 @@
   cursor: pointer;
 }
 
-/* Team KPI Cards */
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
 /* Team KPI Cards */
 .team-kpi-cards {
   display: grid;

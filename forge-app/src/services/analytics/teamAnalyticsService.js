@@ -1078,43 +1078,38 @@ async function fetchIssueDetailsBatch(issueKeys) {
   
   try {
     const results = {};
-    const batchSize = 100; // Jira's max results per request
     
-    // Process in batches of 100
-    for (let i = 0; i < issueKeys.length; i += batchSize) {
-      const batch = issueKeys.slice(i, i + batchSize);
-      const jql = `key in (${batch.join(',')})`;
-      
-      const response = await api.asApp().requestJira(route`/rest/api/3/search`, {
-        method: 'POST',
-        headers: { 
-          'Accept': 'application/json',
-          'Content-Type': 'application/json' 
-        },
-        body: JSON.stringify({
-          jql,
-          fields: ['summary', 'status', 'priority', 'issuetype'],
-          maxResults: batchSize
-        })
-      });
-      
-      const data = await response.json();
-      
-      // Map results by issue key
-      (data.issues || []).forEach(issue => {
-        results[issue.key] = {
-          summary: issue.fields?.summary || '',
-          status: issue.fields?.status?.name || 'Unknown',
-          statusCategory: issue.fields?.status?.statusCategory?.key || 'new',
-          priority: issue.fields?.priority?.name || 'Medium',
-          issueType: issue.fields?.issuetype?.name || 'Task'
-        };
-      });
+    // Fetch each issue individually for reliability in Forge
+    for (const issueKey of issueKeys) {
+      try {
+        const response = await api.asApp().requestJira(
+          route`/rest/api/3/issue/${issueKey}?fields=summary,status,priority,issuetype`,
+          {
+            method: 'GET',
+            headers: { 'Accept': 'application/json' }
+          }
+        );
+        
+        if (response.ok) {
+          const issue = await response.json();
+          results[issue.key] = {
+            summary: issue.fields?.summary || '',
+            status: issue.fields?.status?.name || 'Unknown',
+            statusCategory: issue.fields?.status?.statusCategory?.key || 'new',
+            priority: issue.fields?.priority?.name || 'Medium',
+            issueType: issue.fields?.issuetype?.name || 'Task'
+          };
+        } else {
+          console.warn(`[FetchIssueDetails] Failed to fetch ${issueKey}: ${response.status}`);
+        }
+      } catch (issueError) {
+        console.warn(`[FetchIssueDetails] Error fetching ${issueKey}:`, issueError.message);
+      }
     }
     
     return results;
   } catch (error) {
-    console.error('[FetchIssueDetails] Error fetching issue details:', error);
+    console.error('[FetchIssueDetails] Error:', error);
     return {};
   }
 }
