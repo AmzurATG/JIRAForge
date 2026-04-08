@@ -1524,19 +1524,23 @@ export async function generateTeamExportData(accountId, cloudId, projectKey, sta
     if (member.monthHours === 0) continue;
     
     lines.push(`DETAILED ACTIVITY - ${member.displayName}`);
-    lines.push('Date,Issue Key,Issue Summary,Time Spent,Status');
+    lines.push('Date,Issues,Time Spent');
     
     // Fetch detailed data for this member
     try {
       const memberDetails = await fetchMemberMonthDetails(accountId, cloudId, projectKey, member.userId, endDate.substring(0, 7));
       
-      // Extract all issues from all days
+      // Consolidate issues per day into single rows
       memberDetails.weeklyBreakdown.forEach(week => {
         week.dailyBreakdown.forEach(day => {
-          day.issues.forEach(issue => {
-            const hours = Math.round(issue.totalSeconds / 3600 * 10) / 10;
-            lines.push(`${day.date},${issue.issueKey},"${(issue.summary || '').replace(/"/g, '""')}",${hours}h,${issue.status || 'Unknown'}`);
-          });
+          if (day.issues && day.issues.length > 0) {
+            const dayHours = Math.round(day.totalSeconds / 3600 * 10) / 10;
+            const issueList = day.issues.map(issue => {
+              const h = Math.round(issue.totalSeconds / 3600 * 10) / 10;
+              return `${issue.issueKey} (${h}h)`;
+            }).join(' | ');
+            lines.push(`${day.date},"${issueList}",${dayHours}h`);
+          }
         });
       });
     } catch (error) {
@@ -1549,13 +1553,14 @@ export async function generateTeamExportData(accountId, cloudId, projectKey, sta
   
   // Time by Issue section
   lines.push('TIME BY ISSUE (Top Issues)');
-  lines.push('Issue Key,Issue Summary,Total Time,Contributors,Percentage');
+  lines.push('Issue Key,Total Time,Contributors,Percentage');
   
   const totalSeconds = teamAnalytics.teamTimeByIssue.reduce((sum, i) => sum + i.totalSeconds, 0);
   (teamAnalytics.teamTimeByIssue || []).forEach(issue => {
     const hours = Math.round(issue.totalSeconds / 3600 * 10) / 10;
     const percentage = totalSeconds > 0 ? Math.round((issue.totalSeconds / totalSeconds) * 100) : 0;
-    lines.push(`${issue.issueKey},"${(issue.issueSummary || '').replace(/"/g, '""')}",${hours}h,${issue.contributors},${percentage}%`);
+    const contributorNames = (issue.contributorDetails || []).map(c => c.displayName).join(' | ');
+    lines.push(`${issue.issueKey},${hours}h,"${contributorNames}",${percentage}%`);
   });
   
   return lines.join('\n');
