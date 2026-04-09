@@ -173,7 +173,7 @@ export async function generateExcelReport(data, filename) {
   const hRow = ws.getRow(cr);
   hRow.values = ['Member', 'Date', 'Issue Key', 'Total Time', 'Entries', 'Time Breakdown (Start - End | Duration)'];
   styleHeaderRow(hRow, COL_COUNT);
-  ws.autoFilter = { from: `A${cr}`, to: `F${cr}` };
+  const headerRowNum = cr;
   ws.views = [{ state: 'frozen', ySplit: cr }];
   cr++;
 
@@ -229,6 +229,9 @@ export async function generateExcelReport(data, filename) {
       rowIdx++;
     }
   }
+
+  // Set autoFilter to span from header row to last data row
+  ws.autoFilter = { from: `A${headerRowNum}`, to: `F${cr - 1}` };
 
   // ═══════════════════════════════════════════════════
   // SHEET 2: Time by Issue
