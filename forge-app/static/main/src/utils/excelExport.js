@@ -154,8 +154,9 @@ export async function generateExcelReport(data, filename) {
   // ═══════════════════════════════════════════════════
   const ws = workbook.addWorksheet('Detailed Activity (Grouped)');
 
-  const COL_COUNT = 5;
+  const COL_COUNT = 6;
   ws.columns = [
+    { key: 'member', width: 22 },
     { key: 'date', width: 16 },
     { key: 'issueKey', width: 18 },
     { key: 'totalTime', width: 14 },
@@ -170,9 +171,9 @@ export async function generateExcelReport(data, filename) {
 
   // Header row
   const hRow = ws.getRow(cr);
-  hRow.values = ['Date', 'Issue Key', 'Total Time', '# Entries', 'Time Breakdown (Start - End | Duration)'];
+  hRow.values = ['Member', 'Date', 'Issue Key', 'Total Time', 'Entries', 'Time Breakdown (Start - End | Duration)'];
   styleHeaderRow(hRow, COL_COUNT);
-  ws.autoFilter = { from: `A${cr}`, to: `E${cr}` };
+  ws.autoFilter = { from: `A${cr}`, to: `F${cr}` };
   ws.views = [{ state: 'frozen', ySplit: cr }];
   cr++;
 
@@ -204,6 +205,7 @@ export async function generateExcelReport(data, filename) {
 
       const row = ws.getRow(cr);
       row.values = [
+        member.displayName,
         formatDateFriendly(entry.date),
         entry.issueKey,
         formatDuration(entry.totalSeconds),
@@ -212,11 +214,13 @@ export async function generateExcelReport(data, filename) {
       ];
       styleDataRow(row, COL_COUNT, rowIdx % 2 === 0);
       row.getCell(1).alignment = { vertical: 'middle', horizontal: 'left' };
-      row.getCell(1).font = { bold: true, size: 10, color: { argb: 'FF172B4D' } };
+      row.getCell(1).font = { size: 10, color: { argb: 'FF172B4D' } };
       row.getCell(2).alignment = { vertical: 'middle', horizontal: 'left' };
-      row.getCell(3).font = { bold: true, size: 10, color: { argb: 'FF172B4D' } };
-      row.getCell(5).alignment = { vertical: 'middle', horizontal: 'left', wrapText: true };
-      row.getCell(5).font = { size: 9, color: { argb: 'FF37474F' } };
+      row.getCell(2).font = { bold: true, size: 10, color: { argb: 'FF172B4D' } };
+      row.getCell(3).alignment = { vertical: 'middle', horizontal: 'left' };
+      row.getCell(4).font = { bold: true, size: 10, color: { argb: 'FF172B4D' } };
+      row.getCell(6).alignment = { vertical: 'middle', horizontal: 'left', wrapText: true };
+      row.getCell(6).font = { size: 9, color: { argb: 'FF37474F' } };
       // Auto-height: ~15px per ~120 chars
       const lineCount = Math.max(1, Math.ceil(breakdownText.length / 120));
       row.height = Math.max(20, lineCount * 16);

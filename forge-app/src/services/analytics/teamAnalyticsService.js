@@ -1511,18 +1511,47 @@ export async function generateTeamExportData(accountId, cloudId, projectKey, sta
   const isSingleUser = members.length === 1;
   const lines = [];
   
+  // Helper: format seconds to show exact seconds
+  const fmtDur = (secs) => {
+    if (!secs || secs <= 0) return '0s';
+    const h = Math.floor(secs / 3600);
+    const m = Math.floor((secs % 3600) / 60);
+    const s = secs % 60;
+    if (h > 0 && m > 0 && s > 0) return `${h}h ${m}m ${s}s`;
+    if (h > 0 && m > 0) return `${h}h ${m}m`;
+    if (h > 0 && s > 0) return `${h}h ${s}s`;
+    if (h > 0) return `${h}h`;
+    if (m > 0 && s > 0) return `${m}m ${s}s`;
+    if (m > 0) return `${m}m`;
+    return `${s}s`;
+  };
+
+  // Helper: format short duration for individual sessions
+  const fmtShort = (secs) => {
+    if (!secs || secs <= 0) return '0s';
+    const m = Math.floor(secs / 60);
+    const s = secs % 60;
+    if (m > 0 && s > 0) return `${m}m ${s}s`;
+    if (m > 0) return `${m}m`;
+    return `${s}s`;
+  };
+
+  const memberNames = members.map(m => m.displayName).join(', ');
+  
   // === HEADER ===
-  lines.push(`Team Analytics Export - ${projectKey || 'All Projects'}`);
+  lines.push(`Team Analytics - ${projectKey || 'All Projects'} | ${startDate} to ${endDate} | ${memberNames}`);
   lines.push(`Generated,${new Date().toLocaleString()}`);
-  lines.push(`Period,${startDate} to ${endDate}`);
   lines.push('');
   
-  // === DETAILED ACTIVITY PER MEMBER (FIRST - consolidated per issue per date) ===
+  // === DETAILED ACTIVITY PER MEMBER ===
+  // All entries collected for Time by Issue section
+  const allIssueSeconds = {};
+  
   for (const member of members) {
     if (member.monthHours === 0) continue;
     
     lines.push(`DETAILED ACTIVITY - ${member.displayName}`);
-    lines.push('Date,Issue Key,Session Timings,Total Duration');
+    lines.push('Member,Date,Issue Key,Total Time,Entries,Time Breakdown (Start - End | Duration)');
     
     let memberTotalSeconds = 0;
     
@@ -1543,22 +1572,24 @@ export async function generateTeamExportData(accountId, cloudId, projectKey, sta
         if (!grouped[key]) {
           grouped[key] = { date: workDate, issueKey: record.user_assigned_issue_key, sessions: [], totalSeconds: 0 };
         }
-        const startTime = record.start_time ? new Date(record.start_time).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true }) : '';
-        const endTime = record.end_time ? new Date(record.end_time).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true }) : '';
-        if (startTime && endTime) {
-          grouped[key].sessions.push(`${startTime}-${endTime}`);
+        const dur = record.duration_seconds || 0;
+        const startTime = record.start_time ? new Date(record.start_time).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true }) : '';
+        const endTime = record.end_time ? new Date(record.end_time).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true }) : '';
+        if (startTime && endTime && dur > 0) {
+          grouped[key].sessions.push({ startTime, endTime, dur });
         }
-        grouped[key].totalSeconds += record.duration_seconds || 0;
+        grouped[key].totalSeconds += dur;
       });
       
-      // Output one row per date+issue
+      // Output one row per date+issue with pipe-separated time breakdown
       Object.values(grouped).forEach(entry => {
         memberTotalSeconds += entry.totalSeconds;
-        const hours = Math.floor(entry.totalSeconds / 3600);
-        const mins = Math.floor((entry.totalSeconds % 3600) / 60);
-        const durationStr = hours > 0 ? `${hours}h ${mins}m` : `${mins}m`;
-        const sessionsStr = entry.sessions.join(' | ');
-        lines.push(`${entry.date},${entry.issueKey},"${sessionsStr}",${durationStr}`);
+        // Track for issue totals
+        allIssueSeconds[entry.issueKey] = (allIssueSeconds[entry.issueKey] || 0) + entry.totalSeconds;
+        
+        const breakdownParts = entry.sessions.map(s => `${s.startTime}-${s.endTime} (${fmtShort(s.dur)})`);
+        const breakdownStr = breakdownParts.join(' | ');
+        lines.push(`${member.displayName},${entry.date},${entry.issueKey},${fmtDur(entry.totalSeconds)},${entry.sessions.length},"${breakdownStr}"`);
       });
     } catch (error) {
       console.error(`Error fetching details for ${member.displayName}:`, error);
@@ -1566,32 +1597,28 @@ export async function generateTeamExportData(accountId, cloudId, projectKey, sta
     }
     
     // Member total row
-    const totalH = Math.floor(memberTotalSeconds / 3600);
-    const totalM = Math.floor((memberTotalSeconds % 3600) / 60);
-    lines.push(`TOTAL,,,"${totalH}h ${totalM}m"`);
+    lines.push(`TOTAL,,,${fmtDur(memberTotalSeconds)},,`);
     lines.push('');
   }
   
-  // === TIME BY ISSUE (only for multi-user / team exports) ===
-  if (!isSingleUser) {
-    lines.push('TIME BY ISSUE');
-    lines.push('Issue Key,Total Time,Contributors,% of Total');
-    
-    const totalSeconds = teamAnalytics.teamTimeByIssue.reduce((sum, i) => sum + i.totalSeconds, 0);
-    (teamAnalytics.teamTimeByIssue || []).forEach(issue => {
-      const hours = Math.floor(issue.totalSeconds / 3600);
-      const mins = Math.floor((issue.totalSeconds % 3600) / 60);
-      const percentage = totalSeconds > 0 ? Math.round((issue.totalSeconds / totalSeconds) * 100) : 0;
-      const contributorNames = (issue.contributorDetails || []).map(c => c.displayName).join(' | ');
-      lines.push(`${issue.issueKey},"${hours}h ${mins}m","${contributorNames}",${percentage}%`);
-    });
-    const issueTotalH = Math.floor(totalSeconds / 3600);
-    const issueTotalM = Math.floor((totalSeconds % 3600) / 60);
-    lines.push(`TOTAL,"${issueTotalH}h ${issueTotalM}m",,100%`);
-    lines.push('');
-  }
+  // === TIME BY ISSUE ===
+  lines.push('TIME BY ISSUE');
+  lines.push('Issue Key,Total Time (min),Total Time,% of Total');
   
-  // === SUMMARY (at the bottom) ===
+  const issueArray = Object.entries(allIssueSeconds)
+    .map(([key, sec]) => ({ issueKey: key, totalSeconds: sec }))
+    .sort((a, b) => b.totalSeconds - a.totalSeconds);
+  const grandTotalSec = issueArray.reduce((s, i) => s + i.totalSeconds, 0);
+  
+  issueArray.forEach(issue => {
+    const totalMin = Math.round(issue.totalSeconds / 60);
+    const pct = grandTotalSec > 0 ? ((issue.totalSeconds / grandTotalSec) * 100).toFixed(1) : '0.0';
+    lines.push(`${issue.issueKey},${totalMin},${fmtDur(issue.totalSeconds)},${pct}%`);
+  });
+  lines.push(`TOTAL,${Math.round(grandTotalSec / 60)},${fmtDur(grandTotalSec)},100.0%`);
+  lines.push('');
+  
+  // === SUMMARY ===
   lines.push('SUMMARY');
   lines.push('Metric,Value');
   lines.push(`Active Members,${members.length}`);
