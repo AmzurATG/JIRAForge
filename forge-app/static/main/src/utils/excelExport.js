@@ -154,24 +154,23 @@ export async function generateExcelReport(data, filename) {
   // ═══════════════════════════════════════════════════
   const ws = workbook.addWorksheet('Detailed Activity (Grouped)');
 
-  const COL_COUNT = 6;
+  const COL_COUNT = 5;
   ws.columns = [
     { key: 'member', width: 22 },
     { key: 'date', width: 16 },
     { key: 'issueKey', width: 18 },
     { key: 'totalTime', width: 14 },
-    { key: 'entries', width: 12 },
-    { key: 'timings', width: 90 }
+    { key: 'timings', width: 40 }
   ];
 
   // Title
   let cr = addTitleRow(ws, `Team Analytics – ${data.projectKey || 'All'} Project  |  ${dateRangeStr}  |  ${memberNames}`, COL_COUNT, 1);
   // Subtitle
-  cr = addSubtitleRow(ws, 'Each row = one issue on one day. All individual time entries are in the last column.', COL_COUNT, cr);
+  cr = addSubtitleRow(ws, 'Each row = one issue on one day. Start and end times are in the last column.', COL_COUNT, cr);
 
   // Header row
   const hRow = ws.getRow(cr);
-  hRow.values = ['Member', 'Date', 'Issue Key', 'Total Time', 'Entries', 'Time Breakdown (Start - End | Duration)'];
+  hRow.values = ['Member', 'Date', 'Issue Key', 'Total Time', 'Time (Start - End)'];
   styleHeaderRow(hRow, COL_COUNT);
   const headerRowNum = cr;
   ws.views = [{ state: 'frozen', ySplit: cr }];
@@ -198,10 +197,10 @@ export async function generateExcelReport(data, filename) {
 
       allEntries.push({ ...entry, memberName: member.displayName });
 
-      const breakdownParts = sessions.map(s =>
-        `${formatTime(s.startTime)}-${formatTime(s.endTime)} (${formatDurationShort(s.durationSeconds)})`
-      );
-      const breakdownText = breakdownParts.join(' | ');
+      // Show just the first start time and last end time for the issue
+      const firstStart = sessions.length > 0 ? formatTime(sessions[0].startTime) : '';
+      const lastEnd = sessions.length > 0 ? formatTime(sessions[sessions.length - 1].endTime) : '';
+      const timingText = firstStart && lastEnd ? `${firstStart} - ${lastEnd}` : '—';
 
       const row = ws.getRow(cr);
       row.values = [
@@ -209,8 +208,7 @@ export async function generateExcelReport(data, filename) {
         formatDateFriendly(entry.date),
         entry.issueKey,
         formatDuration(entry.totalSeconds),
-        sessions.length,
-        breakdownText || '—'
+        timingText
       ];
       styleDataRow(row, COL_COUNT, rowIdx % 2 === 0);
       row.getCell(1).alignment = { vertical: 'middle', horizontal: 'left' };
@@ -219,11 +217,9 @@ export async function generateExcelReport(data, filename) {
       row.getCell(2).font = { bold: true, size: 10, color: { argb: 'FF172B4D' } };
       row.getCell(3).alignment = { vertical: 'middle', horizontal: 'left' };
       row.getCell(4).font = { bold: true, size: 10, color: { argb: 'FF172B4D' } };
-      row.getCell(6).alignment = { vertical: 'middle', horizontal: 'left', wrapText: true };
-      row.getCell(6).font = { size: 9, color: { argb: 'FF37474F' } };
-      // Auto-height: ~15px per ~120 chars
-      const lineCount = Math.max(1, Math.ceil(breakdownText.length / 120));
-      row.height = Math.max(20, lineCount * 16);
+      row.getCell(5).alignment = { vertical: 'middle', horizontal: 'left' };
+      row.getCell(5).font = { size: 10, color: { argb: 'FF37474F' } };
+      row.height = 20;
 
       cr++;
       rowIdx++;
@@ -231,7 +227,7 @@ export async function generateExcelReport(data, filename) {
   }
 
   // Set autoFilter to span from header row to last data row
-  ws.autoFilter = { from: `A${headerRowNum}`, to: `F${cr - 1}` };
+  ws.autoFilter = { from: `A${headerRowNum}`, to: `E${cr - 1}` };
 
   // ═══════════════════════════════════════════════════
   // SHEET 2: Time by Issue

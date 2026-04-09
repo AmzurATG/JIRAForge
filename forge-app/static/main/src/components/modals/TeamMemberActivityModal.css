@@ -803,3 +803,13 @@
   padding: 10px 16px;
   border-top: 1px solid #DFE1E6;
 }
+
+/* Non-productive value styling */
+.non-productive-value {
+  color: #DE350B;
+}
+
+/* Unassigned value styling */
+.unassigned-value {
+  color: #6B778C;
+}
