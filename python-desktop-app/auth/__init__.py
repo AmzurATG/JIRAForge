@@ -22,4 +22,3 @@ from auth.secure_storage import SecureTokenStorage, SecurityError, KEYRING_AVAIL
 
 __all__ = ['SecureTokenStorage', 'SecurityError', 'KEYRING_AVAILABLE']
 __version__ = '1.0.0'
-d
