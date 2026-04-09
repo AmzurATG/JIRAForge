@@ -179,12 +179,13 @@ def secure_log(message: str, level: str = "INFO", **kwargs) -> None:
 
 # Secure credential storage
 try:
-    print("!!!DEBUG!!! About to execute main JQL query for Jira issues.")
-    import keyring
-    KEYRING_AVAILABLE = True
+    from auth import SecureTokenStorage, SecurityError, KEYRING_AVAILABLE
+    SECURE_STORAGE_AVAILABLE = True
+    print("[OK] Secure token storage initialized")
 except ImportError:
-    KEYRING_AVAILABLE = False
-    print("[WARN] keyring module not available - tokens will be stored in plain text")
+    SECURE_STORAGE_AVAILABLE = False
+    print("[ERROR] Secure token storage module not found - this should not happen")
+    raise
 
 # Windows-specific imports
 try:
@@ -320,7 +321,7 @@ load_dotenv()
 
 # Application version - IMPORTANT: Update this when releasing new versions
 # This is used for update checking and notifications
-APP_VERSION = "1.3.3"
+APP_VERSION = "1.3.5"
 
 # Hard-disable screenshot monitoring/storage in desktop app.
 # OCR text extraction for activity records still runs via event-based flow.
@@ -1297,6 +1298,7 @@ def _keyring_set(service, key, value):
     in JWT tokens that can cause error 1783 'The stub received bad data'.
     """
     import base64
+    import keyring
     # Base64 encode to avoid special character issues
     encoded = base64.b64encode(value.encode('utf-8')).decode('ascii')
     encoded_with_marker = f"__b64__:{encoded}"
@@ -1330,6 +1332,7 @@ def _keyring_set(service, key, value):
 def _keyring_get(service, key):
     """Load a value from keyring, decoding base64 and reassembling chunks if needed."""
     import base64
+    import keyring
     value = keyring.get_password(service, key)
     if value is None:
         return None
@@ -1390,6 +1393,7 @@ def _keyring_get(service, key):
 
 def _keyring_delete(service, key):
     """Delete a value from keyring, including any chunks."""
+    import keyring
     try:
         value = keyring.get_password(service, key)
         if value and (value.startswith("__chunked__:") or value.startswith("__b64_chunked__:")):
@@ -1417,6 +1421,7 @@ class AtlassianAuthManager:
         # Token exchange now goes through AI Server
         self.ai_server_url = get_env_var('AI_SERVER_URL', 'https://forgesync.amzur.com')
         self.store_path = store_path or os.path.join(get_app_data_dir(), 'time_tracker_auth.json')
+        self.metadata_path = os.path.join(get_app_data_dir(), 'auth_metadata.json')  # For non-sensitive data
 
         # Prevents concurrent token refreshes from burning the same refresh_token twice.
         # Atlassian uses token rotation: each refresh invalidates the old refresh_token.
@@ -1424,80 +1429,86 @@ class AtlassianAuthManager:
         # refresh_token — the second call arrives after rotation and gets "token invalid".
         self._refresh_lock = threading.Lock()
 
-        # Migrate from plain-text to keyring if needed
-        self._migrate_to_keyring()
+        # Initialize secure storage
+        self.secure_storage = SecureTokenStorage(get_app_data_dir())
 
-        # Load tokens (from keyring + JSON)
+        # Migrate from plain-text JSON to secure storage if needed
+        self._migrate_from_plaintext()
+
+        # Load tokens (from secure storage)
         self.tokens = self._load_tokens()
 
-    def _migrate_to_keyring(self):
-        """Migrate sensitive tokens from plain-text JSON to secure keyring storage.
-
-        JSON file is kept as a backup (not cleaned) because keyring can lose data
-        if the app is killed during a chunked write (e.g., system shutdown/reboot).
+    def _migrate_from_plaintext(self):
+        """Migrate sensitive tokens from plain-text JSON to secure storage.
+        
+        This handles migration from the old insecure system that stored tokens
+        in plaintext JSON when keyring was unavailable.
         """
-        if not KEYRING_AVAILABLE:
-            return
-
         try:
-            # Check if old JSON file has plain-text tokens
+            # Check if old JSON file exists
             if not os.path.exists(self.store_path):
                 return
 
-            with open(self.store_path, 'r') as f:
-                old_data = json.load(f)
-
-            for key in SENSITIVE_TOKEN_KEYS:
-                if key in old_data and old_data[key]:
-                    # Check if already in keyring
-                    existing = _keyring_get(KEYRING_SERVICE, key)
-                    if existing is None:
-                        # Copy to keyring (keep JSON as backup)
-                        _keyring_set(KEYRING_SERVICE, key, old_data[key])
-                        print(f"[OK] Migrated {key} to secure storage")
+            # Use SecureTokenStorage's migration method
+            migrated = self.secure_storage.migrate_from_plaintext(self.store_path)
+            
+            if migrated:
+                print("[OK] Migrated tokens from plaintext to secure storage")
+                
+                # Extract metadata (non-sensitive data) and save separately
+                try:
+                    with open(self.store_path, 'r') as f:
+                        old_data = json.load(f)
+                    
+                    # Save non-sensitive metadata separately
+                    metadata = {k: v for k, v in old_data.items() if k not in SENSITIVE_TOKEN_KEYS}
+                    if metadata:
+                        with open(self.metadata_path, 'w') as f:
+                            json.dump(metadata, f)
+                        print(f"[OK] Saved non-sensitive metadata separately")
+                except Exception:
+                    pass  # Non-critical
 
         except Exception as e:
             print(f"[WARN] Migration to secure storage failed: {e}")
 
     def _load_tokens(self):
-        """Load tokens from secure keyring (sensitive) and JSON file (backup).
-
-        Priority: keyring > JSON backup. If keyring is missing a token
-        (e.g., corrupted by interrupted shutdown), fall back to JSON.
+        """Load tokens from secure storage (keyring or encrypted file).
+        
+        Sensitive tokens are loaded from SecureTokenStorage (keyring → encrypted fallback).
+        Non-sensitive metadata (oauth_state, code_verifier) is loaded from metadata JSON.
         """
         tokens = {}
 
-        # Load all tokens from JSON file (includes backup of sensitive tokens)
+        # Load non-sensitive metadata from JSON file
         try:
-            if os.path.exists(self.store_path):
-                with open(self.store_path, 'r') as f:
+            if os.path.exists(self.metadata_path):
+                with open(self.metadata_path, 'r') as f:
                     tokens = json.load(f)
+                    print(f"[OK] Loaded metadata from {self.metadata_path}")
         except Exception as e:
-            print(f"[WARN] Failed to load token metadata: {e}")
+            print(f"[WARN] Failed to load metadata: {e}")
 
-        # Override with keyring values (more secure, preferred source)
-        if KEYRING_AVAILABLE:
-            try:
-                for key in SENSITIVE_TOKEN_KEYS:
-                    value = _keyring_get(KEYRING_SERVICE, key)
-                    if value:
-                        tokens[key] = value
-                    elif tokens.get(key):
-                        # Keyring lost this token (corrupted chunks from interrupted shutdown)
-                        # but JSON backup has it — re-save to keyring for next time
-                        print(f"[WARN] Keyring missing {key}, recovered from JSON backup")
-                        try:
-                            _keyring_set(KEYRING_SERVICE, key, tokens[key])
-                        except Exception:
-                            pass
-            except Exception as e:
-                print(f"[WARN] Failed to load tokens from secure storage: {e}")
-                # JSON backup tokens are already in `tokens` dict — will be used
+        # Load sensitive tokens from secure storage
+        try:
+            secure_tokens = self.secure_storage.load_tokens()
+            if secure_tokens:
+                tokens.update(secure_tokens)
+                print(f"[OK] Loaded {len(secure_tokens)} tokens from secure storage")
+        except Exception as e:
+            print(f"[ERROR] Failed to load from secure storage: {e}")
 
         return tokens
 
     def _save_tokens(self):
-        """Save tokens to secure keyring (sensitive) and JSON file (metadata + backup)"""
+        """Save tokens to secure storage (keyring or encrypted file).
+        
+        Sensitive tokens (access_token, refresh_token, supabase_token) are saved to
+        SecureTokenStorage (keyring with automatic encrypted fallback).
+        Non-sensitive metadata (oauth_state, code_verifier) is saved to JSON.
+        
+        SECURITY NOTE: No plaintext backup for sensitive tokens.
+        """
         # Separate sensitive and non-sensitive data
         sensitive_data = {}
         metadata = {}
@@ -1508,26 +1519,27 @@ class AtlassianAuthManager:
             else:
                 metadata[key] = value
 
-        # Save sensitive tokens to keyring
-        if KEYRING_AVAILABLE:
+        # Save sensitive tokens to secure storage (keyring → encrypted fallback)
+        if sensitive_data:
             try:
-                for key, value in sensitive_data.items():
-                    if value:
-                        _keyring_set(KEYRING_SERVICE, key, value)
+                self.secure_storage.save_tokens(sensitive_data)
+                print(f"[OK] Saved {len(sensitive_data)} tokens to secure storage")
+            except SecurityError as e:
+                print(f"[ERROR] Cannot save tokens securely: {e}")
+                # This is a critical error - do not fall back to plaintext
+                raise
             except Exception as e:
-                print(f"[WARN] Failed to save tokens to secure storage: {e}")
+                print(f"[ERROR] Failed to save tokens: {e}")
+                raise
 
-        # Always save tokens to JSON as backup — keyring can lose data if the app
-        # is killed during a chunked write (e.g., system shutdown/reboot).
-        # The JSON file in AppData is the resilient fallback.
-        metadata.update(sensitive_data)
-
-        # Save to JSON file
-        try:
-            with open(self.store_path, 'w') as f:
-                json.dump(metadata, f)
-        except Exception as e:
-            print(f"[WARN] Failed to save token metadata: {e}")
+        # Save non-sensitive metadata to JSON file
+        if metadata:
+            try:
+                with open(self.metadata_path, 'w') as f:
+                    json.dump(metadata, f)
+                print(f"[OK] Saved metadata to {self.metadata_path}")
+            except Exception as e:
+                print(f"[WARN] Failed to save metadata: {e}")
     
     def get_auth_url(self):
         """Generate Atlassian OAuth authorization URL with PKCE"""
@@ -2079,137 +2091,18 @@ def send_login_diagnostics(auth_manager, status: str, step: str, error: str = No
 class OfflineManager:
     """Manages offline data storage and synchronization with Supabase"""
     
-    def __init__(self, db_path=None):
-        """Initialize offline manager with SQLite database"""
-        self.db_path = db_path or os.path.join(get_app_data_dir(), 'time_tracker_offline.db')
+    def __init__(self, db_manager):
+        """Initialize offline manager with shared database connection manager"""
+        self.db_manager = db_manager
+        self.db_path = db_manager.db_path  # backward compat
         self.is_online = True
         self._last_connectivity_check = 0
         self._connectivity_check_interval = 30  # Check every 30 seconds
         self._sync_lock = threading.Lock()
         self._syncing = False
-        
-        # Initialize database
-        self._init_database()
+
+        # Schema initialization handled by db_manager
         print(f"[OK] Offline manager initialized (DB: {self.db_path})")
-    
-    def _init_database(self):
-        """Initialize SQLite database for offline storage"""
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        
-        # Create screenshots table for offline storage
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS offline_screenshots (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id TEXT NOT NULL,
-                organization_id TEXT,
-                timestamp TEXT NOT NULL,
-                storage_path TEXT,
-                window_title TEXT,
-                application_name TEXT,
-                file_size_bytes INTEGER,
-                start_time TEXT,
-                end_time TEXT,
-                duration_seconds INTEGER,
-                project_key TEXT,
-                user_assigned_issues TEXT,
-                metadata TEXT,
-                image_data BLOB,
-                thumbnail_data BLOB,
-                synced INTEGER DEFAULT 0,
-                sync_attempts INTEGER DEFAULT 0,
-                last_sync_error TEXT,
-                created_at TEXT DEFAULT CURRENT_TIMESTAMP
-            )
-        ''')
-
-        # Add project_key column if it doesn't exist (for existing databases)
-        try:
-            cursor.execute('ALTER TABLE offline_screenshots ADD COLUMN project_key TEXT')
-        except sqlite3.OperationalError:
-            pass  # Column already exists
-        
-        # Create index for faster queries
-        cursor.execute('''
-            CREATE INDEX IF NOT EXISTS idx_offline_screenshots_synced 
-            ON offline_screenshots(synced)
-        ''')
-        
-        cursor.execute('''
-            CREATE INDEX IF NOT EXISTS idx_offline_screenshots_user 
-            ON offline_screenshots(user_id)
-        ''')
-
-        # Create project_settings_cache table for offline caching
-        # This caches admin-configured tracked statuses per project
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS project_settings_cache (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                organization_id TEXT NOT NULL,
-                project_key TEXT NOT NULL,
-                project_name TEXT,
-                tracked_statuses TEXT,
-                cached_at TEXT DEFAULT CURRENT_TIMESTAMP,
-                UNIQUE(organization_id, project_key)
-            )
-        ''')
-
-        cursor.execute('''
-            CREATE INDEX IF NOT EXISTS idx_project_settings_org 
-            ON project_settings_cache(organization_id)
-        ''')
-
-        # ====================================================================
-        # App classifications cache (synced from Supabase)
-        # ====================================================================
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS app_classifications_cache (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                organization_id TEXT,
-                project_key TEXT,
-                identifier TEXT NOT NULL,
-                display_name TEXT,
-                classification TEXT NOT NULL,
-                match_by TEXT NOT NULL,
-                cached_at TEXT DEFAULT CURRENT_TIMESTAMP,
-                UNIQUE(organization_id, project_key, identifier, match_by)
-            )
-        ''')
-
-        cursor.execute('''
-            CREATE INDEX IF NOT EXISTS idx_app_class_cache_identifier
-            ON app_classifications_cache(identifier)
-        ''')
-
-        cursor.execute('''
-            CREATE INDEX IF NOT EXISTS idx_app_class_cache_match_by
-            ON app_classifications_cache(match_by)
-        ''')
-
-        # ====================================================================
-        # Active sessions (real-time activity tracking between batches)
-        # ====================================================================
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS active_sessions (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                window_title TEXT,
-                application_name TEXT,
-                classification TEXT,
-                ocr_text TEXT,
-                ocr_method TEXT,
-                ocr_confidence REAL,
-                ocr_error_message TEXT,
-                total_time_seconds REAL DEFAULT 0,
-                visit_count INTEGER DEFAULT 1,
-                first_seen TEXT,
-                last_seen TEXT,
-                timer_started_at TEXT,
-                UNIQUE(window_title, application_name)
-            )
-        ''')
-        
-        conn.commit()
-        conn.close()
     
     def check_connectivity(self, force=False):
         """Check if we have internet connectivity"""
@@ -2266,13 +2159,13 @@ class OfflineManager:
             int: Local record ID
         """
         try:
-            conn = sqlite3.connect(self.db_path)
+            conn = self.db_manager.get_connection()
             cursor = conn.cursor()
-            
+
             # Convert complex objects to JSON strings
             user_issues = json.dumps(screenshot_data.get('user_assigned_issues', []))
             metadata = json.dumps(screenshot_data.get('metadata', {}))
-            
+
             cursor.execute('''
                 INSERT INTO offline_screenshots (
                     user_id, organization_id, timestamp, storage_path,
@@ -2297,15 +2190,15 @@ class OfflineManager:
                 image_bytes,
                 thumbnail_bytes
             ))
-            
+
             local_id = cursor.lastrowid
             conn.commit()
-            conn.close()
-            
+
             print(f"[OK] Screenshot saved offline (local ID: {local_id})")
             return local_id
-            
+
         except Exception as e:
+            conn.rollback()
             print(f"[ERROR] Failed to save screenshot offline: {e}")
             traceback.print_exc()
             return None
@@ -2320,29 +2213,27 @@ class OfflineManager:
             List of dictionaries with screenshot data
         """
         try:
-            conn = sqlite3.connect(self.db_path)
-            conn.row_factory = sqlite3.Row
+            conn = self.db_manager.get_connection()
             cursor = conn.cursor()
-            
+
             # Only get records with valid UUID user_id (not anonymous)
             # UUID format: 8-4-4-4-12 hex characters
             cursor.execute('''
-                SELECT * FROM offline_screenshots 
-                WHERE synced = 0 
+                SELECT * FROM offline_screenshots
+                WHERE synced = 0
                 AND sync_attempts < 5
-                AND user_id IS NOT NULL 
+                AND user_id IS NOT NULL
                 AND user_id != ''
                 AND user_id NOT LIKE 'anonymous_%'
                 AND length(user_id) = 36
                 ORDER BY created_at ASC
                 LIMIT ?
             ''', (limit,))
-            
+
+            columns = [desc[0] for desc in cursor.description]
             rows = cursor.fetchall()
-            conn.close()
-            
-            return [dict(row) for row in rows]
-            
+            return [dict(zip(columns, row)) for row in rows]
+
         except Exception as e:
             print(f"[ERROR] Failed to get pending screenshots: {e}")
             return []
@@ -2354,19 +2245,19 @@ class OfflineManager:
             local_id: Local database ID
         """
         try:
-            conn = sqlite3.connect(self.db_path)
+            conn = self.db_manager.get_connection()
             cursor = conn.cursor()
-            
+
             cursor.execute('''
-                UPDATE offline_screenshots 
+                UPDATE offline_screenshots
                 SET synced = 1, last_sync_error = NULL
                 WHERE id = ?
             ''', (local_id,))
-            
+
             conn.commit()
-            conn.close()
-            
+
         except Exception as e:
+            conn.rollback()
             print(f"[ERROR] Failed to mark screenshot as synced: {e}")
     
     def mark_sync_failed(self, local_id, error_message):
@@ -2377,20 +2268,20 @@ class OfflineManager:
             error_message: Error message from sync attempt
         """
         try:
-            conn = sqlite3.connect(self.db_path)
+            conn = self.db_manager.get_connection()
             cursor = conn.cursor()
-            
+
             cursor.execute('''
-                UPDATE offline_screenshots 
-                SET sync_attempts = sync_attempts + 1, 
+                UPDATE offline_screenshots
+                SET sync_attempts = sync_attempts + 1,
                     last_sync_error = ?
                 WHERE id = ?
             ''', (error_message, local_id))
-            
+
             conn.commit()
-            conn.close()
-            
+
         except Exception as e:
+            conn.rollback()
             print(f"[ERROR] Failed to mark sync as failed: {e}")
     
     def get_pending_count(self, include_anonymous=True):
@@ -2400,24 +2291,23 @@ class OfflineManager:
             include_anonymous: If True, includes records without user_id
         """
         try:
-            conn = sqlite3.connect(self.db_path)
+            conn = self.db_manager.get_connection()
             cursor = conn.cursor()
-            
+
             if include_anonymous:
                 cursor.execute('''
-                    SELECT COUNT(*) FROM offline_screenshots 
+                    SELECT COUNT(*) FROM offline_screenshots
                     WHERE synced = 0 AND sync_attempts < 5
                 ''')
             else:
                 cursor.execute('''
-                    SELECT COUNT(*) FROM offline_screenshots 
+                    SELECT COUNT(*) FROM offline_screenshots
                     WHERE synced = 0 AND sync_attempts < 5 AND user_id IS NOT NULL AND user_id != ''
                 ''')
-            
+
             count = cursor.fetchone()[0]
-            conn.close()
             return count
-            
+
         except Exception as e:
             print(f"[ERROR] Failed to get pending count: {e}")
             return 0
@@ -2425,18 +2315,17 @@ class OfflineManager:
     def get_anonymous_count(self):
         """Get count of screenshots captured without user authentication"""
         try:
-            conn = sqlite3.connect(self.db_path)
+            conn = self.db_manager.get_connection()
             cursor = conn.cursor()
-            
+
             cursor.execute('''
-                SELECT COUNT(*) FROM offline_screenshots 
+                SELECT COUNT(*) FROM offline_screenshots
                 WHERE synced = 0 AND (user_id IS NULL OR user_id = '' OR user_id LIKE 'anonymous_%')
             ''')
-            
+
             count = cursor.fetchone()[0]
-            conn.close()
             return count
-            
+
         except Exception as e:
             print(f"[ERROR] Failed to get anonymous count: {e}")
             return 0
@@ -2452,33 +2341,33 @@ class OfflineManager:
             int: Number of records updated
         """
         try:
-            conn = sqlite3.connect(self.db_path)
+            conn = self.db_manager.get_connection()
             cursor = conn.cursor()
-            
+
             # Update all anonymous records with the real user_id
             if organization_id:
                 cursor.execute('''
-                    UPDATE offline_screenshots 
+                    UPDATE offline_screenshots
                     SET user_id = ?, organization_id = ?
                     WHERE synced = 0 AND (user_id IS NULL OR user_id = '' OR user_id LIKE 'anonymous_%')
                 ''', (user_id, organization_id))
             else:
                 cursor.execute('''
-                    UPDATE offline_screenshots 
+                    UPDATE offline_screenshots
                     SET user_id = ?
                     WHERE synced = 0 AND (user_id IS NULL OR user_id = '' OR user_id LIKE 'anonymous_%')
                 ''', (user_id,))
-            
+
             updated = cursor.rowcount
             conn.commit()
-            conn.close()
-            
+
             if updated > 0:
                 secure_log(f"[OK] Associated {updated} anonymous screenshots with user", user_id=user_id)
-            
+
             return updated
-            
+
         except Exception as e:
+            conn.rollback()
             print(f"[ERROR] Failed to associate anonymous records: {e}")
             return 0
 
@@ -2489,30 +2378,30 @@ class OfflineManager:
             days_old: Number of days after which to delete synced records (0 = immediate)
         """
         try:
-            conn = sqlite3.connect(self.db_path)
+            conn = self.db_manager.get_connection()
             cursor = conn.cursor()
-            
+
             if days_old == 0:
                 # Delete immediately after sync
                 cursor.execute('''
-                    DELETE FROM offline_screenshots 
+                    DELETE FROM offline_screenshots
                     WHERE synced = 1
                 ''')
             else:
                 cursor.execute('''
-                    DELETE FROM offline_screenshots 
-                    WHERE synced = 1 
+                    DELETE FROM offline_screenshots
+                    WHERE synced = 1
                     AND datetime(created_at) < datetime('now', ? || ' days')
                 ''', (f'-{days_old}',))
-            
+
             deleted = cursor.rowcount
             conn.commit()
-            conn.close()
-            
+
             if deleted > 0:
                 print(f"[OK] Deleted {deleted} synced screenshots from local storage")
-            
+
         except Exception as e:
+            conn.rollback()
             print(f"[ERROR] Failed to cleanup synced screenshots: {e}")
     
     def sync_all(self, supabase_client, storage_client):
@@ -2713,25 +2602,25 @@ class OfflineManager:
             project_settings: Dict of {project_key: {tracked_statuses: [...], project_name: '...'}}
         """
         try:
-            conn = sqlite3.connect(self.db_path)
+            conn = self.db_manager.get_connection()
             cursor = conn.cursor()
-            
+
             for project_key, settings in project_settings.items():
                 tracked_statuses = json.dumps(settings.get('tracked_statuses', ['In Progress']))
                 project_name = settings.get('project_name', project_key)
-                
+
                 # Upsert: Insert or replace
                 cursor.execute('''
-                    INSERT OR REPLACE INTO project_settings_cache 
+                    INSERT OR REPLACE INTO project_settings_cache
                     (organization_id, project_key, project_name, tracked_statuses, cached_at)
                     VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
                 ''', (organization_id, project_key, project_name, tracked_statuses))
-            
+
             conn.commit()
-            conn.close()
             print(f"[OK] Cached project settings for {len(project_settings)} projects")
-            
+
         except Exception as e:
+            conn.rollback()
             print(f"[ERROR] Failed to cache project settings: {e}")
 
     def load_project_settings_cache(self, organization_id):
@@ -2744,32 +2633,29 @@ class OfflineManager:
             dict: {project_key: {tracked_statuses: [...], project_name: '...'}} or empty dict
         """
         try:
-            conn = sqlite3.connect(self.db_path)
-            conn.row_factory = sqlite3.Row
+            conn = self.db_manager.get_connection()
             cursor = conn.cursor()
-            
+
             cursor.execute('''
                 SELECT project_key, project_name, tracked_statuses
                 FROM project_settings_cache
                 WHERE organization_id = ?
             ''', (organization_id,))
-            
+
             rows = cursor.fetchall()
-            conn.close()
-            
+
             if rows:
                 result = {}
                 for row in rows:
-                    project_key = row['project_key']
-                    result[project_key] = {
-                        'tracked_statuses': json.loads(row['tracked_statuses']) if row['tracked_statuses'] else ['In Progress'],
-                        'project_name': row['project_name'] or project_key
+                    result[row[0]] = {
+                        'tracked_statuses': json.loads(row[2]) if row[2] else ['In Progress'],
+                        'project_name': row[1] or row[0]
                     }
                 print(f"[OK] Loaded {len(result)} project settings from local cache")
                 return result
-            
+
             return {}
-            
+
         except Exception as e:
             print(f"[ERROR] Failed to load project settings cache: {e}")
             return {}
@@ -2781,22 +2667,22 @@ class OfflineManager:
             organization_id: If provided, only clear for this org. Otherwise clear all.
         """
         try:
-            conn = sqlite3.connect(self.db_path)
+            conn = self.db_manager.get_connection()
             cursor = conn.cursor()
-            
+
             if organization_id:
                 cursor.execute('DELETE FROM project_settings_cache WHERE organization_id = ?', (organization_id,))
             else:
                 cursor.execute('DELETE FROM project_settings_cache')
-            
+
             deleted = cursor.rowcount
             conn.commit()
-            conn.close()
-            
+
             if deleted > 0:
                 print(f"[OK] Cleared {deleted} cached project settings")
-                
+
         except Exception as e:
+            conn.rollback()
             print(f"[ERROR] Failed to clear project settings cache: {e}")
 
 # ============================================================================
@@ -3511,8 +3397,8 @@ class AppClassificationManager:
     In-memory dicts provide O(1) lookup during tracking.
     """
 
-    def __init__(self, db_path):
-        self.db_path = db_path
+    def __init__(self, db_manager):
+        self.db_manager = db_manager
         # In-memory lookup dicts (populated from SQLite)
         self.process_classifications = {}  # exact identifier (lower) -> classification
         self.normalized_process_classifications = {}  # canonical identifier -> classification
@@ -3532,29 +3418,35 @@ class AppClassificationManager:
         return PROCESS_IDENTIFIER_ALIASES.get(normalized, normalized)
 
     def reload_from_cache(self):
-        """Load classifications from SQLite into memory for fast lookup."""
-        self.process_classifications = {}
-        self.normalized_process_classifications = {}
-        self.url_classifications = {}
-        self.url_wildcard_patterns = []
+        """Load classifications from SQLite into memory for fast lookup.
+        Uses copy-on-write pattern: builds new dicts in locals, then atomically
+        swaps references (single assignment is GIL-atomic)."""
+        new_process = {}
+        new_normalized = {}
+        new_url = {}
+        new_wildcard = []
         try:
-            conn = sqlite3.connect(self.db_path)
+            conn = self.db_manager.get_connection()
             cursor = conn.cursor()
             cursor.execute('SELECT identifier, classification, match_by FROM app_classifications_cache')
             for identifier, classification, match_by in cursor.fetchall():
                 key = (identifier or '').lower().strip()
                 if match_by == 'process':
-                    self.process_classifications[key] = classification
+                    new_process[key] = classification
                     canonical_key = self._canonical_process_key(identifier)
                     if canonical_key:
-                        self.normalized_process_classifications[canonical_key] = classification
+                        new_normalized[canonical_key] = classification
                 elif match_by == 'url':
                     if '*' in identifier:
-                        self.url_wildcard_patterns.append((key, classification))
+                        new_wildcard.append((key, classification))
                     else:
-                        self.url_classifications[key] = classification
-            conn.close()
-            total = len(self.process_classifications) + len(self.url_classifications) + len(self.url_wildcard_patterns)
+                        new_url[key] = classification
+            # Atomic swap — single reference assignment is GIL-atomic
+            self.process_classifications = new_process
+            self.normalized_process_classifications = new_normalized
+            self.url_classifications = new_url
+            self.url_wildcard_patterns = new_wildcard
+            total = len(new_process) + len(new_url) + len(new_wildcard)
             if total > 0:
                 print(f"[OK] Loaded {total} app classifications into memory")
         except Exception as e:
@@ -3673,25 +3565,22 @@ class AppClassificationManager:
                         print(f"[WARN] Project-level classification fetch failed for {pk}: {project_err}")
 
             # Write merged results to SQLite cache
-            conn = sqlite3.connect(self.db_path)
-            try:
-                cursor = conn.cursor()
-                cursor.execute('DELETE FROM app_classifications_cache')
-                for (identifier_lower, match_by), row in merged.items():
-                    cursor.execute('''
-                        INSERT OR REPLACE INTO app_classifications_cache
-                        (organization_id, identifier, display_name, classification, match_by, cached_at)
-                        VALUES (?, ?, ?, ?, ?, datetime('now'))
-                    ''', (
-                        organization_id,
-                        row['identifier'],
-                        row.get('display_name', ''),
-                        row['classification'],
-                        row['match_by']
-                    ))
-                conn.commit()
-            finally:
-                conn.close()
+            conn = self.db_manager.get_connection()
+            cursor = conn.cursor()
+            cursor.execute('DELETE FROM app_classifications_cache')
+            for (identifier_lower, match_by), row in merged.items():
+                cursor.execute('''
+                    INSERT OR REPLACE INTO app_classifications_cache
+                    (organization_id, identifier, display_name, classification, match_by, cached_at)
+                    VALUES (?, ?, ?, ?, ?, datetime('now'))
+                ''', (
+                    organization_id,
+                    row['identifier'],
+                    row.get('display_name', ''),
+                    row['classification'],
+                    row['match_by']
+                ))
+            conn.commit()
 
             if project_keys_to_load:
                 print(
@@ -3706,6 +3595,10 @@ class AppClassificationManager:
             self.reload_from_cache()
 
         except Exception as e:
+            try:
+                self.db_manager.get_connection().rollback()
+            except Exception:
+                pass
             print(f"[WARN] Failed to sync classifications from Supabase: {e}")
 
 
@@ -3716,8 +3609,8 @@ class ActiveSessionManager:
     Thread-safe with a lock.
     """
 
-    def __init__(self, db_path):
-        self.db_path = db_path
+    def __init__(self, db_manager):
+        self.db_manager = db_manager
         self._lock = threading.Lock()
         self._current_key = None  # (window_title, application_name)
         self._pending_ocr_keys = set()  # Sessions that need OCR backfill
@@ -3753,7 +3646,7 @@ class ActiveSessionManager:
         if not ocr_result or ocr_result.get('throttled'):
             return
         with self._lock:
-            conn = sqlite3.connect(self.db_path)
+            conn = self.db_manager.get_connection()
             cursor = conn.cursor()
             try:
                 cursor.execute(
@@ -3772,9 +3665,8 @@ class ActiveSessionManager:
                     )
                     conn.commit()
             except Exception as e:
+                conn.rollback()
                 print(f"[WARN] OCR backfill failed: {e}")
-            finally:
-                conn.close()
 
     def on_window_switch(self, title, app_name, classification, ocr_result=None):
         """Handle a window switch event.
@@ -3813,7 +3705,7 @@ class ActiveSessionManager:
 
             has_ocr_data = ocr_text or ocr_method
 
-            conn = sqlite3.connect(self.db_path)
+            conn = self.db_manager.get_connection()
             cursor = conn.cursor()
 
             try:
@@ -3858,8 +3750,6 @@ class ActiveSessionManager:
             except Exception as e:
                 print(f"[ERROR] ActiveSessionManager.on_window_switch: {e}")
                 conn.rollback()
-            finally:
-                conn.close()
 
     def _stop_timer_internal(self, cursor, now):
         """Stop the timer on the currently active session (internal, must hold lock)."""
@@ -3889,34 +3779,37 @@ class ActiveSessionManager:
     def stop_current_timer(self):
         """Stop timer on the current session (public, acquires lock)."""
         with self._lock:
-            now = datetime.now(timezone.utc).isoformat()
-            conn = sqlite3.connect(self.db_path)
-            cursor = conn.cursor()
+            conn = self.db_manager.get_connection()
             try:
+                now = datetime.now(timezone.utc).isoformat()
+                cursor = conn.cursor()
                 self._stop_timer_internal(cursor, now)
                 conn.commit()
-            finally:
-                conn.close()
+            except Exception as e:
+                conn.rollback()
+                print(f"[ERROR] stop_current_timer failed: {e}")
 
     def get_all_sessions(self):
         """Get all sessions for batch upload."""
         with self._lock:
-            conn = sqlite3.connect(self.db_path)
+            conn = self.db_manager.get_connection()
             cursor = conn.cursor()
             cursor.execute('SELECT * FROM active_sessions')
             columns = [desc[0] for desc in cursor.description]
             rows = cursor.fetchall()
-            conn.close()
             return [dict(zip(columns, row)) for row in rows]
 
     def clear_all(self):
         """Clear all sessions after successful batch upload."""
         with self._lock:
-            conn = sqlite3.connect(self.db_path)
+            conn = self.db_manager.get_connection()
             cursor = conn.cursor()
-            cursor.execute('DELETE FROM active_sessions')
-            conn.commit()
-            conn.close()
+            try:
+                cursor.execute('DELETE FROM active_sessions')
+                conn.commit()
+            except Exception as e:
+                conn.rollback()
+                print(f"[ERROR] clear_all failed: {e}")
             self._current_key = None
 
     def harvest_and_clear(self, min_duration_seconds=0):
@@ -3930,7 +3823,7 @@ class ActiveSessionManager:
         inserted between separate get_all_sessions() and clear_all() calls.
         """
         with self._lock:
-            conn = sqlite3.connect(self.db_path)
+            conn = self.db_manager.get_connection()
             cursor = conn.cursor()
             try:
                 # Stop any running timer first so accumulated time is accurate
@@ -3949,8 +3842,6 @@ class ActiveSessionManager:
                 print(f"[ERROR] harvest_and_clear failed: {e}")
                 conn.rollback()
                 return []
-            finally:
-                conn.close()
 
             self._current_key = None
             all_sessions = [dict(zip(columns, row)) for row in rows]
@@ -3973,7 +3864,7 @@ class ActiveSessionManager:
         if not sessions:
             return
         with self._lock:
-            conn = sqlite3.connect(self.db_path)
+            conn = self.db_manager.get_connection()
             cursor = conn.cursor()
             try:
                 for s in sessions:
@@ -3995,13 +3886,11 @@ class ActiveSessionManager:
             except Exception as e:
                 print(f"[ERROR] Failed to restore sessions: {e}")
                 conn.rollback()
-            finally:
-                conn.close()
 
     def update_classification(self, app_name, old_classification, new_classification):
         """Thread-safe update of classification for an app (called from async classify thread)."""
         with self._lock:
-            conn = sqlite3.connect(self.db_path)
+            conn = self.db_manager.get_connection()
             cursor = conn.cursor()
             try:
                 cursor.execute(
@@ -4010,9 +3899,8 @@ class ActiveSessionManager:
                 )
                 conn.commit()
             except Exception as e:
+                conn.rollback()
                 print(f"[WARN] Failed to update classification: {e}")
-            finally:
-                conn.close()
 
 
 class LocalOCRProcessor:
@@ -4391,6 +4279,7 @@ class TimeTracker:
         # User state
         self.current_user = None
         self.current_user_id = None  # UUID from public.users table
+        self._login_reminder_last_shown = time.time()  # Don't remind immediately on startup
         
         # ============================================================================
         # TRACKING SETTINGS (loaded from Supabase, configurable by admins)
@@ -4503,8 +4392,10 @@ class TimeTracker:
         self.organization_name = None  # Organization name (Jira site name)
         self.jira_instance_url = None  # Jira instance URL
         
-        # Offline mode support
-        self.offline_manager = OfflineManager()
+        # Offline mode support (encrypted SQLite via DatabaseConnectionManager)
+        from db_connection import DatabaseConnectionManager
+        self.db_manager = DatabaseConnectionManager()
+        self.offline_manager = OfflineManager(self.db_manager)
         self._sync_thread = None
         self._last_sync_time = 0
         self._sync_interval = 60  # Try to sync every 60 seconds when online
@@ -4515,8 +4406,8 @@ class TimeTracker:
         # ====================================================================
         # NEW: Event-based activity tracking components
         # ====================================================================
-        self.classification_manager = AppClassificationManager(self.offline_manager.db_path)
-        self.session_manager = ActiveSessionManager(self.offline_manager.db_path)
+        self.classification_manager = AppClassificationManager(self.db_manager)
+        self.session_manager = ActiveSessionManager(self.db_manager)
         
         # OCR engine setup is deferred until after authentication so it uses
         # the correct engine config fetched from the AI server.
@@ -4541,7 +4432,6 @@ class TimeTracker:
         self.tray = None
 
         # Admin configuration
-        self.admin_password = None  # Fetched from server after auth; admin panel locked until then
         self.admin_session_token = None
         self.admin_logs = []  # In-memory log storage
         self.max_log_entries = 500  # Maximum log entries to keep
@@ -4844,9 +4734,9 @@ class TimeTracker:
                 print("[INFO] Sending OCR diagnostics to server...")
                 send_ocr_diagnostics(self.auth_manager)
 
-                # Reset reauth notification flag on successful login
-                self._reauth_notification_shown = False
-                self._reauth_notification_shown = False
+                # Reset notification timestamps on successful login
+                self._reauth_notification_last_shown = 0
+                self._login_reminder_last_shown = 0
 
                 # Update desktop app status to logged in
                 self._update_desktop_status(logged_in=True)
@@ -5099,7 +4989,7 @@ class TimeTracker:
         @self.app.route('/admin')
         def admin_login_page():
             """Admin login page"""
-            if self.admin_password is None:
+            if not self.supabase or not self.organization_id:
                 return self.render_admin_locked_page()
             # Check if already authenticated
             session_token = request.cookies.get('admin_session')
@@ -5110,11 +5000,17 @@ class TimeTracker:
         @self.app.route('/admin/login', methods=['POST'])
         def admin_login():
             """Handle admin login"""
-            if self.admin_password is None:
+            if not self.supabase or not self.organization_id:
                 return self.render_admin_locked_page()
             password = request.form.get('password', '')
 
-            if password == self.admin_password:
+            # Always fetch the latest password from the server — never use a cached value
+            current_password = self._fetch_admin_password()
+            if current_password is None:
+                self.add_admin_log('WARN', 'Admin login failed: could not fetch password from server')
+                return self.render_admin_login_page(error='Could not verify password. Please try again.')
+
+            if password == current_password:
                 # Generate session token
                 self.admin_session_token = secrets.token_hex(32)
                 self.add_admin_log('INFO', 'Admin logged in successfully')
@@ -5916,12 +5812,6 @@ class TimeTracker:
                     # Register organization in database
                     self.register_organization()
 
-                    # Fetch org-level tracking settings early to load admin password
-                    try:
-                        self.fetch_tracking_settings(project_key=None)
-                    except Exception as e:
-                        print(f"[WARN] Early tracking settings fetch failed: {e}")
-
                     return self.jira_cloud_id
             else:
                 print(f"[ERROR] Failed to get resources: {response.status_code} - {response.text}")
@@ -6448,13 +6338,25 @@ class TimeTracker:
         return (time.time() - self.projects_cache_time) > self.projects_cache_ttl
 
     def _get_known_project_keys(self):
-        """Build set of all known project keys from issues + projects."""
+        """Build set of all known project keys from issues + projects.
+        
+        Ensures user_projects is populated so we have ALL project keys the user
+        is a member of — not just the ones from assigned issues. This is critical
+        for multi-project users: the AI server needs the full set to correctly
+        attribute activity records to the right project.
+        """
         known = set()
         if self.user_issues:
             for issue in self.user_issues:
                 proj = issue.get('project')
                 if proj:
                     known.add(proj)
+        # Ensure user_projects is loaded (it's only fetched on-demand as a fallback
+        # in get_user_project_key, so it may still be empty even when user has
+        # multiple projects). Fetch once and cache for 1 hour.
+        if not self.user_projects and self.should_refresh_projects_cache():
+            self.user_projects = self.fetch_jira_projects()
+            self.projects_cache_time = time.time()
         if self.user_projects:
             for proj in self.user_projects:
                 key = proj.get('key')
@@ -6737,12 +6639,6 @@ class TimeTracker:
                 if SCREENSHOT_MONITORING_HARD_DISABLED:
                     fetched_settings['screenshot_monitoring_enabled'] = False
 
-                # Update admin password from org-wide settings
-                if settings_source in ('organization', 'global') or project_key is None:
-                    raw_password = settings.get('desktop_admin_password')
-                    if raw_password:
-                        self.admin_password = raw_password
-
                 # Cache the settings
                 self.tracking_settings_cache[cache_key] = fetched_settings
                 self.tracking_settings_last_fetch[cache_key] = time.time()
@@ -6938,10 +6834,12 @@ class TimeTracker:
             print(f"[WARN] Failed to show notification: {e}")
 
     def _show_reauth_notification(self):
-        """Show a one-time notification that the user needs to re-authenticate"""
-        if getattr(self, '_reauth_notification_shown', False):
-            return  # Already shown, don't spam
-        self._reauth_notification_shown = True
+        """Show a periodic notification that the user needs to re-authenticate (every 15 minutes)"""
+        now = time.time()
+        last_shown = getattr(self, '_reauth_notification_last_shown', 0)
+        if now - last_shown < 900:  # 15 minutes
+            return
+        self._reauth_notification_last_shown = now
 
         if not WINOTIFY_AVAILABLE:
             print("[WARN] Re-authentication required (notification unavailable)")
@@ -6959,6 +6857,31 @@ class TimeTracker:
             print("[OK] Re-authentication notification shown to user")
         except Exception as e:
             print(f"[WARN] Failed to show reauth notification: {e}")
+
+    def _show_login_reminder(self):
+        """Show a periodic notification reminding the user to log in (every 15 minutes)"""
+        now = time.time()
+        last_shown = getattr(self, '_login_reminder_last_shown', 0)
+        if now - last_shown < 900:  # 15 minutes
+            return
+        self._login_reminder_last_shown = now
+
+        if not WINOTIFY_AVAILABLE:
+            print("[WARN] Login reminder skipped - winotify not available")
+            return
+
+        try:
+            notification = Notification(
+                app_id="Time Tracker",
+                title="Time Tracker - Not Logged In",
+                msg="You are not logged in. Please log in to start tracking your work time.",
+                duration="long"
+            )
+            notification.set_audio(audio.Default, loop=False)
+            notification.show()
+            print("[OK] Login reminder notification shown to user")
+        except Exception as e:
+            print(f"[WARN] Failed to show login reminder: {e}")
 
     def show_pause_reminder_notification(self):
         """Show notification reminding user they have paused tracking"""
@@ -7121,6 +7044,9 @@ class TimeTracker:
         Called every 5 minutes (batch_upload_interval).
         Uses custom JWT for RLS-scoped access (Atlassian OAuth → AI server JWT).
         """
+        sessions = None
+        records = None
+        batch_timestamp = None
         try:
             # Wait briefly for any in-flight async OCR to finish before uploading
             if self.ocr_processor and not self.ocr_processor.wait_for_ocr(timeout=5.0):
@@ -7159,6 +7085,7 @@ class TimeTracker:
                 print("[BATCH] No activity records to upload")
                 self.current_window_key = None  # Force re-detection so tracking resumes on next loop
                 self.last_batch_upload_time = time.time()
+                self.add_admin_log('DEBUG', 'Batch upload: no activity records to upload')
                 return
 
             if not sessions:
@@ -7172,18 +7099,42 @@ class TimeTracker:
 
             # Supabase client with custom JWT required for RLS-scoped batch insert
             if not self.supabase:
-                print("[BATCH] No Supabase client — records stay in SQLite")
+                print("[BATCH] No Supabase client — restoring sessions to SQLite")
+                self.session_manager.restore_sessions(sessions)
+                self.last_batch_upload_time = time.time()
+                self.add_admin_log('ERROR', f'Batch upload failed: no Supabase client ({len(sessions)} records pending)')
                 return
 
             if not self.current_user_id:
-                print("[BATCH] No current user ID — cannot upload activity records")
+                print("[BATCH] No current user ID — restoring sessions to SQLite")
+                self.session_manager.restore_sessions(sessions)
                 self.last_batch_upload_time = time.time()
+                self.add_admin_log('ERROR', f'Batch upload failed: no user ID ({len(sessions)} records pending)')
                 return
 
             # Check connectivity
             if not self.offline_manager.check_connectivity():
-                print(f"[BATCH] Offline — {len(sessions)} records stay in SQLite for retry")
+                print(f"[BATCH] Offline — restoring {len(sessions)} sessions to SQLite for retry")
+                self.session_manager.restore_sessions(sessions)
+                self.last_batch_upload_time = time.time()
+                self.add_admin_log('WARN', f'Batch upload deferred: offline ({len(sessions)} records pending)')
                 return
+
+            # Ensure Supabase JWT is valid before uploading
+            # (JWT expires after ~1 hour; without this check, all uploads silently fail)
+            sb_expires_at = self.auth_manager.tokens.get('supabase_token_expires_at', 0)
+            if sb_expires_at and time.time() > (sb_expires_at - 300):
+                print("[BATCH] Supabase JWT expired — refreshing before upload...")
+                if not self._set_supabase_jwt():
+                    print("[BATCH] JWT refresh failed — restoring sessions to SQLite for retry")
+                    self.session_manager.restore_sessions(sessions)
+                    self.last_batch_upload_time = time.time()
+                    self.add_admin_log('ERROR', f'Batch upload failed: JWT refresh failed ({len(sessions)} records pending). Re-login may be required.')
+                    return
+            elif not sb_expires_at:
+                # No expiry info stored — proactively refresh to be safe
+                print("[BATCH] No JWT expiry info — refreshing proactively...")
+                self._set_supabase_jwt()
 
             batch_timestamp = datetime.now(timezone.utc).isoformat()
             batch_end = datetime.now(timezone.utc)
@@ -7306,11 +7257,13 @@ class TimeTracker:
                         print(f"[ERROR] Insert returned data but verification found 0 records — possible RLS or trigger issue")
                         print(f"[BATCH] Restoring {len(sessions)} sessions to SQLite for retry on next cycle")
                         self.session_manager.restore_sessions(sessions)
+                        self.add_admin_log('ERROR', f'Batch upload failed: verification found 0/{len(records)} records (RLS or trigger issue). Records queued for retry.')
                     else:
                         upload_verified = True
                 except Exception as ve:
                     print(f"[ERROR] Verification query failed: {ve} — restoring sessions to SQLite for retry")
                     self.session_manager.restore_sessions(sessions)
+                    self.add_admin_log('ERROR', f'Batch upload verification failed: {ve}')
 
                 if upload_verified:
                     # Upload confirmed — safe to clear idle records and reset batch timer
@@ -7318,6 +7271,7 @@ class TimeTracker:
                     self.current_window_key = None  # Force re-detection so tracking resumes on next loop
                     self.batch_start_time = datetime.now(timezone.utc)
                     print(f"[BATCH] Upload verified and committed successfully")
+                    self.add_admin_log('INFO', f'Batch uploaded: {len(records)} records verified in database')
             else:
                 # Log detailed response for debugging
                 print(f"[WARN] Batch upload returned no data — restoring sessions to SQLite for retry")
@@ -7325,22 +7279,84 @@ class TimeTracker:
                     print(f"       result.count={result.count}")
                 print(f"       result={result}")
                 self.session_manager.restore_sessions(sessions)
+                self.add_admin_log('ERROR', f'Batch upload returned no data ({len(records)} records). Queued for retry.')
 
             self.last_batch_upload_time = time.time()
 
         except Exception as e:
-            print(f"[ERROR] Activity batch upload failed: {e}")
-            # Log detailed error info from Supabase response
-            if hasattr(e, 'message'):
-                print(f"       Supabase error: {e.message}")
-            if hasattr(e, 'code'):
-                print(f"       Error code: {e.code}")
-            if hasattr(e, 'details'):
-                print(f"       Details: {e.details}")
+            error_str = str(e).lower()
+            is_auth_error = any(kw in error_str for kw in ('jwt expired', 'jwt', '401', 'unauthorized', 'invalid token', 'token is expired', 'not authenticated'))
+
+            if is_auth_error and records:
+                print(f"[BATCH] Auth error during upload: {e}")
+                print("[BATCH] Refreshing Supabase JWT and retrying once...")
+                self.add_admin_log('WARN', f'Batch upload auth error: {e}. Refreshing JWT and retrying...')
+                if self._set_supabase_jwt():
+                    try:
+                        # Check if records were partially inserted before the error
+                        # (e.g., HTTP timeout after server committed). batch_timestamp
+                        # is unique per upload cycle, so we can detect duplicates.
+                        if batch_timestamp:
+                            existing = self.supabase.table('activity_records') \
+                                .select('id') \
+                                .eq('user_id', self.current_user_id) \
+                                .eq('batch_timestamp', batch_timestamp) \
+                                .execute()
+                            if existing.data and len(existing.data) > 0:
+                                print(f"[BATCH] {len(existing.data)} records already inserted before error — skipping retry to avoid duplicates")
+                                self._pending_idle_records.clear()
+                                self.current_window_key = None
+                                self.batch_start_time = datetime.now(timezone.utc)
+                                self.last_batch_upload_time = time.time()
+                                return
+
+                        result = self.supabase.table('activity_records').insert(records).execute()
+                        if result.data:
+                            print(f"[BATCH] Retry succeeded — {len(result.data)} records uploaded after JWT refresh")
+                            self.add_admin_log('INFO', f'Batch uploaded after JWT refresh: {len(result.data)} records')
+                            self._pending_idle_records.clear()
+                            self.current_window_key = None
+                            self.batch_start_time = datetime.now(timezone.utc)
+                            self.last_batch_upload_time = time.time()
+                            return
+                    except Exception as retry_e:
+                        print(f"[ERROR] Retry also failed: {retry_e}")
+                        self.add_admin_log('ERROR', f'Batch upload retry also failed: {retry_e}')
+
+            else:
+                print(f"[ERROR] Activity batch upload failed: {e}")
+                self.add_admin_log('ERROR', f'Batch upload failed: {e}')
+                if hasattr(e, 'message'):
+                    print(f"       Supabase error: {e.message}")
+                if hasattr(e, 'code'):
+                    print(f"       Error code: {e.code}")
+                if hasattr(e, 'details'):
+                    print(f"       Details: {e.details}")
+
+            # Before restoring sessions, check if the insert actually succeeded
+            # (e.g., server committed but response timed out — restoring would cause duplicates)
+            if sessions and batch_timestamp and self.supabase:
+                try:
+                    existing = self.supabase.table('activity_records') \
+                        .select('id') \
+                        .eq('user_id', self.current_user_id) \
+                        .eq('batch_timestamp', batch_timestamp) \
+                        .execute()
+                    if existing.data and len(existing.data) > 0:
+                        print(f"[BATCH] {len(existing.data)} records already in database despite error — skipping restore to avoid duplicates")
+                        self._pending_idle_records.clear()
+                        self.current_window_key = None
+                        self.batch_start_time = datetime.now(timezone.utc)
+                        self.last_batch_upload_time = time.time()
+                        return
+                except Exception:
+                    pass  # Can't verify — fall through to restore
+
             # Restore sessions to SQLite so they can be retried on next cycle
-            if 'sessions' in dir() and sessions:
+            if sessions:
                 self.session_manager.restore_sessions(sessions)
                 print(f"       {len(sessions)} records restored to SQLite for retry on next cycle")
+                self.add_admin_log('WARN', f'{len(sessions)} records queued for retry on next cycle')
             self.last_batch_upload_time = time.time()
 
     def process_window_event(self, window_info):
@@ -7945,6 +7961,19 @@ class TimeTracker:
                     print("[ERROR] Failed to save screenshot offline")
                     return None
             
+            # Ensure Supabase JWT is valid before uploading
+            sb_expires_at = self.auth_manager.tokens.get('supabase_token_expires_at', 0)
+            if sb_expires_at and time.time() > (sb_expires_at - 300):
+                if not self._set_supabase_jwt():
+                    # JWT refresh failed — save offline
+                    local_id = self.offline_manager.save_screenshot_offline(
+                        screenshot_data, img_bytes, thumb_bytes
+                    )
+                    if local_id:
+                        self.last_screenshot_end_time = end_time
+                        return f"offline_{local_id}"
+                    return None
+
             # ONLINE MODE: Upload to Supabase
             screenshot_result = storage_client.storage.from_('screenshots').upload(
                 storage_path, img_bytes, file_options={'content-type': 'image/png'}
@@ -8210,11 +8239,11 @@ class TimeTracker:
             'user_timezone': get_local_timezone_name(),
             'project_key': project_key,
             'status': 'analyzed',  # No AI analysis needed for idle records
-            'metadata': json.dumps({
+            'metadata': {
                 'tracking_mode': 'idle_detection',
                 'idle_reason': reason,
                 'app_version': self.app_version
-            })
+            }
         }
         self._pending_idle_records.append(record)
         print(f"[IDLE] Created idle record: {self.idle_start_time.strftime('%H:%M:%S')} → {idle_end.strftime('%H:%M:%S')} ({idle_duration}s, reason: {reason})")
@@ -8450,7 +8479,7 @@ class TimeTracker:
             heartbeat_counter = 0
             heartbeat_interval = 480  # Send heartbeat every 480 iterations (4 hours at 30s interval)
             token_refresh_counter = 0
-            token_refresh_interval = 100  # Check token expiry every 100 iterations (~50 min at 30s)
+            token_refresh_interval = 20  # Check token expiry every 20 iterations (~10 min at 30s)
 
             # Send initial heartbeat immediately on thread start
             if self.current_user_id and not self.current_user_id.startswith('anonymous_'):
@@ -8499,7 +8528,7 @@ class TimeTracker:
                                     print("[WARN] Supabase JWT refresh failed — will retry on next cycle")
 
                     elif getattr(self.auth_manager, '_refresh_token_invalid', False):
-                        # Refresh token is permanently invalid — show reauth notification once
+                        # Refresh token is permanently invalid — remind user every 15 min
                         self._show_reauth_notification()
 
                 except Exception as e:
@@ -8681,6 +8710,13 @@ class TimeTracker:
                         # This prevents idle time from being counted as work time
                         self._finalize_active_session("idle timeout")
                         self.session_manager.stop_current_timer()  # Stop SQLite activity timer so idle time isn't counted in activity_records
+
+                        # Flush accumulated sessions to database BEFORE entering idle
+                        # This prevents data sitting in SQLite for hours during long idle periods
+                        try:
+                            self.upload_activity_batch()
+                        except Exception as e:
+                            print(f"[WARN] Pre-idle batch upload failed: {e} — data remains in SQLite for next cycle")
 
                         # Record when idle started (backdate to last activity)
                         self.idle_start_time = last_activity
@@ -9354,6 +9390,9 @@ class TimeTracker:
                 show_badge = getattr(self, 'update_available', False)
                 new_icon = self.create_tray_icon(state, show_update_badge=show_badge)
                 self.tray.icon = new_icon
+                
+                self.tray.title = "TimeTracker"
+                    
             except Exception as e:
                 print(f"[WARN] Failed to update tray icon: {e}")
 
@@ -9483,7 +9522,7 @@ class TimeTracker:
             print(f"[ERROR] Failed to open feedback form: {e}")
 
     def _shutdown_cleanup(self):
-        """Gracefully shut down OCR worker and flush remaining sessions."""
+        """Gracefully shut down OCR worker, flush sessions, and close DB connections."""
         if getattr(self, '_shutdown_done', False):
             return
         self._shutdown_done = True
@@ -9498,6 +9537,12 @@ class TimeTracker:
             self.upload_activity_batch()
         except Exception as e:
             print(f"[SHUTDOWN] Final batch upload error: {e}")
+        try:
+            if hasattr(self, 'db_manager'):
+                self.db_manager.close_all()
+                print("[SHUTDOWN] Database connections closed")
+        except Exception as e:
+            print(f"[SHUTDOWN] DB connection cleanup error: {e}")
 
     def _exit_app(self):
         """Exit the application from tray menu"""
@@ -9528,20 +9573,31 @@ class TimeTracker:
             menu = self._build_tray_menu()
 
             self.tray = pystray.Icon("Time Tracker", icon_image, menu=menu)
+            
+            self.tray.title = "TimeTracker"
 
-            # Start a thread to periodically update the icon
-            def update_icon_periodically():
-                while self.tray and self.tray.visible:
-                    try:
-                        self.update_tray_icon()
-                        time.sleep(2)  # Update every 2 seconds
-                    except Exception as e:
-                        break
+            # Use pystray's setup callback to start periodic icon updates
+            # AFTER the tray is visible. Without this, the update thread exits
+            # immediately because self.tray.visible is False before .run() starts.
+            def on_tray_ready(icon):
+                icon.visible = True
+                # Start periodic icon update in a separate daemon thread
+                def update_icon_periodically():
+                    while self.tray and self.tray.visible:
+                        try:
+                            self.update_tray_icon()
+                            # Remind user to log in every 15 minutes if not logged in
+                            # (skip for anonymous/offline users — they can't log in)
+                            if not self.current_user and not (self.current_user_id and self.current_user_id.startswith('anonymous_')):
+                                self._show_login_reminder()
+                        except Exception as e:
+                            print(f"[WARN] Periodic icon update error: {e}")
+                        time.sleep(2)
 
-            update_thread = threading.Thread(target=update_icon_periodically, daemon=True)
-            update_thread.start()
+                update_thread = threading.Thread(target=update_icon_periodically, daemon=True)
+                update_thread.start()
 
-            self.tray.run()
+            self.tray.run(setup=on_tray_ready)
         except Exception as e:
             print(f"[WARN] System tray setup failed: {e}")
             # Fallback to simple colored icon
@@ -9614,6 +9670,27 @@ class TimeTracker:
             # Auto-start is only configured when running the built executable.
             # We don't remove existing entries as they may be valid (pointing to installed exe).
             print("[INFO] Running in development mode - auto-start is only configured for the built exe.")
+
+        # BUGFIX: Load cached user info EARLY to restore organization_id immediately
+        # This ensures admin panel and tracking work even before server verification completes.
+        # Without this, routes are initialized with organization_id=None, causing admin panel
+        # to show "locked" message even when user has valid cached credentials.
+        if self.auth_manager.is_authenticated():
+            try:
+                cached_user = self._load_cached_user_info()
+                if cached_user and cached_user.get('organization_id'):
+                    self.organization_id = cached_user.get('organization_id')
+                    self.current_user_id = cached_user.get('user_id')
+                    self.current_user = cached_user
+                    print(f"[OK] Restored organization_id from cache: {self.organization_id}")
+                    # Initialize Supabase with cached credentials
+                    try:
+                        if self.initialize_supabase():
+                            print("[OK] Supabase initialized successfully from cache")
+                    except Exception as e:
+                        print(f"[WARN] Could not initialize Supabase from cache: {e}")
+            except Exception as e:
+                print(f"[WARN] Could not load cached user info early: {e}")
 
         # Check network connectivity first
         is_online = self.offline_manager.check_connectivity(force=True)
@@ -10334,6 +10411,23 @@ class TimeTracker:
 </body>
 </html>'''
         return html
+
+    def _fetch_admin_password(self):
+        """Fetch the current admin password directly from Supabase (no cache).
+        Returns the password string, or None if the fetch fails."""
+        try:
+            result = self.supabase.table('tracking_settings') \
+                .select('desktop_admin_password') \
+                .eq('organization_id', self.organization_id) \
+                .is_('project_key', 'null') \
+                .limit(1) \
+                .execute()
+            if result.data and len(result.data) > 0:
+                return result.data[0].get('desktop_admin_password')
+            return None
+        except Exception as e:
+            print(f"[ERROR] [Admin] Failed to fetch admin password from server: {e}")
+            return None
 
     def render_admin_locked_page(self):
         html = '''<!DOCTYPE html>
@@ -11676,4 +11770,3 @@ def main():
 
 if __name__ == '__main__':
     main()
-

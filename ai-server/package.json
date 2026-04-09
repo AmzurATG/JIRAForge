@@ -42,7 +42,7 @@
   },
   "overrides": {
     "node-forge": "1.4.0",
-    "nodemailer": "8.0.4",
+    "nodemailer": "8.0.5",
     "http-proxy-agent": "7.0.2",
     "notifme-sdk": {
       "form-data": "4.0.5"
