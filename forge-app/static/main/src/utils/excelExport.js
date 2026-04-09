@@ -17,25 +17,61 @@ function formatDuration(seconds) {
   return `${s}s`;
 }
 
+function formatDurationShort(seconds) {
+  if (!seconds || seconds <= 0) return '0s';
+  const m = Math.floor(seconds / 60);
+  const s = seconds % 60;
+  if (m > 0 && s > 0) return `${m}m ${s}s`;
+  if (m > 0) return `${m}m`;
+  return `${s}s`;
+}
+
 function formatTime(isoString) {
   if (!isoString) return '';
   const d = new Date(isoString);
-  return d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true });
+  let h = d.getHours();
+  const min = d.getMinutes().toString().padStart(2, '0');
+  const ampm = h >= 12 ? 'PM' : 'AM';
+  h = h % 12 || 12;
+  return `${h}:${min} ${ampm}`;
+}
+
+function formatDateFriendly(dateStr) {
+  const d = new Date(dateStr + 'T00:00:00');
+  const days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+  const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  return `${days[d.getDay()]}, ${months[d.getMonth()]} ${d.getDate()}`;
+}
+
+function formatDateRange(startDate, endDate) {
+  const s = new Date(startDate + 'T00:00:00');
+  const e = new Date(endDate + 'T00:00:00');
+  const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  if (s.getMonth() === e.getMonth() && s.getFullYear() === e.getFullYear()) {
+    return `${months[s.getMonth()]} ${s.getDate()}–${e.getDate()}, ${s.getFullYear()}`;
+  }
+  return `${months[s.getMonth()]} ${s.getDate()} – ${months[e.getMonth()]} ${e.getDate()}, ${e.getFullYear()}`;
 }
 
 // ── Shared Styles ──
 
 const COLORS = {
-  headerBg: 'FF0052CC',      // Jira blue
-  headerFont: 'FFFFFFFF',    // White
-  sectionBg: 'FFDEEBFF',     // Light blue
-  sectionFont: 'FF0052CC',   // Blue
-  rowEvenBg: 'FFF8F9FA',     // Very light gray
-  rowOddBg: 'FFFFFFFF',      // White
-  borderColor: 'FFD0D4DB',   // Light border
-  totalBg: 'FFE3FCEF',       // Light green
-  totalFont: 'FF006644',     // Dark green
-  memberHeaderBg: 'FF4C9AFF', // Lighter blue
+  headerBg: 'FF2C5F8A',
+  headerFont: 'FFFFFFFF',
+  sectionBg: 'FFDEEBFF',
+  sectionFont: 'FF0052CC',
+  rowEvenBg: 'FFE8F0FE',
+  rowOddBg: 'FFFFFFFF',
+  borderColor: 'FFB0BEC5',
+  totalBg: 'FFDCEDC8',
+  totalFont: 'FF1B5E20',
+  titleBg: 'FF1A3E5C',
+  titleFont: 'FFFFFFFF',
+  pivotColors: [
+    'FFFFF3E0', 'FFE8F5E9', 'FFE3F2FD', 'FFFCE4EC',
+    'FFF3E5F5', 'FFEFEBE9', 'FFE0F7FA', 'FFFFF8E1',
+    'FFE8EAF6', 'FFEDE7F6'
+  ]
 };
 
 const thinBorder = {
@@ -45,8 +81,8 @@ const thinBorder = {
   right: { style: 'thin', color: { argb: COLORS.borderColor } }
 };
 
-function applyHeaderStyle(row, colCount) {
-  row.height = 28;
+function styleHeaderRow(row, colCount) {
+  row.height = 30;
   row.eachCell({ includeEmpty: true }, (cell, colNumber) => {
     if (colNumber > colCount) return;
     cell.font = { bold: true, size: 11, color: { argb: COLORS.headerFont } };
@@ -56,36 +92,50 @@ function applyHeaderStyle(row, colCount) {
   });
 }
 
-function applySectionStyle(row, colCount) {
-  row.height = 26;
-  row.eachCell({ includeEmpty: true }, (cell, colNumber) => {
-    if (colNumber > colCount) return;
-    cell.font = { bold: true, size: 12, color: { argb: COLORS.sectionFont } };
-    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: COLORS.sectionBg } };
-    cell.alignment = { vertical: 'middle' };
-    cell.border = thinBorder;
-  });
-}
-
-function applyDataRowStyle(row, colCount, isEven) {
+function styleDataRow(row, colCount, isEven) {
   row.eachCell({ includeEmpty: true }, (cell, colNumber) => {
     if (colNumber > colCount) return;
     cell.font = { size: 10, color: { argb: 'FF172B4D' } };
     cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: isEven ? COLORS.rowEvenBg : COLORS.rowOddBg } };
-    cell.alignment = { vertical: 'top', wrapText: true };
+    cell.alignment = { vertical: 'middle', horizontal: 'center' };
     cell.border = thinBorder;
   });
 }
 
-function applyTotalRowStyle(row, colCount) {
-  row.height = 22;
+function styleTotalRow(row, colCount) {
+  row.height = 26;
   row.eachCell({ includeEmpty: true }, (cell, colNumber) => {
     if (colNumber > colCount) return;
     cell.font = { bold: true, size: 11, color: { argb: COLORS.totalFont } };
     cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: COLORS.totalBg } };
-    cell.alignment = { vertical: 'middle' };
+    cell.alignment = { vertical: 'middle', horizontal: 'center' };
     cell.border = thinBorder;
   });
+}
+
+function addTitleRow(ws, text, colCount, rowNum) {
+  const row = ws.getRow(rowNum);
+  ws.mergeCells(rowNum, 1, rowNum, colCount);
+  const cell = row.getCell(1);
+  cell.value = text;
+  cell.font = { bold: true, size: 14, color: { argb: COLORS.titleFont } };
+  cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: COLORS.titleBg } };
+  cell.alignment = { vertical: 'middle', horizontal: 'center' };
+  cell.border = thinBorder;
+  row.height = 32;
+  return rowNum + 1;
+}
+
+function addSubtitleRow(ws, text, colCount, rowNum) {
+  const row = ws.getRow(rowNum);
+  ws.mergeCells(rowNum, 1, rowNum, colCount);
+  const cell = row.getCell(1);
+  cell.value = text;
+  cell.font = { italic: true, size: 9, color: { argb: 'FF757575' } };
+  cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF5F5F5' } };
+  cell.alignment = { vertical: 'middle', horizontal: 'center' };
+  row.height = 20;
+  return rowNum + 1;
 }
 
 /**
@@ -96,45 +146,48 @@ export async function generateExcelReport(data, filename) {
   workbook.creator = 'JIRAForge Time Tracker';
   workbook.created = new Date();
 
-  // ═══════════════════════════════════════════
+  const memberNames = data.memberDetails.map(m => m.displayName).join(', ');
+  const dateRangeStr = formatDateRange(data.startDate, data.endDate);
+
+  // ═══════════════════════════════════════════════════
   // SHEET 1: Detailed Activity (Grouped)
-  // ═══════════════════════════════════════════
-  const ws = workbook.addWorksheet('Detailed Activity (Grouped)', {
-    views: [{ state: 'frozen', ySplit: 1 }]
-  });
+  // ═══════════════════════════════════════════════════
+  const ws = workbook.addWorksheet('Detailed Activity (Grouped)');
 
   const COL_COUNT = 5;
-  const detailCols = [
-    { header: 'Date', key: 'date', width: 14 },
-    { header: 'Issue Key', key: 'issueKey', width: 18 },
-    { header: 'Total Time', key: 'totalTime', width: 16 },
-    { header: 'Sessions', key: 'sessionCount', width: 11 },
-    { header: 'Session Timings  ▼', key: 'timings', width: 44 }
+  ws.columns = [
+    { key: 'date', width: 16 },
+    { key: 'issueKey', width: 18 },
+    { key: 'totalTime', width: 14 },
+    { key: 'entries', width: 12 },
+    { key: 'timings', width: 90 }
   ];
-  ws.columns = detailCols;
-  applyHeaderStyle(ws.getRow(1), COL_COUNT);
-  ws.autoFilter = { from: 'A1', to: 'E1' };
 
-  let currentRow = 2;
+  // Title
+  let cr = addTitleRow(ws, `Team Analytics – ${data.projectKey || 'All'} Project  |  ${dateRangeStr}  |  ${memberNames}`, COL_COUNT, 1);
+  // Subtitle
+  cr = addSubtitleRow(ws, 'Each row = one issue on one day. All individual time entries are in the last column.', COL_COUNT, cr);
+
+  // Header row
+  const hRow = ws.getRow(cr);
+  hRow.values = ['Date', 'Issue Key', 'Total Time', '# Entries', 'Time Breakdown (Start - End | Duration)'];
+  styleHeaderRow(hRow, COL_COUNT);
+  ws.autoFilter = { from: `A${cr}`, to: `E${cr}` };
+  ws.views = [{ state: 'frozen', ySplit: cr }];
+  cr++;
+
+  // Collect all entries across all members for the pivot later
+  const allEntries = [];
 
   for (const member of data.memberDetails) {
-    // ── Member section header ──
-    const memberRow = ws.getRow(currentRow);
-    ws.mergeCells(currentRow, 1, currentRow, COL_COUNT);
-    memberRow.getCell(1).value = `${member.displayName}  —  Total: ${formatDuration(member.totalSeconds)}`;
-    applySectionStyle(memberRow, COL_COUNT);
-    currentRow++;
-
-    // Sort entries by date → issue key
     const sortedEntries = [...member.entries].sort((a, b) => {
       if (a.date !== b.date) return a.date.localeCompare(b.date);
       return a.issueKey.localeCompare(b.issueKey);
     });
 
-    let rowIndex = 0;
+    let rowIdx = 0;
     for (const entry of sortedEntries) {
-      // Sort sessions by start time, keep all sessions (show seconds)
-      const validSessions = [...entry.sessions]
+      const sessions = [...entry.sessions]
         .filter(s => s.durationSeconds > 0)
         .sort((a, b) => {
           if (!a.startTime) return 1;
@@ -142,247 +195,259 @@ export async function generateExcelReport(data, filename) {
           return new Date(a.startTime) - new Date(b.startTime);
         });
 
-      const sessionCount = validSessions.length;
+      allEntries.push({ ...entry, memberName: member.displayName });
 
-      // Build session timings as multi-line string in ONE cell
-      const timingsText = validSessions
-        .map(s => `${formatTime(s.startTime)}  →  ${formatTime(s.endTime)}  (${formatDuration(s.durationSeconds)})`)
-        .join('\n');
+      const breakdownParts = sessions.map(s =>
+        `${formatTime(s.startTime)}-${formatTime(s.endTime)} (${formatDurationShort(s.durationSeconds)})`
+      );
+      const breakdownText = breakdownParts.join(' | ');
 
-      // ── Data row: Date | Issue Key | Total Time ▼ | Sessions | Session Timings ──
-      const dataRow = ws.getRow(currentRow);
-      dataRow.values = [
-        entry.date,
+      const row = ws.getRow(cr);
+      row.values = [
+        formatDateFriendly(entry.date),
         entry.issueKey,
-        `${formatDuration(entry.totalSeconds)}  ▼`,
-        sessionCount,
-        timingsText || '—'
+        formatDuration(entry.totalSeconds),
+        sessions.length,
+        breakdownText || '—'
       ];
-      applyDataRowStyle(dataRow, COL_COUNT, rowIndex % 2 === 0);
-      dataRow.getCell(1).alignment = { vertical: 'top', horizontal: 'center' };
-      dataRow.getCell(2).alignment = { vertical: 'top', horizontal: 'left' };
-      dataRow.getCell(3).font = { bold: true, size: 10, color: { argb: 'FF0052CC' } };
-      dataRow.getCell(3).alignment = { vertical: 'top', horizontal: 'center' };
-      dataRow.getCell(4).alignment = { vertical: 'top', horizontal: 'center' };
-      dataRow.getCell(5).alignment = { vertical: 'top', wrapText: true };
-      dataRow.getCell(5).font = { size: 9, color: { argb: 'FF505F79' } };
-      // Auto-height based on session count
-      dataRow.height = Math.max(22, sessionCount * 15);
+      styleDataRow(row, COL_COUNT, rowIdx % 2 === 0);
+      row.getCell(1).alignment = { vertical: 'middle', horizontal: 'left' };
+      row.getCell(1).font = { bold: true, size: 10, color: { argb: 'FF172B4D' } };
+      row.getCell(2).alignment = { vertical: 'middle', horizontal: 'left' };
+      row.getCell(3).font = { bold: true, size: 10, color: { argb: 'FF172B4D' } };
+      row.getCell(5).alignment = { vertical: 'middle', horizontal: 'left', wrapText: true };
+      row.getCell(5).font = { size: 9, color: { argb: 'FF37474F' } };
+      // Auto-height: ~15px per ~120 chars
+      const lineCount = Math.max(1, Math.ceil(breakdownText.length / 120));
+      row.height = Math.max(20, lineCount * 16);
 
-      currentRow++;
-      rowIndex++;
+      cr++;
+      rowIdx++;
     }
-
-    // Total row for this member
-    const totalRow = ws.getRow(currentRow);
-    totalRow.values = ['', 'TOTAL', formatDuration(member.totalSeconds), '', ''];
-    applyTotalRowStyle(totalRow, COL_COUNT);
-    totalRow.getCell(3).alignment = { vertical: 'middle', horizontal: 'center' };
-    currentRow++;
-
-    // Spacer
-    currentRow++;
   }
 
-  // ── TEAM SUMMARY at bottom of same sheet ──
-  currentRow++; // extra spacer
-
-  // Team Summary Header
-  const teamSumHeaderRow = ws.getRow(currentRow);
-  ws.mergeCells(currentRow, 1, currentRow, COL_COUNT);
-  teamSumHeaderRow.getCell(1).value = 'TEAM SUMMARY';
-  applySectionStyle(teamSumHeaderRow, COL_COUNT);
-  currentRow++;
-
-  // Summary metric rows
-  const summaryMetrics = [
-    ['Project', data.projectKey || 'All Projects'],
-    ['Period', `${data.startDate} to ${data.endDate}`],
-    ['Generated', new Date(data.generatedAt).toLocaleString()],
-    ['Active Members', data.summary.activeMembers],
-    ['Total Hours', `${data.summary.totalHours}h`],
-    ['Issues Worked', data.summary.issuesWorked],
-    ['Avg Hours/Member', `${data.summary.avgHoursPerMember}h`]
+  // ═══════════════════════════════════════════════════
+  // SHEET 2: Time by Issue
+  // ═══════════════════════════════════════════════════
+  const issueWs = workbook.addWorksheet('Time by Issue');
+  const IC = 4;
+  issueWs.columns = [
+    { key: 'issueKey', width: 18 },
+    { key: 'totalMin', width: 18 },
+    { key: 'totalTime', width: 16 },
+    { key: 'pct', width: 16 }
   ];
 
-  summaryMetrics.forEach((vals, i) => {
-    const r = ws.getRow(currentRow);
-    r.values = [vals[0], vals[1], '', '', ''];
-    applyDataRowStyle(r, COL_COUNT, i % 2 === 0);
-    r.getCell(1).font = { bold: true, size: 10, color: { argb: 'FF172B4D' } };
-    r.getCell(1).alignment = { vertical: 'middle', horizontal: 'left' };
-    r.getCell(2).alignment = { vertical: 'middle', horizontal: 'left' };
-    currentRow++;
+  // Aggregate time by issue from allEntries
+  const issueMap = {};
+  for (const entry of allEntries) {
+    if (!issueMap[entry.issueKey]) {
+      issueMap[entry.issueKey] = 0;
+    }
+    issueMap[entry.issueKey] += entry.totalSeconds;
+  }
+  const issueArray = Object.entries(issueMap)
+    .map(([key, sec]) => ({ issueKey: key, totalSeconds: sec }))
+    .sort((a, b) => b.totalSeconds - a.totalSeconds);
+  const grandTotalSec = issueArray.reduce((s, i) => s + i.totalSeconds, 0);
+
+  // Title
+  const allContrib = data.memberDetails.length > 1 ? 'All Contributors' : memberNames;
+  let icr = addTitleRow(issueWs, `Time by Issue – ${allContrib}`, IC, 1);
+
+  // Header
+  const ihRow = issueWs.getRow(icr);
+  ihRow.values = ['Issue Key', 'Total Time (min)', 'Total Time', '% of Total'];
+  styleHeaderRow(ihRow, IC);
+  issueWs.autoFilter = { from: `A${icr}`, to: `D${icr}` };
+  issueWs.views = [{ state: 'frozen', ySplit: icr }];
+  icr++;
+
+  issueArray.forEach((issue, i) => {
+    const totalMin = Math.round(issue.totalSeconds / 60);
+    const pct = grandTotalSec > 0 ? ((issue.totalSeconds / grandTotalSec) * 100).toFixed(1) : '0.0';
+    const r = issueWs.getRow(icr);
+    r.values = [issue.issueKey, totalMin, formatDuration(issue.totalSeconds), `${pct}%`];
+    styleDataRow(r, IC, i % 2 === 0);
+    r.getCell(1).alignment = { vertical: 'middle', horizontal: 'center' };
+    r.getCell(2).font = { size: 10, color: { argb: 'FF172B4D' } };
+    r.getCell(3).font = { size: 10, color: { argb: 'FF172B4D' } };
+    icr++;
   });
 
-  currentRow++; // spacer
+  // Total
+  const totalMin = Math.round(grandTotalSec / 60);
+  const totalR = issueWs.getRow(icr);
+  totalR.values = ['TOTAL', totalMin, formatDuration(grandTotalSec), '100.0%'];
+  styleTotalRow(totalR, IC);
 
-  // Member Summary Header
-  if (data.memberSummary && data.memberSummary.length > 0) {
-    const memSumHeaderRow = ws.getRow(currentRow);
-    ws.mergeCells(currentRow, 1, currentRow, COL_COUNT);
-    memSumHeaderRow.getCell(1).value = 'MEMBER SUMMARY';
-    applySectionStyle(memSumHeaderRow, COL_COUNT);
-    currentRow++;
+  // ═══════════════════════════════════════════════════
+  // SHEET 3: Daily Time Pivot
+  // ═══════════════════════════════════════════════════
+  const pivotWs = workbook.addWorksheet('Daily Time Pivot');
 
-    // Column headers for member summary
-    const memColHeaderRow = ws.getRow(currentRow);
-    memColHeaderRow.values = ['Member Name', 'Today', 'This Week', 'This Month', '% of Total'];
-    memColHeaderRow.eachCell({ includeEmpty: true }, (cell, colNumber) => {
-      if (colNumber > 5) return;
-      cell.font = { bold: true, size: 10, color: { argb: COLORS.headerFont } };
-      cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: COLORS.memberHeaderBg } };
-      cell.alignment = { vertical: 'middle', horizontal: 'center' };
-      cell.border = thinBorder;
-    });
-    memColHeaderRow.height = 24;
-    currentRow++;
+  // Get unique dates and issue keys
+  const dateSet = new Set();
+  const issueKeySet = new Set();
+  for (const entry of allEntries) {
+    dateSet.add(entry.date);
+    issueKeySet.add(entry.issueKey);
+  }
+  const dates = [...dateSet].sort();
+  // Sort issue keys by total time descending
+  const issueKeys = issueArray.map(i => i.issueKey);
+  const PC = issueKeys.length + 2; // Date + issues + Day Total
 
-    data.memberSummary.forEach((m, i) => {
-      const r = ws.getRow(currentRow);
-      r.values = [m.displayName, `${m.todayHours}h`, `${m.weekHours}h`, `${m.monthHours}h`, `${m.percentage}%`];
-      applyDataRowStyle(r, 5, i % 2 === 0);
-      r.getCell(1).alignment = { vertical: 'middle', horizontal: 'left' };
-      for (let c = 2; c <= 5; c++) {
-        r.getCell(c).alignment = { vertical: 'middle', horizontal: 'center' };
-      }
-      currentRow++;
-    });
+  // Set columns
+  pivotWs.columns = [
+    { key: 'date', width: 16 },
+    ...issueKeys.map(k => ({ key: k, width: 16 })),
+    { key: 'dayTotal', width: 14 }
+  ];
 
-    // Total row
-    const totalMemberHours = data.memberSummary.reduce((s, m) => s + m.monthHours, 0);
-    const totalToday = data.memberSummary.reduce((s, m) => s + m.todayHours, 0);
-    const totalWeek = data.memberSummary.reduce((s, m) => s + m.weekHours, 0);
-    const memTotalR = ws.getRow(currentRow);
-    memTotalR.values = [
-      'TOTAL',
-      `${Math.round(totalToday * 10) / 10}h`,
-      `${Math.round(totalWeek * 10) / 10}h`,
-      `${Math.round(totalMemberHours * 10) / 10}h`,
-      '100%'
-    ];
-    applyTotalRowStyle(memTotalR, 5);
-    for (let c = 1; c <= 5; c++) {
-      memTotalR.getCell(c).alignment = { vertical: 'middle', horizontal: 'center' };
-    }
-    currentRow++;
+  // Title
+  let pcr = addTitleRow(pivotWs, 'Daily Time Pivot – Minutes per Issue per Day', PC, 1);
+
+  // Header row
+  const phRow = pivotWs.getRow(pcr);
+  phRow.values = ['Date', ...issueKeys, 'Day Total'];
+  phRow.height = 30;
+  phRow.eachCell({ includeEmpty: true }, (cell, colNumber) => {
+    if (colNumber > PC) return;
+    cell.font = { bold: true, size: 10, color: { argb: COLORS.headerFont } };
+    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: COLORS.headerBg } };
+    cell.alignment = { vertical: 'middle', horizontal: 'center', wrapText: true };
+    cell.border = thinBorder;
+  });
+  pivotWs.views = [{ state: 'frozen', ySplit: pcr }];
+  pcr++;
+
+  // Build pivot data: { date -> { issueKey -> minutes } }
+  const pivotData = {};
+  for (const entry of allEntries) {
+    if (!pivotData[entry.date]) pivotData[entry.date] = {};
+    pivotData[entry.date][entry.issueKey] = (pivotData[entry.date][entry.issueKey] || 0) + Math.round(entry.totalSeconds / 60);
   }
 
-  // ═══════════════════════════════════════════
-  // SHEET 2: Summary
-  // ═══════════════════════════════════════════
-  if (data.memberSummary && data.memberSummary.length > 0) {
-    const summaryWs = workbook.addWorksheet('Summary', {
-      views: [{ state: 'frozen', ySplit: 1 }]
+  // Column totals
+  const colTotals = {};
+  issueKeys.forEach(k => { colTotals[k] = 0; });
+  let grandDayTotal = 0;
+
+  dates.forEach((date, di) => {
+    const row = pivotWs.getRow(pcr);
+    const dayData = pivotData[date] || {};
+    let dayTotal = 0;
+    const vals = [formatDateFriendly(date)];
+    issueKeys.forEach(k => {
+      const min = dayData[k] || 0;
+      vals.push(min > 0 ? min : '–');
+      colTotals[k] += min;
+      dayTotal += min;
     });
+    vals.push(dayTotal);
+    grandDayTotal += dayTotal;
+    row.values = vals;
 
+    // Style
+    row.eachCell({ includeEmpty: true }, (cell, colNumber) => {
+      if (colNumber > PC) return;
+      cell.border = thinBorder;
+      cell.alignment = { vertical: 'middle', horizontal: 'center' };
+      cell.font = { size: 10, color: { argb: 'FF172B4D' } };
+
+      if (colNumber === 1) {
+        // Date column - bold
+        cell.font = { bold: true, size: 10, color: { argb: 'FF172B4D' } };
+        cell.alignment = { vertical: 'middle', horizontal: 'left' };
+        cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: di % 2 === 0 ? 'FFE8EAF6' : 'FFFFFFFF' } };
+      } else if (colNumber === PC) {
+        // Day Total - bold
+        cell.font = { bold: true, size: 10, color: { argb: 'FF1A237E' } };
+        cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFBBDEFB' } };
+      } else {
+        // Issue columns - pastel colors
+        const colorIdx = (colNumber - 2) % COLORS.pivotColors.length;
+        cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: COLORS.pivotColors[colorIdx] } };
+        if (cell.value === '–') {
+          cell.font = { size: 10, color: { argb: 'FFBDBDBD' } };
+        }
+      }
+    });
+    row.height = 22;
+    pcr++;
+  });
+
+  // TOTAL row
+  const ptRow = pivotWs.getRow(pcr);
+  const ptVals = ['TOTAL'];
+  issueKeys.forEach(k => { ptVals.push(colTotals[k]); });
+  ptVals.push(grandDayTotal);
+  ptRow.values = ptVals;
+  styleTotalRow(ptRow, PC);
+  ptRow.getCell(1).alignment = { vertical: 'middle', horizontal: 'center' };
+
+  // ═══════════════════════════════════════════════════
+  // SHEET 4: Summary
+  // ═══════════════════════════════════════════════════
+  if (data.memberSummary && data.memberSummary.length > 0) {
+    const summaryWs = workbook.addWorksheet('Summary');
+    const SC = 5;
     summaryWs.columns = [
-      { header: 'Metric', key: 'metric', width: 22 },
-      { header: 'Value', key: 'value', width: 22 }
+      { key: 'c1', width: 24 },
+      { key: 'c2', width: 16 },
+      { key: 'c3', width: 16 },
+      { key: 'c4', width: 16 },
+      { key: 'c5', width: 16 }
     ];
-    applyHeaderStyle(summaryWs.getRow(1), 2);
-    summaryWs.autoFilter = { from: 'A1', to: 'B1' };
 
+    let scr = addTitleRow(summaryWs, `Team Summary – ${data.projectKey || 'All'} Project  |  ${dateRangeStr}`, SC, 1);
+
+    // Info rows
     const infoRows = [
-      ['Project', data.projectKey || 'All Projects'],
-      ['Period', `${data.startDate} to ${data.endDate}`],
-      ['Generated', new Date(data.generatedAt).toLocaleString()],
       ['Active Members', data.summary.activeMembers],
       ['Total Hours', `${data.summary.totalHours}h`],
       ['Issues Worked', data.summary.issuesWorked],
       ['Avg Hours/Member', `${data.summary.avgHoursPerMember}h`]
     ];
-
     infoRows.forEach((vals, i) => {
-      const r = summaryWs.addRow(vals);
-      applyDataRowStyle(r, 2, i % 2 === 0);
+      const r = summaryWs.getRow(scr);
+      r.values = [vals[0], vals[1], '', '', ''];
+      styleDataRow(r, 2, i % 2 === 0);
       r.getCell(1).font = { bold: true, size: 10, color: { argb: 'FF172B4D' } };
+      r.getCell(1).alignment = { vertical: 'middle', horizontal: 'left' };
+      r.getCell(2).alignment = { vertical: 'middle', horizontal: 'left' };
+      scr++;
     });
+    scr++; // spacer
 
-    // Spacer
-    summaryWs.addRow([]);
-
-    // ── Member Summary Table ──
-    const memberHeaderRow = summaryWs.addRow(['Member Name', 'Today', 'This Week', 'This Month', '% of Total']);
-    memberHeaderRow.eachCell({ includeEmpty: true }, (cell, colNumber) => {
-      if (colNumber > 5) return;
-      cell.font = { bold: true, size: 11, color: { argb: COLORS.headerFont } };
-      cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: COLORS.memberHeaderBg } };
-      cell.alignment = { vertical: 'middle', horizontal: 'center' };
-      cell.border = thinBorder;
-    });
-    memberHeaderRow.height = 24;
-
-    // Set wider columns for summary area
-    summaryWs.getColumn(1).width = 24;
-    summaryWs.getColumn(2).width = 14;
-    summaryWs.getColumn(3).width = 14;
-    summaryWs.getColumn(4).width = 14;
-    summaryWs.getColumn(5).width = 14;
+    // Member Summary Table
+    const mhRow = summaryWs.getRow(scr);
+    mhRow.values = ['Member Name', 'Today', 'This Week', 'This Month', '% of Total'];
+    styleHeaderRow(mhRow, SC);
+    scr++;
 
     data.memberSummary.forEach((m, i) => {
-      const r = summaryWs.addRow([m.displayName, `${m.todayHours}h`, `${m.weekHours}h`, `${m.monthHours}h`, `${m.percentage}%`]);
-      applyDataRowStyle(r, 5, i % 2 === 0);
+      const r = summaryWs.getRow(scr);
+      r.values = [m.displayName, `${m.todayHours}h`, `${m.weekHours}h`, `${m.monthHours}h`, `${m.percentage}%`];
+      styleDataRow(r, SC, i % 2 === 0);
       r.getCell(1).alignment = { vertical: 'middle', horizontal: 'left' };
-      for (let c = 2; c <= 5; c++) {
-        r.getCell(c).alignment = { vertical: 'middle', horizontal: 'center' };
-      }
+      scr++;
     });
 
-    // Total row
+    // Total
     const totalMemberHours = data.memberSummary.reduce((s, m) => s + m.monthHours, 0);
     const totalToday = data.memberSummary.reduce((s, m) => s + m.todayHours, 0);
     const totalWeek = data.memberSummary.reduce((s, m) => s + m.weekHours, 0);
-    const totalR = summaryWs.addRow([
+    const stRow = summaryWs.getRow(scr);
+    stRow.values = [
       'TOTAL',
       `${Math.round(totalToday * 10) / 10}h`,
       `${Math.round(totalWeek * 10) / 10}h`,
       `${Math.round(totalMemberHours * 10) / 10}h`,
       '100%'
-    ]);
-    applyTotalRowStyle(totalR, 5);
-    for (let c = 1; c <= 5; c++) {
-      totalR.getCell(c).alignment = { vertical: 'middle', horizontal: 'center' };
-    }
-  }
-
-  // ═══════════════════════════════════════════
-  // SHEET 3: Time by Issue (multi-user only)
-  // ═══════════════════════════════════════════
-  if (data.timeByIssue && data.timeByIssue.length > 0) {
-    const issueWs = workbook.addWorksheet('Time by Issue', {
-      views: [{ state: 'frozen', ySplit: 1 }]
-    });
-
-    issueWs.columns = [
-      { header: 'Issue Key', key: 'issueKey', width: 18 },
-      { header: 'Total Time', key: 'totalTime', width: 16 },
-      { header: 'Contributors', key: 'contributors', width: 34 },
-      { header: '% of Total', key: 'percentage', width: 14 }
     ];
-    applyHeaderStyle(issueWs.getRow(1), 4);
-    issueWs.autoFilter = { from: 'A1', to: 'D1' };
-
-    data.timeByIssue.forEach((issue, i) => {
-      const r = issueWs.addRow([
-        issue.issueKey,
-        formatDuration(issue.totalSeconds),
-        issue.contributors.join(', '),
-        `${issue.percentage}%`
-      ]);
-      applyDataRowStyle(r, 4, i % 2 === 0);
-      r.getCell(1).alignment = { vertical: 'middle', horizontal: 'left' };
-      r.getCell(2).alignment = { vertical: 'middle', horizontal: 'center' };
-      r.getCell(2).font = { bold: true, size: 10, color: { argb: 'FF172B4D' } };
-      r.getCell(4).alignment = { vertical: 'middle', horizontal: 'center' };
-    });
-
-    // Total
-    const totalSec = data.timeByIssue.reduce((s, i) => s + i.totalSeconds, 0);
-    const totalR = issueWs.addRow(['TOTAL', formatDuration(totalSec), '', '100%']);
-    applyTotalRowStyle(totalR, 4);
-    totalR.getCell(2).alignment = { vertical: 'middle', horizontal: 'center' };
-    totalR.getCell(4).alignment = { vertical: 'middle', horizontal: 'center' };
+    styleTotalRow(stRow, SC);
   }
 
   // ── Generate and Download ──
