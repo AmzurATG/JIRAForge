@@ -65,7 +65,7 @@ export async function getUserAssignedIssues(statuses = JQL_ACTIVE_STATUSES, maxR
 export async function getAllUserAssignedIssues() {
   // Fetch all non-Done assigned issues across ALL project types (software, service desk, business).
   // Avoid Sprint/dueDate/rank fields — these are software-only and return nothing for JSM/business projects.
-  const jql = 'assignee = currentUser() AND statusCategory != Done ORDER BY updated DESC';
+  const jql = 'assignee = currentUser() ORDER BY updated DESC';
   const fields = ['summary', 'status', 'project', 'issuetype', 'priority', 'updated'];
 
   console.log('[JIRA API] Fetching issues with JQL:', jql);
