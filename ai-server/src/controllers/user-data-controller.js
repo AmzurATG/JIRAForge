@@ -8,7 +8,7 @@
 const express = require('express');
 const router = express.Router();
 const userDataService = require('../services/user-data-service');
-const { forgeAuthMiddleware } = require('../middleware/forge-auth');
+const forgeAuthMiddleware = require('../middleware/forge-auth');
 const { sanitizeLogData } = require('../utils/log-sanitizer');
 const logger = require('../utils/logger');
 
