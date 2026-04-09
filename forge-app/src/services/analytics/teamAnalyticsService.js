@@ -1502,77 +1502,57 @@ export async function fetchMemberMonthDetails(accountId, cloudId, projectKey, us
   // Fetch issue details from Jira
   const issueDetails = await fetchIssueDetailsBatch([...allIssueKeys]);
   
-  // Build weekly breakdown
+  // Build weekly breakdown — only include days within the actual month (1st to last day)
   const weeklyBreakdown = [];
-  let currentWeekStart = new Date(monthStart);
+  const dayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
   
-  // Find the Monday of the first week
-  const dayOfWeek = currentWeekStart.getDay();
-  const daysToMonday = dayOfWeek === 0 ? 6 : dayOfWeek - 1;
-  currentWeekStart.setDate(currentWeekStart.getDate() - daysToMonday);
+  // Start from the 1st of the month, group into Mon-Sun weeks
+  let weekDays = [];
+  let weekNum = 0;
   
-  // Iterate through weeks
-  while (currentWeekStart <= monthEnd) {
-    const weekStart = new Date(currentWeekStart);
-    const weekEnd = new Date(weekStart);
-    weekEnd.setDate(weekStart.getDate() + 6);
+  for (let d = new Date(monthStart); d <= monthEnd; d.setDate(d.getDate() + 1)) {
+    const dateStr = d.toISOString().split('T')[0];
+    const dayOfWeek = dayNames[d.getDay()];
+    const dayIssues = dayMap[dateStr] || {};
+    const issues = Object.values(dayIssues).map(issue => {
+      const jiraDetails = issueDetails[issue.issueKey];
+      return {
+        ...issue,
+        summary: issue.issueKey === 'Unassigned' ? 'Work not assigned to any issue' : (jiraDetails?.summary || ''),
+        status: jiraDetails?.status || 'Unknown'
+      };
+    }).sort((a, b) => b.totalSeconds - a.totalSeconds);
     
-    const weekStartStr = weekStart.toISOString().split('T')[0];
-    const weekEndStr = weekEnd.toISOString().split('T')[0];
+    const totalSeconds = issues.reduce((sum, i) => sum + i.totalSeconds, 0);
+    const nonProductiveSeconds = npDayMap[dateStr] || 0;
     
-    // Build daily breakdown for this week
-    const dailyBreakdown = [];
-    const dayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+    weekDays.push({
+      date: dateStr,
+      dayOfWeek,
+      totalSeconds,
+      totalHours: Math.round(totalSeconds / 3600 * 100) / 100,
+      issueCount: issues.filter(i => i.issueKey !== 'Unassigned').length,
+      issues,
+      nonProductiveSeconds
+    });
     
-    for (let i = 0; i < 7; i++) {
-      const currentDate = new Date(weekStart);
-      currentDate.setDate(weekStart.getDate() + i);
-      const dateStr = currentDate.toISOString().split('T')[0];
+    // End of week (Sunday) or last day of month — flush the week
+    const isLastDayOfMonth = new Date(d.getFullYear(), d.getMonth(), d.getDate() + 1) > monthEnd;
+    if (d.getDay() === 0 || isLastDayOfMonth) {
+      weekNum++;
+      const weekTotalSeconds = weekDays.reduce((sum, day) => sum + day.totalSeconds, 0);
+      const weekNPSeconds = weekDays.reduce((sum, day) => sum + (day.nonProductiveSeconds || 0), 0);
       
-      // Only include dates within the month
-      if (currentDate >= monthStart && currentDate <= monthEnd) {
-        const dayOfWeek = dayNames[currentDate.getDay()];
-        const dayIssues = dayMap[dateStr] || {};
-        const issues = Object.values(dayIssues).map(issue => {
-          const jiraDetails = issueDetails[issue.issueKey];
-          return {
-            ...issue,
-            summary: issue.issueKey === 'Unassigned' ? 'Work not assigned to any issue' : (jiraDetails?.summary || ''),
-            status: jiraDetails?.status || 'Unknown'
-          };
-        }).sort((a, b) => b.totalSeconds - a.totalSeconds);
-        
-        const totalSeconds = issues.reduce((sum, i) => sum + i.totalSeconds, 0);
-        const nonProductiveSeconds = npDayMap[dateStr] || 0;
-        
-        dailyBreakdown.push({
-          date: dateStr,
-          dayOfWeek,
-          totalSeconds,
-          totalHours: Math.round(totalSeconds / 3600 * 100) / 100,
-          issueCount: issues.filter(i => i.issueKey !== 'Unassigned').length,
-          issues,
-          nonProductiveSeconds
-        });
-      }
-    }
-    
-    const weekTotalSeconds = dailyBreakdown.reduce((sum, day) => sum + day.totalSeconds, 0);
-    const weekNPSeconds = dailyBreakdown.reduce((sum, day) => sum + (day.nonProductiveSeconds || 0), 0);
-    
-    if (weekTotalSeconds > 0 || dailyBreakdown.length > 0) {
       weeklyBreakdown.push({
-        weekStart: weekStartStr,
-        weekEnd: weekEndStr,
+        weekStart: weekDays[0].date,
+        weekEnd: weekDays[weekDays.length - 1].date,
         totalSeconds: weekTotalSeconds,
         totalHours: Math.round(weekTotalSeconds / 3600 * 10) / 10,
         nonProductiveSeconds: weekNPSeconds,
-        dailyBreakdown
+        dailyBreakdown: weekDays
       });
+      weekDays = [];
     }
-    
-    // Move to next week
-    currentWeekStart.setDate(currentWeekStart.getDate() + 7);
   }
   
   // Calculate month totals
