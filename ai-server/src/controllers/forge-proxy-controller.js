@@ -467,12 +467,52 @@ function isMissingUserDetails(user) {
 }
 
 /**
+ * Migrate a user's existing data to a new organization.
+ * When a user's organization_id changes, their activity data still references
+ * the old org, making it invisible to queries that filter by the new org.
+ * This updates all affected tables so the data stays accessible.
+ */
+async function migrateUserDataToNewOrg(supabase, userId, oldOrgId, newOrgId) {
+  const tables = [
+    'activity_records',
+    'analysis_results',
+    'unassigned_activity',
+    'unassigned_work_groups'
+  ];
+
+  for (const table of tables) {
+    try {
+      const { error } = await supabase
+        .from(table)
+        .update({ organization_id: newOrgId })
+        .eq('user_id', userId)
+        .eq('organization_id', oldOrgId);
+
+      if (error) {
+        // Table may not exist or have no matching rows — log and continue
+        logger.warn(`[ForgeProxy] Failed to migrate ${table} for user ${userId}:`, error.message);
+      } else {
+        logger.info(`[ForgeProxy] Migrated ${table} from org ${oldOrgId} to ${newOrgId} for user ${userId}`);
+      }
+    } catch (err) {
+      logger.warn(`[ForgeProxy] Error migrating ${table} for user ${userId}:`, err.message);
+    }
+  }
+}
+
+/**
  * Update an existing user's org and/or missing profile fields if needed
  */
 async function updateExistingUserIfNeeded(supabase, user, organizationId, email, displayName) {
   if (organizationId && user.organization_id !== organizationId) {
+    const oldOrgId = user.organization_id;
     await supabase.from('users').update({ organization_id: organizationId }).eq('id', user.id);
     await ensureOrganizationMembership(supabase, user.id, organizationId);
+
+    // Migrate existing activity data to the new org so it remains visible
+    if (oldOrgId) {
+      await migrateUserDataToNewOrg(supabase, user.id, oldOrgId, organizationId);
+    }
   }
 
   if (isMissingUserDetails(user) && (email || displayName)) {

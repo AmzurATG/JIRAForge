@@ -440,7 +440,18 @@ def test_complete_flow_with_save(use_mock=False):
     
     # Initialize AppClassificationManager with real SQLite database
     db_path = get_db_path()
-    classification_manager = AppClassificationManager(db_path)
+
+    # Create a lightweight db_manager for testing
+    class _TestDbManager:
+        def __init__(self, path):
+            self.db_path = path
+            self._conn = None
+        def get_connection(self):
+            if self._conn is None:
+                self._conn = sqlite3.connect(self.db_path, check_same_thread=False)
+            return self._conn
+    _test_db_mgr = _TestDbManager(db_path)
+    classification_manager = AppClassificationManager(_test_db_mgr)
     
     # Initial classification without OCR text
     classification = classify_window(classification_manager, app_name, window_title, ocr_text=None, supabase=supabase)

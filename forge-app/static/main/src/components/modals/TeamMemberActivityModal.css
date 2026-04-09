@@ -1,0 +1,805 @@
+/* Team Member Activity Modal Styles */
+
+.modal-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-color: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 10000;
+  animation: fadeIn 0.2s ease-out;
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.team-member-modal {
+  background: white;
+  border-radius: 8px;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15);
+  width: 96%;
+  max-width: none;
+  height: 85vh;
+  max-height: 90vh;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  animation: slideUp 0.2s cubic-bezier(0.4, 0.0, 0.2, 1);
+  overflow: hidden;
+}
+
+@keyframes slideUp {
+  from {
+    opacity: 0;
+    transform: scale(0.95) translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+}
+
+/* Modal Header */
+.modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  border-bottom: 1px solid #DFE1E6;
+}
+
+.modal-header-content h2 {
+  margin: 0;
+  font-size: 22px;
+  font-weight: 600;
+  color: #172B4D;
+}
+
+.modal-subtitle {
+  margin: 4px 0 0 0;
+  font-size: 15px;
+  color: #5E6C84;
+}
+
+.modal-close-btn {
+  background: none;
+  border: none;
+  font-size: 24px;
+  color: #5E6C84;
+  cursor: pointer;
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 3px;
+  transition: all 0.2s ease;
+}
+
+.modal-close-btn:hover {
+  background-color: #F4F5F7;
+  color: #172B4D;
+}
+
+/* Modal Tabs */
+.modal-tabs {
+  display: flex;
+  border-bottom: 2px solid #DFE1E6;
+  padding: 0 16px;
+  gap: 4px;
+}
+
+.tab-btn {
+  background: none;
+  border: none;
+  padding: 12px 16px;
+  font-size: 16px;
+  font-weight: 500;
+  color: #5E6C84;
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -2px;
+  transition: all 0.15s ease;
+}
+
+.tab-btn:hover {
+  color: #172B4D;
+  background-color: #F4F5F7;
+}
+
+.tab-btn.active {
+  color: #0052CC;
+  border-bottom-color: #0052CC;
+}
+
+/* Modal Content - scoped under .team-member-modal to override Modals.css */
+.team-member-modal .modal-content {
+  flex: 1;
+  overflow-y: auto;
+  padding: 12px 16px;
+  width: 100%;
+  max-width: none;
+  max-height: none;
+  align-self: stretch;
+  box-sizing: border-box;
+  background: transparent;
+  box-shadow: none;
+  border-radius: 0;
+  display: block;
+}
+
+.modal-content > * {
+  width: 100% !important;
+  max-width: 100% !important;
+  box-sizing: border-box;
+}
+
+/* Activity View containers - fill full width */
+.today-activity-view,
+.week-activity-view,
+.month-activity-view {
+  width: 100% !important;
+}
+
+.summary-stats {
+  display: flex;
+  gap: 16px;
+  width: 100%;
+}
+
+/* Issue Breakdown Section */
+.issue-breakdown-section {
+  width: 100%;
+}
+
+.issue-breakdown-section h3 {
+  font-size: 18px;
+  font-weight: 600;
+  color: #172B4D;
+  margin: 0 0 12px 0;
+}
+
+/* Loading State */
+.loading-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 60px 20px;
+  color: #5E6C84;
+  width: 100% !important;
+  min-height: 200px;
+}
+
+.loading-spinner {
+  width: 40px;
+  height: 40px;
+  border: 3px solid #DFE1E6;
+  border-top-color: #0052CC;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+  margin-bottom: 16px;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* Error State */
+.error-state {
+  padding: 40px 20px;
+  text-align: center;
+  color: #DE350B;
+}
+
+/* Empty State */
+.empty-state {
+  padding: 40px 16px;
+  text-align: center;
+  color: #5E6C84;
+}
+
+.empty-state p:first-child {
+  font-size: 36px;
+  margin: 0 0 8px 0;
+}
+
+.empty-subtitle {
+  font-size: 14px;
+  color: #97A0AF;
+  margin: 8px 0 0 0;
+}
+
+/* Summary Section */
+.summary-section {
+  margin-bottom: 16px;
+  width: 100%;
+}
+
+.summary-section h3 {
+  font-size: 18px;
+  font-weight: 600;
+  color: #172B4D;
+  margin: 0 0 10px 0;
+}
+
+.stat-item {
+  flex: 1;
+  background: #F4F5F7;
+  padding: 14px 16px;
+  border-radius: 4px;
+  text-align: center;
+}
+
+.stat-value {
+  font-size: 28px;
+  font-weight: 600;
+  color: #0052CC;
+  margin-bottom: 4px;
+}
+
+.stat-label {
+  font-size: 14px;
+  color: #5E6C84;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.issue-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  width: 100%;
+}
+
+.issue-item {
+  border: 1px solid #DFE1E6;
+  border-radius: 4px;
+  padding: 8px 12px;
+  transition: all 0.2s ease;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.issue-item:hover {
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+}
+
+.issue-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 4px;
+}
+
+.issue-key-summary {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.issue-key {
+  font-size: 15px;
+  font-family: 'Roboto Mono', monospace;
+  font-weight: 500;
+  color: #0052CC;
+  cursor: pointer;
+}
+
+.issue-key:hover {
+  text-decoration: underline;
+}
+
+.issue-summary {
+  font-size: 14px;
+  color: #172B4D;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+
+.issue-time {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.issue-time strong {
+  font-size: 16px;
+  color: #172B4D;
+}
+
+.issue-percentage {
+  font-size: 13px;
+  color: #5E6C84;
+}
+
+.issue-progress {
+  height: 4px;
+  background: #DFE1E6;
+  border-radius: 2px;
+  overflow: hidden;
+  margin-bottom: 2px;
+}
+
+.progress-bar {
+  height: 100%;
+  background: linear-gradient(90deg, #0052CC, #0065FF);
+  transition: width 0.4s cubic-bezier(0.4, 0.0, 0.2, 1);
+  animation: progressFill 0.6s ease-out;
+}
+
+@keyframes progressFill {
+  from {
+    width: 0;
+  }
+}
+
+.issue-meta {
+  display: flex;
+  gap: 16px;
+  align-items: center;
+}
+
+.meta-item {
+  font-size: 12px;
+  color: #5E6C84;
+}
+
+/* Status Badge Styles */
+.status-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 3px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.status-badge.status-done {
+  background-color: #E3FCEF;
+  color: #006644;
+}
+
+.status-badge.status-indeterminate {
+  background-color: #DEEBFF;
+  color: #0747A6;
+}
+
+.status-badge.status-new {
+  background-color: #F4F5F7;
+  color: #42526E;
+}
+
+/* Week Activity View */
+.daily-breakdown-section {
+  width: 100%;
+}
+
+.daily-breakdown-section h3 {
+  font-size: 16px;
+  font-weight: 600;
+  color: #172B4D;
+  margin: 0 0 16px 0;
+}
+
+.day-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  width: 100%;
+}
+
+.day-card {
+  border: 1px solid #DFE1E6;
+  border-left: 4px solid #DFE1E6;
+  border-radius: 4px;
+  padding: 12px 16px;
+  transition: all 0.2s ease;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.day-card.today {
+  border-left-color: #0052CC;
+  background: #F4F5F7;
+}
+
+.day-card.no-activity {
+  opacity: 0.6;
+}
+
+.day-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.day-date {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.day-date strong {
+  font-size: 16px;
+  color: #172B4D;
+}
+
+.today-badge {
+  font-size: 12px;
+  color: #0052CC;
+  font-weight: 500;
+}
+
+.day-total {
+  font-size: 16px;
+  font-weight: 600;
+  color: #172B4D;
+}
+
+.day-issues {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-left: 8px;
+}
+
+.day-issue-item {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 15px;
+}
+
+.day-issue-bullet {
+  color: #5E6C84;
+  flex-shrink: 0;
+}
+
+.day-issue-key {
+  font-family: 'Roboto Mono', monospace;
+  color: #0052CC;
+  font-weight: 500;
+  flex-shrink: 0;
+}
+
+.day-issue-time {
+  color: #5E6C84;
+  flex-shrink: 0;
+}
+
+.day-issue-summary {
+  color: #172B4D;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Month Activity View */
+.weekly-breakdown-section {
+  width: 100%;
+}
+
+.weekly-breakdown-section h3 {
+  font-size: 16px;
+  font-weight: 600;
+  color: #172B4D;
+  margin: 0 0 16px 0;
+}
+
+.week-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.week-card {
+  border: 1px solid #DFE1E6;
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.week-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 12px 16px;
+  cursor: pointer;
+  background: white;
+  transition: all 0.2s ease;
+}
+
+.week-header:hover {
+  background: #F4F5F7;
+}
+
+.week-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.week-title strong {
+  font-size: 16px;
+  color: #172B4D;
+}
+
+.week-range {
+  font-size: 15px;
+  color: #5E6C84;
+}
+
+.week-info {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.week-total {
+  font-size: 16px;
+  font-weight: 600;
+  color: #172B4D;
+}
+
+.week-expand-icon {
+  font-size: 12px;
+  color: #5E6C84;
+}
+
+.week-details {
+  padding: 0 16px 12px 16px;
+  background: #FAFBFC;
+  border-top: 1px solid #DFE1E6;
+  animation: expandDown 0.25s ease-out;
+}
+
+@keyframes expandDown {
+  from {
+    opacity: 0;
+    max-height: 0;
+  }
+  to {
+    opacity: 1;
+    max-height: 500px;
+  }
+}
+
+.week-day-item {
+  padding: 8px 0;
+  border-bottom: 1px solid #DFE1E6;
+}
+
+.week-day-item:last-child {
+  border-bottom: none;
+}
+
+.week-day-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 6px;
+}
+
+.week-day-name {
+  font-size: 15px;
+  font-weight: 500;
+  color: #172B4D;
+}
+
+.week-day-time {
+  font-size: 15px;
+  font-weight: 600;
+  color: #5E6C84;
+}
+
+.week-day-issues {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding-left: 8px;
+}
+
+.week-day-issue {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 15px;
+}
+
+.week-issue-key {
+  font-family: 'Roboto Mono', monospace;
+  color: #0052CC;
+  font-weight: 500;
+  flex-shrink: 0;
+}
+
+.week-issue-summary {
+  color: #172B4D;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.week-issue-time {
+  color: #5E6C84;
+  flex-shrink: 0;
+}
+
+/* Modal Footer - defined in responsive section below */
+
+.secondary-btn,
+.primary-btn {
+  padding: 8px 16px;
+  border-radius: 3px;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  border: none;
+}
+
+.secondary-btn {
+  background: white;
+  color: #42526E;
+  border: 1px solid #DFE1E6;
+}
+
+.secondary-btn:hover {
+  background: #F4F5F7;
+}
+
+.primary-btn {
+  background: #0052CC;
+  color: white;
+}
+
+.primary-btn:hover:not(:disabled) {
+  background: #0065FF;
+}
+
+.primary-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* Responsive Design */
+@media (max-width: 768px) {
+  .team-member-modal {
+    width: 98%;
+    max-height: 92vh;
+  }
+
+  .modal-header {
+    padding: 10px 12px;
+  }
+
+  .modal-content {
+    padding: 10px 12px;
+  }
+
+  .summary-stats {
+    flex-direction: column;
+  }
+
+  .issue-header {
+    flex-direction: column;
+    gap: 8px;
+    align-items: flex-start;
+  }
+
+  .issue-time {
+    align-self: flex-end;
+  }
+}
+
+/* Session List Styles */
+.session-list {
+  margin-top: 8px;
+  padding: 10px 16px;
+  background: #F4F5F7;
+  border-radius: 4px;
+  border-left: 3px solid #0052CC;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.session-list.compact {
+  margin-top: 6px;
+  margin-left: 0;
+  padding: 6px 12px;
+  font-size: 14px;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.session-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 5px 0;
+  border-bottom: 1px solid #EBECF0;
+}
+
+.session-row:last-child {
+  border-bottom: none;
+}
+
+.session-time-range {
+  font-family: 'Roboto Mono', monospace;
+  font-size: 15px;
+  color: #42526E;
+}
+
+.session-duration {
+  font-size: 15px;
+  font-weight: 500;
+  color: #5E6C84;
+}
+
+/* Day Issue Block (for nested sessions) */
+.day-issue-item-block {
+  margin-bottom: 4px;
+}
+
+.week-day-issue-block {
+  margin-bottom: 4px;
+}
+
+/* Clickable issue headers */
+.issue-header-clickable,
+.day-issue-clickable {
+  cursor: pointer;
+  user-select: none;
+  transition: background 0.15s ease;
+  border-radius: 4px;
+  padding: 2px 0;
+}
+
+.issue-header-clickable:hover,
+.day-issue-clickable:hover {
+  background: #F4F5F7;
+}
+
+.issue-expand-icon {
+  font-size: 12px;
+  color: #5E6C84;
+  margin-left: 8px;
+  flex-shrink: 0;
+}
+
+.session-count {
+  font-size: 12px;
+  color: #97A0AF;
+  margin-left: 4px;
+}
+
+/* Modal Footer updated */
+.modal-footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 16px;
+  border-top: 1px solid #DFE1E6;
+}
