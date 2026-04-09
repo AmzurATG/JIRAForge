@@ -1,0 +1,308 @@
+/* Export Team Analytics Modal Styles */
+
+.export-modal {
+  background: white;
+  border-radius: 8px;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15);
+  width: 90%;
+  max-width: 520px;
+  max-height: 85vh;
+  display: flex;
+  flex-direction: column;
+  animation: slideUp 0.2s cubic-bezier(0.4, 0.0, 0.2, 1);
+}
+
+.export-modal .modal-header {
+  padding: 20px 24px 16px 24px;
+  border-bottom: 1px solid #DFE1E6;
+}
+
+.export-modal .modal-header h2 {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 600;
+  color: #172B4D;
+}
+
+.export-modal .modal-content {
+  flex: 1;
+  overflow-y: auto;
+  padding: 20px 24px;
+  max-width: none;
+  width: auto;
+  background: transparent;
+  box-shadow: none;
+  border-radius: 0;
+  display: block;
+}
+
+.export-modal .modal-footer {
+  padding: 16px 24px;
+  border-top: 1px solid #DFE1E6;
+  display: flex;
+  justify-content: flex-end;
+  gap: 12px;
+}
+
+/* Title and Close Button already styled in TeamMemberActivityModal.css */
+
+/* Export Options */
+.export-options {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.option-group {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.option-group label {
+  font-size: 12px;
+  font-weight: 500;
+  color: #5E6C84;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.option-group select {
+  height: 36px;
+  padding: 8px 12px;
+  border: 1px solid #DFE1E6;
+  border-radius: 3px;
+  font-size: 14px;
+  color: #172B4D;
+  background: white;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.option-group select:hover {
+  border-color: #0052CC;
+}
+
+.option-group select:focus {
+  outline: none;
+  border-color: #0052CC;
+  box-shadow: 0 0 0 2px rgba(0, 82, 204, 0.1);
+}
+
+/* Custom Date Range */
+.custom-date-range {
+  display: flex;
+  gap: 16px;
+  padding: 16px;
+  background: #F4F5F7;
+  border-radius: 4px;
+  animation: slideDown 0.2s ease-out;
+}
+
+@keyframes slideDown {
+  from {
+    opacity: 0;
+    max-height: 0;
+    padding-top: 0;
+    padding-bottom: 0;
+  }
+  to {
+    opacity: 1;
+    max-height: 100px;
+    padding-top: 16px;
+    padding-bottom: 16px;
+  }
+}
+
+.date-input {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.date-input label {
+  font-size: 12px;
+  font-weight: 500;
+  color: #5E6C84;
+}
+
+.date-input input[type="date"] {
+  height: 36px;
+  padding: 8px 12px;
+  border: 1px solid #DFE1E6;
+  border-radius: 3px;
+  font-size: 14px;
+  color: #172B4D;
+  background: white;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.date-input input[type="date"]:hover {
+  border-color: #0052CC;
+}
+
+.date-input input[type="date"]:focus {
+  outline: none;
+  border-color: #0052CC;
+  box-shadow: 0 0 0 2px rgba(0, 82, 204, 0.1);
+}
+
+/* Export Preview */
+.export-preview {
+  background: #F4F5F7;
+  padding: 16px;
+  border-radius: 4px;
+  border-left: 4px solid #0052CC;
+}
+
+.export-preview h4 {
+  margin: 0 0 12px 0;
+  font-size: 14px;
+  font-weight: 600;
+  color: #172B4D;
+}
+
+.export-preview ul {
+  margin: 0;
+  padding-left: 0;
+  list-style: none;
+}
+
+.export-preview li {
+  font-size: 13px;
+  color: #172B4D;
+  margin-bottom: 6px;
+}
+
+.preview-note {
+  margin: 12px 0 0 0;
+  font-size: 12px;
+  color: #5E6C84;
+  font-style: italic;
+}
+
+/* Error Message */
+.error-message {
+  padding: 12px 16px;
+  background: #FFEBE6;
+  border: 1px solid #FF8B00;
+  border-radius: 4px;
+  color: #DE350B;
+  font-size: 14px;
+  margin-top: 16px;
+}
+
+.error-message strong {
+  font-weight: 600;
+}
+
+/* Button Spinner */
+.btn-spinner {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  border: 2px solid rgba(255, 255, 255, 0.3);
+  border-top-color: white;
+  border-radius: 50%;
+  animation: spin 0.6s linear infinite;
+  margin-right: 8px;
+  vertical-align: middle;
+}
+
+.primary-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.primary-btn svg {
+  flex-shrink: 0;
+}
+
+/* Responsive Design */
+@media (max-width: 768px) {
+  .export-modal {
+    width: 95%;
+  }
+
+  .custom-date-range {
+    flex-direction: column;
+  }
+}
+
+/* User Filter Styles */
+.user-filter-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.filter-chip {
+  padding: 4px 12px;
+  border: 1px solid #DFE1E6;
+  border-radius: 16px;
+  font-size: 12px;
+  font-weight: 500;
+  color: #42526E;
+  background: white;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.filter-chip:hover {
+  border-color: #0052CC;
+  color: #0052CC;
+}
+
+.filter-chip.active {
+  border-color: #0052CC;
+  background: #DEEBFF;
+  color: #0052CC;
+}
+
+.selected-count {
+  font-size: 12px;
+  color: #5E6C84;
+}
+
+.user-checkbox-list {
+  max-height: 180px;
+  overflow-y: auto;
+  border: 1px solid #DFE1E6;
+  border-radius: 4px;
+  padding: 4px 0;
+}
+
+.user-checkbox-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  cursor: pointer;
+  font-size: 13px;
+  transition: background 0.1s;
+}
+
+.user-checkbox-item:hover {
+  background: #F4F5F7;
+}
+
+.user-checkbox-item input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  cursor: pointer;
+  accent-color: #0052CC;
+}
+
+.user-checkbox-name {
+  flex: 1;
+  color: #172B4D;
+}
+
+.user-checkbox-hours {
+  font-size: 12px;
+  color: #5E6C84;
+  flex-shrink: 0;
+}

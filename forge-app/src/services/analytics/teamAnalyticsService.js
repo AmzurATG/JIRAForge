@@ -1061,3 +1061,686 @@ export async function getIdleRecordProjectKey(accountId, cloudId, idleRecordId) 
   );
   return records?.[0]?.project_key || null;
 }
+
+// ============================================================================
+// TEAM ANALYTICS DETAIL FUNCTIONS (Enhanced Drill-Down)
+// ============================================================================
+
+/**
+ * Fetch issue details from Jira API in batches
+ * @param {Array<string>} issueKeys - Array of issue keys to fetch
+ * @returns {Promise<Object>} Map of issueKey -> issue details
+ */
+async function fetchIssueDetailsBatch(issueKeys) {
+  if (!issueKeys || issueKeys.length === 0) return {};
+  
+  const { api, route } = await import('@forge/api');
+  
+  try {
+    const results = {};
+    
+    // Fetch each issue individually for reliability in Forge
+    for (const issueKey of issueKeys) {
+      try {
+        const response = await api.asApp().requestJira(
+          route`/rest/api/3/issue/${issueKey}?fields=summary,status,priority,issuetype`,
+          {
+            method: 'GET',
+            headers: { 'Accept': 'application/json' }
+          }
+        );
+        
+        if (response.ok) {
+          const issue = await response.json();
+          results[issue.key] = {
+            summary: issue.fields?.summary || '',
+            status: issue.fields?.status?.name || 'Unknown',
+            statusCategory: issue.fields?.status?.statusCategory?.key || 'new',
+            priority: issue.fields?.priority?.name || 'Medium',
+            issueType: issue.fields?.issuetype?.name || 'Task'
+          };
+        } else {
+          console.warn(`[FetchIssueDetails] Failed to fetch ${issueKey}: ${response.status}`);
+        }
+      } catch (issueError) {
+        console.warn(`[FetchIssueDetails] Error fetching ${issueKey}:`, issueError.message);
+      }
+    }
+    
+    return results;
+  } catch (error) {
+    console.error('[FetchIssueDetails] Error:', error);
+    return {};
+  }
+}
+
+/**
+ * Fetch detailed day activity for a team member
+ * Shows which issues they worked on and time per issue
+ * @param {string} accountId - Atlassian account ID
+ * @param {string} cloudId - Jira Cloud ID
+ * @param {string} projectKey - Project key (null for all projects)
+ * @param {string} userId - User ID to fetch details for
+ * @param {string} date - Date string (YYYY-MM-DD)
+ * @returns {Promise<Object>} Day activity details with issue breakdown
+ */
+export async function fetchMemberDayDetails(accountId, cloudId, projectKey, userId, date) {
+  validateDateFormat(date);
+  
+  const { supabaseConfig, organization } = await initializeContext(accountId, cloudId);
+  
+  // Build query for activity records for the specific date
+  let query = `activity_records?organization_id=eq.${organization.id}&user_id=eq.${userId}&work_date=eq.${date}&classification=in.(productive,unknown)&user_assigned_issue_key=not.is.null&select=user_assigned_issue_key,project_key,duration_seconds,start_time,end_time&order=start_time.asc&limit=1000`;
+  
+  // Add project filter if provided
+  if (projectKey && projectKey !== 'null') {
+    query += `&project_key=eq.${projectKey}`;
+  }
+  
+  const records = await supabaseRequest(supabaseConfig, query);
+  
+  // Group by issue
+  const issueMap = {};
+  (records || []).forEach(record => {
+    const key = record.user_assigned_issue_key;
+    if (!issueMap[key]) {
+      issueMap[key] = {
+        issueKey: key,
+        projectKey: record.project_key,
+        totalSeconds: 0,
+        sessionCount: 0,
+        sessions: []
+      };
+    }
+    issueMap[key].totalSeconds += record.duration_seconds || 0;
+    issueMap[key].sessionCount++;
+    issueMap[key].sessions.push({
+      startTime: record.start_time,
+      endTime: record.end_time,
+      seconds: record.duration_seconds
+    });
+  });
+  
+  // Convert to array and sort by time spent (descending)
+  const issues = Object.values(issueMap).sort((a, b) => b.totalSeconds - a.totalSeconds);
+  
+  // Fetch issue details from Jira (summary, status, etc.)
+  const issueKeys = issues.map(i => i.issueKey);
+  const issueDetails = await fetchIssueDetailsBatch(issueKeys);
+  
+  // Merge Jira details with time data
+  issues.forEach(issue => {
+    const jiraIssue = issueDetails[issue.issueKey];
+    if (jiraIssue) {
+      issue.summary = jiraIssue.summary;
+      issue.status = jiraIssue.status;
+      issue.statusCategory = jiraIssue.statusCategory;
+      issue.priority = jiraIssue.priority;
+      issue.issueType = jiraIssue.issueType;
+    }
+  });
+  
+  // Calculate totals
+  const totalSeconds = issues.reduce((sum, i) => sum + i.totalSeconds, 0);
+  
+  // Get user info
+  const userInfo = await supabaseRequest(
+    supabaseConfig,
+    `users?id=eq.${userId}&select=display_name,email&limit=1`
+  );
+  const displayName = userInfo[0]?.display_name || userInfo[0]?.email || 'Unknown User';
+  
+  return {
+    userId,
+    displayName,
+    date,
+    totalSeconds,
+    totalHours: Math.round(totalSeconds / 3600 * 10) / 10,
+    issueCount: issues.length,
+    issues
+  };
+}
+
+/**
+ * Fetch detailed week activity for a team member
+ * Shows day-by-day breakdown with issues for each day
+ * @param {string} accountId - Atlassian account ID
+ * @param {string} cloudId - Jira Cloud ID
+ * @param {string} projectKey - Project key (null for all projects)
+ * @param {string} userId - User ID to fetch details for
+ * @param {string} weekStartDate - Monday date (YYYY-MM-DD)
+ * @returns {Promise<Object>} Week activity details with daily breakdown
+ */
+export async function fetchMemberWeekDetails(accountId, cloudId, projectKey, userId, weekStartDate) {
+  validateDateFormat(weekStartDate);
+  
+  const { supabaseConfig, organization } = await initializeContext(accountId, cloudId);
+  
+  // Calculate week end date (Sunday, 6 days after Monday)
+  const startDate = new Date(weekStartDate + 'T00:00:00');
+  const endDate = new Date(startDate);
+  endDate.setDate(startDate.getDate() + 6);
+  const weekEndStr = endDate.toISOString().split('T')[0];
+  
+  // Build query for activity records for the week range
+  let query = `activity_records?organization_id=eq.${organization.id}&user_id=eq.${userId}&work_date=gte.${weekStartDate}&work_date=lte.${weekEndStr}&classification=in.(productive,unknown)&user_assigned_issue_key=not.is.null&select=work_date,user_assigned_issue_key,project_key,duration_seconds,start_time,end_time&order=work_date.asc,start_time.asc&limit=5000`;
+  
+  if (projectKey && projectKey !== 'null') {
+    query += `&project_key=eq.${projectKey}`;
+  }
+  
+  const records = await supabaseRequest(supabaseConfig, query);
+  
+  // Group by date and then by issue
+  const dayMap = {};
+  (records || []).forEach(record => {
+    const workDate = typeof record.work_date === 'string' ? record.work_date.split('T')[0] : String(record.work_date);
+    const issueKey = record.user_assigned_issue_key;
+    
+    if (!dayMap[workDate]) {
+      dayMap[workDate] = {};
+    }
+    if (!dayMap[workDate][issueKey]) {
+      dayMap[workDate][issueKey] = {
+        issueKey,
+        projectKey: record.project_key,
+        totalSeconds: 0,
+        sessionCount: 0,
+        sessions: []
+      };
+    }
+    dayMap[workDate][issueKey].totalSeconds += record.duration_seconds || 0;
+    dayMap[workDate][issueKey].sessionCount++;
+    dayMap[workDate][issueKey].sessions.push({
+      startTime: record.start_time,
+      endTime: record.end_time,
+      seconds: record.duration_seconds
+    });
+  });
+  
+  // Collect all unique issue keys for batch fetching
+  const allIssueKeys = new Set();
+  Object.values(dayMap).forEach(dayIssues => {
+    Object.keys(dayIssues).forEach(key => allIssueKeys.add(key));
+  });
+  
+  // Fetch issue details from Jira
+  const issueDetails = await fetchIssueDetailsBatch([...allIssueKeys]);
+  
+  // Build daily breakdown
+  const dailyBreakdown = [];
+  const dayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+  
+  for (let i = 0; i < 7; i++) {
+    const currentDate = new Date(startDate);
+    currentDate.setDate(startDate.getDate() + i);
+    const dateStr = currentDate.toISOString().split('T')[0];
+    const dayOfWeek = dayNames[currentDate.getDay()];
+    
+    const dayIssues = dayMap[dateStr] || {};
+    const issues = Object.values(dayIssues).map(issue => {
+      const jiraDetails = issueDetails[issue.issueKey];
+      return {
+        ...issue,
+        summary: jiraDetails?.summary || '',
+        status: jiraDetails?.status || 'Unknown',
+        statusCategory: jiraDetails?.statusCategory || 'new'
+      };
+    }).sort((a, b) => b.totalSeconds - a.totalSeconds);
+    
+    const totalSeconds = issues.reduce((sum, i) => sum + i.totalSeconds, 0);
+    
+    dailyBreakdown.push({
+      date: dateStr,
+      dayOfWeek,
+      totalSeconds,
+      totalHours: Math.round(totalSeconds / 3600 * 10) / 10,
+      issueCount: issues.length,
+      issues
+    });
+  }
+  
+  // Calculate week totals
+  const totalSeconds = dailyBreakdown.reduce((sum, day) => sum + day.totalSeconds, 0);
+  
+  // Get user info
+  const userInfo = await supabaseRequest(
+    supabaseConfig,
+    `users?id=eq.${userId}&select=display_name,email&limit=1`
+  );
+  const displayName = userInfo[0]?.display_name || userInfo[0]?.email || 'Unknown User';
+  
+  return {
+    userId,
+    displayName,
+    weekStart: weekStartDate,
+    weekEnd: weekEndStr,
+    totalSeconds,
+    totalHours: Math.round(totalSeconds / 3600 * 10) / 10,
+    dailyBreakdown
+  };
+}
+
+/**
+ * Fetch detailed month activity for a team member
+ * Shows week-by-week and day-by-day breakdown
+ * @param {string} accountId - Atlassian account ID
+ * @param {string} cloudId - Jira Cloud ID
+ * @param {string} projectKey - Project key (null for all projects)
+ * @param {string} userId - User ID to fetch details for
+ * @param {string} month - Month string (YYYY-MM)
+ * @returns {Promise<Object>} Month activity details with weekly breakdown
+ */
+export async function fetchMemberMonthDetails(accountId, cloudId, projectKey, userId, month) {
+  // Validate month format (YYYY-MM)
+  if (!/^\d{4}-\d{2}$/.test(month)) {
+    throw new Error('Invalid month format. Expected YYYY-MM');
+  }
+  
+  const { supabaseConfig, organization } = await initializeContext(accountId, cloudId);
+  
+  // Calculate month start and end dates
+  const [year, monthNum] = month.split('-').map(Number);
+  const monthStart = new Date(year, monthNum - 1, 1);
+  const monthEnd = new Date(year, monthNum, 0); // Last day of month
+  
+  const monthStartStr = monthStart.toISOString().split('T')[0];
+  const monthEndStr = monthEnd.toISOString().split('T')[0];
+  
+  // Build query for activity records for the entire month
+  let query = `activity_records?organization_id=eq.${organization.id}&user_id=eq.${userId}&work_date=gte.${monthStartStr}&work_date=lte.${monthEndStr}&classification=in.(productive,unknown)&user_assigned_issue_key=not.is.null&select=work_date,user_assigned_issue_key,project_key,duration_seconds,start_time,end_time&order=work_date.asc,start_time.asc&limit=10000`;
+  
+  if (projectKey && projectKey !== 'null') {
+    query += `&project_key=eq.${projectKey}`;
+  }
+  
+  const records = await supabaseRequest(supabaseConfig, query);
+  
+  // Group by date and then by issue
+  const dayMap = {};
+  (records || []).forEach(record => {
+    const workDate = typeof record.work_date === 'string' ? record.work_date.split('T')[0] : String(record.work_date);
+    const issueKey = record.user_assigned_issue_key;
+    
+    if (!dayMap[workDate]) {
+      dayMap[workDate] = {};
+    }
+    if (!dayMap[workDate][issueKey]) {
+      dayMap[workDate][issueKey] = {
+        issueKey,
+        projectKey: record.project_key,
+        totalSeconds: 0,
+        sessions: []
+      };
+    }
+    dayMap[workDate][issueKey].totalSeconds += record.duration_seconds || 0;
+    dayMap[workDate][issueKey].sessions.push({
+      startTime: record.start_time,
+      endTime: record.end_time,
+      seconds: record.duration_seconds
+    });
+  });
+  
+  // Collect all unique issue keys for batch fetching
+  const allIssueKeys = new Set();
+  Object.values(dayMap).forEach(dayIssues => {
+    Object.keys(dayIssues).forEach(key => allIssueKeys.add(key));
+  });
+  
+  // Fetch issue details from Jira
+  const issueDetails = await fetchIssueDetailsBatch([...allIssueKeys]);
+  
+  // Build weekly breakdown
+  const weeklyBreakdown = [];
+  let currentWeekStart = new Date(monthStart);
+  
+  // Find the Monday of the first week
+  const dayOfWeek = currentWeekStart.getDay();
+  const daysToMonday = dayOfWeek === 0 ? 6 : dayOfWeek - 1;
+  currentWeekStart.setDate(currentWeekStart.getDate() - daysToMonday);
+  
+  // Iterate through weeks
+  while (currentWeekStart <= monthEnd) {
+    const weekStart = new Date(currentWeekStart);
+    const weekEnd = new Date(weekStart);
+    weekEnd.setDate(weekStart.getDate() + 6);
+    
+    const weekStartStr = weekStart.toISOString().split('T')[0];
+    const weekEndStr = weekEnd.toISOString().split('T')[0];
+    
+    // Build daily breakdown for this week
+    const dailyBreakdown = [];
+    const dayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+    
+    for (let i = 0; i < 7; i++) {
+      const currentDate = new Date(weekStart);
+      currentDate.setDate(weekStart.getDate() + i);
+      const dateStr = currentDate.toISOString().split('T')[0];
+      
+      // Only include dates within the month
+      if (currentDate >= monthStart && currentDate <= monthEnd) {
+        const dayOfWeek = dayNames[currentDate.getDay()];
+        const dayIssues = dayMap[dateStr] || {};
+        const issues = Object.values(dayIssues).map(issue => {
+          const jiraDetails = issueDetails[issue.issueKey];
+          return {
+            ...issue,
+            summary: jiraDetails?.summary || '',
+            status: jiraDetails?.status || 'Unknown'
+          };
+        }).sort((a, b) => b.totalSeconds - a.totalSeconds);
+        
+        const totalSeconds = issues.reduce((sum, i) => sum + i.totalSeconds, 0);
+        
+        dailyBreakdown.push({
+          date: dateStr,
+          dayOfWeek,
+          totalSeconds,
+          totalHours: Math.round(totalSeconds / 3600 * 10) / 10,
+          issueCount: issues.length,
+          issues
+        });
+      }
+    }
+    
+    const weekTotalSeconds = dailyBreakdown.reduce((sum, day) => sum + day.totalSeconds, 0);
+    
+    if (weekTotalSeconds > 0 || dailyBreakdown.length > 0) {
+      weeklyBreakdown.push({
+        weekStart: weekStartStr,
+        weekEnd: weekEndStr,
+        totalSeconds: weekTotalSeconds,
+        totalHours: Math.round(weekTotalSeconds / 3600 * 10) / 10,
+        dailyBreakdown
+      });
+    }
+    
+    // Move to next week
+    currentWeekStart.setDate(currentWeekStart.getDate() + 7);
+  }
+  
+  // Calculate month totals
+  const totalSeconds = weeklyBreakdown.reduce((sum, week) => sum + week.totalSeconds, 0);
+  
+  // Get user info
+  const userInfo = await supabaseRequest(
+    supabaseConfig,
+    `users?id=eq.${userId}&select=display_name,email&limit=1`
+  );
+  const displayName = userInfo[0]?.display_name || userInfo[0]?.email || 'Unknown User';
+  
+  return {
+    userId,
+    displayName,
+    month,
+    totalSeconds,
+    totalHours: Math.round(totalSeconds / 3600 * 10) / 10,
+    weeklyBreakdown
+  };
+}
+
+/**
+ * Generate exportable team analytics data
+ * Creates CSV/Excel-ready data structure
+ * @param {string} accountId - Atlassian account ID
+ * @param {string} cloudId - Jira Cloud ID
+ * @param {string} projectKey - Project key
+ * @param {string} startDate - Start date (YYYY-MM-DD)
+ * @param {string} endDate - End date (YYYY-MM-DD)
+ * @returns {Promise<string>} CSV formatted string
+ */
+export async function generateTeamExportData(accountId, cloudId, projectKey, startDate, endDate, filterUserIds) {
+  validateDateFormat(startDate);
+  validateDateFormat(endDate);
+  
+  if (projectKey && !isValidProjectKey(projectKey)) {
+    throw new Error('Invalid project key format');
+  }
+  
+  const { supabaseConfig, organization } = await initializeContext(accountId, cloudId);
+  
+  // Fetch team analytics for the period
+  const teamAnalytics = await fetchProjectTeamAnalytics(accountId, cloudId, projectKey, endDate);
+  
+  // Filter members if specific users requested
+  let members = teamAnalytics.teamMemberActivity || [];
+  if (filterUserIds && filterUserIds.length > 0) {
+    members = members.filter(m => filterUserIds.includes(m.userId));
+  }
+  
+  const isSingleUser = members.length === 1;
+  const lines = [];
+  
+  // Helper: format seconds to show exact seconds
+  const fmtDur = (secs) => {
+    if (!secs || secs <= 0) return '0s';
+    const h = Math.floor(secs / 3600);
+    const m = Math.floor((secs % 3600) / 60);
+    const s = secs % 60;
+    if (h > 0 && m > 0 && s > 0) return `${h}h ${m}m ${s}s`;
+    if (h > 0 && m > 0) return `${h}h ${m}m`;
+    if (h > 0 && s > 0) return `${h}h ${s}s`;
+    if (h > 0) return `${h}h`;
+    if (m > 0 && s > 0) return `${m}m ${s}s`;
+    if (m > 0) return `${m}m`;
+    return `${s}s`;
+  };
+
+  // Helper: format short duration for individual sessions
+  const fmtShort = (secs) => {
+    if (!secs || secs <= 0) return '0s';
+    const m = Math.floor(secs / 60);
+    const s = secs % 60;
+    if (m > 0 && s > 0) return `${m}m ${s}s`;
+    if (m > 0) return `${m}m`;
+    return `${s}s`;
+  };
+
+  const memberNames = members.map(m => m.displayName).join(', ');
+  
+  // === HEADER ===
+  lines.push(`Team Analytics - ${projectKey || 'All Projects'} | ${startDate} to ${endDate} | ${memberNames}`);
+  lines.push(`Generated,${new Date().toLocaleString()}`);
+  lines.push('');
+  
+  // === DETAILED ACTIVITY PER MEMBER ===
+  // All entries collected for Time by Issue section
+  const allIssueSeconds = {};
+  
+  for (const member of members) {
+    if (member.monthHours === 0) continue;
+    
+    lines.push(`DETAILED ACTIVITY - ${member.displayName}`);
+    lines.push('Member,Date,Issue Key,Total Time,Entries,Time Breakdown (Start - End | Duration)');
+    
+    let memberTotalSeconds = 0;
+    
+    try {
+      let query = `activity_records?organization_id=eq.${organization.id}&user_id=eq.${member.userId}&work_date=gte.${startDate}&work_date=lte.${endDate}&classification=in.(productive,unknown)&user_assigned_issue_key=not.is.null&select=user_assigned_issue_key,work_date,start_time,end_time,duration_seconds&order=work_date.asc,start_time.asc&limit=5000`;
+      
+      if (projectKey && projectKey !== 'null') {
+        query += `&project_key=eq.${projectKey}`;
+      }
+      
+      const records = await supabaseRequest(supabaseConfig, query);
+      
+      // Group by date + issue key
+      const grouped = {};
+      (records || []).forEach(record => {
+        const workDate = typeof record.work_date === 'string' ? record.work_date.split('T')[0] : String(record.work_date);
+        const key = `${workDate}||${record.user_assigned_issue_key}`;
+        if (!grouped[key]) {
+          grouped[key] = { date: workDate, issueKey: record.user_assigned_issue_key, sessions: [], totalSeconds: 0 };
+        }
+        const dur = record.duration_seconds || 0;
+        const startTime = record.start_time ? new Date(record.start_time).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true }) : '';
+        const endTime = record.end_time ? new Date(record.end_time).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true }) : '';
+        if (startTime && endTime && dur > 0) {
+          grouped[key].sessions.push({ startTime, endTime, dur });
+        }
+        grouped[key].totalSeconds += dur;
+      });
+      
+      // Output one row per date+issue with pipe-separated time breakdown
+      Object.values(grouped).forEach(entry => {
+        memberTotalSeconds += entry.totalSeconds;
+        // Track for issue totals
+        allIssueSeconds[entry.issueKey] = (allIssueSeconds[entry.issueKey] || 0) + entry.totalSeconds;
+        
+        const breakdownParts = entry.sessions.map(s => `${s.startTime}-${s.endTime} (${fmtShort(s.dur)})`);
+        const breakdownStr = breakdownParts.join(' | ');
+        lines.push(`${member.displayName},${entry.date},${entry.issueKey},${fmtDur(entry.totalSeconds)},${entry.sessions.length},"${breakdownStr}"`);
+      });
+    } catch (error) {
+      console.error(`Error fetching details for ${member.displayName}:`, error);
+      lines.push(`Error: Could not fetch detailed data`);
+    }
+    
+    // Member total row
+    lines.push(`TOTAL,,,${fmtDur(memberTotalSeconds)},,`);
+    lines.push('');
+  }
+  
+  // === TIME BY ISSUE ===
+  lines.push('TIME BY ISSUE');
+  lines.push('Issue Key,Total Time (min),Total Time,% of Total');
+  
+  const issueArray = Object.entries(allIssueSeconds)
+    .map(([key, sec]) => ({ issueKey: key, totalSeconds: sec }))
+    .sort((a, b) => b.totalSeconds - a.totalSeconds);
+  const grandTotalSec = issueArray.reduce((s, i) => s + i.totalSeconds, 0);
+  
+  issueArray.forEach(issue => {
+    const totalMin = Math.round(issue.totalSeconds / 60);
+    const pct = grandTotalSec > 0 ? ((issue.totalSeconds / grandTotalSec) * 100).toFixed(1) : '0.0';
+    lines.push(`${issue.issueKey},${totalMin},${fmtDur(issue.totalSeconds)},${pct}%`);
+  });
+  lines.push(`TOTAL,${Math.round(grandTotalSec / 60)},${fmtDur(grandTotalSec)},100.0%`);
+  lines.push('');
+  
+  // === SUMMARY ===
+  lines.push('SUMMARY');
+  lines.push('Metric,Value');
+  lines.push(`Active Members,${members.length}`);
+  const totalMemberHours = members.reduce((sum, m) => sum + m.monthHours, 0);
+  lines.push(`Total Hours,${Math.round(totalMemberHours * 10) / 10}h`);
+  lines.push(`Issues Worked,${teamAnalytics.teamSummary.issuesWorked}`);
+  lines.push(`Average Hours/Member,${members.length > 0 ? Math.round(totalMemberHours / members.length * 10) / 10 : 0}h`);
+  lines.push('');
+  
+  lines.push('MEMBER SUMMARY');
+  lines.push('Member Name,Today,This Week,This Month,% of Total');
+  members.forEach(member => {
+    const percentage = totalMemberHours > 0 ? Math.round((member.monthHours / totalMemberHours) * 100) : 0;
+    lines.push(`"${member.displayName}",${member.todayHours}h,${member.weekHours}h,${member.monthHours}h,${percentage}%`);
+  });
+  const todayTotal = members.reduce((s, m) => s + m.todayHours, 0);
+  const weekTotal = members.reduce((s, m) => s + m.weekHours, 0);
+  lines.push(`"TOTAL",${Math.round(todayTotal * 10) / 10}h,${Math.round(weekTotal * 10) / 10}h,${Math.round(totalMemberHours * 10) / 10}h,100%`);
+  
+  return lines.join('\n');
+}
+
+/**
+ * Generate structured export data for Excel generation on the frontend
+ * Returns JSON with grouped sessions by date + issue
+ */
+export async function generateTeamExportDataStructured(accountId, cloudId, projectKey, startDate, endDate, filterUserIds) {
+  validateDateFormat(startDate);
+  validateDateFormat(endDate);
+  
+  if (projectKey && !isValidProjectKey(projectKey)) {
+    throw new Error('Invalid project key format');
+  }
+  
+  const { supabaseConfig, organization } = await initializeContext(accountId, cloudId);
+  const teamAnalytics = await fetchProjectTeamAnalytics(accountId, cloudId, projectKey, endDate);
+  
+  let members = teamAnalytics.teamMemberActivity || [];
+  if (filterUserIds && filterUserIds.length > 0) {
+    members = members.filter(m => filterUserIds.includes(m.userId));
+  }
+  
+  const isSingleUser = members.length === 1;
+  const memberDetails = [];
+  
+  for (const member of members) {
+    if (member.monthHours === 0) continue;
+    
+    const memberData = {
+      displayName: member.displayName,
+      todayHours: member.todayHours,
+      weekHours: member.weekHours,
+      monthHours: member.monthHours,
+      entries: [], // {date, issueKey, totalSeconds, sessions:[{startTime, endTime, durationSeconds}]}
+      totalSeconds: 0
+    };
+    
+    try {
+      let query = `activity_records?organization_id=eq.${organization.id}&user_id=eq.${member.userId}&work_date=gte.${startDate}&work_date=lte.${endDate}&classification=in.(productive,unknown)&user_assigned_issue_key=not.is.null&select=user_assigned_issue_key,work_date,start_time,end_time,duration_seconds&order=work_date.asc,start_time.asc&limit=5000`;
+      
+      if (projectKey && projectKey !== 'null') {
+        query += `&project_key=eq.${projectKey}`;
+      }
+      
+      const records = await supabaseRequest(supabaseConfig, query);
+      
+      // Group by date + issue key
+      const grouped = {};
+      (records || []).forEach(record => {
+        const workDate = typeof record.work_date === 'string' ? record.work_date.split('T')[0] : String(record.work_date);
+        const key = `${workDate}||${record.user_assigned_issue_key}`;
+        if (!grouped[key]) {
+          grouped[key] = { date: workDate, issueKey: record.user_assigned_issue_key, sessions: [], totalSeconds: 0 };
+        }
+        grouped[key].sessions.push({
+          startTime: record.start_time || null,
+          endTime: record.end_time || null,
+          durationSeconds: record.duration_seconds || 0
+        });
+        grouped[key].totalSeconds += record.duration_seconds || 0;
+      });
+      
+      memberData.entries = Object.values(grouped);
+      memberData.totalSeconds = memberData.entries.reduce((s, e) => s + e.totalSeconds, 0);
+    } catch (error) {
+      console.error(`Error fetching details for ${member.displayName}:`, error);
+    }
+    
+    memberDetails.push(memberData);
+  }
+  
+  // Summary data
+  const totalMemberHours = members.reduce((sum, m) => sum + m.monthHours, 0);
+  
+  return {
+    projectKey,
+    startDate,
+    endDate,
+    generatedAt: new Date().toISOString(),
+    isSingleUser,
+    memberDetails,
+    summary: {
+      activeMembers: members.length,
+      totalHours: Math.round(totalMemberHours * 10) / 10,
+      issuesWorked: teamAnalytics.teamSummary.issuesWorked,
+      avgHoursPerMember: members.length > 0 ? Math.round(totalMemberHours / members.length * 10) / 10 : 0
+    },
+    memberSummary: members.map(m => ({
+      displayName: m.displayName,
+      todayHours: m.todayHours,
+      weekHours: m.weekHours,
+      monthHours: m.monthHours,
+      percentage: totalMemberHours > 0 ? Math.round((m.monthHours / totalMemberHours) * 100) : 0
+    })),
+    timeByIssue: !isSingleUser ? (teamAnalytics.teamTimeByIssue || []).map(issue => {
+      const totalSeconds = teamAnalytics.teamTimeByIssue.reduce((sum, i) => sum + i.totalSeconds, 0);
+      return {
+        issueKey: issue.issueKey,
+        totalSeconds: issue.totalSeconds,
+        contributors: (issue.contributorDetails || []).map(c => c.displayName),
+        percentage: totalSeconds > 0 ? Math.round((issue.totalSeconds / totalSeconds) * 100) : 0
+      };
+    }) : null
+  };
+}
