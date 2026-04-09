@@ -92,8 +92,9 @@ export async function fetchTimeAnalyticsBatch(accountId, cloudId) {
     };
   }
   
-  // User can view team data if Jira admin or project admin
-  const canViewAllUsers = isAdmin || isProjectAdmin;
+  // Time Analytics page always shows only the current user's own data,
+  // even for admins. Team-wide views are handled by Team Analytics page.
+  const canViewAllUsers = false;
 
   console.log('[Analytics] Using batch endpoint with canViewAllUsers:', canViewAllUsers, 'isJiraAdmin:', isAdmin);
 
@@ -155,8 +156,9 @@ export async function fetchTimeAnalytics(accountId, cloudId) {
   // Only Jira admins and project admins (verified via Jira API) should see team data.
   const membership = await getUserOrganizationMembership(userId, organization.id, supabaseConfig);
 
-  // User can view all users only if Jira admin or project admin
-  const canViewAllUsers = isAdmin || isProjectAdmin;
+  // Time Analytics page always shows only the current user's own data,
+  // even for admins. Team-wide views are handled by Team Analytics page.
+  const canViewAllUsers = false;
 
   // Fetch daily summary - filter by organization_id, and by user if not admin
   const dailySummaryQuery = canViewAllUsers

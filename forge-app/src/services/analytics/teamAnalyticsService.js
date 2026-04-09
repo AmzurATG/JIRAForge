@@ -289,10 +289,9 @@ export async function fetchProjectTeamAnalytics(accountId, cloudId, projectKey, 
     .sort((a, b) => b.totalSeconds - a.totalSeconds)
     .slice(0, MAX_ISSUES_IN_ANALYTICS);
 
-  // === Calculate Team Summary KPIs ===
-  // Use client-provided date to avoid UTC vs local-date mismatch.
-  // work_date in daily_time_summary stores the user's local date, so server-side
-  // UTC calculations can be off by ±1 day near midnight.
+  // === Calculate Team Summary KPIs from activity_records ===
+  // Use the same data source (activity_records) as the Team Member Activity table
+  // to ensure the KPI card totals match the sum of member totals exactly.
   const now = new Date();
   const formatDateUTC = (d) => {
     const y = d.getUTCFullYear();
@@ -315,82 +314,126 @@ export async function fetchProjectTeamAnalytics(accountId, cloudId, projectKey, 
   weekStart.setDate(todayDate.getDate() - daysToMonday);
   const weekStartStr = `${weekStart.getFullYear()}-${String(weekStart.getMonth() + 1).padStart(2, '0')}-${String(weekStart.getDate()).padStart(2, '0')}`;
 
-  // Filter data for this month
-  const thisMonthData = (teamDailySummary || []).filter(day => {
-    const workDate = typeof day.work_date === 'string' ? day.work_date.split('T')[0] : String(day.work_date);
-    return workDate >= currentMonthStr;
-  });
-
-  // Total hours this month
-  const totalSecondsThisMonth = thisMonthData.reduce((sum, d) => sum + (d.total_seconds || 0), 0);
-  const totalHoursThisMonth = Math.round(totalSecondsThisMonth / 3600 * 10) / 10;
-
-  // Active members (unique users who tracked time this month)
-  const activeMembers = new Set(thisMonthData.map(d => d.user_id)).size;
-
-  // Issues worked (unique issues this month)
-  // Note: column is now 'task_key' in the view (was 'active_task_key')
-  const issuesWorked = new Set(thisMonthData.map(d => d.task_key || d.active_task_key).filter(Boolean)).size;
-
-  // Average hours per member
-  const avgHoursPerMember = activeMembers > 0
-    ? Math.round(totalHoursThisMonth / activeMembers * 10) / 10
-    : 0;
-
-  const teamSummary = {
-    totalHoursThisMonth,
-    activeMembers,
-    issuesWorked,
-    avgHoursPerMember
-  };
-
   // === Calculate Team Member Activity (Today/Week/Month) ===
+  // Use activity_records as the source of truth — same data source the modal uses
+  // This ensures the table hours match the modal's total time exactly
+  const monthStartStr = `${currentMonthStr}-01`;
+  
+  // Trend chart needs last 14 days which may go into the previous month
+  const trendStartDate = new Date(todayDate);
+  trendStartDate.setDate(todayDate.getDate() - 13);
+  const trendStartStr = `${trendStartDate.getFullYear()}-${String(trendStartDate.getMonth() + 1).padStart(2, '0')}-${String(trendStartDate.getDate()).padStart(2, '0')}`;
+  // Use the earlier of monthStart and trendStart as query start
+  const queryStartStr = trendStartStr < monthStartStr ? trendStartStr : monthStartStr;
+
+  // Fetch productive/unknown records for this project (main working time)
+  const memberActivityRecords = await supabaseRequest(
+    supabaseConfig,
+    `activity_records?organization_id=eq.${organization.id}&project_key=eq.${projectKey}&classification=in.(productive,unknown)&work_date=gte.${queryStartStr}&work_date=lte.${todayStr}&select=user_id,work_date,duration_seconds,user_assigned_issue_key&order=work_date.desc&limit=10000`
+  );
+
+  // Fetch non-productive records for this project (idle, breaks, etc.)
+  const memberNonProductiveRecords = await supabaseRequest(
+    supabaseConfig,
+    `activity_records?organization_id=eq.${organization.id}&project_key=eq.${projectKey}&classification=in.(non_productive,private)&work_date=gte.${queryStartStr}&work_date=lte.${todayStr}&select=user_id,work_date,duration_seconds&order=work_date.desc&limit=10000`
+  );
+
   // Use all project users, not just those in the last 30 days
   const projectUserIds = new Set([
     ...(teamDailySummary || []).map(d => d.user_id),
-    ...(allProjectUsers || []).map(d => d.user_id)
+    ...(allProjectUsers || []).map(d => d.user_id),
+    ...(memberActivityRecords || []).map(d => d.user_id),
+    ...(memberNonProductiveRecords || []).map(d => d.user_id)
   ]);
 
   const teamMemberActivity = Array.from(projectUserIds).map(userId => {
     const userInfo = (allUsers || []).find(u => u.id === userId);
     const displayName = userInfo?.display_name || userInfo?.email || 'Unknown User';
 
-    const userDailyData = (teamDailySummary || []).filter(d => d.user_id === userId);
+    const userRecords = (memberActivityRecords || []).filter(d => d.user_id === userId);
+    const userNPRecords = (memberNonProductiveRecords || []).filter(d => d.user_id === userId);
 
-    // Today's hours
-    const todayData = userDailyData.filter(d => {
-      const workDate = typeof d.work_date === 'string' ? d.work_date.split('T')[0] : String(d.work_date);
-      return workDate === todayStr;
-    });
-    const todaySeconds = todayData.reduce((sum, d) => sum + (d.total_seconds || 0), 0);
-    const todayHours = Math.round(todaySeconds / 3600 * 10) / 10;
+    // Helper to filter by date range
+    const filterByDate = (records, startStr, endStr) =>
+      records.filter(d => {
+        const wd = typeof d.work_date === 'string' ? d.work_date.split('T')[0] : String(d.work_date);
+        return wd >= startStr && wd <= endStr;
+      });
 
-    // This week's hours
-    const weekData = userDailyData.filter(d => {
-      const workDate = typeof d.work_date === 'string' ? d.work_date.split('T')[0] : String(d.work_date);
-      return workDate >= weekStartStr && workDate <= todayStr;
-    });
-    const weekSeconds = weekData.reduce((sum, d) => sum + (d.total_seconds || 0), 0);
-    const weekHours = Math.round(weekSeconds / 3600 * 10) / 10;
+    // Today
+    const todayProductive = filterByDate(userRecords, todayStr, todayStr);
+    const todaySeconds = todayProductive.reduce((sum, d) => sum + (d.duration_seconds || 0), 0);
+    const todayUnassignedSeconds = todayProductive
+      .filter(d => !d.user_assigned_issue_key)
+      .reduce((sum, d) => sum + (d.duration_seconds || 0), 0);
+    const todayNPRecords = filterByDate(userNPRecords, todayStr, todayStr);
+    const todayNonProductiveSeconds = todayNPRecords.reduce((sum, d) => sum + (d.duration_seconds || 0), 0);
 
-    // This month's hours
-    const monthData = userDailyData.filter(d => {
-      const workDate = typeof d.work_date === 'string' ? d.work_date.split('T')[0] : String(d.work_date);
-      return workDate >= currentMonthStr;
-    });
-    const monthSeconds = monthData.reduce((sum, d) => sum + (d.total_seconds || 0), 0);
-    const monthHours = Math.round(monthSeconds / 3600 * 10) / 10;
+    // This week
+    const weekProductive = filterByDate(userRecords, weekStartStr, todayStr);
+    const weekSeconds = weekProductive.reduce((sum, d) => sum + (d.duration_seconds || 0), 0);
+    const weekUnassignedSeconds = weekProductive
+      .filter(d => !d.user_assigned_issue_key)
+      .reduce((sum, d) => sum + (d.duration_seconds || 0), 0);
+    const weekNPRecords = filterByDate(userNPRecords, weekStartStr, todayStr);
+    const weekNonProductiveSeconds = weekNPRecords.reduce((sum, d) => sum + (d.duration_seconds || 0), 0);
+
+    // This month (filter to current month only, since query may include prev month for trend)
+    const monthProductive = filterByDate(userRecords, monthStartStr, todayStr);
+    const monthSeconds = monthProductive.reduce((sum, d) => sum + (d.duration_seconds || 0), 0);
+    const monthUnassignedSeconds = monthProductive
+      .filter(d => !d.user_assigned_issue_key)
+      .reduce((sum, d) => sum + (d.duration_seconds || 0), 0);
+    const monthNPRecords = filterByDate(userNPRecords, monthStartStr, todayStr);
+    const monthNonProductiveSeconds = monthNPRecords.reduce((sum, d) => sum + (d.duration_seconds || 0), 0);
+
+    const todayHours = Math.round(todaySeconds / 3600 * 100) / 100;
+    const weekHours = Math.round(weekSeconds / 3600 * 100) / 100;
+    const monthHours = Math.round(monthSeconds / 3600 * 100) / 100;
 
     return {
       userId,
       displayName,
       todayHours,
       weekHours,
-      monthHours
+      monthHours,
+      todaySeconds,
+      weekSeconds,
+      monthSeconds,
+      todayUnassignedSeconds,
+      weekUnassignedSeconds,
+      monthUnassignedSeconds,
+      todayNonProductiveSeconds,
+      weekNonProductiveSeconds,
+      monthNonProductiveSeconds
     };
-  }).sort((a, b) => b.monthHours - a.monthHours);
+  }).sort((a, b) => b.monthSeconds - a.monthSeconds);
 
-  // === Calculate Daily Trend (Last 14 days) ===
+  // === Calculate Team Summary KPIs from activity_records (same source as table) ===
+  const totalSecondsThisMonth = teamMemberActivity.reduce((sum, m) => sum + m.monthSeconds, 0);
+  const totalHoursThisMonth = Math.round(totalSecondsThisMonth / 3600 * 10) / 10;
+  const activeMembers = teamMemberActivity.filter(m => m.monthSeconds > 0).length;
+  const issuesWorked = new Set(
+    (memberActivityRecords || [])
+      .filter(d => {
+        const wd = typeof d.work_date === 'string' ? d.work_date.split('T')[0] : String(d.work_date);
+        return wd >= monthStartStr && wd <= todayStr && d.user_assigned_issue_key;
+      })
+      .map(d => d.user_assigned_issue_key)
+  ).size;
+  const avgHoursPerMember = activeMembers > 0
+    ? Math.round(totalHoursThisMonth / activeMembers * 10) / 10
+    : 0;
+
+  const teamSummary = {
+    totalHoursThisMonth,
+    totalSecondsThisMonth,
+    activeMembers,
+    issuesWorked,
+    avgHoursPerMember
+  };
+
+  // === Calculate Daily Trend (Last 14 days) from activity_records ===
   const trendDays = 14;
   const dayNames = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
   const trendData = [];
@@ -399,11 +442,11 @@ export async function fetchProjectTeamAnalytics(accountId, cloudId, projectKey, 
     date.setDate(todayDate.getDate() - i);
     const dateStr = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
 
-    const dayData = (teamDailySummary || []).filter(d => {
-      const workDate = typeof d.work_date === 'string' ? d.work_date.split('T')[0] : String(d.work_date);
-      return workDate === dateStr;
+    const dayRecords = (memberActivityRecords || []).filter(d => {
+      const wd = typeof d.work_date === 'string' ? d.work_date.split('T')[0] : String(d.work_date);
+      return wd === dateStr;
     });
-    const totalSeconds = dayData.reduce((sum, d) => sum + (d.total_seconds || 0), 0);
+    const totalSeconds = dayRecords.reduce((sum, d) => sum + (d.duration_seconds || 0), 0);
     const totalHours = Math.round(totalSeconds / 3600 * 10) / 10;
 
     trendData.push({
@@ -1129,20 +1172,36 @@ export async function fetchMemberDayDetails(accountId, cloudId, projectKey, user
   
   const { supabaseConfig, organization } = await initializeContext(accountId, cloudId);
   
-  // Build query for activity records for the specific date
-  let query = `activity_records?organization_id=eq.${organization.id}&user_id=eq.${userId}&work_date=eq.${date}&classification=in.(productive,unknown)&user_assigned_issue_key=not.is.null&select=user_assigned_issue_key,project_key,duration_seconds,start_time,end_time&order=start_time.asc&limit=1000`;
-  
-  // Add project filter if provided
+  // Get detailed breakdown from activity_records (productive/unknown)
+  let query = `activity_records?organization_id=eq.${organization.id}&user_id=eq.${userId}&work_date=eq.${date}&classification=in.(productive,unknown)&select=user_assigned_issue_key,project_key,duration_seconds,start_time,end_time&order=start_time.asc&limit=1000`;
   if (projectKey && projectKey !== 'null') {
     query += `&project_key=eq.${projectKey}`;
   }
   
-  const records = await supabaseRequest(supabaseConfig, query);
+  // Also fetch non-productive time for this day
+  let npQuery = `activity_records?organization_id=eq.${organization.id}&user_id=eq.${userId}&work_date=eq.${date}&classification=in.(non_productive,private)&select=duration_seconds,start_time,end_time,classification&order=start_time.asc&limit=1000`;
+  if (projectKey && projectKey !== 'null') {
+    npQuery += `&project_key=eq.${projectKey}`;
+  }
   
-  // Group by issue
+  const [records, npRecords] = await Promise.all([
+    supabaseRequest(supabaseConfig, query),
+    supabaseRequest(supabaseConfig, npQuery)
+  ]);
+  
+  // Calculate non-productive totals
+  const nonProductiveSeconds = (npRecords || []).reduce((sum, r) => sum + (r.duration_seconds || 0), 0);
+  const nonProductiveSessions = (npRecords || []).map(r => ({
+    startTime: r.start_time,
+    endTime: r.end_time,
+    seconds: r.duration_seconds,
+    classification: r.classification
+  }));
+  
+  // Group activity_records by issue (use "Unassigned" for records without an issue key)
   const issueMap = {};
   (records || []).forEach(record => {
-    const key = record.user_assigned_issue_key;
+    const key = record.user_assigned_issue_key || 'Unassigned';
     if (!issueMap[key]) {
       issueMap[key] = {
         issueKey: key,
@@ -1164,12 +1223,20 @@ export async function fetchMemberDayDetails(accountId, cloudId, projectKey, user
   // Convert to array and sort by time spent (descending)
   const issues = Object.values(issueMap).sort((a, b) => b.totalSeconds - a.totalSeconds);
   
-  // Fetch issue details from Jira (summary, status, etc.)
-  const issueKeys = issues.map(i => i.issueKey);
+  // Fetch issue details from Jira (skip 'Unassigned' placeholder)
+  const issueKeys = issues.map(i => i.issueKey).filter(k => k !== 'Unassigned');
   const issueDetails = await fetchIssueDetailsBatch(issueKeys);
   
   // Merge Jira details with time data
   issues.forEach(issue => {
+    if (issue.issueKey === 'Unassigned') {
+      issue.summary = 'Work not assigned to any issue';
+      issue.status = '';
+      issue.statusCategory = '';
+      issue.priority = '';
+      issue.issueType = '';
+      return;
+    }
     const jiraIssue = issueDetails[issue.issueKey];
     if (jiraIssue) {
       issue.summary = jiraIssue.summary;
@@ -1180,8 +1247,11 @@ export async function fetchMemberDayDetails(accountId, cloudId, projectKey, user
     }
   });
   
-  // Calculate totals
+  // Calculate totals from actual activity records
   const totalSeconds = issues.reduce((sum, i) => sum + i.totalSeconds, 0);
+  const totalUnassignedSeconds = issues
+    .filter(i => i.issueKey === 'Unassigned')
+    .reduce((sum, i) => sum + i.totalSeconds, 0);
   
   // Get user info
   const userInfo = await supabaseRequest(
@@ -1196,8 +1266,11 @@ export async function fetchMemberDayDetails(accountId, cloudId, projectKey, user
     date,
     totalSeconds,
     totalHours: Math.round(totalSeconds / 3600 * 10) / 10,
-    issueCount: issues.length,
-    issues
+    issueCount: issues.filter(i => i.issueKey !== 'Unassigned').length,
+    issues,
+    nonProductiveSeconds,
+    nonProductiveSessions,
+    totalUnassignedSeconds
   };
 }
 
@@ -1222,20 +1295,35 @@ export async function fetchMemberWeekDetails(accountId, cloudId, projectKey, use
   endDate.setDate(startDate.getDate() + 6);
   const weekEndStr = endDate.toISOString().split('T')[0];
   
-  // Build query for activity records for the week range
-  let query = `activity_records?organization_id=eq.${organization.id}&user_id=eq.${userId}&work_date=gte.${weekStartDate}&work_date=lte.${weekEndStr}&classification=in.(productive,unknown)&user_assigned_issue_key=not.is.null&select=work_date,user_assigned_issue_key,project_key,duration_seconds,start_time,end_time&order=work_date.asc,start_time.asc&limit=5000`;
-  
+  // Get detailed breakdown from activity_records (productive/unknown)
+  let query = `activity_records?organization_id=eq.${organization.id}&user_id=eq.${userId}&work_date=gte.${weekStartDate}&work_date=lte.${weekEndStr}&classification=in.(productive,unknown)&select=work_date,user_assigned_issue_key,project_key,duration_seconds,start_time,end_time&order=work_date.asc,start_time.asc&limit=5000`;
   if (projectKey && projectKey !== 'null') {
     query += `&project_key=eq.${projectKey}`;
   }
   
-  const records = await supabaseRequest(supabaseConfig, query);
+  // Also fetch non-productive time for this week
+  let npQuery = `activity_records?organization_id=eq.${organization.id}&user_id=eq.${userId}&work_date=gte.${weekStartDate}&work_date=lte.${weekEndStr}&classification=in.(non_productive,private)&select=work_date,duration_seconds&order=work_date.asc&limit=5000`;
+  if (projectKey && projectKey !== 'null') {
+    npQuery += `&project_key=eq.${projectKey}`;
+  }
+  
+  const [records, npRecords] = await Promise.all([
+    supabaseRequest(supabaseConfig, query),
+    supabaseRequest(supabaseConfig, npQuery)
+  ]);
+  
+  // Build non-productive daily map
+  const npDayMap = {};
+  (npRecords || []).forEach(r => {
+    const wd = typeof r.work_date === 'string' ? r.work_date.split('T')[0] : String(r.work_date);
+    npDayMap[wd] = (npDayMap[wd] || 0) + (r.duration_seconds || 0);
+  });
   
   // Group by date and then by issue
   const dayMap = {};
   (records || []).forEach(record => {
     const workDate = typeof record.work_date === 'string' ? record.work_date.split('T')[0] : String(record.work_date);
-    const issueKey = record.user_assigned_issue_key;
+    const issueKey = record.user_assigned_issue_key || 'Unassigned';
     
     if (!dayMap[workDate]) {
       dayMap[workDate] = {};
@@ -1258,10 +1346,10 @@ export async function fetchMemberWeekDetails(accountId, cloudId, projectKey, use
     });
   });
   
-  // Collect all unique issue keys for batch fetching
+  // Collect all unique issue keys for batch fetching (exclude 'Unassigned')
   const allIssueKeys = new Set();
   Object.values(dayMap).forEach(dayIssues => {
-    Object.keys(dayIssues).forEach(key => allIssueKeys.add(key));
+    Object.keys(dayIssues).forEach(key => { if (key !== 'Unassigned') allIssueKeys.add(key); });
   });
   
   // Fetch issue details from Jira
@@ -1282,26 +1370,33 @@ export async function fetchMemberWeekDetails(accountId, cloudId, projectKey, use
       const jiraDetails = issueDetails[issue.issueKey];
       return {
         ...issue,
-        summary: jiraDetails?.summary || '',
+        summary: issue.issueKey === 'Unassigned' ? 'Work not assigned to any issue' : (jiraDetails?.summary || ''),
         status: jiraDetails?.status || 'Unknown',
         statusCategory: jiraDetails?.statusCategory || 'new'
       };
     }).sort((a, b) => b.totalSeconds - a.totalSeconds);
     
     const totalSeconds = issues.reduce((sum, i) => sum + i.totalSeconds, 0);
+    const nonProductiveSeconds = npDayMap[dateStr] || 0;
     
     dailyBreakdown.push({
       date: dateStr,
       dayOfWeek,
       totalSeconds,
-      totalHours: Math.round(totalSeconds / 3600 * 10) / 10,
-      issueCount: issues.length,
-      issues
+      totalHours: Math.round(totalSeconds / 3600 * 100) / 100,
+      issueCount: issues.filter(i => i.issueKey !== 'Unassigned').length,
+      issues,
+      nonProductiveSeconds
     });
   }
   
   // Calculate week totals
   const totalSeconds = dailyBreakdown.reduce((sum, day) => sum + day.totalSeconds, 0);
+  const totalNonProductiveSeconds = dailyBreakdown.reduce((sum, day) => sum + (day.nonProductiveSeconds || 0), 0);
+  const totalUnassignedSeconds = dailyBreakdown.reduce((sum, day) => {
+    const dayUnassigned = (day.issues || []).filter(i => i.issueKey === 'Unassigned').reduce((s, i) => s + i.totalSeconds, 0);
+    return sum + dayUnassigned;
+  }, 0);
   
   // Get user info
   const userInfo = await supabaseRequest(
@@ -1317,6 +1412,8 @@ export async function fetchMemberWeekDetails(accountId, cloudId, projectKey, use
     weekEnd: weekEndStr,
     totalSeconds,
     totalHours: Math.round(totalSeconds / 3600 * 10) / 10,
+    nonProductiveSeconds: totalNonProductiveSeconds,
+    totalUnassignedSeconds,
     dailyBreakdown
   };
 }
@@ -1347,20 +1444,35 @@ export async function fetchMemberMonthDetails(accountId, cloudId, projectKey, us
   const monthStartStr = monthStart.toISOString().split('T')[0];
   const monthEndStr = monthEnd.toISOString().split('T')[0];
   
-  // Build query for activity records for the entire month
-  let query = `activity_records?organization_id=eq.${organization.id}&user_id=eq.${userId}&work_date=gte.${monthStartStr}&work_date=lte.${monthEndStr}&classification=in.(productive,unknown)&user_assigned_issue_key=not.is.null&select=work_date,user_assigned_issue_key,project_key,duration_seconds,start_time,end_time&order=work_date.asc,start_time.asc&limit=10000`;
-  
+  // Get detailed breakdown from activity_records (productive/unknown)
+  let query = `activity_records?organization_id=eq.${organization.id}&user_id=eq.${userId}&work_date=gte.${monthStartStr}&work_date=lte.${monthEndStr}&classification=in.(productive,unknown)&select=work_date,user_assigned_issue_key,project_key,duration_seconds,start_time,end_time&order=work_date.asc,start_time.asc&limit=10000`;
   if (projectKey && projectKey !== 'null') {
     query += `&project_key=eq.${projectKey}`;
   }
   
-  const records = await supabaseRequest(supabaseConfig, query);
+  // Also fetch non-productive time for this month
+  let npQuery = `activity_records?organization_id=eq.${organization.id}&user_id=eq.${userId}&work_date=gte.${monthStartStr}&work_date=lte.${monthEndStr}&classification=in.(non_productive,private)&select=work_date,duration_seconds&order=work_date.asc&limit=10000`;
+  if (projectKey && projectKey !== 'null') {
+    npQuery += `&project_key=eq.${projectKey}`;
+  }
+  
+  const [records, npRecords] = await Promise.all([
+    supabaseRequest(supabaseConfig, query),
+    supabaseRequest(supabaseConfig, npQuery)
+  ]);
+  
+  // Build non-productive daily map
+  const npDayMap = {};
+  (npRecords || []).forEach(r => {
+    const wd = typeof r.work_date === 'string' ? r.work_date.split('T')[0] : String(r.work_date);
+    npDayMap[wd] = (npDayMap[wd] || 0) + (r.duration_seconds || 0);
+  });
   
   // Group by date and then by issue
   const dayMap = {};
   (records || []).forEach(record => {
     const workDate = typeof record.work_date === 'string' ? record.work_date.split('T')[0] : String(record.work_date);
-    const issueKey = record.user_assigned_issue_key;
+    const issueKey = record.user_assigned_issue_key || 'Unassigned';
     
     if (!dayMap[workDate]) {
       dayMap[workDate] = {};
@@ -1381,10 +1493,10 @@ export async function fetchMemberMonthDetails(accountId, cloudId, projectKey, us
     });
   });
   
-  // Collect all unique issue keys for batch fetching
+  // Collect all unique issue keys for batch fetching (exclude 'Unassigned')
   const allIssueKeys = new Set();
   Object.values(dayMap).forEach(dayIssues => {
-    Object.keys(dayIssues).forEach(key => allIssueKeys.add(key));
+    Object.keys(dayIssues).forEach(key => { if (key !== 'Unassigned') allIssueKeys.add(key); });
   });
   
   // Fetch issue details from Jira
@@ -1425,25 +1537,28 @@ export async function fetchMemberMonthDetails(accountId, cloudId, projectKey, us
           const jiraDetails = issueDetails[issue.issueKey];
           return {
             ...issue,
-            summary: jiraDetails?.summary || '',
+            summary: issue.issueKey === 'Unassigned' ? 'Work not assigned to any issue' : (jiraDetails?.summary || ''),
             status: jiraDetails?.status || 'Unknown'
           };
         }).sort((a, b) => b.totalSeconds - a.totalSeconds);
         
         const totalSeconds = issues.reduce((sum, i) => sum + i.totalSeconds, 0);
+        const nonProductiveSeconds = npDayMap[dateStr] || 0;
         
         dailyBreakdown.push({
           date: dateStr,
           dayOfWeek,
           totalSeconds,
-          totalHours: Math.round(totalSeconds / 3600 * 10) / 10,
-          issueCount: issues.length,
-          issues
+          totalHours: Math.round(totalSeconds / 3600 * 100) / 100,
+          issueCount: issues.filter(i => i.issueKey !== 'Unassigned').length,
+          issues,
+          nonProductiveSeconds
         });
       }
     }
     
     const weekTotalSeconds = dailyBreakdown.reduce((sum, day) => sum + day.totalSeconds, 0);
+    const weekNPSeconds = dailyBreakdown.reduce((sum, day) => sum + (day.nonProductiveSeconds || 0), 0);
     
     if (weekTotalSeconds > 0 || dailyBreakdown.length > 0) {
       weeklyBreakdown.push({
@@ -1451,6 +1566,7 @@ export async function fetchMemberMonthDetails(accountId, cloudId, projectKey, us
         weekEnd: weekEndStr,
         totalSeconds: weekTotalSeconds,
         totalHours: Math.round(weekTotalSeconds / 3600 * 10) / 10,
+        nonProductiveSeconds: weekNPSeconds,
         dailyBreakdown
       });
     }
@@ -1461,6 +1577,12 @@ export async function fetchMemberMonthDetails(accountId, cloudId, projectKey, us
   
   // Calculate month totals
   const totalSeconds = weeklyBreakdown.reduce((sum, week) => sum + week.totalSeconds, 0);
+  const totalNonProductiveSeconds = weeklyBreakdown.reduce((sum, week) => sum + (week.nonProductiveSeconds || 0), 0);
+  const totalUnassignedSeconds = weeklyBreakdown.reduce((sum, week) => {
+    return sum + (week.dailyBreakdown || []).reduce((ds, day) => {
+      return ds + (day.issues || []).filter(i => i.issueKey === 'Unassigned').reduce((s, i) => s + i.totalSeconds, 0);
+    }, 0);
+  }, 0);
   
   // Get user info
   const userInfo = await supabaseRequest(
@@ -1475,6 +1597,8 @@ export async function fetchMemberMonthDetails(accountId, cloudId, projectKey, us
     month,
     totalSeconds,
     totalHours: Math.round(totalSeconds / 3600 * 10) / 10,
+    nonProductiveSeconds: totalNonProductiveSeconds,
+    totalUnassignedSeconds,
     weeklyBreakdown
   };
 }
@@ -1551,12 +1675,10 @@ export async function generateTeamExportData(accountId, cloudId, projectKey, sta
     if (member.monthHours === 0) continue;
     
     lines.push(`DETAILED ACTIVITY - ${member.displayName}`);
-    lines.push('Member,Date,Issue Key,Total Time,Entries,Time Breakdown (Start - End | Duration)');
-    
-    let memberTotalSeconds = 0;
+    lines.push('Member,Date,Issue Key,Total Time,Time (Start - End)');
     
     try {
-      let query = `activity_records?organization_id=eq.${organization.id}&user_id=eq.${member.userId}&work_date=gte.${startDate}&work_date=lte.${endDate}&classification=in.(productive,unknown)&user_assigned_issue_key=not.is.null&select=user_assigned_issue_key,work_date,start_time,end_time,duration_seconds&order=work_date.asc,start_time.asc&limit=5000`;
+      let query = `activity_records?organization_id=eq.${organization.id}&user_id=eq.${member.userId}&work_date=gte.${startDate}&work_date=lte.${endDate}&classification=in.(productive,unknown)&select=user_assigned_issue_key,work_date,start_time,end_time,duration_seconds&order=work_date.asc,start_time.asc&limit=5000`;
       
       if (projectKey && projectKey !== 'null') {
         query += `&project_key=eq.${projectKey}`;
@@ -1568,9 +1690,10 @@ export async function generateTeamExportData(accountId, cloudId, projectKey, sta
       const grouped = {};
       (records || []).forEach(record => {
         const workDate = typeof record.work_date === 'string' ? record.work_date.split('T')[0] : String(record.work_date);
-        const key = `${workDate}||${record.user_assigned_issue_key}`;
+        const issueKey = record.user_assigned_issue_key || 'Unassigned';
+        const key = `${workDate}||${issueKey}`;
         if (!grouped[key]) {
-          grouped[key] = { date: workDate, issueKey: record.user_assigned_issue_key, sessions: [], totalSeconds: 0 };
+          grouped[key] = { date: workDate, issueKey: issueKey, sessions: [], totalSeconds: 0 };
         }
         const dur = record.duration_seconds || 0;
         const startTime = record.start_time ? new Date(record.start_time).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true }) : '';
@@ -1581,15 +1704,16 @@ export async function generateTeamExportData(accountId, cloudId, projectKey, sta
         grouped[key].totalSeconds += dur;
       });
       
-      // Output one row per date+issue with pipe-separated time breakdown
+      // Output one row per date+issue with start-end time
       Object.values(grouped).forEach(entry => {
         memberTotalSeconds += entry.totalSeconds;
         // Track for issue totals
         allIssueSeconds[entry.issueKey] = (allIssueSeconds[entry.issueKey] || 0) + entry.totalSeconds;
         
-        const breakdownParts = entry.sessions.map(s => `${s.startTime}-${s.endTime} (${fmtShort(s.dur)})`);
-        const breakdownStr = breakdownParts.join(' | ');
-        lines.push(`${member.displayName},${entry.date},${entry.issueKey},${fmtDur(entry.totalSeconds)},${entry.sessions.length},"${breakdownStr}"`);
+        const firstStart = entry.sessions.length > 0 ? entry.sessions[0].startTime : '';
+        const lastEnd = entry.sessions.length > 0 ? entry.sessions[entry.sessions.length - 1].endTime : '';
+        const timingStr = firstStart && lastEnd ? `${firstStart} - ${lastEnd}` : '';
+        lines.push(`${member.displayName},${entry.date},${entry.issueKey},${fmtDur(entry.totalSeconds)},"${timingStr}"`);
       });
     } catch (error) {
       console.error(`Error fetching details for ${member.displayName}:`, error);
@@ -1597,7 +1721,47 @@ export async function generateTeamExportData(accountId, cloudId, projectKey, sta
     }
     
     // Member total row
-    lines.push(`TOTAL,,,${fmtDur(memberTotalSeconds)},,`);
+    lines.push(`TOTAL,,,${fmtDur(memberTotalSeconds)},`);
+    
+    // Non-productive activity for this member
+    try {
+      let npQuery = `activity_records?organization_id=eq.${organization.id}&user_id=eq.${member.userId}&work_date=gte.${startDate}&work_date=lte.${endDate}&classification=in.(non_productive,private)&select=user_assigned_issue_key,work_date,start_time,end_time,duration_seconds&order=work_date.asc,start_time.asc&limit=5000`;
+      if (projectKey && projectKey !== 'null') {
+        npQuery += `&project_key=eq.${projectKey}`;
+      }
+      const npRecords = await supabaseRequest(supabaseConfig, npQuery);
+      if (npRecords && npRecords.length > 0) {
+        let npTotalSeconds = 0;
+        const npGrouped = {};
+        npRecords.forEach(record => {
+          const workDate = typeof record.work_date === 'string' ? record.work_date.split('T')[0] : String(record.work_date);
+          const issueKey = record.user_assigned_issue_key || 'Unassigned';
+          const key = `${workDate}||${issueKey}`;
+          if (!npGrouped[key]) {
+            npGrouped[key] = { date: workDate, issueKey, sessions: [], totalSeconds: 0 };
+          }
+          const dur = record.duration_seconds || 0;
+          const startTime = record.start_time ? new Date(record.start_time).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true }) : '';
+          const endTime = record.end_time ? new Date(record.end_time).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true }) : '';
+          if (startTime && endTime && dur > 0) {
+            npGrouped[key].sessions.push({ startTime, endTime, dur });
+          }
+          npGrouped[key].totalSeconds += dur;
+        });
+        lines.push(`NON-PRODUCTIVE ACTIVITY - ${member.displayName}`);
+        lines.push('Member,Date,Issue Key,Total Time,Time (Start - End)');
+        Object.values(npGrouped).forEach(entry => {
+          npTotalSeconds += entry.totalSeconds;
+          const firstStart = entry.sessions.length > 0 ? entry.sessions[0].startTime : '';
+          const lastEnd = entry.sessions.length > 0 ? entry.sessions[entry.sessions.length - 1].endTime : '';
+          const timingStr = firstStart && lastEnd ? `${firstStart} - ${lastEnd}` : '';
+          lines.push(`${member.displayName},${entry.date},${entry.issueKey},${fmtDur(entry.totalSeconds)},"${timingStr}"`);
+        });
+        lines.push(`TOTAL (Non-Productive),,,${fmtDur(npTotalSeconds)},`);
+      }
+    } catch (error) {
+      console.error(`Error fetching non-productive data for ${member.displayName}:`, error);
+    }
     lines.push('');
   }
   
@@ -1629,14 +1793,21 @@ export async function generateTeamExportData(accountId, cloudId, projectKey, sta
   lines.push('');
   
   lines.push('MEMBER SUMMARY');
-  lines.push('Member Name,Today,This Week,This Month,% of Total');
+  lines.push('Member Name,Today,Today Unassigned,Today Non-Productive,This Week,Week Unassigned,Week Non-Productive,This Month,Month Unassigned,Month Non-Productive,% of Total');
   members.forEach(member => {
     const percentage = totalMemberHours > 0 ? Math.round((member.monthHours / totalMemberHours) * 100) : 0;
-    lines.push(`"${member.displayName}",${member.todayHours}h,${member.weekHours}h,${member.monthHours}h,${percentage}%`);
+    lines.push(`"${member.displayName}",${fmtDur(member.todaySeconds)},${fmtDur(member.todayUnassignedSeconds || 0)},${fmtDur(member.todayNonProductiveSeconds || 0)},${fmtDur(member.weekSeconds)},${fmtDur(member.weekUnassignedSeconds || 0)},${fmtDur(member.weekNonProductiveSeconds || 0)},${fmtDur(member.monthSeconds)},${fmtDur(member.monthUnassignedSeconds || 0)},${fmtDur(member.monthNonProductiveSeconds || 0)},${percentage}%`);
   });
-  const todayTotal = members.reduce((s, m) => s + m.todayHours, 0);
-  const weekTotal = members.reduce((s, m) => s + m.weekHours, 0);
-  lines.push(`"TOTAL",${Math.round(todayTotal * 10) / 10}h,${Math.round(weekTotal * 10) / 10}h,${Math.round(totalMemberHours * 10) / 10}h,100%`);
+  const todayTotalSec = members.reduce((s, m) => s + (m.todaySeconds || 0), 0);
+  const weekTotalSec = members.reduce((s, m) => s + (m.weekSeconds || 0), 0);
+  const monthTotalSec = members.reduce((s, m) => s + (m.monthSeconds || 0), 0);
+  const todayNpTotal = members.reduce((s, m) => s + (m.todayNonProductiveSeconds || 0), 0);
+  const weekNpTotal = members.reduce((s, m) => s + (m.weekNonProductiveSeconds || 0), 0);
+  const monthNpTotal = members.reduce((s, m) => s + (m.monthNonProductiveSeconds || 0), 0);
+  const todayUnassignedTotal = members.reduce((s, m) => s + (m.todayUnassignedSeconds || 0), 0);
+  const weekUnassignedTotal = members.reduce((s, m) => s + (m.weekUnassignedSeconds || 0), 0);
+  const monthUnassignedTotal = members.reduce((s, m) => s + (m.monthUnassignedSeconds || 0), 0);
+  lines.push(`"TOTAL",${fmtDur(todayTotalSec)},${fmtDur(todayUnassignedTotal)},${fmtDur(todayNpTotal)},${fmtDur(weekTotalSec)},${fmtDur(weekUnassignedTotal)},${fmtDur(weekNpTotal)},${fmtDur(monthTotalSec)},${fmtDur(monthUnassignedTotal)},${fmtDur(monthNpTotal)},100%`);
   
   return lines.join('\n');
 }
@@ -1672,12 +1843,23 @@ export async function generateTeamExportDataStructured(accountId, cloudId, proje
       todayHours: member.todayHours,
       weekHours: member.weekHours,
       monthHours: member.monthHours,
+      todaySeconds: member.todaySeconds || 0,
+      weekSeconds: member.weekSeconds || 0,
+      monthSeconds: member.monthSeconds || 0,
+      todayUnassignedSeconds: member.todayUnassignedSeconds || 0,
+      weekUnassignedSeconds: member.weekUnassignedSeconds || 0,
+      monthUnassignedSeconds: member.monthUnassignedSeconds || 0,
+      todayNonProductiveSeconds: member.todayNonProductiveSeconds || 0,
+      weekNonProductiveSeconds: member.weekNonProductiveSeconds || 0,
+      monthNonProductiveSeconds: member.monthNonProductiveSeconds || 0,
       entries: [], // {date, issueKey, totalSeconds, sessions:[{startTime, endTime, durationSeconds}]}
-      totalSeconds: 0
+      nonProductiveEntries: [],
+      totalSeconds: 0,
+      nonProductiveTotalSeconds: 0
     };
     
     try {
-      let query = `activity_records?organization_id=eq.${organization.id}&user_id=eq.${member.userId}&work_date=gte.${startDate}&work_date=lte.${endDate}&classification=in.(productive,unknown)&user_assigned_issue_key=not.is.null&select=user_assigned_issue_key,work_date,start_time,end_time,duration_seconds&order=work_date.asc,start_time.asc&limit=5000`;
+      let query = `activity_records?organization_id=eq.${organization.id}&user_id=eq.${member.userId}&work_date=gte.${startDate}&work_date=lte.${endDate}&classification=in.(productive,unknown)&select=user_assigned_issue_key,work_date,start_time,end_time,duration_seconds&order=work_date.asc,start_time.asc&limit=5000`;
       
       if (projectKey && projectKey !== 'null') {
         query += `&project_key=eq.${projectKey}`;
@@ -1689,9 +1871,10 @@ export async function generateTeamExportDataStructured(accountId, cloudId, proje
       const grouped = {};
       (records || []).forEach(record => {
         const workDate = typeof record.work_date === 'string' ? record.work_date.split('T')[0] : String(record.work_date);
-        const key = `${workDate}||${record.user_assigned_issue_key}`;
+        const issueKey = record.user_assigned_issue_key || 'Unassigned';
+        const key = `${workDate}||${issueKey}`;
         if (!grouped[key]) {
-          grouped[key] = { date: workDate, issueKey: record.user_assigned_issue_key, sessions: [], totalSeconds: 0 };
+          grouped[key] = { date: workDate, issueKey: issueKey, sessions: [], totalSeconds: 0 };
         }
         grouped[key].sessions.push({
           startTime: record.start_time || null,
@@ -1703,6 +1886,32 @@ export async function generateTeamExportDataStructured(accountId, cloudId, proje
       
       memberData.entries = Object.values(grouped);
       memberData.totalSeconds = memberData.entries.reduce((s, e) => s + e.totalSeconds, 0);
+      
+      // Fetch non-productive records
+      let npQuery = `activity_records?organization_id=eq.${organization.id}&user_id=eq.${member.userId}&work_date=gte.${startDate}&work_date=lte.${endDate}&classification=in.(non_productive,private)&select=user_assigned_issue_key,work_date,start_time,end_time,duration_seconds&order=work_date.asc,start_time.asc&limit=5000`;
+      if (projectKey && projectKey !== 'null') {
+        npQuery += `&project_key=eq.${projectKey}`;
+      }
+      const npRecords = await supabaseRequest(supabaseConfig, npQuery);
+      if (npRecords && npRecords.length > 0) {
+        const npGrouped = {};
+        npRecords.forEach(record => {
+          const workDate = typeof record.work_date === 'string' ? record.work_date.split('T')[0] : String(record.work_date);
+          const issueKey = record.user_assigned_issue_key || 'Unassigned';
+          const key = `${workDate}||${issueKey}`;
+          if (!npGrouped[key]) {
+            npGrouped[key] = { date: workDate, issueKey, sessions: [], totalSeconds: 0 };
+          }
+          npGrouped[key].sessions.push({
+            startTime: record.start_time || null,
+            endTime: record.end_time || null,
+            durationSeconds: record.duration_seconds || 0
+          });
+          npGrouped[key].totalSeconds += record.duration_seconds || 0;
+        });
+        memberData.nonProductiveEntries = Object.values(npGrouped);
+        memberData.nonProductiveTotalSeconds = memberData.nonProductiveEntries.reduce((s, e) => s + e.totalSeconds, 0);
+      }
     } catch (error) {
       console.error(`Error fetching details for ${member.displayName}:`, error);
     }
@@ -1731,6 +1940,15 @@ export async function generateTeamExportDataStructured(accountId, cloudId, proje
       todayHours: m.todayHours,
       weekHours: m.weekHours,
       monthHours: m.monthHours,
+      todaySeconds: m.todaySeconds || 0,
+      weekSeconds: m.weekSeconds || 0,
+      monthSeconds: m.monthSeconds || 0,
+      todayUnassignedSeconds: m.todayUnassignedSeconds || 0,
+      weekUnassignedSeconds: m.weekUnassignedSeconds || 0,
+      monthUnassignedSeconds: m.monthUnassignedSeconds || 0,
+      todayNonProductiveSeconds: m.todayNonProductiveSeconds || 0,
+      weekNonProductiveSeconds: m.weekNonProductiveSeconds || 0,
+      monthNonProductiveSeconds: m.monthNonProductiveSeconds || 0,
       percentage: totalMemberHours > 0 ? Math.round((m.monthHours / totalMemberHours) * 100) : 0
     })),
     timeByIssue: !isSingleUser ? (teamAnalytics.teamTimeByIssue || []).map(issue => {

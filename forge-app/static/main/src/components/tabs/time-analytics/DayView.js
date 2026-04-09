@@ -748,20 +748,12 @@ function DayView({ loading, timeData, onTodayTotalReconciled, onOpenWorklogReass
                         {/* Time total */}
                         <div className="member-total-section">
                           <span className="member-total">{formatTime(user.totalSeconds)}</span>
-                          {isOwnUser && user.tasks.length > 0 && (
-                            <button
-                              className="expand-issues-btn"
-                              onClick={() => setExpandedUsers(prev => ({ ...prev, [user.userId]: !prev[user.userId] }))}
-                              title={expandedUsers[user.userId] ? 'Hide issue breakdown' : 'Show issue breakdown'}
-                            >
-                              {expandedUsers[user.userId] ? '▲' : '▼'}
-                            </button>
-                          )}
+                          {/* Dropdown arrow temporarily disabled */}
                         </div>
                       </div>
 
-                      {/* Expandable issue breakdown with worklog reassign button */}
-                      {isOwnUser && expandedUsers[user.userId] && user.tasks.length > 0 && (
+                      {/* Expandable issue breakdown - temporarily disabled */}
+                      {false && isOwnUser && expandedUsers[user.userId] && user.tasks.length > 0 && (
                         <div className="issue-breakdown">
                           {user.tasks.map((task, taskIdx) => {
                             const issueKey = task.task_key || task.issue_key || task.active_task_key;

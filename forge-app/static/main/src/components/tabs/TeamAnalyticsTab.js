@@ -242,7 +242,7 @@ function TeamAnalyticsTab() {
               </div>
               <div className="kpi-content">
                 <div className="kpi-value-row">
-                  <div className="kpi-value">{teamAnalytics?.teamSummary?.totalHoursThisMonth || 0}h</div>
+                  <div className="kpi-value">{teamAnalytics?.teamSummary?.totalSecondsThisMonth ? formatTime(teamAnalytics.teamSummary.totalSecondsThisMonth) : '0s'}</div>
                   <div className="kpi-info-wrapper">
                     <span className="kpi-info-icon">i</span>
                     <span className="kpi-info-tooltip">
@@ -438,9 +438,15 @@ function TeamAnalyticsTab() {
                               </div>
                               <span className="member-name">{member.displayName}</span>
                             </td>
-                            <td className="hours-cell clickable" onClick={() => handleTodayClick(member)}><strong>{member.todayHours}h</strong></td>
-                            <td className="hours-cell clickable" onClick={() => handleWeekClick(member)}><strong>{member.weekHours}h</strong></td>
-                            <td className="hours-cell clickable" onClick={() => handleMonthClick(member)}><strong>{member.monthHours}h</strong></td>
+                            <td className="hours-cell clickable" onClick={() => handleTodayClick(member)}>
+                              <strong>{formatTime(member.todaySeconds)}</strong>
+                            </td>
+                            <td className="hours-cell clickable" onClick={() => handleWeekClick(member)}>
+                              <strong>{formatTime(member.weekSeconds)}</strong>
+                            </td>
+                            <td className="hours-cell clickable" onClick={() => handleMonthClick(member)}>
+                              <strong>{formatTime(member.monthSeconds)}</strong>
+                            </td>
                           </tr>
                         ))
                       ) : (
@@ -657,7 +663,10 @@ function TeamAnalyticsTab() {
       {activityModalOpen && selectedMember && (
         <TeamMemberActivityModal
           isOpen={activityModalOpen}
-          onClose={() => setActivityModalOpen(false)}
+          onClose={() => {
+            setActivityModalOpen(false);
+            loadTeamAnalytics(); // Refresh table data to stay in sync with modal
+          }}
           member={selectedMember}
           viewType={activityViewType}
           projectKey={selectedProjectKey}

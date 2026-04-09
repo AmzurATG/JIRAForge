@@ -1,4 +1,5 @@
 import React from 'react';
+import { formatTime } from '../../../utils';
 
 /**
  * User Activity Table Component
@@ -111,13 +112,13 @@ function UserActivityTable({ users = [] }) {
                     <span className="user-name">{user.displayName}</span>
                   </td>
                   <td className="hours-cell">
-                    <strong>{user.todayHours}h</strong>
+                    <strong>{formatTime(user.todaySeconds)}</strong>
                   </td>
                   <td className="hours-cell">
-                    <strong>{user.weekHours}h</strong>
+                    <strong>{formatTime(user.weekSeconds)}</strong>
                   </td>
                   <td className="hours-cell">
-                    <strong>{user.monthHours}h</strong>
+                    <strong>{formatTime(user.monthSeconds)}</strong>
                   </td>
                 </tr>
               ))
