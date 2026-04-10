@@ -141,7 +141,19 @@ app.get('/health', publicLimiter, (req, res) => {
 // =============================================================================
 
 // Serve the dashboard HTML page (public — login happens client-side)
-app.get('/admin-dashboard', publicLimiter, (req, res) => {
+// Override helmet CSP for this route to allow the inline script in the single-page dashboard
+app.get('/admin-dashboard', publicLimiter, helmet({
+  contentSecurityPolicy: {
+    directives: {
+      defaultSrc: ["'self'"],
+      scriptSrc: ["'self'", "'unsafe-inline'"],
+      scriptSrcAttr: ["'self'", "'unsafe-inline'"],
+      styleSrc: ["'self'", "'unsafe-inline'"],
+      imgSrc: ["'self'", "data:"],
+      connectSrc: ["'self'"],
+    }
+  }
+}), (req, res) => {
   res.sendFile(path.join(__dirname, 'dashboard', 'admin-dashboard.html'));
 });
 
