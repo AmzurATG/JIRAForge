@@ -68,6 +68,9 @@
     .st-pending{background:#FFF3CD;color:#856404}
     .st-failed{background:#F8D7DA;color:#721C24}
     .st-default{background:#E2E8F0;color:#4A5568}
+    .st-active{background:#D4EDDA;color:#155724}
+    .st-registered{background:#CCE5FF;color:#004085}
+    .st-notstarted{background:#F8D7DA;color:#721C24}
 
     /* ── Priority colors ── */
     .pr{display:inline-block;padding:3px 10px;border-radius:4px;font-size:12px;font-weight:600}
@@ -301,7 +304,7 @@ function renderAllUsers(data) {
   let html = `
     <div class="section-title">All Users - Complete List (${users.length} Users)</div>
     <div class="tbl-wrap"><table>
-      <thead><tr class="th-blue"><th>S.No</th><th>Display Name</th><th>Email</th><th>Organization</th><th>Team</th></tr></thead>
+      <thead><tr class="th-blue"><th>S.No</th><th>Display Name</th><th>Email</th><th>Organization</th><th>Team</th><th>Status</th></tr></thead>
       <tbody>
         ${users.map((u, i) => `<tr>
           <td>${i + 1}</td>
@@ -309,6 +312,7 @@ function renderAllUsers(data) {
           <td>${esc(u.email)}</td>
           <td>${esc(u.organization)}</td>
           <td>${esc(u.team)}</td>
+          <td>${userStatusBadge(u.status)}</td>
         </tr>`).join('')}
       </tbody>
     </table></div>
@@ -352,9 +356,9 @@ function renderAmzurUsers(data) {
     <div class="tbl-wrap">
       <div class="team-header" style="background:#548235">Custom Software Team (${cs.length} Users)</div>
       <table>
-        <thead><tr class="th-green"><th>S.No</th><th>Display Name</th><th>Email</th></tr></thead>
+        <thead><tr class="th-green"><th>S.No</th><th>Display Name</th><th>Email</th><th>Status</th></tr></thead>
         <tbody>
-          ${cs.map((u, i) => `<tr><td>${i + 1}</td><td>${esc(u.displayName)}</td><td>${esc(u.email)}</td></tr>`).join('')}
+          ${cs.map((u, i) => `<tr><td>${i + 1}</td><td>${esc(u.displayName)}</td><td>${esc(u.email)}</td><td>${userStatusBadge(u.status)}</td></tr>`).join('')}
         </tbody>
       </table>
     </div>
@@ -362,9 +366,9 @@ function renderAmzurUsers(data) {
     <div class="tbl-wrap">
       <div class="team-header" style="background:#C55A11">ATG Team (${atg.length} Users)</div>
       <table>
-        <thead><tr class="th-orange"><th>S.No</th><th>Display Name</th><th>Email</th></tr></thead>
+        <thead><tr class="th-orange"><th>S.No</th><th>Display Name</th><th>Email</th><th>Status</th></tr></thead>
         <tbody>
-          ${atg.map((u, i) => `<tr><td>${i + 1}</td><td>${esc(u.displayName)}</td><td>${esc(u.email)}</td></tr>`).join('')}
+          ${atg.map((u, i) => `<tr><td>${i + 1}</td><td>${esc(u.displayName)}</td><td>${esc(u.email)}</td><td>${userStatusBadge(u.status)}</td></tr>`).join('')}
         </tbody>
       </table>
     </div>
@@ -378,9 +382,9 @@ function renderEvokeUsers(data) {
   let html = `
     <div class="section-title">Evoke - User List (${users.length} Users)</div>
     <div class="tbl-wrap"><table>
-      <thead><tr class="th-dark"><th>S.No</th><th>Display Name</th><th>Email</th></tr></thead>
+      <thead><tr class="th-dark"><th>S.No</th><th>Display Name</th><th>Email</th><th>Status</th></tr></thead>
       <tbody>
-        ${users.map((u, i) => `<tr><td>${i + 1}</td><td>${esc(u.displayName)}</td><td>${esc(u.email)}</td></tr>`).join('')}
+        ${users.map((u, i) => `<tr><td>${i + 1}</td><td>${esc(u.displayName)}</td><td>${esc(u.email)}</td><td>${userStatusBadge(u.status)}</td></tr>`).join('')}
       </tbody>
     </table></div>
   `;
@@ -395,6 +399,15 @@ function esc(s) {
   const d = document.createElement('div');
   d.textContent = s;
   return d.innerHTML;
+}
+
+function userStatusBadge(status) {
+  if (!status) return '<span class="st st-default">-</span>';
+  const s = status.toLowerCase();
+  if (s === 'active') return '<span class="st st-active">Active</span>';
+  if (s === 'registered') return '<span class="st st-registered">Registered</span>';
+  if (s === 'not started') return '<span class="st st-notstarted">Not Started</span>';
+  return '<span class="st st-default">' + esc(status) + '</span>';
 }
 
 function statusBadge(status) {

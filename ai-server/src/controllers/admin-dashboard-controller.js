@@ -68,7 +68,8 @@ const JIRA_CACHE_TTL = 15 * 60 * 1000; // 15 minutes
 
 async function fetchJiraStatuses() {
   const now = Date.now();
-  if (now - jiraCache.fetchedAt < JIRA_CACHE_TTL && Object.keys(jiraCache.data).length > 0) {
+  // Cache both success AND failure to avoid retrying every 30 seconds
+  if (now - jiraCache.fetchedAt < JIRA_CACHE_TTL) {
     return jiraCache.data;
   }
 
@@ -92,12 +93,17 @@ async function fetchJiraStatuses() {
     maxResults: 200
   };
 
-  // Try each site URL with both API v3 and v2
+  // Try each site URL — new endpoint first, then legacy
   for (const url of siteUrls) {
     const baseUrl = url.replace(/\/$/, '');
-    for (const apiVersion of ['3', '2']) {
+    const endpoints = [
+      `${baseUrl}/rest/api/3/search/jql`,   // New endpoint (2026+)
+      `${baseUrl}/rest/api/3/search`,        // Legacy v3
+      `${baseUrl}/rest/api/2/search`,        // Legacy v2
+    ];
+    for (const endpoint of endpoints) {
       try {
-        const response = await axios.get(`${baseUrl}/rest/api/${apiVersion}/search`, {
+        const response = await axios.get(endpoint, {
           params, headers, timeout: 10000
         });
 
@@ -109,16 +115,17 @@ async function fetchJiraStatuses() {
           };
         });
 
-        logger.info('[AdminDashboard] Jira fetch OK via %s (api v%s) — %d issues', baseUrl, apiVersion, Object.keys(map).length);
+        logger.info('[AdminDashboard] Jira fetch OK via %s — %d issues', endpoint, Object.keys(map).length);
         jiraCache = { data: map, fetchedAt: Date.now() };
         return map;
       } catch (e) {
-        logger.warn('[AdminDashboard] Jira fetch failed: %s/rest/api/%s — %s', baseUrl, apiVersion, e.message);
+        logger.warn('[AdminDashboard] Jira fetch failed: %s — %s', endpoint, e.message);
       }
     }
   }
 
-  // All attempts failed
+  // All attempts failed — cache the failure so we don't retry for 15 minutes
+  jiraCache = { data: {}, fetchedAt: Date.now() };
   return {};
 }
 
@@ -215,25 +222,27 @@ exports.getStats = async (req, res) => {
     // ── Build user list with team info ──
     const allUsers = users.map(u => {
       const emailOrg = getOrg(u.email);
+      const desktopInstalled = u.desktop_logged_in === true || !!u.desktop_last_heartbeat;
       return {
         displayName: u.display_name || '',
         email: u.email || '',
         organization: emailOrg || orgMap[u.organization_id] || '-',
         team: getTeam(u.email),
         isActive: u.is_active !== false,
-        desktopInstalled: u.desktop_logged_in === true || !!u.desktop_last_heartbeat,
+        desktopInstalled,
         desktopLoggedIn: u.desktop_logged_in || false,
         lastHeartbeat: u.desktop_last_heartbeat,
         appVersion: u.desktop_app_version,
-        createdAt: u.created_at
+        createdAt: u.created_at,
+        status: desktopInstalled ? 'Active' : 'Not Started'
       };
     });
 
     // ── Summary metrics ──
     const totalUsers = allUsers.length;
-    const activeUsers = allUsers.filter(u => u.isActive).length;
+    const activeUsers = allUsers.filter(u => u.status === 'Active').length;
     const desktopAppUsers = allUsers.filter(u => u.desktopInstalled).length;
-    const notStarted = totalUsers - desktopAppUsers;
+    const notStarted = allUsers.filter(u => u.status === 'Not Started').length;
 
     const uniqueTeams = new Set();
     allUsers.forEach(u => uniqueTeams.add(u.team !== '-' ? u.team : u.organization));
