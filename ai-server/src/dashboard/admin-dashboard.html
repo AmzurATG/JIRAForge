@@ -211,9 +211,14 @@ document.getElementById('tab-bar').addEventListener('click', e => {
 // ═══════════════════════════════════════════════════════════════
 // Data loading
 // ═══════════════════════════════════════════════════════════════
+let initialLoad = true;
+
 async function loadData() {
   document.getElementById('error-area').innerHTML = '';
-  document.getElementById('loading').style.display = 'block';
+  // Only show the loading spinner on first load, not on background refreshes
+  if (initialLoad) {
+    document.getElementById('loading').style.display = 'block';
+  }
   try {
     const r = await fetch('/admin-dashboard/api/stats', {
       headers: { 'Authorization': 'Bearer ' + sessionToken }
@@ -228,6 +233,7 @@ async function loadData() {
     if (!j.success) throw new Error(j.error);
     document.getElementById('loading').style.display = 'none';
     render(j);
+    initialLoad = false;
   } catch (e) {
     document.getElementById('loading').style.display = 'none';
     document.getElementById('error-area').innerHTML = '<div class="error-banner">' + esc(e.message) + '</div>';
@@ -238,10 +244,24 @@ async function loadData() {
 // Rendering
 // ═══════════════════════════════════════════════════════════════
 function render(data) {
+  // Remember which tab is active before re-render
+  const activeBtn = document.querySelector('.tab-btn.active');
+  const activeTab = activeBtn ? activeBtn.dataset.tab : 'dashboard';
+
   renderDashboard(data);
   renderAllUsers(data);
   renderIssueList(data);
   renderOrgTabs(data);
+
+  // Restore active tab
+  const restoreBtn = document.querySelector('.tab-btn[data-tab="' + activeTab + '"]');
+  if (restoreBtn) {
+    document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+    document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+    restoreBtn.classList.add('active');
+    const tabEl = document.getElementById('tab-' + activeTab);
+    if (tabEl) tabEl.classList.add('active');
+  }
 }
 
 // ── Dashboard Tab ──
@@ -322,9 +342,18 @@ function renderAllUsers(data) {
 
 // ── Issue List Tab ──
 let allTickets = [];
+let savedFilters = { status: '', priority: '', org: '' };
 
 function renderIssueList(data) {
   allTickets = data.tickets;
+
+  // Save current filter values before re-render (if filters exist)
+  const existingStatus = document.getElementById('filter-status');
+  if (existingStatus) {
+    savedFilters.status = existingStatus.value;
+    savedFilters.priority = document.getElementById('filter-priority').value;
+    savedFilters.org = document.getElementById('filter-org').value;
+  }
 
   // Extract unique filter values
   const statuses = [...new Set(allTickets.map(t => t.status).filter(s => s && s !== '-'))].sort();
@@ -338,21 +367,21 @@ function renderIssueList(data) {
         <label>Status</label>
         <select id="filter-status" onchange="applyIssueFilters()">
           <option value="">All</option>
-          ${statuses.map(s => `<option value="${esc(s)}">${esc(s)}</option>`).join('')}
+          ${statuses.map(s => `<option value="${esc(s)}"${s === savedFilters.status ? ' selected' : ''}>${esc(s)}</option>`).join('')}
         </select>
       </div>
       <div class="filter-group">
         <label>Priority</label>
         <select id="filter-priority" onchange="applyIssueFilters()">
           <option value="">All</option>
-          ${priorities.map(p => `<option value="${esc(p)}">${esc(p)}</option>`).join('')}
+          ${priorities.map(p => `<option value="${esc(p)}"${p === savedFilters.priority ? ' selected' : ''}>${esc(p)}</option>`).join('')}
         </select>
       </div>
       <div class="filter-group">
         <label>Organization</label>
         <select id="filter-org" onchange="applyIssueFilters()">
           <option value="">All</option>
-          ${orgs.map(o => `<option value="${esc(o)}">${esc(o)}</option>`).join('')}
+          ${orgs.map(o => `<option value="${esc(o)}"${o === savedFilters.org ? ' selected' : ''}>${esc(o)}</option>`).join('')}
         </select>
       </div>
     </div>
@@ -484,8 +513,8 @@ function formatDate(ts) {
   return day + suffix + ' ' + months[d.getMonth()];
 }
 
-// Auto-refresh every 30 seconds
-setInterval(() => { if (sessionToken) loadData(); }, 30000);
+// Auto-refresh every 5 minutes
+setInterval(() => { if (sessionToken) loadData(); }, 5 * 60 * 1000);
 </script>
 </body>
 </html>
