@@ -61,14 +61,13 @@ function getTicketTeamLabel(email) {
 }
 
 // ============================================================================
-// Jira Status Fetch (uses same JIRA_FEEDBACK_* env vars as ticket creation)
+// Jira Issue Fetch (uses same JIRA_FEEDBACK_* env vars as ticket creation)
 // ============================================================================
-let jiraCache = { data: {}, fetchedAt: 0 };
+let jiraCache = { data: { statusMap: {}, issues: [] }, fetchedAt: 0 };
 const JIRA_CACHE_TTL = 15 * 60 * 1000; // 15 minutes
 
-async function fetchJiraStatuses() {
+async function fetchJiraIssues() {
   const now = Date.now();
-  // Cache both success AND failure to avoid retrying every 30 seconds
   if (now - jiraCache.fetchedAt < JIRA_CACHE_TTL) {
     return jiraCache.data;
   }
@@ -76,30 +75,30 @@ async function fetchJiraStatuses() {
   const email = process.env.JIRA_FEEDBACK_EMAIL;
   const apiToken = process.env.JIRA_FEEDBACK_API_TOKEN;
   const projectKey = process.env.JIRA_FEEDBACK_PROJECT;
+  const siteUrl = (process.env.JIRA_FEEDBACK_SITE_URL || '').replace(/\/$/, '');
 
-  // Try JIRA_FEEDBACK_SITE_URL first, fall back to JIRA_BASE_URL
   const siteUrls = [
     process.env.JIRA_FEEDBACK_SITE_URL,
     process.env.JIRA_BASE_URL
   ].filter(Boolean);
 
-  if (siteUrls.length === 0 || !email || !apiToken || !projectKey) return {};
+  const empty = { statusMap: {}, issues: [] };
+  if (siteUrls.length === 0 || !email || !apiToken || !projectKey) return empty;
 
   const basicAuth = Buffer.from(`${email}:${apiToken}`).toString('base64');
   const headers = { 'Authorization': `Basic ${basicAuth}`, 'Accept': 'application/json' };
   const params = {
     jql: `project = ${projectKey} ORDER BY created DESC`,
-    fields: 'status,priority',
+    fields: 'status,priority,summary,reporter,created',
     maxResults: 200
   };
 
-  // Try each site URL — new endpoint first, then legacy
   for (const url of siteUrls) {
     const baseUrl = url.replace(/\/$/, '');
     const endpoints = [
-      `${baseUrl}/rest/api/3/search/jql`,   // New endpoint (2026+)
-      `${baseUrl}/rest/api/3/search`,        // Legacy v3
-      `${baseUrl}/rest/api/2/search`,        // Legacy v2
+      `${baseUrl}/rest/api/3/search/jql`,
+      `${baseUrl}/rest/api/3/search`,
+      `${baseUrl}/rest/api/2/search`,
     ];
     for (const endpoint of endpoints) {
       try {
@@ -107,26 +106,36 @@ async function fetchJiraStatuses() {
           params, headers, timeout: 10000
         });
 
-        const map = {};
+        const statusMap = {};
+        const issues = [];
         (response.data.issues || []).forEach(issue => {
-          map[issue.key] = {
+          statusMap[issue.key] = {
             status: issue.fields?.status?.name || '-',
             priority: issue.fields?.priority?.name || '-'
           };
+          issues.push({
+            key: issue.key,
+            summary: issue.fields?.summary || '-',
+            status: issue.fields?.status?.name || '-',
+            priority: issue.fields?.priority?.name || '-',
+            reporter: issue.fields?.reporter?.displayName || '-',
+            reporterEmail: issue.fields?.reporter?.emailAddress || '',
+            created: issue.fields?.created || null,
+            url: siteUrl ? `${siteUrl}/browse/${issue.key}` : ''
+          });
         });
 
-        logger.info('[AdminDashboard] Jira fetch OK via %s — %d issues', endpoint, Object.keys(map).length);
-        jiraCache = { data: map, fetchedAt: Date.now() };
-        return map;
+        logger.info('[AdminDashboard] Jira fetch OK via %s — %d issues', endpoint, issues.length);
+        jiraCache = { data: { statusMap, issues }, fetchedAt: Date.now() };
+        return { statusMap, issues };
       } catch (e) {
         logger.warn('[AdminDashboard] Jira fetch failed: %s — %s', endpoint, e.message);
       }
     }
   }
 
-  // All attempts failed — cache the failure so we don't retry for 15 minutes
-  jiraCache = { data: {}, fetchedAt: Date.now() };
-  return {};
+  jiraCache = { data: empty, fetchedAt: Date.now() };
+  return empty;
 }
 
 // ============================================================================
@@ -146,14 +155,14 @@ exports.login = (req, res) => {
   }
 
   if (!password || password !== correctPassword) {
-    logger.warn('[AdminDashboard] Failed login attempt from', req.ip);
+    logger.warn('[AdminDashboard] Failed login attempt from %s', req.ip);
     return res.status(401).json({ success: false, error: 'Invalid password' });
   }
 
   const token = crypto.randomBytes(32).toString('hex');
   sessions.set(token, Date.now() + SESSION_TTL_MS);
 
-  logger.info('[AdminDashboard] Admin logged in from', req.ip);
+  logger.info('[AdminDashboard] Admin logged in from %s', req.ip);
   res.json({ success: true, token });
 };
 
@@ -207,12 +216,12 @@ exports.getStats = async (req, res) => {
     const users = usersResult.data || [];
     const feedback = feedbackResult.data || [];
 
-    // Jira statuses (non-blocking)
-    let jiraStatuses = {};
+    // Jira issues (non-blocking)
+    let jiraData = { statusMap: {}, issues: [] };
     try {
-      jiraStatuses = await fetchJiraStatuses();
+      jiraData = await fetchJiraIssues();
     } catch (e) {
-      logger.warn('[AdminDashboard] Jira status fetch failed:', e.message);
+      logger.warn('[AdminDashboard] Jira fetch failed: %s', e.message);
     }
 
     // Org ID → name
@@ -221,12 +230,12 @@ exports.getStats = async (req, res) => {
 
     // ── Build user list with team info ──
     const allUsers = users.map(u => {
-      const emailOrg = getOrg(u.email);
+      const org = orgMap[u.organization_id] || getOrg(u.email) || '-';
       const desktopInstalled = u.desktop_logged_in === true || !!u.desktop_last_heartbeat;
       return {
         displayName: u.display_name || '',
         email: u.email || '',
-        organization: emailOrg || orgMap[u.organization_id] || '-',
+        organization: org,
         team: getTeam(u.email),
         isActive: u.is_active !== false,
         desktopInstalled,
@@ -257,31 +266,29 @@ exports.getStats = async (req, res) => {
       .map(([team, userCount]) => ({ team, userCount }))
       .sort((a, b) => b.userCount - a.userCount);
 
-    // ── Map feedback tickets ──
-    const tickets = feedback.map(f => {
-      const jira = f.jira_issue_key ? jiraStatuses[f.jira_issue_key] : null;
+    // ── Tickets: use Jira issues directly, enrich with feedback data ──
+    const feedbackByKey = {};
+    feedback.forEach(f => {
+      if (f.jira_issue_key) feedbackByKey[f.jira_issue_key] = f;
+    });
+
+    const tickets = jiraData.issues.map(issue => {
+      const fb = feedbackByKey[issue.key];
       return {
-        issueKey: f.jira_issue_key || '-',
-        issueUrl: f.jira_issue_url || '',
-        summary: f.title || f.ai_summary || f.category || '-',
-        submittedBy: f.user_display_name || '-',
-        team: getTicketTeamLabel(f.user_email),
-        status: jira?.status || f.jira_creation_status || '-',
-        priority: f.user_priority || jira?.priority || f.ai_priority || '-',
-        category: f.category,
-        createdAt: f.created_at
+        issueKey: issue.key,
+        issueUrl: issue.url,
+        summary: issue.summary,
+        submittedBy: fb?.user_display_name || issue.reporter,
+        team: getTicketTeamLabel(fb?.user_email || issue.reporterEmail),
+        status: issue.status,
+        priority: issue.priority,
+        category: fb?.category || '-',
+        createdAt: issue.created
       };
     });
 
     // ── Tickets per team ──
-    // Ensure all teams appear (even with 0 tickets)
-    const allTicketTeamLabels = new Set();
-    allUsers.forEach(u => {
-      const label = getTicketTeamLabel(u.email);
-      if (label !== '-') allTicketTeamLabels.add(label);
-    });
     const teamTickets = {};
-    allTicketTeamLabels.forEach(t => { teamTickets[t] = { count: 0, earliest: null }; });
     tickets.forEach(t => {
       if (t.team !== '-') {
         if (!teamTickets[t.team]) teamTickets[t.team] = { count: 0, earliest: null };
@@ -292,7 +299,7 @@ exports.getStats = async (req, res) => {
       }
     });
 
-    const totalTickets = tickets.filter(t => t.issueKey !== '-').length;
+    const totalTickets = tickets.length;
     const ticketsPerTeam = Object.entries(teamTickets)
       .map(([team, info]) => ({
         team,
@@ -323,10 +330,30 @@ exports.getStats = async (req, res) => {
         return (ai === -1 ? 999 : ai) - (bi === -1 ? 999 : bi);
       });
 
-    // ── Org-specific user lists ──
-    const amzurCS = allUsers.filter(u => u.organization === 'Amzur' && u.team === 'Custom Software');
-    const amzurATG = allUsers.filter(u => u.organization === 'Amzur' && u.team === 'ATG');
-    const evokeUsers = allUsers.filter(u => u.organization === 'Evoke');
+    // ── Dynamic org tabs ──
+    const orgGroupsMap = {};
+    allUsers.forEach(u => {
+      const org = u.organization;
+      if (!org || org === '-') return;
+      if (!orgGroupsMap[org]) orgGroupsMap[org] = [];
+      orgGroupsMap[org].push(u);
+    });
+
+    const orgTabs = Object.entries(orgGroupsMap)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([orgName, orgUsers]) => {
+        const subGroupMap = {};
+        orgUsers.forEach(u => {
+          const team = u.team && u.team !== '-' ? u.team : orgName;
+          if (!subGroupMap[team]) subGroupMap[team] = [];
+          subGroupMap[team].push(u);
+        });
+        return {
+          orgName,
+          totalUsers: orgUsers.length,
+          subGroups: Object.entries(subGroupMap).map(([name, users]) => ({ name, users }))
+        };
+      });
 
     res.json({
       success: true,
@@ -343,8 +370,7 @@ exports.getStats = async (req, res) => {
       ticketStatusSummary,
       allUsers,
       tickets,
-      amzurUsers: { customSoftware: amzurCS, atg: amzurATG },
-      evokeUsers
+      orgTabs
     });
   } catch (error) {
     logger.error('[AdminDashboard] Stats error:', error);

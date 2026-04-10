@@ -134,8 +134,7 @@
   <button class="tab-btn active" data-tab="dashboard">Dashboard</button>
   <button class="tab-btn" data-tab="allUsers">All Users</button>
   <button class="tab-btn" data-tab="issueList">Issue List</button>
-  <button class="tab-btn" data-tab="amzurUsers">Amzur Users</button>
-  <button class="tab-btn" data-tab="evokeUsers">Evoke Users</button>
+  <!-- org tabs added dynamically -->
 </div>
 
 <div class="container">
@@ -151,11 +150,8 @@
   <!-- TAB: Issue List -->
   <div class="tab-content" id="tab-issueList"></div>
 
-  <!-- TAB: Amzur Users -->
-  <div class="tab-content" id="tab-amzurUsers"></div>
-
-  <!-- TAB: Evoke Users -->
-  <div class="tab-content" id="tab-evokeUsers"></div>
+  <!-- org tab content added dynamically -->
+  <div id="org-tabs-container"></div>
 </div>
 
 <script>
@@ -239,8 +235,7 @@ function render(data) {
   renderDashboard(data);
   renderAllUsers(data);
   renderIssueList(data);
-  renderAmzurUsers(data);
-  renderEvokeUsers(data);
+  renderOrgTabs(data);
 }
 
 // ── Dashboard Tab ──
@@ -323,13 +318,12 @@ function renderAllUsers(data) {
 // ── Issue List Tab ──
 function renderIssueList(data) {
   const tickets = data.tickets;
-  const withKey = tickets.filter(t => t.issueKey !== '-');
   let html = `
-    <div class="section-title">Jira Feedback Tickets (${withKey.length} Tickets)</div>
+    <div class="section-title">Jira Feedback Tickets (${tickets.length} Tickets)</div>
     <div class="tbl-wrap"><table>
       <thead><tr class="th-dark"><th>S.No</th><th>Issue Key</th><th>Summary</th><th>Submitted By</th><th>Team</th><th>Status</th><th>Priority</th></tr></thead>
       <tbody>
-        ${withKey.map((t, i) => `<tr>
+        ${tickets.map((t, i) => `<tr>
           <td>${i + 1}</td>
           <td>${t.issueUrl ? '<a class="issue-link" href="' + esc(t.issueUrl) + '" target="_blank">' + esc(t.issueKey) + '</a>' : esc(t.issueKey)}</td>
           <td>${esc(t.summary)}</td>
@@ -344,51 +338,65 @@ function renderIssueList(data) {
   document.getElementById('tab-issueList').innerHTML = html;
 }
 
-// ── Amzur Users Tab ──
-function renderAmzurUsers(data) {
-  const cs = data.amzurUsers.customSoftware;
-  const atg = data.amzurUsers.atg;
-  const total = cs.length + atg.length;
+// ── Dynamic Org Tabs ──
+const subGroupColors = ['#548235','#C55A11','#0D7377','#6c5ce7','#2F5496','#D63384'];
+const subGroupThClasses = ['th-green','th-orange','th-teal','th-gray','th-blue','th-dark'];
 
-  let html = `
-    <div class="section-title">Amzur - All Users (${total} Users)</div>
+function renderOrgTabs(data) {
+  const tabBar = document.getElementById('tab-bar');
+  const container = document.getElementById('org-tabs-container');
 
-    <div class="tbl-wrap">
-      <div class="team-header" style="background:#548235">Custom Software Team (${cs.length} Users)</div>
-      <table>
-        <thead><tr class="th-green"><th>S.No</th><th>Display Name</th><th>Email</th><th>Status</th></tr></thead>
+  // Remove old dynamic tabs
+  tabBar.querySelectorAll('.tab-btn[data-dynamic]').forEach(b => b.remove());
+  container.innerHTML = '';
+
+  (data.orgTabs || []).forEach((org, idx) => {
+    const tabId = 'org_' + org.orgName.replace(/\s+/g, '_');
+
+    // Add tab button
+    const btn = document.createElement('button');
+    btn.className = 'tab-btn';
+    btn.dataset.tab = tabId;
+    btn.dataset.dynamic = '1';
+    btn.textContent = org.orgName + ' Users';
+    tabBar.appendChild(btn);
+
+    // Add tab content div
+    const div = document.createElement('div');
+    div.className = 'tab-content';
+    div.id = 'tab-' + tabId;
+
+    let html = `<div class="section-title">${esc(org.orgName)} - All Users (${org.totalUsers} Users)</div>`;
+
+    if (org.subGroups.length === 1) {
+      // Single group — no sub-headers needed
+      const users = org.subGroups[0].users;
+      html += `<div class="tbl-wrap"><table>
+        <thead><tr class="th-dark"><th>S.No</th><th>Display Name</th><th>Email</th><th>Status</th></tr></thead>
         <tbody>
-          ${cs.map((u, i) => `<tr><td>${i + 1}</td><td>${esc(u.displayName)}</td><td>${esc(u.email)}</td><td>${userStatusBadge(u.status)}</td></tr>`).join('')}
+          ${users.map((u, i) => `<tr><td>${i + 1}</td><td>${esc(u.displayName)}</td><td>${esc(u.email)}</td><td>${userStatusBadge(u.status)}</td></tr>`).join('')}
         </tbody>
-      </table>
-    </div>
+      </table></div>`;
+    } else {
+      // Multiple sub-groups — show team headers
+      org.subGroups.forEach((sg, si) => {
+        const color = subGroupColors[si % subGroupColors.length];
+        const thClass = subGroupThClasses[si % subGroupThClasses.length];
+        html += `<div class="tbl-wrap">
+          <div class="team-header" style="background:${color}">${esc(sg.name)} Team (${sg.users.length} Users)</div>
+          <table>
+            <thead><tr class="${thClass}"><th>S.No</th><th>Display Name</th><th>Email</th><th>Status</th></tr></thead>
+            <tbody>
+              ${sg.users.map((u, i) => `<tr><td>${i + 1}</td><td>${esc(u.displayName)}</td><td>${esc(u.email)}</td><td>${userStatusBadge(u.status)}</td></tr>`).join('')}
+            </tbody>
+          </table>
+        </div>`;
+      });
+    }
 
-    <div class="tbl-wrap">
-      <div class="team-header" style="background:#C55A11">ATG Team (${atg.length} Users)</div>
-      <table>
-        <thead><tr class="th-orange"><th>S.No</th><th>Display Name</th><th>Email</th><th>Status</th></tr></thead>
-        <tbody>
-          ${atg.map((u, i) => `<tr><td>${i + 1}</td><td>${esc(u.displayName)}</td><td>${esc(u.email)}</td><td>${userStatusBadge(u.status)}</td></tr>`).join('')}
-        </tbody>
-      </table>
-    </div>
-  `;
-  document.getElementById('tab-amzurUsers').innerHTML = html;
-}
-
-// ── Evoke Users Tab ──
-function renderEvokeUsers(data) {
-  const users = data.evokeUsers;
-  let html = `
-    <div class="section-title">Evoke - User List (${users.length} Users)</div>
-    <div class="tbl-wrap"><table>
-      <thead><tr class="th-dark"><th>S.No</th><th>Display Name</th><th>Email</th><th>Status</th></tr></thead>
-      <tbody>
-        ${users.map((u, i) => `<tr><td>${i + 1}</td><td>${esc(u.displayName)}</td><td>${esc(u.email)}</td><td>${userStatusBadge(u.status)}</td></tr>`).join('')}
-      </tbody>
-    </table></div>
-  `;
-  document.getElementById('tab-evokeUsers').innerHTML = html;
+    div.innerHTML = html;
+    container.appendChild(div);
+  });
 }
 
 // ═══════════════════════════════════════════════════════════════
