@@ -100,6 +100,12 @@
     /* ── Totals row ── */
     .total-row td{font-weight:700;border-top:2px solid #cbd5e0}
 
+    /* ── Filters ── */
+    .filters{display:flex;gap:12px;flex-wrap:wrap;margin-bottom:16px;align-items:center}
+    .filters label{font-size:12px;font-weight:600;color:#636e72;text-transform:uppercase;letter-spacing:.4px}
+    .filters select{padding:6px 10px;border:1px solid #dfe6e9;border-radius:6px;font-size:13px;color:#1a1a2e;background:#fff;min-width:140px}
+    .filter-group{display:flex;flex-direction:column;gap:4px}
+
     @media(max-width:768px){
       .container{padding:14px}
       .cards{grid-template-columns:repeat(2,1fr)}
@@ -241,7 +247,7 @@ function render(data) {
 // ── Dashboard Tab ──
 function renderDashboard(data) {
   const s = data.summary;
-  const totalPerTeam = data.usersPerTeam.reduce((a, t) => a + t.userCount, 0);
+  const totalPerOrg = data.usersPerOrg.reduce((a, t) => a + t.userCount, 0);
 
   let html = `
     <div class="status-line"><span class="status-badge">Status: Internal Testing</span></div>
@@ -250,25 +256,25 @@ function renderDashboard(data) {
       <div class="card"><div class="label">Active Users</div><div class="value c-blue">${s.activeUsers}</div></div>
       <div class="card"><div class="label">Desktop App Users</div><div class="value c-green">${s.desktopAppUsers}</div></div>
       <div class="card"><div class="label">Not Started</div><div class="value c-orange">${s.notStarted}</div></div>
-      <div class="card"><div class="label">Organizations/Team</div><div class="value c-purple">${s.organizationsTeam}</div></div>
+      <div class="card"><div class="label">Organizations</div><div class="value c-purple">${s.totalOrganizations}</div></div>
       <div class="card"><div class="label">Total Tickets</div><div class="value c-gray">${s.totalTickets}</div></div>
     </div>
 
-    <div class="section-title">Users Per Organization &amp; Team</div>
+    <div class="section-title">Users Per Organization</div>
     <div class="tbl-wrap"><table>
-      <thead><tr class="th-blue"><th>Team/Organization</th><th>User Count</th></tr></thead>
+      <thead><tr class="th-blue"><th>Organization</th><th>User Count</th></tr></thead>
       <tbody>
-        ${data.usersPerTeam.map(t => `<tr><td>${esc(t.team)}</td><td><strong>${t.userCount}</strong></td></tr>`).join('')}
-        <tr class="total-row"><td><strong>Total</strong></td><td><strong>${totalPerTeam}</strong></td></tr>
+        ${data.usersPerOrg.map(t => `<tr><td>${esc(t.org)}</td><td><strong>${t.userCount}</strong></td></tr>`).join('')}
+        <tr class="total-row"><td><strong>Total</strong></td><td><strong>${totalPerOrg}</strong></td></tr>
       </tbody>
     </table></div>
 
-    <div class="section-title">Tickets Raised Per Team</div>
+    <div class="section-title">Tickets Raised Per Organization</div>
     <div class="tbl-wrap"><table>
-      <thead><tr class="th-blue"><th>Team/Organization</th><th>Tickets Raised</th><th>% of Total</th><th>Started</th></tr></thead>
+      <thead><tr class="th-blue"><th>Organization</th><th>Tickets Raised</th><th>% of Total</th><th>Started</th></tr></thead>
       <tbody>
-        ${data.ticketsPerTeam.map(t => `<tr>
-          <td>${esc(t.team)}</td>
+        ${data.ticketsPerOrg.map(t => `<tr>
+          <td>${esc(t.org)}</td>
           <td><strong>${t.ticketsRaised}</strong></td>
           <td>${t.ticketsRaised > 0 ? t.percentOfTotal + '%' : ''}</td>
           <td>${t.started ? formatDate(t.started) : ''}</td>
@@ -279,12 +285,12 @@ function renderDashboard(data) {
 
     <div class="section-title">Ticket Status Summary</div>
     <div class="tbl-wrap"><table>
-      <thead><tr class="th-blue"><th>Status</th><th>Count</th><th>Team Breakdown</th></tr></thead>
+      <thead><tr class="th-blue"><th>Status</th><th>Count</th><th>Organization Breakdown</th></tr></thead>
       <tbody>
         ${data.ticketStatusSummary.map(t => `<tr>
           <td>${statusBadge(t.status)}</td>
           <td><strong>${t.count}</strong></td>
-          <td>${esc(t.teamBreakdown)}</td>
+          <td>${esc(t.orgBreakdown)}</td>
         </tr>`).join('')}
       </tbody>
     </table></div>
@@ -299,14 +305,13 @@ function renderAllUsers(data) {
   let html = `
     <div class="section-title">All Users - Complete List (${users.length} Users)</div>
     <div class="tbl-wrap"><table>
-      <thead><tr class="th-blue"><th>S.No</th><th>Display Name</th><th>Email</th><th>Organization</th><th>Team</th><th>Status</th></tr></thead>
+      <thead><tr class="th-blue"><th>S.No</th><th>Display Name</th><th>Email</th><th>Organization</th><th>Status</th></tr></thead>
       <tbody>
         ${users.map((u, i) => `<tr>
           <td>${i + 1}</td>
           <td>${esc(u.displayName)}</td>
           <td>${esc(u.email)}</td>
           <td>${esc(u.organization)}</td>
-          <td>${esc(u.team)}</td>
           <td>${userStatusBadge(u.status)}</td>
         </tr>`).join('')}
       </tbody>
@@ -316,31 +321,78 @@ function renderAllUsers(data) {
 }
 
 // ── Issue List Tab ──
+let allTickets = [];
+
 function renderIssueList(data) {
-  const tickets = data.tickets;
+  allTickets = data.tickets;
+
+  // Extract unique filter values
+  const statuses = [...new Set(allTickets.map(t => t.status).filter(s => s && s !== '-'))].sort();
+  const priorities = [...new Set(allTickets.map(t => t.priority).filter(p => p && p !== '-'))].sort();
+  const orgs = [...new Set(allTickets.map(t => t.organization).filter(o => o && o !== '-'))].sort();
+
   let html = `
-    <div class="section-title">Jira Feedback Tickets (${tickets.length} Tickets)</div>
+    <div class="section-title">Jira Feedback Tickets</div>
+    <div class="filters">
+      <div class="filter-group">
+        <label>Status</label>
+        <select id="filter-status" onchange="applyIssueFilters()">
+          <option value="">All</option>
+          ${statuses.map(s => `<option value="${esc(s)}">${esc(s)}</option>`).join('')}
+        </select>
+      </div>
+      <div class="filter-group">
+        <label>Priority</label>
+        <select id="filter-priority" onchange="applyIssueFilters()">
+          <option value="">All</option>
+          ${priorities.map(p => `<option value="${esc(p)}">${esc(p)}</option>`).join('')}
+        </select>
+      </div>
+      <div class="filter-group">
+        <label>Organization</label>
+        <select id="filter-org" onchange="applyIssueFilters()">
+          <option value="">All</option>
+          ${orgs.map(o => `<option value="${esc(o)}">${esc(o)}</option>`).join('')}
+        </select>
+      </div>
+    </div>
+    <div id="issue-table-area"></div>
+  `;
+  document.getElementById('tab-issueList').innerHTML = html;
+  applyIssueFilters();
+}
+
+function applyIssueFilters() {
+  const statusVal = document.getElementById('filter-status').value;
+  const priorityVal = document.getElementById('filter-priority').value;
+  const orgVal = document.getElementById('filter-org').value;
+
+  let filtered = allTickets;
+  if (statusVal) filtered = filtered.filter(t => t.status === statusVal);
+  if (priorityVal) filtered = filtered.filter(t => t.priority === priorityVal);
+  if (orgVal) filtered = filtered.filter(t => t.organization === orgVal);
+
+  document.getElementById('issue-table-area').innerHTML = `
+    <div style="font-size:13px;color:#636e72;margin-bottom:8px">Showing ${filtered.length} of ${allTickets.length} tickets</div>
     <div class="tbl-wrap"><table>
-      <thead><tr class="th-dark"><th>S.No</th><th>Issue Key</th><th>Summary</th><th>Submitted By</th><th>Team</th><th>Status</th><th>Priority</th></tr></thead>
+      <thead><tr class="th-dark"><th>S.No</th><th>Issue Key</th><th>Summary</th><th>Submitted By</th><th>Organization</th><th>Status</th><th>Priority</th></tr></thead>
       <tbody>
-        ${tickets.map((t, i) => `<tr>
+        ${filtered.map((t, i) => `<tr>
           <td>${i + 1}</td>
           <td>${t.issueUrl ? '<a class="issue-link" href="' + esc(t.issueUrl) + '" target="_blank">' + esc(t.issueKey) + '</a>' : esc(t.issueKey)}</td>
           <td>${esc(t.summary)}</td>
           <td>${esc(t.submittedBy)}</td>
-          <td>${esc(t.team)}</td>
+          <td>${esc(t.organization)}</td>
           <td>${statusBadge(t.status)}</td>
           <td>${priorityBadge(t.priority)}</td>
         </tr>`).join('')}
       </tbody>
     </table></div>
   `;
-  document.getElementById('tab-issueList').innerHTML = html;
 }
 
 // ── Dynamic Org Tabs ──
-const subGroupColors = ['#548235','#C55A11','#0D7377','#6c5ce7','#2F5496','#D63384'];
-const subGroupThClasses = ['th-green','th-orange','th-teal','th-gray','th-blue','th-dark'];
+const orgThClasses = ['th-green','th-orange','th-teal','th-dark','th-blue','th-gray'];
 
 function renderOrgTabs(data) {
   const tabBar = document.getElementById('tab-bar');
@@ -352,6 +404,7 @@ function renderOrgTabs(data) {
 
   (data.orgTabs || []).forEach((org, idx) => {
     const tabId = 'org_' + org.orgName.replace(/\s+/g, '_');
+    const thClass = orgThClasses[idx % orgThClasses.length];
 
     // Add tab button
     const btn = document.createElement('button');
@@ -366,35 +419,16 @@ function renderOrgTabs(data) {
     div.className = 'tab-content';
     div.id = 'tab-' + tabId;
 
-    let html = `<div class="section-title">${esc(org.orgName)} - All Users (${org.totalUsers} Users)</div>`;
-
-    if (org.subGroups.length === 1) {
-      // Single group — no sub-headers needed
-      const users = org.subGroups[0].users;
-      html += `<div class="tbl-wrap"><table>
-        <thead><tr class="th-dark"><th>S.No</th><th>Display Name</th><th>Email</th><th>Status</th></tr></thead>
+    div.innerHTML = `
+      <div class="section-title">${esc(org.orgName)} - User List (${org.totalUsers} Users)</div>
+      <div class="tbl-wrap"><table>
+        <thead><tr class="${thClass}"><th>S.No</th><th>Display Name</th><th>Email</th><th>Status</th></tr></thead>
         <tbody>
-          ${users.map((u, i) => `<tr><td>${i + 1}</td><td>${esc(u.displayName)}</td><td>${esc(u.email)}</td><td>${userStatusBadge(u.status)}</td></tr>`).join('')}
+          ${org.users.map((u, i) => `<tr><td>${i + 1}</td><td>${esc(u.displayName)}</td><td>${esc(u.email)}</td><td>${userStatusBadge(u.status)}</td></tr>`).join('')}
         </tbody>
-      </table></div>`;
-    } else {
-      // Multiple sub-groups — show team headers
-      org.subGroups.forEach((sg, si) => {
-        const color = subGroupColors[si % subGroupColors.length];
-        const thClass = subGroupThClasses[si % subGroupThClasses.length];
-        html += `<div class="tbl-wrap">
-          <div class="team-header" style="background:${color}">${esc(sg.name)} Team (${sg.users.length} Users)</div>
-          <table>
-            <thead><tr class="${thClass}"><th>S.No</th><th>Display Name</th><th>Email</th><th>Status</th></tr></thead>
-            <tbody>
-              ${sg.users.map((u, i) => `<tr><td>${i + 1}</td><td>${esc(u.displayName)}</td><td>${esc(u.email)}</td><td>${userStatusBadge(u.status)}</td></tr>`).join('')}
-            </tbody>
-          </table>
-        </div>`;
-      });
-    }
+      </table></div>
+    `;
 
-    div.innerHTML = html;
     container.appendChild(div);
   });
 }

@@ -23,44 +23,6 @@ setInterval(() => {
 }, 30 * 60 * 1000);
 
 // ============================================================================
-// Internal Team Mapping (hardcoded — no DB changes needed)
-// ============================================================================
-const ATG_EMAILS = new Set([
-  'iswarya.kolimalla@amzur.com',
-  'lavanya.joga@amzur.com',
-  'murali.puramaneni@amzur.com',
-  'pushpa.nacharla@amzur.com',
-  'siva.jamula@amzur.com',
-  'vishnu.kanthamraju@amzur.com',
-]);
-
-function getTeam(email) {
-  if (!email) return '-';
-  const e = email.toLowerCase();
-  if (ATG_EMAILS.has(e)) return 'ATG';
-  if (e.endsWith('@amzur.com')) return 'Custom Software';
-  return '-';
-}
-
-function getOrg(email) {
-  if (!email) return '';
-  const e = email.toLowerCase();
-  if (e.endsWith('@amzur.com')) return 'Amzur';
-  if (e.endsWith('@evokesystems.com')) return 'Evoke';
-  return '';
-}
-
-/** Ticket team label — e.g. "Amzur - ATG", "Custom Software", "Evoke" */
-function getTicketTeamLabel(email) {
-  if (!email) return '-';
-  const e = email.toLowerCase();
-  if (ATG_EMAILS.has(e)) return 'Amzur - ATG';
-  if (e.endsWith('@amzur.com')) return 'Custom Software';
-  if (e.endsWith('@evokesystems.com')) return 'Evoke';
-  return '-';
-}
-
-// ============================================================================
 // Jira Issue Fetch (uses same JIRA_FEEDBACK_* env vars as ticket creation)
 // ============================================================================
 let jiraCache = { data: { statusMap: {}, issues: [] }, fetchedAt: 0 };
@@ -228,15 +190,14 @@ exports.getStats = async (req, res) => {
     const orgMap = {};
     orgs.forEach(o => { orgMap[o.id] = o.org_name; });
 
-    // ── Build user list with team info ──
+    // ── Build user list ──
     const allUsers = users.map(u => {
-      const org = orgMap[u.organization_id] || getOrg(u.email) || '-';
+      const org = orgMap[u.organization_id] || '-';
       const desktopInstalled = u.desktop_logged_in === true || !!u.desktop_last_heartbeat;
       return {
         displayName: u.display_name || '',
         email: u.email || '',
         organization: org,
-        team: getTeam(u.email),
         isActive: u.is_active !== false,
         desktopInstalled,
         desktopLoggedIn: u.desktop_logged_in || false,
@@ -247,23 +208,29 @@ exports.getStats = async (req, res) => {
       };
     });
 
+    // Email → org lookup (for ticket org resolution)
+    const emailToOrg = {};
+    allUsers.forEach(u => {
+      if (u.email) emailToOrg[u.email.toLowerCase()] = u.organization;
+    });
+
     // ── Summary metrics ──
     const totalUsers = allUsers.length;
     const activeUsers = allUsers.filter(u => u.status === 'Active').length;
     const desktopAppUsers = allUsers.filter(u => u.desktopInstalled).length;
     const notStarted = allUsers.filter(u => u.status === 'Not Started').length;
 
-    const uniqueTeams = new Set();
-    allUsers.forEach(u => uniqueTeams.add(u.team !== '-' ? u.team : u.organization));
+    const uniqueOrgs = new Set();
+    allUsers.forEach(u => { if (u.organization !== '-') uniqueOrgs.add(u.organization); });
 
-    // ── Users per team (for the summary table) ──
-    const teamCounts = {};
+    // ── Users per organization ──
+    const orgCounts = {};
     allUsers.forEach(u => {
-      const label = u.team !== '-' ? u.team : u.organization;
-      teamCounts[label] = (teamCounts[label] || 0) + 1;
+      const label = u.organization || '-';
+      orgCounts[label] = (orgCounts[label] || 0) + 1;
     });
-    const usersPerTeam = Object.entries(teamCounts)
-      .map(([team, userCount]) => ({ team, userCount }))
+    const usersPerOrg = Object.entries(orgCounts)
+      .map(([org, userCount]) => ({ org, userCount }))
       .sort((a, b) => b.userCount - a.userCount);
 
     // ── Tickets: use Jira issues directly, enrich with feedback data ──
@@ -272,14 +239,19 @@ exports.getStats = async (req, res) => {
       if (f.jira_issue_key) feedbackByKey[f.jira_issue_key] = f;
     });
 
+    // Feedback org lookup: feedback.organization_id → org name
     const tickets = jiraData.issues.map(issue => {
       const fb = feedbackByKey[issue.key];
+      const submitterEmail = (fb?.user_email || issue.reporterEmail || '').toLowerCase();
+      const ticketOrg = emailToOrg[submitterEmail]
+        || (fb?.organization_id ? orgMap[fb.organization_id] : null)
+        || '-';
       return {
         issueKey: issue.key,
         issueUrl: issue.url,
         summary: issue.summary,
         submittedBy: fb?.user_display_name || issue.reporter,
-        team: getTicketTeamLabel(fb?.user_email || issue.reporterEmail),
+        organization: ticketOrg,
         status: issue.status,
         priority: issue.priority,
         category: fb?.category || '-',
@@ -287,22 +259,22 @@ exports.getStats = async (req, res) => {
       };
     });
 
-    // ── Tickets per team ──
-    const teamTickets = {};
+    // ── Tickets per organization ──
+    const orgTickets = {};
     tickets.forEach(t => {
-      if (t.team !== '-') {
-        if (!teamTickets[t.team]) teamTickets[t.team] = { count: 0, earliest: null };
-        teamTickets[t.team].count++;
-        if (t.createdAt && (!teamTickets[t.team].earliest || new Date(t.createdAt) < new Date(teamTickets[t.team].earliest))) {
-          teamTickets[t.team].earliest = t.createdAt;
+      if (t.organization !== '-') {
+        if (!orgTickets[t.organization]) orgTickets[t.organization] = { count: 0, earliest: null };
+        orgTickets[t.organization].count++;
+        if (t.createdAt && (!orgTickets[t.organization].earliest || new Date(t.createdAt) < new Date(orgTickets[t.organization].earliest))) {
+          orgTickets[t.organization].earliest = t.createdAt;
         }
       }
     });
 
     const totalTickets = tickets.length;
-    const ticketsPerTeam = Object.entries(teamTickets)
-      .map(([team, info]) => ({
-        team,
+    const ticketsPerOrg = Object.entries(orgTickets)
+      .map(([org, info]) => ({
+        org,
         ticketsRaised: info.count,
         percentOfTotal: totalTickets > 0 ? Math.round((info.count / totalTickets) * 1000) / 10 : 0,
         started: info.earliest || null
@@ -313,16 +285,16 @@ exports.getStats = async (req, res) => {
     const statusAgg = {};
     tickets.forEach(t => {
       const s = t.status || '-';
-      if (!statusAgg[s]) statusAgg[s] = { count: 0, teams: new Set() };
+      if (!statusAgg[s]) statusAgg[s] = { count: 0, orgs: new Set() };
       statusAgg[s].count++;
-      if (t.team !== '-') statusAgg[s].teams.add(t.team);
+      if (t.organization !== '-') statusAgg[s].orgs.add(t.organization);
     });
     const statusOrder = ['To Do', 'In Progress', 'Review', 'Done', 'created', 'pending', 'processing', 'failed'];
     const ticketStatusSummary = Object.entries(statusAgg)
       .map(([status, d]) => ({
         status,
         count: d.count,
-        teamBreakdown: Array.from(d.teams).join(', ')
+        orgBreakdown: Array.from(d.orgs).join(', ')
       }))
       .sort((a, b) => {
         const ai = statusOrder.indexOf(a.status);
@@ -341,19 +313,11 @@ exports.getStats = async (req, res) => {
 
     const orgTabs = Object.entries(orgGroupsMap)
       .sort(([a], [b]) => a.localeCompare(b))
-      .map(([orgName, orgUsers]) => {
-        const subGroupMap = {};
-        orgUsers.forEach(u => {
-          const team = u.team && u.team !== '-' ? u.team : orgName;
-          if (!subGroupMap[team]) subGroupMap[team] = [];
-          subGroupMap[team].push(u);
-        });
-        return {
-          orgName,
-          totalUsers: orgUsers.length,
-          subGroups: Object.entries(subGroupMap).map(([name, users]) => ({ name, users }))
-        };
-      });
+      .map(([orgName, orgUsers]) => ({
+        orgName,
+        totalUsers: orgUsers.length,
+        users: orgUsers
+      }));
 
     res.json({
       success: true,
@@ -362,11 +326,11 @@ exports.getStats = async (req, res) => {
         activeUsers,
         desktopAppUsers,
         notStarted,
-        organizationsTeam: uniqueTeams.size,
+        totalOrganizations: uniqueOrgs.size,
         totalTickets
       },
-      usersPerTeam,
-      ticketsPerTeam,
+      usersPerOrg,
+      ticketsPerOrg,
       ticketStatusSummary,
       allUsers,
       tickets,
