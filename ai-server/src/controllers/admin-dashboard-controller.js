@@ -72,39 +72,54 @@ async function fetchJiraStatuses() {
     return jiraCache.data;
   }
 
-  const siteUrl = process.env.JIRA_FEEDBACK_SITE_URL;
   const email = process.env.JIRA_FEEDBACK_EMAIL;
   const apiToken = process.env.JIRA_FEEDBACK_API_TOKEN;
   const projectKey = process.env.JIRA_FEEDBACK_PROJECT;
 
-  if (!siteUrl || !email || !apiToken || !projectKey) return {};
+  // Try JIRA_FEEDBACK_SITE_URL first, fall back to JIRA_BASE_URL
+  const siteUrls = [
+    process.env.JIRA_FEEDBACK_SITE_URL,
+    process.env.JIRA_BASE_URL
+  ].filter(Boolean);
+
+  if (siteUrls.length === 0 || !email || !apiToken || !projectKey) return {};
 
   const basicAuth = Buffer.from(`${email}:${apiToken}`).toString('base64');
-  const baseUrl = siteUrl.replace(/\/$/, '');
+  const headers = { 'Authorization': `Basic ${basicAuth}`, 'Accept': 'application/json' };
+  const params = {
+    jql: `project = ${projectKey} ORDER BY created DESC`,
+    fields: 'status,priority',
+    maxResults: 200
+  };
 
-  const response = await axios.get(`${baseUrl}/rest/api/3/search`, {
-    params: {
-      jql: `project = ${projectKey} ORDER BY created DESC`,
-      fields: 'status,priority',
-      maxResults: 200
-    },
-    headers: {
-      'Authorization': `Basic ${basicAuth}`,
-      'Accept': 'application/json'
-    },
-    timeout: 10000
-  });
+  // Try each site URL with both API v3 and v2
+  for (const url of siteUrls) {
+    const baseUrl = url.replace(/\/$/, '');
+    for (const apiVersion of ['3', '2']) {
+      try {
+        const response = await axios.get(`${baseUrl}/rest/api/${apiVersion}/search`, {
+          params, headers, timeout: 10000
+        });
 
-  const map = {};
-  (response.data.issues || []).forEach(issue => {
-    map[issue.key] = {
-      status: issue.fields?.status?.name || '-',
-      priority: issue.fields?.priority?.name || '-'
-    };
-  });
+        const map = {};
+        (response.data.issues || []).forEach(issue => {
+          map[issue.key] = {
+            status: issue.fields?.status?.name || '-',
+            priority: issue.fields?.priority?.name || '-'
+          };
+        });
 
-  jiraCache = { data: map, fetchedAt: Date.now() };
-  return map;
+        logger.info('[AdminDashboard] Jira fetch OK via %s (api v%s) — %d issues', baseUrl, apiVersion, Object.keys(map).length);
+        jiraCache = { data: map, fetchedAt: Date.now() };
+        return map;
+      } catch (e) {
+        logger.warn('[AdminDashboard] Jira fetch failed: %s/rest/api/%s — %s', baseUrl, apiVersion, e.message);
+      }
+    }
+  }
+
+  // All attempts failed
+  return {};
 }
 
 // ============================================================================
