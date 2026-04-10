@@ -50,6 +50,10 @@ const corsOptions = {
     if (allowedOrigins.includes(origin)) {
       return callback(null, true);
     }
+    // Allow same-origin requests (e.g. admin dashboard served from this server)
+    if (origin === `https://${process.env.SERVER_HOSTNAME}` || origin === 'https://forgesync.amzur.com') {
+      return callback(null, true);
+    }
     // Log rejected origins in development for debugging
     if (process.env.NODE_ENV === 'development') {
       logger.warn(`[CORS] Rejected origin: ${origin}`);
