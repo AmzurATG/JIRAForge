@@ -3,254 +3,434 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Admin Dashboard - Time Tracker</title>
+  <title>Admin Dashboard - Time Tracker Status Report</title>
   <style>
-    * { box-sizing: border-box; margin: 0; padding: 0; }
-    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f0f2f5; color: #1a1a2e; min-height: 100vh; }
-    .navbar { background: linear-gradient(135deg, #0052CC, #0065FF); padding: 16px 32px; color: #fff; display: flex; justify-content: space-between; align-items: center; }
-    .navbar h1 { font-size: 20px; font-weight: 600; }
-    .navbar .refresh-btn { background: rgba(255,255,255,.2); border: none; color: #fff; padding: 8px 16px; border-radius: 6px; cursor: pointer; font-size: 14px; }
-    .navbar .refresh-btn:hover { background: rgba(255,255,255,.3); }
-    .container { max-width: 1200px; margin: 0 auto; padding: 28px 24px; }
+    *{box-sizing:border-box;margin:0;padding:0}
+    body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#f0f2f5;color:#1a1a2e;min-height:100vh}
 
-    /* Summary cards */
-    .summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; margin-bottom: 32px; }
-    .card { background: #fff; border-radius: 12px; padding: 24px; box-shadow: 0 1px 4px rgba(0,0,0,.06); text-align: center; }
-    .card .label { font-size: 12px; text-transform: uppercase; letter-spacing: .5px; color: #636e72; margin-bottom: 8px; }
-    .card .value { font-size: 32px; font-weight: 700; }
-    .card .value.blue { color: #0052CC; }
-    .card .value.green { color: #00b894; }
-    .card .value.orange { color: #e17055; }
-    .card .value.purple { color: #6c5ce7; }
+    /* ── Navbar ── */
+    .navbar{background:linear-gradient(135deg,#0052CC,#0065FF);padding:14px 32px;color:#fff;display:flex;justify-content:space-between;align-items:center}
+    .navbar h1{font-size:18px;font-weight:600}
+    .nav-actions{display:flex;gap:8px}
+    .nav-btn{background:rgba(255,255,255,.18);border:none;color:#fff;padding:7px 16px;border-radius:6px;cursor:pointer;font-size:13px}
+    .nav-btn:hover{background:rgba(255,255,255,.3)}
 
-    /* Org sections */
-    .org-section { background: #fff; border-radius: 12px; box-shadow: 0 1px 4px rgba(0,0,0,.06); margin-bottom: 20px; overflow: hidden; }
-    .org-header { padding: 16px 20px; display: flex; justify-content: space-between; align-items: center; cursor: pointer; border-bottom: 1px solid #f1f3f5; }
-    .org-header:hover { background: #f8f9fa; }
-    .org-name { font-size: 16px; font-weight: 600; }
-    .org-badges { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
-    .badge { display: inline-block; font-size: 12px; padding: 4px 10px; border-radius: 20px; font-weight: 600; }
-    .badge-blue { background: #dbeafe; color: #1e40af; }
-    .badge-green { background: #d1fae5; color: #065f46; }
-    .badge-orange { background: #ffedd5; color: #9a3412; }
-    .badge-gray { background: #f3f4f6; color: #4b5563; }
-    .badge-purple { background: #ede9fe; color: #5b21b6; }
-    .chevron { font-size: 18px; transition: transform .2s; color: #636e72; }
-    .chevron.open { transform: rotate(90deg); }
+    /* ── Tabs ── */
+    .tab-bar{background:#fff;border-bottom:2px solid #e2e8f0;display:flex;gap:0;padding:0 24px;overflow-x:auto}
+    .tab-btn{padding:12px 22px;font-size:13px;font-weight:600;border:none;background:none;cursor:pointer;color:#636e72;border-bottom:3px solid transparent;white-space:nowrap;transition:all .15s}
+    .tab-btn:hover{color:#0052CC;background:#f8f9fa}
+    .tab-btn.active{color:#0052CC;border-bottom-color:#0052CC}
 
-    /* User table */
-    .org-body { display: none; padding: 0; }
-    .org-body.open { display: block; }
-    table { width: 100%; border-collapse: collapse; }
-    th { background: #f8f9fa; padding: 10px 16px; text-align: left; font-size: 12px; text-transform: uppercase; letter-spacing: .5px; color: #636e72; font-weight: 600; }
-    td { padding: 10px 16px; border-top: 1px solid #f1f3f5; font-size: 14px; }
-    tr:hover td { background: #f8f9fa; }
+    /* ── Container ── */
+    .container{max-width:1260px;margin:0 auto;padding:24px}
+    .tab-content{display:none}
+    .tab-content.active{display:block}
 
-    /* Status dots */
-    .dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 6px; }
-    .dot-green { background: #00b894; }
-    .dot-gray { background: #b2bec3; }
-    .dot-orange { background: #e17055; }
+    /* ── Summary cards ── */
+    .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:14px;margin-bottom:28px}
+    .card{background:#fff;border-radius:10px;padding:20px;box-shadow:0 1px 4px rgba(0,0,0,.06);text-align:center}
+    .card .label{font-size:11px;text-transform:uppercase;letter-spacing:.6px;color:#636e72;margin-bottom:6px}
+    .card .value{font-size:30px;font-weight:700}
+    .c-blue{color:#0052CC} .c-green{color:#2E7D32} .c-orange{color:#E65100} .c-purple{color:#6c5ce7} .c-gray{color:#636e72}
 
-    /* Timestamps */
-    .time-ago { color: #636e72; font-size: 13px; }
+    /* ── Status badge ── */
+    .status-line{margin-bottom:20px}
+    .status-badge{display:inline-block;background:#E65100;color:#fff;padding:5px 14px;border-radius:4px;font-size:13px;font-weight:600}
 
-    /* Loading / error */
-    .loading { text-align: center; padding: 60px; color: #636e72; font-size: 16px; }
-    .error-banner { background: #fee2e2; color: #991b1b; padding: 12px 20px; border-radius: 8px; margin-bottom: 20px; }
+    /* ── Section titles ── */
+    .section-title{font-size:16px;font-weight:700;margin:28px 0 12px;color:#1a1a2e}
+    .section-title:first-child{margin-top:0}
+    .sub-section{margin-bottom:28px}
 
-    /* Login */
-    .login-overlay { position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: #f0f2f5; display: flex; align-items: center; justify-content: center; z-index: 100; }
-    .login-box { background: #fff; padding: 40px; border-radius: 16px; box-shadow: 0 4px 20px rgba(0,0,0,.1); text-align: center; width: 360px; max-width: 90vw; }
-    .login-box h2 { margin-bottom: 8px; color: #0052CC; }
-    .login-box p { color: #636e72; font-size: 14px; margin-bottom: 24px; }
-    .login-box input { width: 100%; padding: 10px 14px; border: 1px solid #dfe6e9; border-radius: 8px; font-size: 14px; margin-bottom: 16px; }
-    .login-box button { width: 100%; padding: 10px; background: #0052CC; color: #fff; border: none; border-radius: 8px; font-size: 15px; font-weight: 600; cursor: pointer; }
-    .login-box button:hover { background: #0065FF; }
-    .login-error { color: #d63031; font-size: 13px; margin-bottom: 12px; }
+    /* ── Tables ── */
+    .tbl-wrap{background:#fff;border-radius:10px;box-shadow:0 1px 4px rgba(0,0,0,.06);overflow:hidden;margin-bottom:22px}
+    table{width:100%;border-collapse:collapse}
+    th{padding:10px 14px;text-align:left;font-size:12px;text-transform:uppercase;letter-spacing:.4px;font-weight:700;color:#fff}
+    td{padding:9px 14px;font-size:13px;border-top:1px solid #f1f3f5}
+    tr:hover td{background:#f8f9fa}
+    .th-blue{background:#2F5496}
+    .th-green{background:#548235}
+    .th-orange{background:#C55A11}
+    .th-dark{background:#1B3A5C}
+    .th-gray{background:#4B5563}
+    .th-teal{background:#0D7377}
 
-    @media (max-width: 768px) {
-      .container { padding: 16px; }
-      .summary { grid-template-columns: repeat(2, 1fr); }
+    /* header for sub-sections */
+    .team-header{padding:10px 14px;font-size:14px;font-weight:700;color:#fff;text-align:center}
+
+    /* ── Status colors ── */
+    .st{display:inline-block;padding:3px 10px;border-radius:4px;font-size:12px;font-weight:600;white-space:nowrap}
+    .st-todo{background:#FFF3CD;color:#856404}
+    .st-progress{background:#CCE5FF;color:#004085}
+    .st-review{background:#FFE0CC;color:#9A3412}
+    .st-done{background:#D4EDDA;color:#155724}
+    .st-created{background:#D4EDDA;color:#155724}
+    .st-pending{background:#FFF3CD;color:#856404}
+    .st-failed{background:#F8D7DA;color:#721C24}
+    .st-default{background:#E2E8F0;color:#4A5568}
+
+    /* ── Priority colors ── */
+    .pr{display:inline-block;padding:3px 10px;border-radius:4px;font-size:12px;font-weight:600}
+    .pr-high,.pr-highest{background:#F8D7DA;color:#721C24}
+    .pr-medium{background:#FFF3CD;color:#856404}
+    .pr-low,.pr-lowest{background:#D4EDDA;color:#155724}
+    .pr-default{background:#E2E8F0;color:#4A5568}
+
+    /* ── Links ── */
+    a.issue-link{color:#0052CC;text-decoration:none;font-weight:600}
+    a.issue-link:hover{text-decoration:underline}
+
+    /* ── Loading / error ── */
+    .loading{text-align:center;padding:60px;color:#636e72;font-size:15px}
+    .error-banner{background:#fee2e2;color:#991b1b;padding:12px 20px;border-radius:8px;margin-bottom:16px}
+
+    /* ── Login ── */
+    .login-overlay{position:fixed;inset:0;background:#f0f2f5;display:flex;align-items:center;justify-content:center;z-index:100}
+    .login-box{background:#fff;padding:40px;border-radius:16px;box-shadow:0 4px 20px rgba(0,0,0,.1);text-align:center;width:360px;max-width:90vw}
+    .login-box h2{margin-bottom:8px;color:#0052CC}
+    .login-box p{color:#636e72;font-size:14px;margin-bottom:24px}
+    .login-box input{width:100%;padding:10px 14px;border:1px solid #dfe6e9;border-radius:8px;font-size:14px;margin-bottom:16px}
+    .login-box button{width:100%;padding:10px;background:#0052CC;color:#fff;border:none;border-radius:8px;font-size:15px;font-weight:600;cursor:pointer}
+    .login-box button:hover{background:#0065FF}
+    .login-error{color:#d63031;font-size:13px;margin-bottom:12px}
+
+    /* ── Totals row ── */
+    .total-row td{font-weight:700;border-top:2px solid #cbd5e0}
+
+    @media(max-width:768px){
+      .container{padding:14px}
+      .cards{grid-template-columns:repeat(2,1fr)}
+      .tab-bar{padding:0 10px}
+      .tab-btn{padding:10px 14px;font-size:12px}
     }
   </style>
 </head>
 <body>
 
-  <!-- Login -->
-  <div class="login-overlay" id="login-overlay">
-    <div class="login-box">
-      <h2>Admin Dashboard</h2>
-      <p>Enter the dashboard password to continue</p>
-      <div class="login-error" id="login-error"></div>
-      <input type="password" id="password-input" placeholder="Password" autocomplete="off">
-      <button onclick="doLogin()">Sign In</button>
-    </div>
+<!-- ═══════════ Login ═══════════ -->
+<div class="login-overlay" id="login-overlay">
+  <div class="login-box">
+    <h2>Admin Dashboard</h2>
+    <p>Enter the dashboard password to continue</p>
+    <div class="login-error" id="login-error"></div>
+    <input type="password" id="password-input" placeholder="Password" autocomplete="off">
+    <button onclick="doLogin()">Sign In</button>
   </div>
+</div>
 
-  <!-- Dashboard -->
-  <nav class="navbar">
-    <h1>&#128202; Admin Dashboard</h1>
-    <div>
-      <button class="refresh-btn" onclick="loadData()">&#8635; Refresh</button>
-      <button class="refresh-btn" onclick="doLogout()" style="margin-left:8px">Logout</button>
-    </div>
-  </nav>
-
-  <div class="container">
-    <div id="error-area"></div>
-    <div class="summary" id="summary-cards">
-      <div class="loading" id="loading">Loading dashboard...</div>
-    </div>
-    <div id="org-list"></div>
+<!-- ═══════════ Dashboard ═══════════ -->
+<nav class="navbar">
+  <h1>Time Tracker Application - Status Report</h1>
+  <div class="nav-actions">
+    <button class="nav-btn" onclick="loadData()">&#8635; Refresh</button>
+    <button class="nav-btn" onclick="doLogout()">Logout</button>
   </div>
+</nav>
 
-  <script>
-    let sessionToken = sessionStorage.getItem('admin_session_token') || '';
+<div class="tab-bar" id="tab-bar">
+  <button class="tab-btn active" data-tab="dashboard">Dashboard</button>
+  <button class="tab-btn" data-tab="allUsers">All Users</button>
+  <button class="tab-btn" data-tab="issueList">Issue List</button>
+  <button class="tab-btn" data-tab="amzurUsers">Amzur Users</button>
+  <button class="tab-btn" data-tab="evokeUsers">Evoke Users</button>
+</div>
 
-    // Check if already logged in
-    if (sessionToken) {
-      document.getElementById('login-overlay').style.display = 'none';
-      loadData();
+<div class="container">
+  <div id="error-area"></div>
+  <div class="loading" id="loading">Loading dashboard...</div>
+
+  <!-- TAB: Dashboard -->
+  <div class="tab-content active" id="tab-dashboard"></div>
+
+  <!-- TAB: All Users -->
+  <div class="tab-content" id="tab-allUsers"></div>
+
+  <!-- TAB: Issue List -->
+  <div class="tab-content" id="tab-issueList"></div>
+
+  <!-- TAB: Amzur Users -->
+  <div class="tab-content" id="tab-amzurUsers"></div>
+
+  <!-- TAB: Evoke Users -->
+  <div class="tab-content" id="tab-evokeUsers"></div>
+</div>
+
+<script>
+// ═══════════════════════════════════════════════════════════════
+// Auth
+// ═══════════════════════════════════════════════════════════════
+let sessionToken = sessionStorage.getItem('admin_session_token') || '';
+
+if (sessionToken) {
+  document.getElementById('login-overlay').style.display = 'none';
+  loadData();
+}
+
+document.getElementById('password-input').addEventListener('keydown', e => { if (e.key === 'Enter') doLogin(); });
+
+async function doLogin() {
+  const pw = document.getElementById('password-input').value.trim();
+  if (!pw) { document.getElementById('login-error').textContent = 'Please enter a password'; return; }
+  document.getElementById('login-error').textContent = '';
+  try {
+    const r = await fetch('/admin-dashboard/api/login', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ password: pw })
+    });
+    const j = await r.json();
+    if (!j.success) { document.getElementById('login-error').textContent = j.error || 'Login failed'; return; }
+    sessionToken = j.token;
+    sessionStorage.setItem('admin_session_token', sessionToken);
+    document.getElementById('login-overlay').style.display = 'none';
+    loadData();
+  } catch { document.getElementById('login-error').textContent = 'Connection error'; }
+}
+
+function doLogout() {
+  sessionStorage.removeItem('admin_session_token');
+  sessionToken = '';
+  location.reload();
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Tab switching
+// ═══════════════════════════════════════════════════════════════
+document.getElementById('tab-bar').addEventListener('click', e => {
+  const btn = e.target.closest('.tab-btn');
+  if (!btn) return;
+  document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+  document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+  btn.classList.add('active');
+  document.getElementById('tab-' + btn.dataset.tab).classList.add('active');
+});
+
+// ═══════════════════════════════════════════════════════════════
+// Data loading
+// ═══════════════════════════════════════════════════════════════
+async function loadData() {
+  document.getElementById('error-area').innerHTML = '';
+  document.getElementById('loading').style.display = 'block';
+  try {
+    const r = await fetch('/admin-dashboard/api/stats', {
+      headers: { 'Authorization': 'Bearer ' + sessionToken }
+    });
+    if (r.status === 401) {
+      sessionStorage.removeItem('admin_session_token'); sessionToken = '';
+      document.getElementById('login-overlay').style.display = 'flex';
+      document.getElementById('login-error').textContent = 'Session expired. Please log in again.';
+      return;
     }
+    const j = await r.json();
+    if (!j.success) throw new Error(j.error);
+    document.getElementById('loading').style.display = 'none';
+    render(j);
+  } catch (e) {
+    document.getElementById('loading').style.display = 'none';
+    document.getElementById('error-area').innerHTML = '<div class="error-banner">' + esc(e.message) + '</div>';
+  }
+}
 
-    async function doLogin() {
-      const input = document.getElementById('password-input');
-      const password = input.value.trim();
-      if (!password) { document.getElementById('login-error').textContent = 'Please enter a password'; return; }
-      document.getElementById('login-error').textContent = '';
-      try {
-        const r = await fetch('/admin-dashboard/api/login', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ password })
-        });
-        const j = await r.json();
-        if (!j.success) {
-          document.getElementById('login-error').textContent = j.error || 'Login failed';
-          return;
-        }
-        sessionToken = j.token;
-        sessionStorage.setItem('admin_session_token', sessionToken);
-        document.getElementById('login-overlay').style.display = 'none';
-        loadData();
-      } catch (e) {
-        document.getElementById('login-error').textContent = 'Connection error';
-      }
-    }
+// ═══════════════════════════════════════════════════════════════
+// Rendering
+// ═══════════════════════════════════════════════════════════════
+function render(data) {
+  renderDashboard(data);
+  renderAllUsers(data);
+  renderIssueList(data);
+  renderAmzurUsers(data);
+  renderEvokeUsers(data);
+}
 
-    function doLogout() {
-      sessionStorage.removeItem('admin_session_token');
-      sessionToken = '';
-      location.reload();
-    }
+// ── Dashboard Tab ──
+function renderDashboard(data) {
+  const s = data.summary;
+  const totalPerTeam = data.usersPerTeam.reduce((a, t) => a + t.userCount, 0);
 
-    // Enter key on input
-    document.getElementById('password-input').addEventListener('keydown', e => { if (e.key === 'Enter') doLogin(); });
+  let html = `
+    <div class="status-line"><span class="status-badge">Status: Internal Testing</span></div>
+    <div class="cards">
+      <div class="card"><div class="label">Total Users</div><div class="value c-blue">${s.totalUsers}</div></div>
+      <div class="card"><div class="label">Active Users</div><div class="value c-blue">${s.activeUsers}</div></div>
+      <div class="card"><div class="label">Desktop App Users</div><div class="value c-green">${s.desktopAppUsers}</div></div>
+      <div class="card"><div class="label">Not Started</div><div class="value c-orange">${s.notStarted}</div></div>
+      <div class="card"><div class="label">Organizations/Team</div><div class="value c-purple">${s.organizationsTeam}</div></div>
+      <div class="card"><div class="label">Total Tickets</div><div class="value c-gray">${s.totalTickets}</div></div>
+    </div>
 
-    async function loadData() {
-      document.getElementById('error-area').innerHTML = '';
-      try {
-        const r = await fetch('/admin-dashboard/api/stats', {
-          headers: { 'Authorization': 'Bearer ' + sessionToken }
-        });
-        if (r.status === 401) {
-          sessionStorage.removeItem('admin_session_token');
-          sessionToken = '';
-          document.getElementById('login-overlay').style.display = 'flex';
-          document.getElementById('login-error').textContent = 'Session expired. Please log in again.';
-          return;
-        }
-        const j = await r.json();
-        if (!j.success) throw new Error(j.error);
-        render(j);
-      } catch (e) {
-        document.getElementById('error-area').innerHTML = '<div class="error-banner">' + esc(e.message) + '</div>';
-      }
-    }
+    <div class="section-title">Users Per Organization &amp; Team</div>
+    <div class="tbl-wrap"><table>
+      <thead><tr class="th-blue"><th>Team/Organization</th><th>User Count</th></tr></thead>
+      <tbody>
+        ${data.usersPerTeam.map(t => `<tr><td>${esc(t.team)}</td><td><strong>${t.userCount}</strong></td></tr>`).join('')}
+        <tr class="total-row"><td><strong>Total</strong></td><td><strong>${totalPerTeam}</strong></td></tr>
+      </tbody>
+    </table></div>
 
-    function render(data) {
-      const s = data.summary;
-      document.getElementById('summary-cards').innerHTML = `
-        <div class="card"><div class="label">Organizations</div><div class="value blue">${s.totalOrganizations}</div></div>
-        <div class="card"><div class="label">Total Users</div><div class="value blue">${s.totalUsers}</div></div>
-        <div class="card"><div class="label">Desktop Installed</div><div class="value green">${s.desktopInstalled}</div></div>
-        <div class="card"><div class="label">Not Installed</div><div class="value orange">${s.desktopNotInstalled}</div></div>
-        <div class="card"><div class="label">Active Now</div><div class="value purple">${s.activeNow}</div></div>
-      `;
+    <div class="section-title">Tickets Raised Per Team</div>
+    <div class="tbl-wrap"><table>
+      <thead><tr class="th-blue"><th>Team/Organization</th><th>Tickets Raised</th><th>% of Total</th><th>Started</th></tr></thead>
+      <tbody>
+        ${data.ticketsPerTeam.map(t => `<tr>
+          <td>${esc(t.team)}</td>
+          <td><strong>${t.ticketsRaised}</strong></td>
+          <td>${t.ticketsRaised > 0 ? t.percentOfTotal + '%' : ''}</td>
+          <td>${t.started ? formatDate(t.started) : ''}</td>
+        </tr>`).join('')}
+        <tr class="total-row"><td></td><td><strong>${s.totalTickets}</strong></td><td></td><td></td></tr>
+      </tbody>
+    </table></div>
 
-      const list = document.getElementById('org-list');
-      if (!data.organizations || data.organizations.length === 0) {
-        list.innerHTML = '<div class="loading">No organizations found</div>';
-        return;
-      }
+    <div class="section-title">Ticket Status Summary</div>
+    <div class="tbl-wrap"><table>
+      <thead><tr class="th-blue"><th>Status</th><th>Count</th><th>Team Breakdown</th></tr></thead>
+      <tbody>
+        ${data.ticketStatusSummary.map(t => `<tr>
+          <td>${statusBadge(t.status)}</td>
+          <td><strong>${t.count}</strong></td>
+          <td>${esc(t.teamBreakdown)}</td>
+        </tr>`).join('')}
+      </tbody>
+    </table></div>
+  `;
 
-      list.innerHTML = data.organizations.map((org, i) => `
-        <div class="org-section">
-          <div class="org-header" onclick="toggleOrg(${i})">
-            <div>
-              <span class="org-name">${esc(org.name)}</span>
-            </div>
-            <div class="org-badges">
-              <span class="badge badge-blue">${org.totalUsers} users</span>
-              <span class="badge badge-green">${org.installedDesktop} installed</span>
-              <span class="badge badge-orange">${org.notInstalled} not installed</span>
-              <span class="badge badge-purple">${org.activeNow} active</span>
-              <span class="badge badge-gray">${org.tier}</span>
-              <span class="chevron" id="chev-${i}">&#9654;</span>
-            </div>
-          </div>
-          <div class="org-body" id="org-body-${i}">
-            <table>
-              <thead><tr>
-                <th>User</th><th>Email</th><th>Desktop</th><th>Status</th><th>Last Heartbeat</th><th>Version</th><th>Joined</th>
-              </tr></thead>
-              <tbody>
-                ${org.users.length === 0 ? '<tr><td colspan="7" style="text-align:center;color:#b2bec3;padding:20px">No users</td></tr>' :
-                  org.users.map(u => `<tr>
-                    <td>${esc(u.displayName || '—')}</td>
-                    <td>${esc(u.email || '—')}</td>
-                    <td>${u.desktopInstalled
-                      ? '<span class="dot dot-green"></span>Installed'
-                      : '<span class="dot dot-gray"></span>Not Installed'}</td>
-                    <td>${u.desktopLoggedIn
-                      ? '<span class="dot dot-green"></span>Logged In'
-                      : '<span class="dot dot-orange"></span>Logged Out'}</td>
-                    <td class="time-ago">${u.lastHeartbeat ? timeAgo(u.lastHeartbeat) : '—'}</td>
-                    <td>${esc(u.appVersion || '—')}</td>
-                    <td class="time-ago">${u.createdAt ? new Date(u.createdAt).toLocaleDateString() : '—'}</td>
-                  </tr>`).join('')}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      `).join('');
-    }
+  document.getElementById('tab-dashboard').innerHTML = html;
+}
 
-    function toggleOrg(i) {
-      const body = document.getElementById('org-body-' + i);
-      const chev = document.getElementById('chev-' + i);
-      body.classList.toggle('open');
-      chev.classList.toggle('open');
-    }
+// ── All Users Tab ──
+function renderAllUsers(data) {
+  const users = data.allUsers;
+  let html = `
+    <div class="section-title">All Users - Complete List (${users.length} Users)</div>
+    <div class="tbl-wrap"><table>
+      <thead><tr class="th-blue"><th>S.No</th><th>Display Name</th><th>Email</th><th>Organization</th><th>Team</th></tr></thead>
+      <tbody>
+        ${users.map((u, i) => `<tr>
+          <td>${i + 1}</td>
+          <td>${esc(u.displayName)}</td>
+          <td>${esc(u.email)}</td>
+          <td>${esc(u.organization)}</td>
+          <td>${esc(u.team)}</td>
+        </tr>`).join('')}
+      </tbody>
+    </table></div>
+  `;
+  document.getElementById('tab-allUsers').innerHTML = html;
+}
 
-    function timeAgo(ts) {
-      const diff = Date.now() - new Date(ts).getTime();
-      if (diff < 60000) return 'Just now';
-      if (diff < 3600000) return Math.floor(diff / 60000) + 'm ago';
-      if (diff < 86400000) return Math.floor(diff / 3600000) + 'h ago';
-      return Math.floor(diff / 86400000) + 'd ago';
-    }
+// ── Issue List Tab ──
+function renderIssueList(data) {
+  const tickets = data.tickets;
+  const withKey = tickets.filter(t => t.issueKey !== '-');
+  let html = `
+    <div class="section-title">Jira Feedback Tickets (${withKey.length} Tickets)</div>
+    <div class="tbl-wrap"><table>
+      <thead><tr class="th-dark"><th>S.No</th><th>Issue Key</th><th>Summary</th><th>Submitted By</th><th>Team</th><th>Status</th><th>Priority</th></tr></thead>
+      <tbody>
+        ${withKey.map((t, i) => `<tr>
+          <td>${i + 1}</td>
+          <td>${t.issueUrl ? '<a class="issue-link" href="' + esc(t.issueUrl) + '" target="_blank">' + esc(t.issueKey) + '</a>' : esc(t.issueKey)}</td>
+          <td>${esc(t.summary)}</td>
+          <td>${esc(t.submittedBy)}</td>
+          <td>${esc(t.team)}</td>
+          <td>${statusBadge(t.status)}</td>
+          <td>${priorityBadge(t.priority)}</td>
+        </tr>`).join('')}
+      </tbody>
+    </table></div>
+  `;
+  document.getElementById('tab-issueList').innerHTML = html;
+}
 
-    function esc(s) {
-      if (s == null) return '';
-      const d = document.createElement('div');
-      d.textContent = s;
-      return d.innerHTML;
-    }
+// ── Amzur Users Tab ──
+function renderAmzurUsers(data) {
+  const cs = data.amzurUsers.customSoftware;
+  const atg = data.amzurUsers.atg;
+  const total = cs.length + atg.length;
 
-    // Auto-refresh every 30 seconds
-    setInterval(() => { if (sessionToken) loadData(); }, 30000);
-  </script>
+  let html = `
+    <div class="section-title">Amzur - All Users (${total} Users)</div>
+
+    <div class="tbl-wrap">
+      <div class="team-header" style="background:#548235">Custom Software Team (${cs.length} Users)</div>
+      <table>
+        <thead><tr class="th-green"><th>S.No</th><th>Display Name</th><th>Email</th></tr></thead>
+        <tbody>
+          ${cs.map((u, i) => `<tr><td>${i + 1}</td><td>${esc(u.displayName)}</td><td>${esc(u.email)}</td></tr>`).join('')}
+        </tbody>
+      </table>
+    </div>
+
+    <div class="tbl-wrap">
+      <div class="team-header" style="background:#C55A11">ATG Team (${atg.length} Users)</div>
+      <table>
+        <thead><tr class="th-orange"><th>S.No</th><th>Display Name</th><th>Email</th></tr></thead>
+        <tbody>
+          ${atg.map((u, i) => `<tr><td>${i + 1}</td><td>${esc(u.displayName)}</td><td>${esc(u.email)}</td></tr>`).join('')}
+        </tbody>
+      </table>
+    </div>
+  `;
+  document.getElementById('tab-amzurUsers').innerHTML = html;
+}
+
+// ── Evoke Users Tab ──
+function renderEvokeUsers(data) {
+  const users = data.evokeUsers;
+  let html = `
+    <div class="section-title">Evoke - User List (${users.length} Users)</div>
+    <div class="tbl-wrap"><table>
+      <thead><tr class="th-dark"><th>S.No</th><th>Display Name</th><th>Email</th></tr></thead>
+      <tbody>
+        ${users.map((u, i) => `<tr><td>${i + 1}</td><td>${esc(u.displayName)}</td><td>${esc(u.email)}</td></tr>`).join('')}
+      </tbody>
+    </table></div>
+  `;
+  document.getElementById('tab-evokeUsers').innerHTML = html;
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Helpers
+// ═══════════════════════════════════════════════════════════════
+function esc(s) {
+  if (s == null) return '';
+  const d = document.createElement('div');
+  d.textContent = s;
+  return d.innerHTML;
+}
+
+function statusBadge(status) {
+  if (!status || status === '-') return '<span class="st st-default">-</span>';
+  const s = status.toLowerCase();
+  let cls = 'st-default';
+  if (s === 'to do' || s === 'to do (start)') cls = 'st-todo';
+  else if (s === 'in progress' || s === 'processing') cls = 'st-progress';
+  else if (s === 'review' || s === 'in review') cls = 'st-review';
+  else if (s === 'done' || s === 'created') cls = 'st-done';
+  else if (s === 'pending') cls = 'st-pending';
+  else if (s === 'failed') cls = 'st-failed';
+  return '<span class="st ' + cls + '">' + esc(status) + '</span>';
+}
+
+function priorityBadge(priority) {
+  if (!priority || priority === '-') return '<span class="pr pr-default">-</span>';
+  const p = priority.toLowerCase();
+  let cls = 'pr-default';
+  if (p === 'high' || p === 'highest') cls = 'pr-high';
+  else if (p === 'medium') cls = 'pr-medium';
+  else if (p === 'low' || p === 'lowest') cls = 'pr-low';
+  return '<span class="pr ' + cls + '">' + esc(priority) + '</span>';
+}
+
+function formatDate(ts) {
+  if (!ts) return '';
+  const d = new Date(ts);
+  const day = d.getDate();
+  const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  const suffix = (day === 1 || day === 21 || day === 31) ? 'st' : (day === 2 || day === 22) ? 'nd' : (day === 3 || day === 23) ? 'rd' : 'th';
+  return day + suffix + ' ' + months[d.getMonth()];
+}
+
+// Auto-refresh every 30 seconds
+setInterval(() => { if (sessionToken) loadData(); }, 30000);
+</script>
 </body>
 </html>
