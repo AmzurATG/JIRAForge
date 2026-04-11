@@ -19,15 +19,16 @@ export function registerAnalyticsResolvers(resolver) {
    * Uses optimized batch API to reduce API calls from 8+ to 1
    */
   resolver.define('getTimeAnalytics', async (req) => {
-    const { context } = req;
+    const { payload, context } = req;
     const accountId = context.accountId;
     const cloudId = context.cloudId;  // Multi-tenancy: Get Jira Cloud ID from context
+    const clientToday = payload?.clientToday;
 
     try {
       // Use batch API for improved performance (reduces API calls from 8+ to 1)
       const data = USE_BATCH_API 
-        ? await fetchTimeAnalyticsBatch(accountId, cloudId)
-        : await fetchTimeAnalytics(accountId, cloudId);
+        ? await fetchTimeAnalyticsBatch(accountId, cloudId, clientToday)
+        : await fetchTimeAnalytics(accountId, cloudId, clientToday);
       return {
         success: true,
         data

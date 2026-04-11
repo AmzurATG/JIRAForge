@@ -231,7 +231,7 @@ function TodayActivityView({ data }) {
         <div className="summary-stats" style={{width:'100%'}}>
           <div className="stat-item">
             <div className="stat-value">{formatTime(totalSeconds)}</div>
-            <div className="stat-label">Productive Time</div>
+            <div className="stat-label">Total Time</div>
           </div>
           <div className="stat-item">
             <div className="stat-value">{data.issueCount}</div>
@@ -316,7 +316,7 @@ function WeekActivityView({ data }) {
         <div className="summary-stats" style={{width:'100%'}}>
           <div className="stat-item">
             <div className="stat-value">{formatTime(data.totalSeconds)}</div>
-            <div className="stat-label">Productive Time</div>
+            <div className="stat-label">Total Time</div>
           </div>
           <div className="stat-item">
             <div className="stat-value">{data.dailyBreakdown.filter(d => d.totalSeconds > 0).length}</div>
@@ -409,7 +409,7 @@ function MonthActivityView({ data }) {
         <div className="summary-stats" style={{width:'100%'}}>
           <div className="stat-item">
             <div className="stat-value">{formatTime(data.totalSeconds)}</div>
-            <div className="stat-label">Productive Time</div>
+            <div className="stat-label">Total Time</div>
           </div>
           <div className="stat-item">
             <div className="stat-value">{data.weeklyBreakdown.length}</div>

@@ -167,11 +167,12 @@ async function generateSingleProjectExcelReport(data, filename) {
   // ═══════════════════════════════════════════════════
   const ws = workbook.addWorksheet('Detailed Activity (Grouped)');
 
-  const COL_COUNT = 5;
+  const COL_COUNT = 6;
   ws.columns = [
     { key: 'member', width: 22 },
     { key: 'date', width: 16 },
     { key: 'issueKey', width: 18 },
+    { key: 'classification', width: 16 },
     { key: 'totalTime', width: 14 },
     { key: 'timings', width: 40 }
   ];
@@ -183,7 +184,7 @@ async function generateSingleProjectExcelReport(data, filename) {
 
   // Header row
   const hRow = ws.getRow(cr);
-  hRow.values = ['Member', 'Date', 'Issue Key', 'Total Time', 'Time (Start - End)'];
+  hRow.values = ['Member', 'Date', 'Issue Key', 'Classification', 'Total Time', 'Time (Start - End)'];
   styleHeaderRow(hRow, COL_COUNT);
   const headerRowNum = cr;
   ws.views = [{ state: 'frozen', ySplit: cr }];
@@ -193,7 +194,15 @@ async function generateSingleProjectExcelReport(data, filename) {
   const allEntries = [];
 
   for (const member of data.memberDetails) {
-    const sortedEntries = [...member.entries].sort((a, b) => {
+    // Combine productive and non-productive entries
+    const productiveEntries = (member.entries || []).map(e => ({ ...e, classification: 'Productive' }));
+    const npEntries = (member.nonProductiveEntries || []).map(e => ({ 
+      ...e, 
+      classification: e.classification === 'private' ? 'Private' : 'Non-Productive' 
+    }));
+    const allMemberEntries = [...productiveEntries, ...npEntries];
+
+    const sortedEntries = allMemberEntries.sort((a, b) => {
       if (a.date !== b.date) return a.date.localeCompare(b.date);
       return a.issueKey.localeCompare(b.issueKey);
     });
@@ -220,6 +229,7 @@ async function generateSingleProjectExcelReport(data, filename) {
         member.displayName,
         formatDateFriendly(entry.date),
         entry.issueKey,
+        entry.classification || 'Productive',
         formatDuration(entry.totalSeconds),
         timingText
       ];
@@ -229,9 +239,10 @@ async function generateSingleProjectExcelReport(data, filename) {
       row.getCell(2).alignment = { vertical: 'middle', horizontal: 'left' };
       row.getCell(2).font = { bold: true, size: 10, color: { argb: 'FF172B4D' } };
       row.getCell(3).alignment = { vertical: 'middle', horizontal: 'left' };
-      row.getCell(4).font = { bold: true, size: 10, color: { argb: 'FF172B4D' } };
-      row.getCell(5).alignment = { vertical: 'middle', horizontal: 'left' };
-      row.getCell(5).font = { size: 10, color: { argb: 'FF37474F' } };
+      row.getCell(4).alignment = { vertical: 'middle', horizontal: 'left' };
+      row.getCell(5).font = { bold: true, size: 10, color: { argb: 'FF172B4D' } };
+      row.getCell(6).alignment = { vertical: 'middle', horizontal: 'left' };
+      row.getCell(6).font = { size: 10, color: { argb: 'FF37474F' } };
       row.height = 20;
 
       cr++;
@@ -240,7 +251,7 @@ async function generateSingleProjectExcelReport(data, filename) {
   }
 
   // Set autoFilter to span from header row to last data row
-  ws.autoFilter = { from: `A${headerRowNum}`, to: `E${cr - 1}` };
+  ws.autoFilter = { from: `A${headerRowNum}`, to: `F${cr - 1}` };
 
   // ═══════════════════════════════════════════════════
   // SHEET 2: Time by Issue
@@ -490,12 +501,13 @@ async function generateMultiProjectExcelReport(data, filename) {
   // ═══════════════════════════════════════════════════
   const ws = workbook.addWorksheet('Detailed Activity (Grouped)');
 
-  const COL_COUNT = 6;
+  const COL_COUNT = 7;
   ws.columns = [
     { key: 'project', width: 16 },
     { key: 'member', width: 22 },
     { key: 'date', width: 16 },
     { key: 'issueKey', width: 18 },
+    { key: 'classification', width: 16 },
     { key: 'totalTime', width: 14 },
     { key: 'timings', width: 40 }
   ];
@@ -504,7 +516,7 @@ async function generateMultiProjectExcelReport(data, filename) {
   cr = addSubtitleRow(ws, 'Data grouped by project. Each row = one issue on one day.', COL_COUNT, cr);
 
   const hRow = ws.getRow(cr);
-  hRow.values = ['Project', 'Member', 'Date', 'Issue Key', 'Total Time', 'Time (Start - End)'];
+  hRow.values = ['Project', 'Member', 'Date', 'Issue Key', 'Classification', 'Total Time', 'Time (Start - End)'];
   styleHeaderRow(hRow, COL_COUNT);
   const headerRowNum = cr;
   ws.views = [{ state: 'frozen', ySplit: cr }];
@@ -514,7 +526,15 @@ async function generateMultiProjectExcelReport(data, filename) {
 
   for (const projData of projects) {
     for (const member of projData.memberDetails) {
-      const sortedEntries = [...member.entries].sort((a, b) => {
+      // Combine productive and non-productive entries
+      const productiveEntries = (member.entries || []).map(e => ({ ...e, classification: 'Productive' }));
+      const npEntries = (member.nonProductiveEntries || []).map(e => ({ 
+        ...e, 
+        classification: e.classification === 'private' ? 'Private' : 'Non-Productive' 
+      }));
+      const allMemberEntries = [...productiveEntries, ...npEntries];
+
+      const sortedEntries = allMemberEntries.sort((a, b) => {
         if (a.date !== b.date) return a.date.localeCompare(b.date);
         return a.issueKey.localeCompare(b.issueKey);
       });
@@ -541,6 +561,7 @@ async function generateMultiProjectExcelReport(data, filename) {
           member.displayName,
           formatDateFriendly(entry.date),
           entry.issueKey,
+          entry.classification || 'Productive',
           formatDuration(entry.totalSeconds),
           timingText
         ];
@@ -552,9 +573,10 @@ async function generateMultiProjectExcelReport(data, filename) {
         row.getCell(3).alignment = { vertical: 'middle', horizontal: 'left' };
         row.getCell(3).font = { bold: true, size: 10, color: { argb: 'FF172B4D' } };
         row.getCell(4).alignment = { vertical: 'middle', horizontal: 'left' };
-        row.getCell(5).font = { bold: true, size: 10, color: { argb: 'FF172B4D' } };
-        row.getCell(6).alignment = { vertical: 'middle', horizontal: 'left' };
-        row.getCell(6).font = { size: 10, color: { argb: 'FF37474F' } };
+        row.getCell(5).alignment = { vertical: 'middle', horizontal: 'left' };
+        row.getCell(6).font = { bold: true, size: 10, color: { argb: 'FF172B4D' } };
+        row.getCell(7).alignment = { vertical: 'middle', horizontal: 'left' };
+        row.getCell(7).font = { size: 10, color: { argb: 'FF37474F' } };
         row.height = 20;
 
         cr++;
@@ -563,7 +585,7 @@ async function generateMultiProjectExcelReport(data, filename) {
     }
   }
 
-  ws.autoFilter = { from: `A${headerRowNum}`, to: `F${cr - 1}` };
+  ws.autoFilter = { from: `A${headerRowNum}`, to: `G${cr - 1}` };
 
   // ═══════════════════════════════════════════════════
   // SHEET 2: Time by Issue (Grouped by Project)

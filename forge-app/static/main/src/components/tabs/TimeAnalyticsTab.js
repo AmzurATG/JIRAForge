@@ -38,7 +38,9 @@ function TimeAnalyticsTab({ onOpenWorklogReassignModal, refreshKey }) {
     setLoading(true);
     setError(null);
     try {
-      const result = await invoke('getTimeAnalytics');
+      const result = await invoke('getTimeAnalytics', {
+        clientToday: new Date().toLocaleDateString('sv-SE')
+      });
       console.log('[TimeAnalytics] getTimeAnalytics result:', 
         'success:', result?.success,
         'allUsers:', result?.data?.allUsers?.length,
