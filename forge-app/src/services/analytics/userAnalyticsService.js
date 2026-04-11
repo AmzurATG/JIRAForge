@@ -72,9 +72,10 @@ async function resolvePermissions(accountId) {
  * 
  * @param {string} accountId - Atlassian account ID  
  * @param {string} cloudId - Jira Cloud ID for organization filtering
+ * @param {string} [clientToday] - Client's local date as YYYY-MM-DD (reserved for future use)
  * @returns {Promise<Object>} Analytics data (daily, weekly, by project, by issue)
  */
-export async function fetchTimeAnalyticsBatch(accountId, cloudId) {
+export async function fetchTimeAnalyticsBatch(accountId, cloudId, clientToday) {
   const t0 = Date.now();
 
   // Resolve permissions (cached in KVS — saves ~3-5s on subsequent loads)
@@ -130,7 +131,7 @@ export async function fetchTimeAnalyticsBatch(accountId, cloudId) {
  * @returns {Promise<Object>} Analytics data (daily, weekly, by project, by issue)
  * @deprecated Use fetchTimeAnalyticsBatch() for improved performance
  */
-export async function fetchTimeAnalytics(accountId, cloudId) {
+export async function fetchTimeAnalytics(accountId, cloudId, clientToday) {
   const supabaseConfig = await getSupabaseConfig(accountId);
   if (!supabaseConfig) {
     throw new Error('Supabase not configured. Please configure in Settings.');
