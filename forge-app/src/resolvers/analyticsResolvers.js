@@ -320,17 +320,20 @@ export function registerAnalyticsResolvers(resolver) {
 
   /**
    * Resolver for exporting team analytics
-   * Generates CSV data for download
+   * Generates CSV data for download - supports multiple projects
    */
   resolver.define('exportTeamAnalytics', async (req) => {
     const { payload, context } = req;
-    const { projectKey, startDate, endDate, format, filterUserIds } = payload;
+    const { projectKey, projectKeys, startDate, endDate, format, filterUserIds } = payload;
     const accountId = context.accountId;
     const cloudId = context.cloudId;
 
+    // Support both single projectKey (backward compat) and projectKeys array
+    const keys = projectKeys && projectKeys.length > 0 ? projectKeys : (projectKey ? [projectKey] : []);
+
     try {
-      // Verify admin or project admin permissions
-      const perms = await checkUserPermissions(['ADMINISTER', 'ADMINISTER_PROJECTS'], projectKey);
+      // Verify admin permissions (check against first project, Jira admins have global access)
+      const perms = await checkUserPermissions(['ADMINISTER', 'ADMINISTER_PROJECTS'], keys[0] || null);
       const adminCheck = perms.permissions?.ADMINISTER?.havePermission || false;
       const isProjectAdmin = perms.permissions?.ADMINISTER_PROJECTS?.havePermission || false;
 
@@ -338,13 +341,31 @@ export function registerAnalyticsResolvers(resolver) {
         return { success: false, error: 'Access denied: Project Admin or Jira Administrator required' };
       }
 
-      const data = await generateTeamExportData(accountId, cloudId, projectKey, startDate, endDate, filterUserIds || null);
-      
+      if (keys.length <= 1) {
+        // Single project - original behavior
+        const data = await generateTeamExportData(accountId, cloudId, keys[0] || null, startDate, endDate, filterUserIds || null);
+        return { 
+          success: true, 
+          data,
+          format: format || 'csv',
+          filename: `team-analytics-${keys[0] || 'all'}-${endDate}.csv`
+        };
+      }
+
+      // Multi-project: generate CSV with project sections
+      let allCsvData = '';
+      for (const pk of keys) {
+        const data = await generateTeamExportData(accountId, cloudId, pk, startDate, endDate, filterUserIds || null);
+        if (allCsvData) allCsvData += '\n\n';
+        allCsvData += data;
+      }
+
+      const projectLabel = keys.length > 1 ? `${keys.length}-projects` : keys[0];
       return { 
         success: true, 
-        data,
+        data: allCsvData,
         format: format || 'csv',
-        filename: `team-analytics-${projectKey || 'all'}-${endDate}.csv`
+        filename: `team-analytics-${projectLabel}-${endDate}.csv`
       };
     } catch (error) {
       console.error('Error exporting team analytics:', error);
@@ -354,12 +375,15 @@ export function registerAnalyticsResolvers(resolver) {
 
   resolver.define('exportTeamAnalyticsExcel', async (req) => {
     const { payload, context } = req;
-    const { projectKey, startDate, endDate, filterUserIds } = payload;
+    const { projectKey, projectKeys, startDate, endDate, filterUserIds } = payload;
     const accountId = context.accountId;
     const cloudId = context.cloudId;
 
+    // Support both single projectKey (backward compat) and projectKeys array
+    const keys = projectKeys && projectKeys.length > 0 ? projectKeys : (projectKey ? [projectKey] : []);
+
     try {
-      const perms = await checkUserPermissions(['ADMINISTER', 'ADMINISTER_PROJECTS'], projectKey);
+      const perms = await checkUserPermissions(['ADMINISTER', 'ADMINISTER_PROJECTS'], keys[0] || null);
       const adminCheck = perms.permissions?.ADMINISTER?.havePermission || false;
       const isProjectAdmin = perms.permissions?.ADMINISTER_PROJECTS?.havePermission || false;
 
@@ -367,9 +391,26 @@ export function registerAnalyticsResolvers(resolver) {
         return { success: false, error: 'Access denied: Project Admin or Jira Administrator required' };
       }
 
-      const data = await generateTeamExportDataStructured(accountId, cloudId, projectKey, startDate, endDate, filterUserIds || null);
-      
-      return { success: true, data };
+      if (keys.length <= 1) {
+        // Single project - original behavior
+        const data = await generateTeamExportDataStructured(accountId, cloudId, keys[0] || null, startDate, endDate, filterUserIds || null);
+        return { success: true, data };
+      }
+
+      // Multi-project: gather data for each project
+      const projectsData = [];
+      for (const pk of keys) {
+        const data = await generateTeamExportDataStructured(accountId, cloudId, pk, startDate, endDate, filterUserIds || null);
+        projectsData.push(data);
+      }
+
+      return { 
+        success: true, 
+        data: {
+          isMultiProject: true,
+          projects: projectsData
+        }
+      };
     } catch (error) {
       console.error('Error exporting team analytics (Excel):', error);
       return { success: false, error: error.message };

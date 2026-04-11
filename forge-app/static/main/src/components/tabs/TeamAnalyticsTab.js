@@ -680,6 +680,11 @@ function TeamAnalyticsTab() {
           onClose={() => setExportModalOpen(false)}
           projectKey={selectedProjectKey}
           teamAnalytics={teamAnalytics}
+          availableProjectKeys={
+            userPermissions.isJiraAdmin
+              ? userPermissions.allProjectKeys
+              : userPermissions.projectAdminProjects
+          }
         />
       )}
     </div>

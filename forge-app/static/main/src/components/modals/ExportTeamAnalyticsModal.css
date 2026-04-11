@@ -306,3 +306,12 @@
   color: #5E6C84;
   flex-shrink: 0;
 }
+
+/* Project Checkbox List */
+.project-checkbox-list {
+  max-height: 150px;
+  overflow-y: auto;
+  border: 1px solid #DFE1E6;
+  border-radius: 4px;
+  padding: 4px 0;
+}
