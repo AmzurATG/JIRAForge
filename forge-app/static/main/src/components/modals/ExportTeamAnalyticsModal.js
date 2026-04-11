@@ -7,7 +7,7 @@ import './ExportTeamAnalyticsModal.css';
  * Export Team Analytics Modal
  * Allows admin to export team analytics data with user and period filters
  */
-function ExportTeamAnalyticsModal({ isOpen, onClose, projectKey, teamAnalytics }) {
+function ExportTeamAnalyticsModal({ isOpen, onClose, projectKey, teamAnalytics, availableProjectKeys }) {
   const [exporting, setExporting] = useState(false);
   const [error, setError] = useState(null);
   const [dateRange, setDateRange] = useState('month'); // 'today' | 'week' | 'month' | 'custom'
@@ -15,6 +15,8 @@ function ExportTeamAnalyticsModal({ isOpen, onClose, projectKey, teamAnalytics }
   const [customStartDate, setCustomStartDate] = useState('');
   const [customEndDate, setCustomEndDate] = useState('');
   const [selectedUserIds, setSelectedUserIds] = useState([]); // empty = all users
+  const [selectedProjectKeys, setSelectedProjectKeys] = useState([projectKey]); // default to current project
+  const [projectSelectAll, setProjectSelectAll] = useState(false);
 
   const members = (teamAnalytics && teamAnalytics.teamMemberActivity) || [];
 
@@ -25,6 +27,25 @@ function ExportTeamAnalyticsModal({ isOpen, onClose, projectKey, teamAnalytics }
   };
 
   const selectAllUsers = () => setSelectedUserIds([]);
+
+  const allProjects = availableProjectKeys || [];
+
+  const toggleProject = (pk) => {
+    setProjectSelectAll(false);
+    setSelectedProjectKeys(prev =>
+      prev.includes(pk) ? prev.filter(k => k !== pk) : [...prev, pk]
+    );
+  };
+
+  const handleSelectAllProjects = () => {
+    setProjectSelectAll(true);
+    setSelectedProjectKeys([...allProjects]);
+  };
+
+  const handleSelectCurrentProject = () => {
+    setProjectSelectAll(false);
+    setSelectedProjectKeys([projectKey]);
+  };
 
   const handleExport = async () => {
     setExporting(true);
@@ -67,23 +88,27 @@ function ExportTeamAnalyticsModal({ isOpen, onClose, projectKey, teamAnalytics }
           throw new Error('Invalid date range');
       }
 
+      const exportProjectKeys = selectedProjectKeys.length > 0 ? selectedProjectKeys : [projectKey];
+      const isMultiProject = exportProjectKeys.length > 1;
+      const projectLabel = isMultiProject ? `${exportProjectKeys.length}-projects` : exportProjectKeys[0];
+
       if (format === 'xlsx') {
         const result = await invoke('exportTeamAnalyticsExcel', {
-          projectKey,
+          projectKeys: exportProjectKeys,
           startDate,
           endDate,
           filterUserIds: selectedUserIds.length > 0 ? selectedUserIds : null
         });
 
         if (result.success) {
-          await generateExcelReport(result.data, `team-analytics-${projectKey || 'all'}-${endDate}`);
+          await generateExcelReport(result.data, `team-analytics-${projectLabel}-${endDate}`);
           onClose();
         } else {
           setError(result.error || 'Export failed');
         }
       } else {
         const result = await invoke('exportTeamAnalytics', {
-          projectKey,
+          projectKeys: exportProjectKeys,
           startDate,
           endDate,
           format,
@@ -91,7 +116,7 @@ function ExportTeamAnalyticsModal({ isOpen, onClose, projectKey, teamAnalytics }
         });
 
         if (result.success) {
-          downloadFile(result.data, format, result.filename || `team-analytics-${projectKey}-${endDate}.csv`);
+          downloadFile(result.data, format, result.filename || `team-analytics-${projectLabel}-${endDate}.csv`);
           onClose();
         } else {
           setError(result.error || 'Export failed');
@@ -129,6 +154,44 @@ function ExportTeamAnalyticsModal({ isOpen, onClose, projectKey, teamAnalytics }
 
         <div className="modal-content">
           <div className="export-options">
+            {/* Project Selection */}
+            <div className="option-group">
+              <label>Projects:</label>
+              <div className="user-filter-actions">
+                <button 
+                  type="button"
+                  className={`filter-chip ${projectSelectAll ? 'active' : ''}`}
+                  onClick={handleSelectAllProjects}
+                >
+                  All Projects
+                </button>
+                <button 
+                  type="button"
+                  className={`filter-chip ${!projectSelectAll && selectedProjectKeys.length === 1 && selectedProjectKeys[0] === projectKey ? 'active' : ''}`}
+                  onClick={handleSelectCurrentProject}
+                >
+                  Current ({projectKey})
+                </button>
+                {!projectSelectAll && selectedProjectKeys.length > 1 && (
+                  <span className="selected-count">{selectedProjectKeys.length} selected</span>
+                )}
+              </div>
+              {allProjects.length > 0 && (
+                <div className="project-checkbox-list">
+                  {allProjects.map((pk) => (
+                    <label key={pk} className="user-checkbox-item">
+                      <input
+                        type="checkbox"
+                        checked={selectedProjectKeys.includes(pk)}
+                        onChange={() => toggleProject(pk)}
+                      />
+                      <span className="user-checkbox-name">{pk}</span>
+                    </label>
+                  ))}
+                </div>
+              )}
+            </div>
+
             {/* Period Selection */}
             <div className="option-group">
               <label htmlFor="date-range">Period:</label>
@@ -219,6 +282,9 @@ function ExportTeamAnalyticsModal({ isOpen, onClose, projectKey, teamAnalytics }
                 <li>Member breakdown (Today/Week/Month)</li>
                 <li>Detailed activity with session start & end times</li>
                 <li>Time by issue with total sums</li>
+                {selectedProjectKeys.length > 1 && (
+                  <li><strong>Data grouped by project</strong></li>
+                )}
               </ul>
             </div>
           </div>

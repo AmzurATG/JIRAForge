@@ -64,10 +64,6 @@ modules:
       events:
         - avi:forge:uninstalled:app
 
-  userDataProvider:
-    - key: user-data-provider
-      function: personalDataHandler
-
 resources:
   - key: main
     path: static/main/build
