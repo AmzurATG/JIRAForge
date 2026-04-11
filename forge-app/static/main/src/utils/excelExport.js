@@ -248,6 +248,53 @@ async function generateSingleProjectExcelReport(data, filename) {
       cr++;
       rowIdx++;
     }
+
+    // Member time summary rows (Today / This Week / This Month + breakdowns)
+    if (member.todaySeconds !== undefined || member.weekSeconds !== undefined || member.monthSeconds !== undefined) {
+      const mSummaryRow = ws.getRow(cr);
+      mSummaryRow.getCell(1).value = member.displayName;
+      ws.mergeCells(cr, 2, cr, COL_COUNT);
+      mSummaryRow.getCell(2).value = `Total Time → Today: ${formatDuration(member.todaySeconds || 0)}  |  This Week: ${formatDuration(member.weekSeconds || 0)}  |  This Month: ${formatDuration(member.monthSeconds || 0)}`;
+      mSummaryRow.height = 24;
+      mSummaryRow.eachCell({ includeEmpty: true }, (cell, colNumber) => {
+        if (colNumber > COL_COUNT) return;
+        cell.font = { bold: true, size: 10, color: { argb: COLORS.sectionFont } };
+        cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: COLORS.sectionBg } };
+        cell.alignment = { vertical: 'middle', horizontal: 'left' };
+        cell.border = thinBorder;
+      });
+      cr++;
+
+      // Breakdown row: Unassigned
+      const unassignedRow = ws.getRow(cr);
+      unassignedRow.getCell(1).value = '';
+      ws.mergeCells(cr, 2, cr, COL_COUNT);
+      unassignedRow.getCell(2).value = `⚠ Unassigned → Today: ${formatDuration(member.todayUnassignedSeconds || 0)}  |  This Week: ${formatDuration(member.weekUnassignedSeconds || 0)}  |  This Month: ${formatDuration(member.monthUnassignedSeconds || 0)}`;
+      unassignedRow.height = 22;
+      unassignedRow.eachCell({ includeEmpty: true }, (cell, colNumber) => {
+        if (colNumber > COL_COUNT) return;
+        cell.font = { bold: true, size: 9, color: { argb: 'FF7A5700' } };
+        cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFF3E0' } };
+        cell.alignment = { vertical: 'middle', horizontal: 'left' };
+        cell.border = thinBorder;
+      });
+      cr++;
+
+      // Breakdown row: Non-Productive & Private
+      const npRow = ws.getRow(cr);
+      npRow.getCell(1).value = '';
+      ws.mergeCells(cr, 2, cr, COL_COUNT);
+      npRow.getCell(2).value = `✖ Non-Productive / Private → Today: ${formatDuration(member.todayNonProductiveSeconds || 0)}  |  This Week: ${formatDuration(member.weekNonProductiveSeconds || 0)}  |  This Month: ${formatDuration(member.monthNonProductiveSeconds || 0)}`;
+      npRow.height = 22;
+      npRow.eachCell({ includeEmpty: true }, (cell, colNumber) => {
+        if (colNumber > COL_COUNT) return;
+        cell.font = { bold: true, size: 9, color: { argb: 'FF8B0000' } };
+        cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFCE4EC' } };
+        cell.alignment = { vertical: 'middle', horizontal: 'left' };
+        cell.border = thinBorder;
+      });
+      cr++;
+    }
   }
 
   // Set autoFilter to span from header row to last data row
@@ -419,13 +466,15 @@ async function generateSingleProjectExcelReport(data, filename) {
   // ═══════════════════════════════════════════════════
   if (data.memberSummary && data.memberSummary.length > 0) {
     const summaryWs = workbook.addWorksheet('Summary');
-    const SC = 5;
+    const SC = 7;
     summaryWs.columns = [
       { key: 'c1', width: 24 },
       { key: 'c2', width: 16 },
       { key: 'c3', width: 16 },
       { key: 'c4', width: 16 },
-      { key: 'c5', width: 16 }
+      { key: 'c5', width: 18 },
+      { key: 'c6', width: 24 },
+      { key: 'c7', width: 14 }
     ];
 
     let scr = addTitleRow(summaryWs, `Team Summary – ${data.projectKey || 'All'} Project  |  ${dateRangeStr}`, SC, 1);
@@ -439,7 +488,7 @@ async function generateSingleProjectExcelReport(data, filename) {
     ];
     infoRows.forEach((vals, i) => {
       const r = summaryWs.getRow(scr);
-      r.values = [vals[0], vals[1], '', '', ''];
+      r.values = [vals[0], vals[1], '', '', '', '', ''];
       styleDataRow(r, 2, i % 2 === 0);
       r.getCell(1).font = { bold: true, size: 10, color: { argb: 'FF172B4D' } };
       r.getCell(1).alignment = { vertical: 'middle', horizontal: 'left' };
@@ -450,28 +499,40 @@ async function generateSingleProjectExcelReport(data, filename) {
 
     // Member Summary Table
     const mhRow = summaryWs.getRow(scr);
-    mhRow.values = ['Member Name', 'Today', 'This Week', 'This Month', '% of Total'];
+    mhRow.values = ['Member Name', 'Today', 'This Week', 'This Month', 'Unassigned (Month)', 'Non-Productive / Private (Month)', '% of Total'];
     styleHeaderRow(mhRow, SC);
     scr++;
 
     data.memberSummary.forEach((m, i) => {
       const r = summaryWs.getRow(scr);
-      r.values = [m.displayName, `${m.todayHours}h`, `${m.weekHours}h`, `${m.monthHours}h`, `${m.percentage}%`];
+      r.values = [
+        m.displayName,
+        formatDuration(m.todaySeconds || Math.round((m.todayHours || 0) * 3600)),
+        formatDuration(m.weekSeconds || Math.round((m.weekHours || 0) * 3600)),
+        formatDuration(m.monthSeconds || Math.round((m.monthHours || 0) * 3600)),
+        formatDuration(m.monthUnassignedSeconds || 0),
+        formatDuration(m.monthNonProductiveSeconds || 0),
+        `${m.percentage}%`
+      ];
       styleDataRow(r, SC, i % 2 === 0);
       r.getCell(1).alignment = { vertical: 'middle', horizontal: 'left' };
       scr++;
     });
 
     // Total
-    const totalMemberHours = data.memberSummary.reduce((s, m) => s + m.monthHours, 0);
-    const totalToday = data.memberSummary.reduce((s, m) => s + m.todayHours, 0);
-    const totalWeek = data.memberSummary.reduce((s, m) => s + m.weekHours, 0);
+    const totalMonthSeconds = data.memberSummary.reduce((s, m) => s + (m.monthSeconds || Math.round((m.monthHours || 0) * 3600)), 0);
+    const totalTodaySeconds = data.memberSummary.reduce((s, m) => s + (m.todaySeconds || Math.round((m.todayHours || 0) * 3600)), 0);
+    const totalWeekSeconds = data.memberSummary.reduce((s, m) => s + (m.weekSeconds || Math.round((m.weekHours || 0) * 3600)), 0);
+    const totalUnassignedSeconds = data.memberSummary.reduce((s, m) => s + (m.monthUnassignedSeconds || 0), 0);
+    const totalNpSeconds = data.memberSummary.reduce((s, m) => s + (m.monthNonProductiveSeconds || 0), 0);
     const stRow = summaryWs.getRow(scr);
     stRow.values = [
       'TOTAL',
-      `${Math.round(totalToday * 10) / 10}h`,
-      `${Math.round(totalWeek * 10) / 10}h`,
-      `${Math.round(totalMemberHours * 10) / 10}h`,
+      formatDuration(totalTodaySeconds),
+      formatDuration(totalWeekSeconds),
+      formatDuration(totalMonthSeconds),
+      formatDuration(totalUnassignedSeconds),
+      formatDuration(totalNpSeconds),
       '100%'
     ];
     styleTotalRow(stRow, SC);
@@ -525,6 +586,18 @@ async function generateMultiProjectExcelReport(data, filename) {
   const allEntries = []; // { projectKey, memberName, date, issueKey, totalSeconds, sessions }
 
   for (const projData of projects) {
+    // Project header row
+    const projRow = ws.getRow(cr);
+    ws.mergeCells(cr, 1, cr, COL_COUNT);
+    const projCell = projRow.getCell(1);
+    projCell.value = `📁  Project: ${projData.projectKey}`;
+    projCell.font = { bold: true, size: 12, color: { argb: 'FFFFFFFF' } };
+    projCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF0052CC' } };
+    projCell.alignment = { vertical: 'middle', horizontal: 'left' };
+    projCell.border = thinBorder;
+    projRow.height = 28;
+    cr++;
+
     for (const member of projData.memberDetails) {
       // Combine productive and non-productive entries
       const productiveEntries = (member.entries || []).map(e => ({ ...e, classification: 'Productive' }));
@@ -581,6 +654,56 @@ async function generateMultiProjectExcelReport(data, filename) {
 
         cr++;
         rowIdx++;
+      }
+
+      // Member time summary rows (Today / This Week / This Month + breakdowns)
+      if (member.todaySeconds !== undefined || member.weekSeconds !== undefined || member.monthSeconds !== undefined) {
+        const mSummaryRow = ws.getRow(cr);
+        mSummaryRow.getCell(1).value = projData.projectKey;
+        mSummaryRow.getCell(2).value = member.displayName;
+        ws.mergeCells(cr, 3, cr, COL_COUNT);
+        mSummaryRow.getCell(3).value = `Total Time → Today: ${formatDuration(member.todaySeconds || 0)}  |  This Week: ${formatDuration(member.weekSeconds || 0)}  |  This Month: ${formatDuration(member.monthSeconds || 0)}`;
+        mSummaryRow.height = 24;
+        mSummaryRow.eachCell({ includeEmpty: true }, (cell, colNumber) => {
+          if (colNumber > COL_COUNT) return;
+          cell.font = { bold: true, size: 10, color: { argb: COLORS.sectionFont } };
+          cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: COLORS.sectionBg } };
+          cell.alignment = { vertical: 'middle', horizontal: 'left' };
+          cell.border = thinBorder;
+        });
+        cr++;
+
+        // Breakdown row: Unassigned
+        const unassignedRow = ws.getRow(cr);
+        unassignedRow.getCell(1).value = '';
+        unassignedRow.getCell(2).value = '';
+        ws.mergeCells(cr, 3, cr, COL_COUNT);
+        unassignedRow.getCell(3).value = `⚠ Unassigned → Today: ${formatDuration(member.todayUnassignedSeconds || 0)}  |  This Week: ${formatDuration(member.weekUnassignedSeconds || 0)}  |  This Month: ${formatDuration(member.monthUnassignedSeconds || 0)}`;
+        unassignedRow.height = 22;
+        unassignedRow.eachCell({ includeEmpty: true }, (cell, colNumber) => {
+          if (colNumber > COL_COUNT) return;
+          cell.font = { bold: true, size: 9, color: { argb: 'FF7A5700' } };
+          cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFF3E0' } };
+          cell.alignment = { vertical: 'middle', horizontal: 'left' };
+          cell.border = thinBorder;
+        });
+        cr++;
+
+        // Breakdown row: Non-Productive & Private
+        const npRow = ws.getRow(cr);
+        npRow.getCell(1).value = '';
+        npRow.getCell(2).value = '';
+        ws.mergeCells(cr, 3, cr, COL_COUNT);
+        npRow.getCell(3).value = `✖ Non-Productive / Private → Today: ${formatDuration(member.todayNonProductiveSeconds || 0)}  |  This Week: ${formatDuration(member.weekNonProductiveSeconds || 0)}  |  This Month: ${formatDuration(member.monthNonProductiveSeconds || 0)}`;
+        npRow.height = 22;
+        npRow.eachCell({ includeEmpty: true }, (cell, colNumber) => {
+          if (colNumber > COL_COUNT) return;
+          cell.font = { bold: true, size: 9, color: { argb: 'FF8B0000' } };
+          cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFCE4EC' } };
+          cell.alignment = { vertical: 'middle', horizontal: 'left' };
+          cell.border = thinBorder;
+        });
+        cr++;
       }
     }
   }
@@ -762,14 +885,16 @@ async function generateMultiProjectExcelReport(data, filename) {
   // SHEET 4: Summary (per Project)
   // ═══════════════════════════════════════════════════
   const summaryWs = workbook.addWorksheet('Summary');
-  const SC = 6;
+  const SC = 8;
   summaryWs.columns = [
     { key: 'c1', width: 16 },
     { key: 'c2', width: 24 },
     { key: 'c3', width: 16 },
     { key: 'c4', width: 16 },
     { key: 'c5', width: 16 },
-    { key: 'c6', width: 16 }
+    { key: 'c6', width: 18 },
+    { key: 'c7', width: 24 },
+    { key: 'c8', width: 14 }
   ];
 
   let scr = addTitleRow(summaryWs, `Team Summary – ${projectKeys.join(', ')}  |  ${dateRangeStr}`, SC, 1);
@@ -809,13 +934,22 @@ async function generateMultiProjectExcelReport(data, filename) {
     if (projData.memberSummary && projData.memberSummary.length > 0) {
       // Member Summary Table header
       const mhRow = summaryWs.getRow(scr);
-      mhRow.values = ['Project', 'Member Name', 'Today', 'This Week', 'This Month', '% of Total'];
+      mhRow.values = ['Project', 'Member Name', 'Today', 'This Week', 'This Month', 'Unassigned (Month)', 'Non-Productive / Private (Month)', '% of Total'];
       styleHeaderRow(mhRow, SC);
       scr++;
 
       projData.memberSummary.forEach((m, i) => {
         const r = summaryWs.getRow(scr);
-        r.values = [projData.projectKey, m.displayName, `${m.todayHours}h`, `${m.weekHours}h`, `${m.monthHours}h`, `${m.percentage}%`];
+        r.values = [
+          projData.projectKey,
+          m.displayName,
+          formatDuration(m.todaySeconds || Math.round((m.todayHours || 0) * 3600)),
+          formatDuration(m.weekSeconds || Math.round((m.weekHours || 0) * 3600)),
+          formatDuration(m.monthSeconds || Math.round((m.monthHours || 0) * 3600)),
+          formatDuration(m.monthUnassignedSeconds || 0),
+          formatDuration(m.monthNonProductiveSeconds || 0),
+          `${m.percentage}%`
+        ];
         styleDataRow(r, SC, i % 2 === 0);
         r.getCell(1).font = { bold: true, size: 10, color: { argb: 'FF0052CC' } };
         r.getCell(1).alignment = { vertical: 'middle', horizontal: 'left' };
@@ -824,16 +958,20 @@ async function generateMultiProjectExcelReport(data, filename) {
       });
 
       // Project total
-      const totalMemberHours = projData.memberSummary.reduce((s, m) => s + m.monthHours, 0);
-      const totalToday = projData.memberSummary.reduce((s, m) => s + m.todayHours, 0);
-      const totalWeek = projData.memberSummary.reduce((s, m) => s + m.weekHours, 0);
+      const totalMonthSeconds = projData.memberSummary.reduce((s, m) => s + (m.monthSeconds || Math.round((m.monthHours || 0) * 3600)), 0);
+      const totalTodaySeconds = projData.memberSummary.reduce((s, m) => s + (m.todaySeconds || Math.round((m.todayHours || 0) * 3600)), 0);
+      const totalWeekSeconds = projData.memberSummary.reduce((s, m) => s + (m.weekSeconds || Math.round((m.weekHours || 0) * 3600)), 0);
+      const totalUnassignedSeconds = projData.memberSummary.reduce((s, m) => s + (m.monthUnassignedSeconds || 0), 0);
+      const totalNpSeconds = projData.memberSummary.reduce((s, m) => s + (m.monthNonProductiveSeconds || 0), 0);
       const stRow = summaryWs.getRow(scr);
       stRow.values = [
         '',
         `${projData.projectKey} TOTAL`,
-        `${Math.round(totalToday * 10) / 10}h`,
-        `${Math.round(totalWeek * 10) / 10}h`,
-        `${Math.round(totalMemberHours * 10) / 10}h`,
+        formatDuration(totalTodaySeconds),
+        formatDuration(totalWeekSeconds),
+        formatDuration(totalMonthSeconds),
+        formatDuration(totalUnassignedSeconds),
+        formatDuration(totalNpSeconds),
         '100%'
       ];
       styleTotalRow(stRow, SC);
