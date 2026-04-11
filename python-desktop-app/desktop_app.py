@@ -330,10 +330,10 @@ SCREENSHOT_MONITORING_HARD_DISABLED = True
 # Embedded credentials (for production builds - no .env file needed)
 # SECURITY: All sensitive keys moved to AI Server - fetched at runtime after authentication
 EMBEDDED_CONFIG = {
-    'ATLASSIAN_CLIENT_ID': 'k2Xwzy8c1g3Wk6Xpbeev0x70CXEp9lJH',
+    'ATLASSIAN_CLIENT_ID': 'Q8HT4Jn205AuTiAarj088oWNDrOqwvM5',
     # REMOVED: ATLASSIAN_CLIENT_SECRET - now on AI Server only (security fix)
     # REMOVED: SUPABASE_URL, SUPABASE_ANON_KEY, SUPABASE_SERVICE_ROLE_KEY - fetched from AI Server
-    'AI_SERVER_URL': 'https://timetracker-forge.amzur.com',  # AI Server for secure token exchange & config
+    'AI_SERVER_URL': 'https://forgesync.amzur.com',  # AI Server for secure token exchange & config
     'CAPTURE_INTERVAL': '300',
     'WEB_PORT': '51777',
 }
@@ -1419,7 +1419,7 @@ class AtlassianAuthManager:
         self.redirect_uri = f'http://localhost:{web_port}/auth/callback'
         self.authorization_url = 'https://auth.atlassian.com/authorize'
         # Token exchange now goes through AI Server
-        self.ai_server_url = get_env_var('AI_SERVER_URL', 'https://timetracker-forge.amzur.com')
+        self.ai_server_url = get_env_var('AI_SERVER_URL', 'https://forgesync.amzur.com')
         self.store_path = store_path or os.path.join(get_app_data_dir(), 'time_tracker_auth.json')
         self.metadata_path = os.path.join(get_app_data_dir(), 'auth_metadata.json')  # For non-sensitive data
 
@@ -1571,7 +1571,7 @@ class AtlassianAuthManager:
             'redirect_uri': self.redirect_uri,
             'state': state,
             'response_type': 'code',
-            'prompt': 'login',
+            'prompt': 'consent',
             'code_challenge': code_challenge,
             'code_challenge_method': 'S256'
         }
@@ -1662,6 +1662,7 @@ class AtlassianAuthManager:
         })
         self._save_tokens()
         self._refresh_token_invalid = False  # Clear any prior permanent-failure flag
+        self._refresh_fail_count = 0  # Reset consecutive failure counter
 
         print("[OK] OAuth tokens received via AI Server")
         return result
@@ -1765,10 +1766,28 @@ class AtlassianAuthManager:
                     error_data = response.json() if response.headers.get('content-type', '').startswith('application/json') else {}
                     error = error_data.get('error', response.text)
                     print(f"[ERROR] Token refresh failed: {error}")
-                    # Check if re-authentication is required (permanent failure — stop retrying)
-                    if error_data.get('requiresReauth') or 'invalid' in str(error).lower():
-                        print("[WARN] Refresh token expired - user must re-authenticate")
-                        self._refresh_token_invalid = True  # Prevents endless 30-second retry loop
+                    # Check if re-authentication is TRULY required (permanent failure only).
+                    # Be precise: only mark as permanently invalid for actual token revocation/expiry,
+                    # NOT for transient errors that happen to contain the word "invalid".
+                    # Atlassian returns 'invalid_grant' when the refresh token is truly revoked/expired.
+                    error_lower = str(error).lower()
+                    is_permanent_failure = (
+                        error_data.get('requiresReauth') or
+                        'invalid_grant' in error_lower or
+                        'refresh token is invalid' in error_lower or
+                        'token has been revoked' in error_lower or
+                        'token has been expired' in error_lower or
+                        response.status_code == 403
+                    )
+                    if is_permanent_failure:
+                        # Track consecutive permanent failures before giving up.
+                        # A single transient "invalid" error should NOT kill the session.
+                        self._refresh_fail_count = getattr(self, '_refresh_fail_count', 0) + 1
+                        if self._refresh_fail_count >= 3:
+                            print(f"[WARN] Refresh token failed {self._refresh_fail_count} consecutive times - user must re-authenticate")
+                            self._refresh_token_invalid = True  # Prevents endless 30-second retry loop
+                        else:
+                            print(f"[WARN] Refresh token failure {self._refresh_fail_count}/3 - will retry before requiring re-auth")
                     return False
 
                 result = response.json()
@@ -1784,6 +1803,7 @@ class AtlassianAuthManager:
                 self._save_tokens()
 
                 self._refresh_token_invalid = False  # Clear permanent-failure flag
+                self._refresh_fail_count = 0  # Reset consecutive failure counter
                 print("[OK] Access token refreshed successfully via AI Server")
                 return True
             except Exception as e:
@@ -1849,6 +1869,16 @@ class AtlassianAuthManager:
             # Store the Supabase token
             self.tokens['supabase_token'] = supabase_token
             self.tokens['supabase_token_expires_at'] = time.time() + expires_in
+
+            # Store user data from exchange-token response (includes organization_id, user id)
+            # The AI server creates/finds the org via service_role during token exchange,
+            # so this is the authoritative source for organization_id.
+            user_data = result.get('user', {})
+            if user_data:
+                self.tokens['exchange_user_id'] = user_data.get('id')
+                self.tokens['exchange_organization_id'] = user_data.get('organization_id')
+                print(f"[OK] Exchange-token user data: user_id={user_data.get('id')}, org_id={user_data.get('organization_id')}")
+
             self._save_tokens()
 
             print(f"[OK] Supabase token received (expires in {expires_in}s)")
@@ -1930,11 +1960,13 @@ class AtlassianAuthManager:
             bool: True if config fetched successfully, False otherwise
         """
         access_token = self.tokens.get('access_token')
+
+        
         if not access_token:
             print("[ERROR] No valid Atlassian token - cannot fetch OCR config")
             return False
 
-        ai_server_url = get_env_var('AI_SERVER_URL', 'https://timetracker-forge.amzur.com')
+        ai_server_url = get_env_var('AI_SERVER_URL', 'https://forgesync.amzur.com')
         
         try:
             print("[INFO] Fetching OCR config from AI Server...")
@@ -1980,17 +2012,29 @@ class AtlassianAuthManager:
             return False
 
     def logout(self):
-        """Clear authentication tokens from both keyring and JSON file"""
+        """Clear authentication tokens from all storage locations"""
         self.tokens = {}
+        self._refresh_token_invalid = False
+        self._refresh_fail_count = 0
 
-        # Clear sensitive tokens from keyring (including any chunks)
+        # Clear sensitive tokens from secure storage (keyring + encrypted fallback)
+        try:
+            self.secure_storage.delete_tokens()
+        except Exception as e:
+            print(f"[WARN] Failed to clear secure storage: {e}")
+
+        # Also clear from keyring directly (handles legacy entries)
         if KEYRING_AVAILABLE:
             for key in SENSITIVE_TOKEN_KEYS:
                 _keyring_delete(KEYRING_SERVICE, key)
 
-        # Remove JSON file (contains metadata)
+        # Remove old JSON file (contains metadata)
         if os.path.exists(self.store_path):
             os.remove(self.store_path)
+
+        # Remove metadata file
+        if os.path.exists(self.metadata_path):
+            os.remove(self.metadata_path)
     
     def send_diagnostics(self, diag_type: str, diagnostics: dict) -> bool:
         """
@@ -4377,10 +4421,22 @@ class TimeTracker:
         self.issues_cache_ttl = 300  # 5 minutes cache TTL
         self.jira_cloud_id = None  # Cached Jira cloud ID
 
+        # Multi-site Jira support: store ALL accessible resources
+        # Users may have projects across multiple Jira sites (cloud IDs).
+        # all_jira_resources stores every resource from accessible-resources API.
+        self.all_jira_resources = []  # List of {id, name, url, ...} for all Jira sites
+        self.all_jira_cloud_ids = []  # List of cloud ID strings for all sites
+
         # Jira project caching (for users without assigned issues)
         self.user_projects = []  # Cache of user's accessible Jira projects
         self.projects_cache_time = None  # Last time projects were fetched
         self.projects_cache_ttl = 3600  # 1 hour cache TTL (projects change less frequently)
+
+        # Multi-project detection: recent project affinity tracker
+        # Tracks the last N resolved project keys to use as tiebreaker when
+        # window title / OCR don't give a confident match.
+        self._recent_project_keys = []  # Ordered list, most recent last
+        self._recent_project_max = 20  # Keep last 20 resolutions
 
         # Project settings caching (admin-configured tracked statuses per project)
         self.project_settings = {}  # Dict: {project_key: {tracked_statuses: [...], ...}}
@@ -4627,6 +4683,18 @@ class TimeTracker:
             # Access .storage to trigger lazy initialization if needed
             _ = self.supabase.storage
             self.supabase.storage.session.headers["Authorization"] = f"Bearer {supabase_token}"
+
+            # Extract organization_id and user_id from exchange-token response data.
+            # The AI server (service_role) creates/finds the org during token exchange,
+            # so this is the authoritative source — avoids RLS chicken-and-egg issues.
+            exchange_org_id = self.auth_manager.tokens.get('exchange_organization_id')
+            exchange_user_id = self.auth_manager.tokens.get('exchange_user_id')
+            if exchange_org_id and not self.organization_id:
+                self.organization_id = exchange_org_id
+                print(f"[OK] Organization ID set from exchange-token: {self.organization_id}")
+            if exchange_user_id and not self.current_user_id:
+                self.current_user_id = exchange_user_id
+                print(f"[OK] User ID set from exchange-token: {self.current_user_id}")
 
             print("[OK] Supabase JWT set on client (PostgREST + Storage)")
             return True
@@ -5649,6 +5717,17 @@ class TimeTracker:
             print(f"[WARN] Failed to load cached user info: {e}")
         return None
     
+    def _clear_cached_user_info(self):
+        """Clear stale cached user info (e.g. after FK violation from deleted user).
+        Forces re-authentication on next startup."""
+        try:
+            cache_path = self._get_user_cache_path()
+            if os.path.exists(cache_path):
+                os.remove(cache_path)
+                print("[OK] Cleared stale cached user info")
+        except Exception as e:
+            print(f"[WARN] Failed to clear cached user info: {e}")
+
     def _load_cached_user_id(self):
         """Load only the user_id from cache"""
         cached = self._load_cached_user_info()
@@ -5799,7 +5878,16 @@ class TimeTracker:
                 resources = response.json()
                 print(f"[INFO] Found {len(resources)} accessible resources")
                 if resources:
-                    # Get the first (selected during OAuth) resource
+                    # Store ALL accessible resources for multi-site support
+                    self.all_jira_resources = resources
+                    self.all_jira_cloud_ids = [r['id'] for r in resources]
+
+                    if len(resources) > 1:
+                        print(f"[MULTI-SITE] User has access to {len(resources)} Jira sites:")
+                        for i, r in enumerate(resources):
+                            print(f"     [{i}] {r.get('name', '?')} — {r.get('url', '?')} (id: {r['id']})")
+
+                    # Use the first resource as primary (selected during OAuth)
                     selected_resource = resources[0]
                     self.jira_cloud_id = selected_resource['id']
                     self.organization_name = selected_resource.get('name', 'Unknown Organization')
@@ -5821,10 +5909,30 @@ class TimeTracker:
         return None
 
     def register_organization(self):
-        """Register or update organization in Supabase database with retry logic"""
+        """Register or update organization in Supabase database with retry logic.
+        
+        The AI server already creates/finds the organization during token exchange
+        (via service_role, bypassing RLS). If organization_id was set from the
+        exchange-token response, this method just verifies/updates the org info.
+        """
         if not self.jira_cloud_id:
             print("[WARN] Cannot register organization: No Jira Cloud ID")
             return None
+
+        # If organization_id was already set from exchange-token, just verify it
+        if self.organization_id:
+            print(f"[OK] Organization already set from exchange-token: {self.organization_id}")
+            # Try to update org info (name, URL) if possible
+            try:
+                client = self.supabase
+                if client:
+                    client.table('organizations').update({
+                        'org_name': self.organization_name,
+                        'jira_instance_url': self.jira_instance_url
+                    }).eq('id', self.organization_id).execute()
+            except Exception as e:
+                print(f"[WARN] Could not update organization info: {e}")
+            return self.organization_id
 
         max_retries = 3
         retry_delay = 2  # seconds
@@ -5835,9 +5943,13 @@ class TimeTracker:
                 client = self.supabase
 
                 # Check if organization already exists
+                # NOTE: RLS on organizations table requires user's organization_id to be set
+                # in the users table. If this returns empty, it may be an RLS issue.
+                print(f"[DEBUG] register_organization: querying orgs by jira_cloud_id={self.jira_cloud_id}")
                 result = client.table('organizations').select('id').eq(
                     'jira_cloud_id', self.jira_cloud_id
                 ).execute()
+                print(f"[DEBUG] register_organization: SELECT returned {len(result.data)} rows")
 
                 if result.data:
                     # Organization exists
@@ -6006,8 +6118,11 @@ class TimeTracker:
     def build_jql_for_tracked_statuses(self):
         """Build JQL query using project-level tracked statuses
         
-        If project settings exist, builds a query that respects each project's
-        configured statuses. Otherwise, falls back to statusCategory.
+        Fetches issues from ALL projects the user is assigned to.
+        For projects with explicit settings, uses their configured statuses.
+        For all other projects, uses statusCategory = "In Progress" as default.
+        This ensures user_assigned_issues contains issues across ALL projects,
+        not just the ones configured in project_settings.
         
         Returns:
             str: JQL query string
@@ -6016,21 +6131,30 @@ class TimeTracker:
         self.fetch_project_settings()
         
         if self.project_settings:
-            # Build project-specific JQL
-            # Format: (project = "A" AND status IN (...)) OR (project = "B" AND status IN (...))
+            # Build project-specific JQL for configured projects
+            # PLUS a catch-all clause for any other projects the user is assigned to
             project_clauses = []
+            configured_projects = []
             for project_key, settings in self.project_settings.items():
                 statuses = settings.get('tracked_statuses', ['In Progress'])
                 if statuses:
                     status_list = ', '.join([f'"{s}"' for s in statuses])
                     clause = f'(project = "{project_key}" AND status IN ({status_list}))'
                     project_clauses.append(clause)
+                    configured_projects.append(project_key)
             
             if project_clauses:
+                # Add a catch-all clause for projects NOT in project_settings
+                # so we still fetch assigned issues from all other projects
+                if configured_projects:
+                    not_in_list = ', '.join([f'"{pk}"' for pk in configured_projects])
+                    catch_all = f'(project NOT IN ({not_in_list}) AND statusCategory = "In Progress")'
+                    project_clauses.append(catch_all)
+                
                 # Combine all project clauses with OR
                 status_filter = ' OR '.join(project_clauses)
                 jql = f'assignee = currentUser() AND ({status_filter})'
-                print(f"[INFO] Using project-level tracked statuses JQL")
+                print(f"[INFO] Using project-level tracked statuses JQL (with catch-all for unconfigured projects)")
                 return jql
 
         # Fallback: Use statusCategory if no project settings
@@ -6082,33 +6206,27 @@ class TimeTracker:
             return None
 
     def fetch_jira_issues(self):
-        """Fetch user's In Progress Jira issues.
-        Primary path: reads from user_jira_issues_cache in Supabase (kept fresh by
-        the Forge avi:jira:updated:issue trigger — no Jira API call needed).
-        Fallback: calls Jira REST API directly if the cache is unavailable or empty.
+        """Fetch user's assigned Jira issues across ALL projects.
+        Primary path: calls Jira REST API directly for the most complete picture.
+        Fallback: reads from user_jira_issues_cache in Supabase when API is
+        unavailable (offline, no token, API error).
         """
         print("[INFO] Attempting to fetch Jira issues...")
 
-        # Primary: Supabase cache (no OAuth token required)
-        cached = self.fetch_issues_from_cache()
-        if cached is not None:
-            return cached
-
-        print("[INFO] Cache miss — falling back to direct Jira API call")
-
         cloud_id = self.get_jira_cloud_id()
         if not cloud_id:
-            print("[WARN] Cannot fetch issues: No Cloud ID")
-            return []
+            print("[WARN] Cannot fetch issues via API: No Cloud ID — trying cache")
+            return self.fetch_issues_from_cache() or []
 
         access_token = self.auth_manager.tokens.get('access_token')
         if not access_token:
-            print("[WARN] Cannot fetch issues: No access token")
-            return []
+            print("[WARN] Cannot fetch issues via API: No access token — trying cache")
+            return self.fetch_issues_from_cache() or []
 
         try:
             # Build JQL using project-level tracked statuses (admin-configured)
             # If project settings exist, uses project-specific statuses
+            # plus a catch-all for unconfigured projects.
             # Otherwise, falls back to statusCategory = "In Progress"
             jql = self.build_jql_for_tracked_statuses()
             print(f"[INFO] Querying Jira with JQL (POST): {jql}")
@@ -6151,8 +6269,8 @@ class TimeTracker:
                         }
                     )
                 else:
-                    print("[ERROR] Token refresh failed, please re-authenticate")
-                    return []
+                    print("[ERROR] Token refresh failed, please re-authenticate — trying cache")
+                    return self.fetch_issues_from_cache() or []
 
             if response.status_code == 200:
                 data = response.json()
@@ -6238,9 +6356,17 @@ class TimeTracker:
                 return formatted_issues
             else:
                 print(f"[ERROR] Jira API failed: {response.status_code} - {response.text}")
+                print("[INFO] Falling back to Supabase cache after API failure")
+                cached = self.fetch_issues_from_cache()
+                if cached is not None:
+                    return cached
         except Exception as e:
             print(f"!!!DEBUG!!! Exception occurred in fetch_jira_issues: {e}")
             print(f"[ERROR] Failed to fetch Jira issues: {e}")
+            print("[INFO] Falling back to Supabase cache after exception")
+            cached = self.fetch_issues_from_cache()
+            if cached is not None:
+                return cached
 
         return []
 
@@ -6256,6 +6382,9 @@ class TimeTracker:
 
         This is used as a fallback when the user has no assigned issues.
         If they only have access to one project, we can use that as the default.
+
+        Multi-site support: if the user has access to multiple Jira sites,
+        fetches projects from ALL sites and merges them.
 
         Uses the paginated /project/search endpoint (recommended by Atlassian).
         Requires OAuth scope: read:jira-work
@@ -6311,18 +6440,85 @@ class TimeTracker:
             if response.status_code == 200:
                 data = response.json()
                 projects = data.get('values', [])
-                print(f"[OK] User has access to {len(projects)} projects")
+                total = data.get('total', len(projects))
+                is_last = data.get('isLast', None)
+                print(f"[OK] User has access to {total} projects (fetched {len(projects)} in first page, isLast={is_last})")
+                print(f"[DEBUG] Raw project/search response keys: {list(data.keys())}")
+                for p in projects:
+                    print(f"[DEBUG]   project: key={p.get('key')}, name={p.get('name')}, projectTypeKey={p.get('projectTypeKey')}")
+
+                # Paginate to fetch ALL projects if total > maxResults
+                all_projects = list(projects)
+                start_at = len(projects)
+                while start_at < total:
+                    page_response = requests.get(
+                        f'https://api.atlassian.com/ex/jira/{cloud_id}/rest/api/3/project/search',
+                        params={
+                            'maxResults': 50,
+                            'startAt': start_at,
+                            'orderBy': 'name'
+                        },
+                        headers={
+                            'Authorization': f'Bearer {access_token}',
+                            'Accept': 'application/json'
+                        }
+                    )
+                    if page_response.status_code == 200:
+                        page_data = page_response.json()
+                        page_projects = page_data.get('values', [])
+                        if not page_projects:
+                            break
+                        all_projects.extend(page_projects)
+                        start_at += len(page_projects)
+                    else:
+                        print(f"[WARN] Pagination failed at startAt={start_at}: {page_response.status_code}")
+                        break
 
                 # Format project data
                 formatted_projects = []
-                for project in projects:
+                for project in all_projects:
                     formatted_projects.append({
                         'key': project.get('key'),
                         'name': project.get('name'),
-                        'id': project.get('id')
+                        'id': project.get('id'),
+                        'cloud_id': cloud_id  # Track which site this project belongs to
                     })
 
-                return formatted_projects
+                # Multi-site: fetch projects from additional Jira sites
+                if len(self.all_jira_cloud_ids) > 1:
+                    seen_keys = {p['key'] for p in formatted_projects if p.get('key')}
+                    for extra_cloud_id in self.all_jira_cloud_ids[1:]:
+                        try:
+                            extra_projects = self._fetch_projects_for_cloud_id(extra_cloud_id, access_token)
+                            for ep in extra_projects:
+                                if ep.get('key') not in seen_keys:
+                                    ep['cloud_id'] = extra_cloud_id
+                                    formatted_projects.append(ep)
+                                    seen_keys.add(ep['key'])
+                            site_name = next((r.get('name', '?') for r in self.all_jira_resources if r['id'] == extra_cloud_id), '?')
+                            print(f"[MULTI-SITE] Fetched {len(extra_projects)} projects from site '{site_name}' ({extra_cloud_id})")
+                        except Exception as ms_err:
+                            print(f"[WARN] Multi-site project fetch failed for {extra_cloud_id}: {ms_err}")
+
+                # Debug: log all project keys for troubleshooting
+                all_project_keys = [p['key'] for p in formatted_projects if p.get('key')]
+                print(f"[DEBUG] All browsable project keys: {all_project_keys}")
+
+                # Filter to only projects where the user is an actual member
+                # (not just has Browse permission). Uses JQL + role checks.
+                member_projects = self._filter_member_projects(
+                    formatted_projects, cloud_id, access_token
+                )
+
+                if member_projects:
+                    member_keys = [p['key'] for p in member_projects if p.get('key')]
+                    print(f"[DEBUG] Filtered to {len(member_projects)} member projects: {member_keys}")
+                    return member_projects
+                else:
+                    # If membership filter returned nothing (e.g., new user with
+                    # no issues), fall back to the full browsable list
+                    print(f"[WARN] Membership filter returned 0 projects — using full browsable list ({len(formatted_projects)} projects)")
+                    return formatted_projects
             else:
                 print(f"[ERROR] Jira projects API failed: {response.status_code} - {response.text}")
         except Exception as e:
@@ -6336,6 +6532,163 @@ class TimeTracker:
             return True
 
         return (time.time() - self.projects_cache_time) > self.projects_cache_ttl
+
+    def _fetch_projects_for_cloud_id(self, cloud_id, access_token):
+        """Fetch all projects for a specific Jira cloud site (used for multi-site support).
+
+        Args:
+            cloud_id: Jira cloud ID for the site
+            access_token: OAuth access token
+
+        Returns:
+            list: Formatted projects [{key, name, id}, ...]
+        """
+        all_projects = []
+        start_at = 0
+        while True:
+            resp = requests.get(
+                f'https://api.atlassian.com/ex/jira/{cloud_id}/rest/api/3/project/search',
+                params={'maxResults': 50, 'startAt': start_at, 'orderBy': 'name'},
+                headers={'Authorization': f'Bearer {access_token}', 'Accept': 'application/json'},
+                timeout=30
+            )
+            if resp.status_code != 200:
+                print(f"[WARN] Multi-site project fetch returned {resp.status_code} for cloud_id={cloud_id}")
+                break
+            data = resp.json()
+            page_projects = data.get('values', [])
+            if not page_projects:
+                break
+            for p in page_projects:
+                all_projects.append({
+                    'key': p.get('key'),
+                    'name': p.get('name'),
+                    'id': p.get('id')
+                })
+            start_at += len(page_projects)
+            if data.get('isLast', True):
+                break
+        return all_projects
+
+    def _filter_member_projects(self, all_projects, cloud_id, access_token):
+        """Filter projects to only those where the user is an actual member.
+
+        The /project/search API returns ALL projects the user can browse, which
+        often includes every project in the Jira instance. This method filters
+        down to projects where the user has real involvement:
+        1. Projects from the user's assigned/reported issues (JQL-based)
+        2. Projects where the user holds a project role (role membership API)
+
+        Args:
+            all_projects: Full list of browsable projects from /project/search
+            cloud_id: Primary Jira cloud ID
+            access_token: OAuth access token
+
+        Returns:
+            list: Filtered projects where user is a member, or empty list if
+                  the filter can't determine membership (caller should fall back)
+        """
+        member_keys = set()
+
+        # Strategy 1: Find projects from user's issues (assignee or reporter)
+        # This is the most reliable signal — 1 API call covers all projects
+        try:
+            jql = 'assignee = currentUser() OR reporter = currentUser() ORDER BY project ASC'
+            resp = requests.post(
+                f'https://api.atlassian.com/ex/jira/{cloud_id}/rest/api/3/search/jql',
+                json={
+                    'jql': jql,
+                    'maxResults': 100,
+                    'fields': ['project']
+                },
+                headers={
+                    'Authorization': f'Bearer {access_token}',
+                    'Accept': 'application/json',
+                    'Content-Type': 'application/json'
+                },
+                timeout=30
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                issues = data.get('issues', [])
+                for issue in issues:
+                    proj_key = issue.get('fields', {}).get('project', {}).get('key')
+                    if proj_key:
+                        member_keys.add(proj_key)
+                print(f"[MEMBER-FILTER] JQL found {len(member_keys)} projects from user's issues: {sorted(member_keys)}")
+            else:
+                print(f"[MEMBER-FILTER] JQL membership query failed: {resp.status_code}")
+        except Exception as e:
+            print(f"[MEMBER-FILTER] JQL membership query error: {e}")
+
+        # Strategy 2: Check project role membership for remaining projects
+        # For projects not already identified via JQL, check if the user holds
+        # any project role (e.g., Developers, Administrators, Member)
+        remaining_keys = [p['key'] for p in all_projects if p.get('key') and p['key'] not in member_keys]
+        if remaining_keys:
+            try:
+                # Get the user's accountId for role membership checks
+                me_resp = requests.get(
+                    f'https://api.atlassian.com/ex/jira/{cloud_id}/rest/api/3/myself',
+                    headers={
+                        'Authorization': f'Bearer {access_token}',
+                        'Accept': 'application/json'
+                    },
+                    timeout=10
+                )
+                if me_resp.status_code == 200:
+                    my_account_id = me_resp.json().get('accountId')
+                    if my_account_id:
+                        # Check role membership for each remaining project
+                        # Limit to avoid excessive API calls
+                        check_limit = min(len(remaining_keys), 20)
+                        for proj_key in remaining_keys[:check_limit]:
+                            try:
+                                role_resp = requests.get(
+                                    f'https://api.atlassian.com/ex/jira/{cloud_id}/rest/api/3/project/{proj_key}/role',
+                                    headers={
+                                        'Authorization': f'Bearer {access_token}',
+                                        'Accept': 'application/json'
+                                    },
+                                    timeout=10
+                                )
+                                if role_resp.status_code == 200:
+                                    roles = role_resp.json()
+                                    is_member = False
+                                    for role_name, role_url in roles.items():
+                                        try:
+                                            actors_resp = requests.get(
+                                                role_url,
+                                                headers={
+                                                    'Authorization': f'Bearer {access_token}',
+                                                    'Accept': 'application/json'
+                                                },
+                                                timeout=10
+                                            )
+                                            if actors_resp.status_code == 200:
+                                                actors = actors_resp.json().get('actors', [])
+                                                for actor in actors:
+                                                    if actor.get('actorUser', {}).get('accountId') == my_account_id:
+                                                        is_member = True
+                                                        break
+                                            if is_member:
+                                                break
+                                        except Exception:
+                                            continue
+                                    if is_member:
+                                        member_keys.add(proj_key)
+                                        print(f"[MEMBER-FILTER] Role check: user IS a member of '{proj_key}'")
+                            except Exception:
+                                continue
+                        print(f"[MEMBER-FILTER] After role checks: {len(member_keys)} total member projects")
+            except Exception as e:
+                print(f"[MEMBER-FILTER] Role membership check error: {e}")
+
+        if not member_keys:
+            return []
+
+        # Filter original project list to only member projects
+        return [p for p in all_projects if p.get('key') in member_keys]
 
     def _get_known_project_keys(self):
         """Build set of all known project keys from issues + projects.
@@ -6364,7 +6717,7 @@ class TimeTracker:
                     known.add(key)
         return known
 
-    def _resolve_record_project_key(self, window_title, default_project_key):
+    def _resolve_record_project_key(self, window_title, default_project_key, ocr_text=None):
         """Determine the project key for an individual activity record.
 
         When a user works on multiple projects simultaneously, each record
@@ -6373,33 +6726,35 @@ class TimeTracker:
         Strategy:
         1. Extract Jira issue keys from the window title (e.g., PROJ-123 → PROJ)
         2. Extract VS Code workspace/folder name and match against known projects
-        3. Fall back to None — let the AI server determine the project from context
-           (previously fell back to batch-level default which was often wrong for
-           multi-project users, causing timelogs to be misattributed)
+        3. Extract project keys from Jira/Confluence URLs in browser window titles
+        4. Extract Jira issue keys from OCR text (screen content)
+        5. Use recent project affinity as tiebreaker
+        6. Fall back to None — let the AI server determine the project from context
         """
-        if not window_title:
-            # No window title to analyze — return None so AI determines the project
-            print(f"[PROJECT_KEY] No window title — returning None")
+        if not window_title and not ocr_text:
+            print(f"[PROJECT_KEY] No window title or OCR text — returning None")
             return None
 
         known_projects = self._get_known_project_keys()
-        print(f"[PROJECT_KEY] Resolving for title: '{window_title[:80]}' | known_projects={sorted(known_projects) if known_projects else 'none'}")
+        title_preview = (window_title or '')[:80]
+        print(f"[PROJECT_KEY] Resolving for title: '{title_preview}' | known_projects={sorted(known_projects) if known_projects else 'none'}")
 
         # Strategy 1: Look for Jira issue keys in window title (PROJ-123 → PROJ)
-        issue_matches = re.findall(r'\b([A-Z][A-Z0-9]+)-\d+\b', window_title)
-        if issue_matches:
-            for match in issue_matches:
-                if match in known_projects:
-                    print(f"[PROJECT_KEY] Strategy 1 HIT: issue key '{match}' found in known projects")
-                    return match
-            # Use first extracted key even if not in known projects cache
-            print(f"[PROJECT_KEY] Strategy 1 PARTIAL: using first issue key '{issue_matches[0]}' (not in known projects)")
-            return issue_matches[0]
+        if window_title:
+            issue_matches = re.findall(r'\b([A-Z][A-Z0-9]+)-\d+\b', window_title)
+            if issue_matches:
+                for match in issue_matches:
+                    if match in known_projects:
+                        print(f"[PROJECT_KEY] Strategy 1 HIT: issue key '{match}' found in known projects")
+                        return match
+                # Use first extracted key even if not in known projects cache
+                print(f"[PROJECT_KEY] Strategy 1 PARTIAL: using first issue key '{issue_matches[0]}' (not in known projects)")
+                return issue_matches[0]
 
         # Strategy 2: Extract workspace/folder name from VS Code or IDE titles
         # VS Code: "filename - workspace_name - Visual Studio Code"
         # IntelliJ: "filename – project_name"
-        if known_projects:
+        if known_projects and window_title:
             workspace_name = None
             vscode_match = re.search(r'\s[-–—]\s(.+?)\s[-–—]\s(?:Visual Studio Code|Code - OSS|VSCodium)', window_title)
             if vscode_match:
@@ -6412,24 +6767,97 @@ class TimeTracker:
 
             if workspace_name:
                 print(f"[PROJECT_KEY] Strategy 2: extracted workspace '{workspace_name}'")
-                # Try case-insensitive match of workspace name against project keys
                 ws_upper = workspace_name.upper().replace('-', '').replace('_', '').replace(' ', '')
                 for pk in known_projects:
                     pk_normalized = pk.upper().replace('-', '').replace('_', '').replace(' ', '')
-                    # Match if workspace contains the project key or vice versa
                     if pk_normalized in ws_upper or ws_upper.startswith(pk_normalized):
                         print(f"[PROJECT_KEY] Strategy 2 HIT: workspace '{workspace_name}' matched project '{pk}'")
                         return pk
                 print(f"[PROJECT_KEY] Strategy 2 MISS: workspace '{workspace_name}' didn't match any known project")
-            else:
-                print(f"[PROJECT_KEY] Strategy 2 SKIP: no workspace name extracted from title")
-        else:
-            print(f"[PROJECT_KEY] Strategy 2 SKIP: no known projects to match against")
 
-        # No confident match from window title — return None instead of the
-        # batch-level default so the AI server can determine the correct project
-        # from OCR text, window titles, and issue context across ALL projects.
+        # Strategy 3: Extract project keys from Jira/Confluence URLs in browser titles
+        # Patterns: /browse/PROJ-123, /projects/PROJ/board, /jira/software/projects/PROJ
+        if window_title:
+            url_patterns = [
+                r'/browse/([A-Z][A-Z0-9]+)-\d+',           # Jira issue URL
+                r'/projects/([A-Z][A-Z0-9]+)(?:/|$|\s)',     # Jira project board URL
+                r'/jira/software/projects/([A-Z][A-Z0-9]+)', # Jira next-gen project URL
+                r'\[([A-Z][A-Z0-9]+)-\d+\]',                # Browser tab format: [PROJ-123] Issue title - Jira
+            ]
+            for pattern in url_patterns:
+                url_match = re.search(pattern, window_title)
+                if url_match:
+                    candidate = url_match.group(1)
+                    if known_projects and candidate in known_projects:
+                        print(f"[PROJECT_KEY] Strategy 3 HIT: URL pattern matched project '{candidate}'")
+                        return candidate
+                    elif not known_projects or len(candidate) >= 2:
+                        print(f"[PROJECT_KEY] Strategy 3 PARTIAL: URL pattern extracted '{candidate}'")
+                        return candidate
+
+        # Strategy 4: Extract Jira issue keys from OCR text (screen content)
+        if ocr_text and len(ocr_text) > 5:
+            ocr_issue_matches = re.findall(r'\b([A-Z][A-Z0-9]+)-\d+\b', ocr_text)
+            if ocr_issue_matches:
+                # Count occurrences to find the most frequently mentioned project
+                from collections import Counter
+                project_counts = Counter(ocr_issue_matches)
+                if known_projects:
+                    # Only use keys that match known projects — OCR text is noisy
+                    # and frequently produces false positives (e.g. 'IO-123' from
+                    # random screen content when user has no access to IO project)
+                    known_hits = {k: v for k, v in project_counts.items() if k in known_projects}
+                    if known_hits:
+                        best_key = max(known_hits, key=known_hits.get)
+                        print(f"[PROJECT_KEY] Strategy 4 HIT: OCR text matched known project '{best_key}' ({known_hits[best_key]} mentions)")
+                        return best_key
+                    else:
+                        ignored = project_counts.most_common(3)
+                        print(f"[PROJECT_KEY] Strategy 4 SKIP: OCR keys {ignored} not in known projects {sorted(known_projects)}")
+                else:
+                    # No known projects to validate against — skip OCR extraction
+                    # to avoid false positives
+                    print(f"[PROJECT_KEY] Strategy 4 SKIP: no known projects to validate OCR keys against")
+
+        # Strategy 5: Recent project affinity — use the most common recent project
+        # as a tiebreaker when no direct evidence is found in the current record
+        affinity_project = self._get_most_recent_project()
+        if affinity_project and (not known_projects or affinity_project in known_projects):
+            print(f"[PROJECT_KEY] Strategy 5 HIT: recent affinity suggests '{affinity_project}'")
+            return affinity_project
+        elif affinity_project:
+            print(f"[PROJECT_KEY] Strategy 5 SKIP: affinity '{affinity_project}' not in known projects {sorted(known_projects)}")
+
+        # No confident match — return None so the AI server determines the project
         print(f"[PROJECT_KEY] No match — returning None (AI server will resolve)")
+        return None
+
+    def _record_project_affinity(self, project_key):
+        """Record a resolved project key for recent affinity tracking.
+        Only records keys that are in known_projects to prevent false positives
+        from propagating via the affinity mechanism."""
+        if not project_key:
+            return
+        # Validate against known projects before recording
+        known = self._get_known_project_keys()
+        if known and project_key not in known:
+            print(f"[PROJECT_KEY] Affinity SKIP: '{project_key}' not in known projects")
+            return
+        self._recent_project_keys.append(project_key)
+        # Trim to max size
+        if len(self._recent_project_keys) > self._recent_project_max:
+            self._recent_project_keys = self._recent_project_keys[-self._recent_project_max:]
+
+    def _get_most_recent_project(self):
+        """Return the most common project key from recent resolutions, or None."""
+        if not self._recent_project_keys:
+            return None
+        from collections import Counter
+        counts = Counter(self._recent_project_keys)
+        most_common_key, most_common_count = counts.most_common(1)[0]
+        # Only use affinity if there's a clear pattern (at least 2 occurrences)
+        if most_common_count >= 2:
+            return most_common_key
         return None
 
     def get_user_project_key(self):
@@ -7178,13 +7606,16 @@ class TimeTracker:
                         ocr_confidence = 0.0
                         ocr_error_message = 'OCR skipped (throttled, not backfilled)'
 
-                # Resolve project key per-record from window title context.
+                # Resolve project key per-record from window title + OCR context.
                 # This allows records from different projects in the same batch
                 # to carry their correct project_key. Returns None when detection
                 # fails — the AI server will determine the project from full context.
                 record_project_key = self._resolve_record_project_key(
-                    s.get('window_title', ''), None
+                    s.get('window_title', ''), None, ocr_text=ocr_text
                 )
+                # Track successful resolutions for affinity-based fallback
+                if record_project_key:
+                    self._record_project_affinity(record_project_key)
 
                 record = {
                     'user_id': self.current_user_id,
@@ -7230,7 +7661,45 @@ class TimeTracker:
 
             # Batch insert to Supabase using anon client with custom JWT (RLS-scoped)
             print(f"[BATCH] Inserting {len(records)} activity records...")
+            print(f"[BATCH] user_id={self.current_user_id}, org_id={self.organization_id}")
             secure_log("[BATCH] Target table: activity_records", user_id=self.current_user_id)
+
+            # Validate JWT is set before attempting insert
+            try:
+                token = self.auth_manager.tokens.get('supabase_token')
+                if token:
+                    import base64
+                    # Decode JWT payload (2nd segment) to verify sub claim matches current_user_id
+                    parts = token.split('.')
+                    if len(parts) == 3:
+                        padded = parts[1] + '=' * (4 - len(parts[1]) % 4)
+                        payload = json.loads(base64.urlsafe_b64decode(padded))
+                        jwt_sub = payload.get('sub')
+                        jwt_role = payload.get('role')
+                        jwt_exp = payload.get('exp', 0)
+                        is_expired = time.time() > jwt_exp
+                        print(f"[BATCH] JWT check: sub={jwt_sub}, role={jwt_role}, expired={is_expired}, exp={jwt_exp}")
+                        if str(jwt_sub) != str(self.current_user_id):
+                            print(f"[BATCH] WARNING: JWT sub '{jwt_sub}' != current_user_id '{self.current_user_id}' — RLS will reject insert!")
+                        if is_expired:
+                            print(f"[BATCH] WARNING: JWT is expired! Refreshing before insert...")
+                            self._set_supabase_jwt()
+                else:
+                    print(f"[BATCH] WARNING: No supabase_token found in auth_manager.tokens — insert will likely fail!")
+                    self._set_supabase_jwt()
+            except Exception as jwt_check_err:
+                print(f"[BATCH] JWT pre-check error (non-fatal): {jwt_check_err}")
+
+            # Debug: log first record's key fields for troubleshooting
+            if records:
+                r0 = records[0]
+                print(f"[BATCH] Sample record: user_id={r0.get('user_id')}, org_id={r0.get('organization_id')}, "
+                      f"status={r0.get('status')}, start_time={r0.get('start_time')}, "
+                      f"window_title='{(r0.get('window_title') or '')[:50]}'")
+
+            # Log the exact Supabase URL for cross-referencing with Dashboard
+            print(f"[BATCH] Supabase URL: {self.supabase_url}")
+
             result = self.supabase.table('activity_records').insert(records).execute()
             print(f"[BATCH] Insert result: data_count={len(result.data) if result.data else 0}, count={getattr(result, 'count', 'N/A')}")
 
@@ -7243,27 +7712,57 @@ class TimeTracker:
                 print(f"[BATCH] Inserted record IDs | ids={inserted_ids}")
                 secure_log("[BATCH] Inserted record IDs", ids=inserted_ids)
 
-                # Verify records actually exist in the database
+                # ============================================================
+                # DIAGNOSTIC: Raw HTTP verification (bypasses supabase-py)
+                # This catches client-library bugs and confirms records
+                # actually persist in the database.
+                # ============================================================
                 upload_verified = False
                 try:
-                    verify = self.supabase.table('activity_records') \
-                        .select('id') \
-                        .eq('user_id', self.current_user_id) \
-                        .eq('batch_timestamp', batch_timestamp) \
-                        .execute()
-                    verified_count = len(verify.data) if verify.data else 0
-                    print(f"[BATCH] Verification: {verified_count}/{len(records)} records confirmed in database")
-                    if verified_count == 0:
-                        print(f"[ERROR] Insert returned data but verification found 0 records — possible RLS or trigger issue")
-                        print(f"[BATCH] Restoring {len(sessions)} sessions to SQLite for retry on next cycle")
-                        self.session_manager.restore_sessions(sessions)
-                        self.add_admin_log('ERROR', f'Batch upload failed: verification found 0/{len(records)} records (RLS or trigger issue). Records queued for retry.')
+                    first_id = inserted_ids[0] if inserted_ids else None
+                    if first_id and first_id != '?':
+                        import requests as req_lib
+                        raw_url = f"{self.supabase_url}/rest/v1/activity_records?id=eq.{first_id}&select=id"
+                        supabase_anon_key = get_env_var('SUPABASE_ANON_KEY')
+                        supabase_token = self.auth_manager.tokens.get('supabase_token')
+                        raw_headers = {
+                            'apikey': supabase_anon_key,
+                            'Authorization': f'Bearer {supabase_token}',
+                        }
+                        raw_resp = req_lib.get(raw_url, headers=raw_headers, timeout=15)
+                        raw_data = raw_resp.json() if raw_resp.status_code == 200 else None
+                        raw_count = len(raw_data) if raw_data else 0
+                        print(f"[BATCH] RAW HTTP verify: GET {raw_url}")
+                        print(f"[BATCH] RAW HTTP result: status={raw_resp.status_code}, rows={raw_count}, body={raw_resp.text[:200]}")
+
+                        if raw_count == 0 and raw_resp.status_code == 200:
+                            print(f"[CRITICAL] Insert appeared to succeed but record {first_id} NOT FOUND via raw HTTP!")
+                            print(f"[CRITICAL] This means the INSERT transaction was ROLLED BACK by a database trigger.")
+                            print(f"[CRITICAL] Likely cause: notify_activity_webhook() AFTER INSERT trigger is failing.")
+                            print(f"[CRITICAL] FIX: Disable the trigger in Supabase SQL Editor:")
+                            print(f"[CRITICAL]   ALTER TABLE activity_records DISABLE TRIGGER on_activity_record_insert;")
+                        elif raw_count > 0:
+                            print(f"[BATCH] RAW HTTP verification PASSED — record {first_id} confirmed via independent HTTP call")
+                            upload_verified = True
                     else:
-                        upload_verified = True
+                        # Fallback: supabase-py verification
+                        verify = self.supabase.table('activity_records') \
+                            .select('id') \
+                            .eq('user_id', self.current_user_id) \
+                            .eq('batch_timestamp', batch_timestamp) \
+                            .execute()
+                        verified_count = len(verify.data) if verify.data else 0
+                        print(f"[BATCH] Verification: {verified_count}/{len(records)} records confirmed in database")
+                        upload_verified = verified_count > 0
+
                 except Exception as ve:
-                    print(f"[ERROR] Verification query failed: {ve} — restoring sessions to SQLite for retry")
+                    print(f"[ERROR] Verification failed: {ve}")
+                    traceback.print_exc()
+
+                if not upload_verified:
+                    print(f"[ERROR] Records not persisted — restoring {len(sessions)} sessions to SQLite for retry")
                     self.session_manager.restore_sessions(sessions)
-                    self.add_admin_log('ERROR', f'Batch upload verification failed: {ve}')
+                    self.add_admin_log('ERROR', f'Batch upload failed: records not persisted. Queued for retry.')
 
                 if upload_verified:
                     # Upload confirmed — safe to clear idle records and reset batch timer
@@ -7285,7 +7784,39 @@ class TimeTracker:
 
         except Exception as e:
             error_str = str(e).lower()
-            is_auth_error = any(kw in error_str for kw in ('jwt expired', 'jwt', '401', 'unauthorized', 'invalid token', 'token is expired', 'not authenticated'))
+            print(f"[BATCH] Exception during upload: {type(e).__name__}: {e}")
+            # Log Supabase API error details if available
+            if hasattr(e, 'message'):
+                print(f"[BATCH] API error message: {e.message}")
+            if hasattr(e, 'code'):
+                print(f"[BATCH] API error code: {e.code}")
+            if hasattr(e, 'details'):
+                print(f"[BATCH] API error details: {e.details}")
+            if hasattr(e, 'hint'):
+                print(f"[BATCH] API error hint: {e.hint}")
+
+            is_fk_violation = 'foreign key' in error_str or '23503' in error_str or 'fkey' in error_str
+            is_auth_error = any(kw in error_str for kw in ('jwt expired', '401', 'unauthorized', 'invalid token', 'token is expired', 'not authenticated', 'apikey'))
+
+            if is_fk_violation:
+                print(f"[CRITICAL] Foreign key violation — user_id '{self.current_user_id}' or org_id '{self.organization_id}' does NOT exist in the database!")
+                print(f"[CRITICAL] Records were NOT persisted. The user/org may have been deleted.")
+                print(f"[CRITICAL] Clearing stale credentials — user MUST re-authenticate.")
+                self.add_admin_log('ERROR', f'FK violation: user {self.current_user_id} not in DB. Clearing credentials for re-auth.')
+                # Clear stale user data to force re-auth on next cycle
+                self.current_user_id = None
+                self.organization_id = None
+                self.current_user = None
+                # Clear cached user info so stale IDs aren't restored
+                try:
+                    self._clear_cached_user_info()
+                except Exception:
+                    pass
+                # Restore sessions so they aren't lost
+                if sessions:
+                    self.session_manager.restore_sessions(sessions)
+                    print(f"[BATCH] {len(sessions)} sessions restored to SQLite. Will retry after re-authentication.")
+                return
 
             if is_auth_error and records:
                 print(f"[BATCH] Auth error during upload: {e}")
@@ -7906,8 +8437,10 @@ class TimeTracker:
             # Priority: window title issue key > assigned issues > accessible projects
             fallback_project_key = self.get_user_project_key()
             project_key = self._resolve_record_project_key(
-                window_info.get('title', ''), fallback_project_key
+                window_info.get('title', ''), fallback_project_key, ocr_text=extracted_text
             )
+            if project_key:
+                self._record_project_affinity(project_key)
 
             screenshot_data = {
                 'user_id': self.current_user_id,
@@ -9718,6 +10251,19 @@ class TimeTracker:
                             self.current_user_id = self._load_cached_user_id()
                         else:
                             self.current_user_id = self.ensure_user_exists(user_info)
+                            # Validate user actually exists in DB (detect stale/phantom IDs)
+                            if self.current_user_id and self.supabase:
+                                try:
+                                    check = self.supabase.table('users').select('id').eq('id', self.current_user_id).execute()
+                                    if not check.data:
+                                        print(f"[CRITICAL] User {self.current_user_id} not found in DB! Clearing stale credentials.")
+                                        self.current_user_id = None
+                                        self.organization_id = None
+                                        self._clear_cached_user_info()
+                                    else:
+                                        print(f"[OK] User {self.current_user_id} verified in database")
+                                except Exception as ve:
+                                    print(f"[WARN] Could not verify user in DB: {ve}")
                             # Sync app classifications from Supabase (all projects)
                             try:
                                 client = self.supabase
