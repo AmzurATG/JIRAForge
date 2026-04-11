@@ -1571,7 +1571,7 @@ class AtlassianAuthManager:
             'redirect_uri': self.redirect_uri,
             'state': state,
             'response_type': 'code',
-            'prompt': 'login',
+            'prompt': 'consent',
             'code_challenge': code_challenge,
             'code_challenge_method': 'S256'
         }
@@ -1662,6 +1662,7 @@ class AtlassianAuthManager:
         })
         self._save_tokens()
         self._refresh_token_invalid = False  # Clear any prior permanent-failure flag
+        self._refresh_fail_count = 0  # Reset consecutive failure counter
 
         print("[OK] OAuth tokens received via AI Server")
         return result
@@ -1765,10 +1766,28 @@ class AtlassianAuthManager:
                     error_data = response.json() if response.headers.get('content-type', '').startswith('application/json') else {}
                     error = error_data.get('error', response.text)
                     print(f"[ERROR] Token refresh failed: {error}")
-                    # Check if re-authentication is required (permanent failure — stop retrying)
-                    if error_data.get('requiresReauth') or 'invalid' in str(error).lower():
-                        print("[WARN] Refresh token expired - user must re-authenticate")
-                        self._refresh_token_invalid = True  # Prevents endless 30-second retry loop
+                    # Check if re-authentication is TRULY required (permanent failure only).
+                    # Be precise: only mark as permanently invalid for actual token revocation/expiry,
+                    # NOT for transient errors that happen to contain the word "invalid".
+                    # Atlassian returns 'invalid_grant' when the refresh token is truly revoked/expired.
+                    error_lower = str(error).lower()
+                    is_permanent_failure = (
+                        error_data.get('requiresReauth') or
+                        'invalid_grant' in error_lower or
+                        'refresh token is invalid' in error_lower or
+                        'token has been revoked' in error_lower or
+                        'token has been expired' in error_lower or
+                        response.status_code == 403
+                    )
+                    if is_permanent_failure:
+                        # Track consecutive permanent failures before giving up.
+                        # A single transient "invalid" error should NOT kill the session.
+                        self._refresh_fail_count = getattr(self, '_refresh_fail_count', 0) + 1
+                        if self._refresh_fail_count >= 3:
+                            print(f"[WARN] Refresh token failed {self._refresh_fail_count} consecutive times - user must re-authenticate")
+                            self._refresh_token_invalid = True  # Prevents endless 30-second retry loop
+                        else:
+                            print(f"[WARN] Refresh token failure {self._refresh_fail_count}/3 - will retry before requiring re-auth")
                     return False
 
                 result = response.json()
@@ -1784,6 +1803,7 @@ class AtlassianAuthManager:
                 self._save_tokens()
 
                 self._refresh_token_invalid = False  # Clear permanent-failure flag
+                self._refresh_fail_count = 0  # Reset consecutive failure counter
                 print("[OK] Access token refreshed successfully via AI Server")
                 return True
             except Exception as e:
@@ -1940,6 +1960,8 @@ class AtlassianAuthManager:
             bool: True if config fetched successfully, False otherwise
         """
         access_token = self.tokens.get('access_token')
+
+        
         if not access_token:
             print("[ERROR] No valid Atlassian token - cannot fetch OCR config")
             return False
@@ -1990,17 +2012,29 @@ class AtlassianAuthManager:
             return False
 
     def logout(self):
-        """Clear authentication tokens from both keyring and JSON file"""
+        """Clear authentication tokens from all storage locations"""
         self.tokens = {}
+        self._refresh_token_invalid = False
+        self._refresh_fail_count = 0
 
-        # Clear sensitive tokens from keyring (including any chunks)
+        # Clear sensitive tokens from secure storage (keyring + encrypted fallback)
+        try:
+            self.secure_storage.delete_tokens()
+        except Exception as e:
+            print(f"[WARN] Failed to clear secure storage: {e}")
+
+        # Also clear from keyring directly (handles legacy entries)
         if KEYRING_AVAILABLE:
             for key in SENSITIVE_TOKEN_KEYS:
                 _keyring_delete(KEYRING_SERVICE, key)
 
-        # Remove JSON file (contains metadata)
+        # Remove old JSON file (contains metadata)
         if os.path.exists(self.store_path):
             os.remove(self.store_path)
+
+        # Remove metadata file
+        if os.path.exists(self.metadata_path):
+            os.remove(self.metadata_path)
     
     def send_diagnostics(self, diag_type: str, diagnostics: dict) -> bool:
         """
@@ -6084,8 +6118,11 @@ class TimeTracker:
     def build_jql_for_tracked_statuses(self):
         """Build JQL query using project-level tracked statuses
         
-        If project settings exist, builds a query that respects each project's
-        configured statuses. Otherwise, falls back to statusCategory.
+        Fetches issues from ALL projects the user is assigned to.
+        For projects with explicit settings, uses their configured statuses.
+        For all other projects, uses statusCategory = "In Progress" as default.
+        This ensures user_assigned_issues contains issues across ALL projects,
+        not just the ones configured in project_settings.
         
         Returns:
             str: JQL query string
@@ -6094,21 +6131,30 @@ class TimeTracker:
         self.fetch_project_settings()
         
         if self.project_settings:
-            # Build project-specific JQL
-            # Format: (project = "A" AND status IN (...)) OR (project = "B" AND status IN (...))
+            # Build project-specific JQL for configured projects
+            # PLUS a catch-all clause for any other projects the user is assigned to
             project_clauses = []
+            configured_projects = []
             for project_key, settings in self.project_settings.items():
                 statuses = settings.get('tracked_statuses', ['In Progress'])
                 if statuses:
                     status_list = ', '.join([f'"{s}"' for s in statuses])
                     clause = f'(project = "{project_key}" AND status IN ({status_list}))'
                     project_clauses.append(clause)
+                    configured_projects.append(project_key)
             
             if project_clauses:
+                # Add a catch-all clause for projects NOT in project_settings
+                # so we still fetch assigned issues from all other projects
+                if configured_projects:
+                    not_in_list = ', '.join([f'"{pk}"' for pk in configured_projects])
+                    catch_all = f'(project NOT IN ({not_in_list}) AND statusCategory = "In Progress")'
+                    project_clauses.append(catch_all)
+                
                 # Combine all project clauses with OR
                 status_filter = ' OR '.join(project_clauses)
                 jql = f'assignee = currentUser() AND ({status_filter})'
-                print(f"[INFO] Using project-level tracked statuses JQL")
+                print(f"[INFO] Using project-level tracked statuses JQL (with catch-all for unconfigured projects)")
                 return jql
 
         # Fallback: Use statusCategory if no project settings
@@ -6160,33 +6206,27 @@ class TimeTracker:
             return None
 
     def fetch_jira_issues(self):
-        """Fetch user's In Progress Jira issues.
-        Primary path: reads from user_jira_issues_cache in Supabase (kept fresh by
-        the Forge avi:jira:updated:issue trigger — no Jira API call needed).
-        Fallback: calls Jira REST API directly if the cache is unavailable or empty.
+        """Fetch user's assigned Jira issues across ALL projects.
+        Primary path: calls Jira REST API directly for the most complete picture.
+        Fallback: reads from user_jira_issues_cache in Supabase when API is
+        unavailable (offline, no token, API error).
         """
         print("[INFO] Attempting to fetch Jira issues...")
 
-        # Primary: Supabase cache (no OAuth token required)
-        cached = self.fetch_issues_from_cache()
-        if cached is not None:
-            return cached
-
-        print("[INFO] Cache miss — falling back to direct Jira API call")
-
         cloud_id = self.get_jira_cloud_id()
         if not cloud_id:
-            print("[WARN] Cannot fetch issues: No Cloud ID")
-            return []
+            print("[WARN] Cannot fetch issues via API: No Cloud ID — trying cache")
+            return self.fetch_issues_from_cache() or []
 
         access_token = self.auth_manager.tokens.get('access_token')
         if not access_token:
-            print("[WARN] Cannot fetch issues: No access token")
-            return []
+            print("[WARN] Cannot fetch issues via API: No access token — trying cache")
+            return self.fetch_issues_from_cache() or []
 
         try:
             # Build JQL using project-level tracked statuses (admin-configured)
             # If project settings exist, uses project-specific statuses
+            # plus a catch-all for unconfigured projects.
             # Otherwise, falls back to statusCategory = "In Progress"
             jql = self.build_jql_for_tracked_statuses()
             print(f"[INFO] Querying Jira with JQL (POST): {jql}")
@@ -6229,8 +6269,8 @@ class TimeTracker:
                         }
                     )
                 else:
-                    print("[ERROR] Token refresh failed, please re-authenticate")
-                    return []
+                    print("[ERROR] Token refresh failed, please re-authenticate — trying cache")
+                    return self.fetch_issues_from_cache() or []
 
             if response.status_code == 200:
                 data = response.json()
@@ -6316,9 +6356,17 @@ class TimeTracker:
                 return formatted_issues
             else:
                 print(f"[ERROR] Jira API failed: {response.status_code} - {response.text}")
+                print("[INFO] Falling back to Supabase cache after API failure")
+                cached = self.fetch_issues_from_cache()
+                if cached is not None:
+                    return cached
         except Exception as e:
             print(f"!!!DEBUG!!! Exception occurred in fetch_jira_issues: {e}")
             print(f"[ERROR] Failed to fetch Jira issues: {e}")
+            print("[INFO] Falling back to Supabase cache after exception")
+            cached = self.fetch_issues_from_cache()
+            if cached is not None:
+                return cached
 
         return []
 
@@ -6755,31 +6803,45 @@ class TimeTracker:
                 from collections import Counter
                 project_counts = Counter(ocr_issue_matches)
                 if known_projects:
-                    # Prefer keys that match known projects
+                    # Only use keys that match known projects — OCR text is noisy
+                    # and frequently produces false positives (e.g. 'IO-123' from
+                    # random screen content when user has no access to IO project)
                     known_hits = {k: v for k, v in project_counts.items() if k in known_projects}
                     if known_hits:
                         best_key = max(known_hits, key=known_hits.get)
                         print(f"[PROJECT_KEY] Strategy 4 HIT: OCR text matched known project '{best_key}' ({known_hits[best_key]} mentions)")
                         return best_key
-                # Fallback to most frequent key from OCR
-                best_key = project_counts.most_common(1)[0][0]
-                print(f"[PROJECT_KEY] Strategy 4 PARTIAL: OCR text most frequent key '{best_key}' ({project_counts[best_key]} mentions)")
-                return best_key
+                    else:
+                        ignored = project_counts.most_common(3)
+                        print(f"[PROJECT_KEY] Strategy 4 SKIP: OCR keys {ignored} not in known projects {sorted(known_projects)}")
+                else:
+                    # No known projects to validate against — skip OCR extraction
+                    # to avoid false positives
+                    print(f"[PROJECT_KEY] Strategy 4 SKIP: no known projects to validate OCR keys against")
 
         # Strategy 5: Recent project affinity — use the most common recent project
         # as a tiebreaker when no direct evidence is found in the current record
         affinity_project = self._get_most_recent_project()
-        if affinity_project:
+        if affinity_project and (not known_projects or affinity_project in known_projects):
             print(f"[PROJECT_KEY] Strategy 5 HIT: recent affinity suggests '{affinity_project}'")
             return affinity_project
+        elif affinity_project:
+            print(f"[PROJECT_KEY] Strategy 5 SKIP: affinity '{affinity_project}' not in known projects {sorted(known_projects)}")
 
         # No confident match — return None so the AI server determines the project
         print(f"[PROJECT_KEY] No match — returning None (AI server will resolve)")
         return None
 
     def _record_project_affinity(self, project_key):
-        """Record a resolved project key for recent affinity tracking."""
+        """Record a resolved project key for recent affinity tracking.
+        Only records keys that are in known_projects to prevent false positives
+        from propagating via the affinity mechanism."""
         if not project_key:
+            return
+        # Validate against known projects before recording
+        known = self._get_known_project_keys()
+        if known and project_key not in known:
+            print(f"[PROJECT_KEY] Affinity SKIP: '{project_key}' not in known projects")
             return
         self._recent_project_keys.append(project_key)
         # Trim to max size

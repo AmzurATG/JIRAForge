@@ -62,6 +62,8 @@ async function fetchWorkHoursConfig(supabaseConfig, organizationId) {
 /**
  * Filter idle blocks to only include those that started within configured work hours.
  * Defense-in-depth: desktop app also filters, but this ensures consistency on the server side.
+ * NOTE: Timestamps are stored in UTC. We must convert to the user's local timezone
+ * before comparing against work hours (which are in local time).
  */
 function filterIdleBlocksByWorkHours(idleBlocks, workHoursConfig) {
   const { workHoursStart, workHoursEnd, workDays } = workHoursConfig;
@@ -77,18 +79,40 @@ function filterIdleBlocksByWorkHours(idleBlocks, workHoursConfig) {
   return idleBlocks.filter(block => {
     const dt = new Date(block.startTime);
     if (isNaN(dt.getTime())) return true; // keep if unparseable
-    const dayOfWeek = dt.getDay(); // 0=Sun ... 6=Sat
-    const isoDay = dayOfWeek === 0 ? 7 : dayOfWeek; // convert to ISO: 1=Mon ... 7=Sun
-    const blockMin = dt.getHours() * 60 + dt.getMinutes();
+
+    // Convert UTC time to user's local timezone for work hours comparison.
+    // Forge runs in UTC, so getHours()/getDay() would return UTC values.
+    const tz = block.userTimezone || 'UTC';
+    let localHour, localMinute, localDay;
+    try {
+      const parts = new Intl.DateTimeFormat('en-US', {
+        timeZone: tz,
+        hour: 'numeric', minute: 'numeric', weekday: 'short',
+        hour12: false
+      }).formatToParts(dt);
+      localHour = parseInt(parts.find(p => p.type === 'hour')?.value || '0', 10);
+      localMinute = parseInt(parts.find(p => p.type === 'minute')?.value || '0', 10);
+      const weekdayStr = parts.find(p => p.type === 'weekday')?.value || '';
+      const dayMap = { Sun: 7, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 };
+      localDay = dayMap[weekdayStr] || ((dt.getUTCDay() === 0 ? 7 : dt.getUTCDay()));
+    } catch {
+      // Fallback to UTC if timezone is invalid
+      localHour = dt.getUTCHours();
+      localMinute = dt.getUTCMinutes();
+      const utcDay = dt.getUTCDay();
+      localDay = utcDay === 0 ? 7 : utcDay;
+    }
+
+    const blockMin = localHour * 60 + localMinute;
 
     if (startMin <= endMin) {
       // Normal schedule
-      return workDays.includes(isoDay) && blockMin >= startMin && blockMin <= endMin;
+      return workDays.includes(localDay) && blockMin >= startMin && blockMin <= endMin;
     } else {
       // Cross-midnight
-      if (blockMin >= startMin) return workDays.includes(isoDay);
+      if (blockMin >= startMin) return workDays.includes(localDay);
       if (blockMin <= endMin) {
-        const prevDay = isoDay > 1 ? isoDay - 1 : 7;
+        const prevDay = localDay > 1 ? localDay - 1 : 7;
         return workDays.includes(prevDay);
       }
       return false;
@@ -504,7 +528,7 @@ async function resolveTeamPermissions(isAdmin, projectKey) {
 }
 
 // Columns from the idle-time migration (20260325) — may not exist in older databases
-const IDLE_COLUMNS = ',is_idle,idle_start_time,idle_end_time,reclassified_from,converted_issue_key';
+const IDLE_COLUMNS = ',is_idle,idle_start_time,idle_end_time,reclassified_from,converted_issue_key,user_timezone';
 const BASE_ACTIVITY_SELECT = 'id,user_id,start_time,end_time,duration_seconds,project_key,classification';
 
 /**
@@ -715,7 +739,8 @@ export async function fetchTeamDayTimeline(accountId, cloudId, projectKey, date,
         durationSeconds: record.duration_seconds || 0,
         classification: record.classification,
         convertedIssueKey: record.converted_issue_key || null,
-        reclassifiedFrom: record.reclassified_from || null
+        reclassifiedFrom: record.reclassified_from || null,
+        userTimezone: record.user_timezone || null
       });
     } else {
       // Add session with start_time, end_time for accurate timeline rendering
@@ -943,7 +968,8 @@ export async function fetchMyDayTimeline(accountId, cloudId, date) {
         durationSeconds: record.duration_seconds || 0,
         classification: record.classification,
         convertedIssueKey: record.converted_issue_key || null,
-        reclassifiedFrom: record.reclassified_from || null
+        reclassifiedFrom: record.reclassified_from || null,
+        userTimezone: record.user_timezone || null
       });
     } else {
       sessions.push({
