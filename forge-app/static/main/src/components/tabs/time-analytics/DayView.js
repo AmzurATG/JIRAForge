@@ -19,7 +19,9 @@ function DayView({ loading, timeData, onTodayTotalReconciled, onOpenWorklogReass
   const [userIssues, setUserIssues] = useState([]); // Issues for "Existing Issue" dropdown
   const [issueSearch, setIssueSearch] = useState(''); // Filter text for issue dropdown
   const [dropdownsLoading, setDropdownsLoading] = useState(false);
-  const [expandedUsers, setExpandedUsers] = useState({}); // { [userId]: true } for showing issue breakdown
+  const [expandedUsers, setExpandedUsers] = useState({});
+  const [showIdleHelp, setShowIdleHelp] = useState(true);
+  const [hoveredBlock, setHoveredBlock] = useState(null); // { text, type }
   const popoverRef = useRef(null);
   // Helper function to get user initials
   const getInitials = (name) => {
@@ -287,10 +289,13 @@ function DayView({ loading, timeData, onTodayTotalReconciled, onOpenWorklogReass
         ? new Date(endTime.getTime() - (durationSeconds * 1000))
         : endTime;
 
+      const hasIssue = !!(session.issueKey);
       return {
         startTime: actualStart,
         endTime: endTime,
-        durationSeconds: durationSeconds
+        durationSeconds: durationSeconds,
+        hasIssue,
+        issueKey: session.issueKey || null
       };
     }).filter(Boolean);
 
@@ -300,12 +305,13 @@ function DayView({ loading, timeData, onTodayTotalReconciled, onOpenWorklogReass
     // Coalesce adjacent/overlapping blocks within a 10-minute gap into continuous bars.
     // Individual 5-minute activity records are too thin to see on a multi-hour timeline,
     // so we merge nearby blocks into larger visible segments.
+    // Only merge blocks with the same assigned/unassigned status.
     const GAP_THRESHOLD_MS = 10 * 60 * 1000; // 10 minutes
     const merged = [];
     for (const block of rawBlocks) {
       const prev = merged[merged.length - 1];
-      if (prev && (block.startTime - prev.endTime) <= GAP_THRESHOLD_MS) {
-        // Extend previous block
+      if (prev && prev.hasIssue === block.hasIssue && (block.startTime - prev.endTime) <= GAP_THRESHOLD_MS) {
+        // Extend previous block (same assigned/unassigned type)
         prev.endTime = new Date(Math.max(prev.endTime.getTime(), block.endTime.getTime()));
         prev.durationSeconds += block.durationSeconds;
       } else {
@@ -324,7 +330,9 @@ function DayView({ loading, timeData, onTodayTotalReconciled, onOpenWorklogReass
         width: widthPercent,
         startTime: block.startTime,
         endTime: block.endTime,
-        durationSeconds: block.durationSeconds
+        durationSeconds: block.durationSeconds,
+        hasIssue: block.hasIssue,
+        issueKey: block.issueKey
       };
     }).filter(block => block.left < 100 && (block.left + block.width) > 0);
   };
@@ -466,11 +474,19 @@ function DayView({ loading, timeData, onTodayTotalReconciled, onOpenWorklogReass
 
   // Get tooltip text for a time block
   const getBlockTooltip = (block) => {
-    return block.startTime.toLocaleTimeString('en-US', {
+    const time = block.startTime.toLocaleTimeString('en-US', {
       hour: 'numeric',
       minute: '2-digit',
       hour12: true
     });
+    const end = block.endTime.toLocaleTimeString('en-US', {
+      hour: 'numeric',
+      minute: '2-digit',
+      hour12: true
+    });
+    const mins = Math.round(block.durationSeconds / 60);
+    const label = block.hasIssue ? block.issueKey : 'No issue assigned';
+    return `${label} · ${time} – ${end} (${mins}m)`;
   };
 
   // Get tooltip text for an idle block
@@ -615,7 +631,12 @@ function DayView({ loading, timeData, onTodayTotalReconciled, onOpenWorklogReass
                 {/* Timeline Header - show if we have timeline data (admin or regular user) */}
                 {hasTimelineData() && (
                   <div className="day-timeline-header">
-                    <div className="timeline-header-name">Name</div>
+                    <div className="timeline-header-name">
+                      Name
+                      {!showIdleHelp && (
+                        <button className="idle-guide-reopen-btn" onClick={() => setShowIdleHelp(true)}>Guide</button>
+                      )}
+                    </div>
                     <div className="timeline-header-hours">
                       {timelineHours.map(hour => (
                         <span key={hour} className="timeline-hour-label">
@@ -624,6 +645,27 @@ function DayView({ loading, timeData, onTodayTotalReconciled, onOpenWorklogReass
                       ))}
                     </div>
                     <div className="timeline-header-total"></div>
+                  </div>
+                )}
+
+                {/* Idle time guide banner — open by default */}
+                {hasTimelineData() && showIdleHelp && (
+                  <div className="idle-guide-banner">
+                    <div className="idle-guide-content">
+                      <div className="idle-guide-legend">
+                        <span className="legend-item"><span className="legend-swatch active"></span>Active work</span>
+                        <span className="legend-item"><span className="legend-swatch idle"></span>Idle (untracked)</span>
+                        <span className="legend-item"><span className="legend-swatch converted"></span>Converted idle</span>
+                      </div>
+                      <div className="idle-guide-text">
+                        <strong>Orange striped blocks</strong> are idle periods where no activity was detected.
+                        Hover over them and click the <strong>+</strong> button to convert idle time into a worklog — assign it to an existing issue or create a new one.
+                        <span className="idle-guide-hint">To see this again, click the <strong>Guide</strong> button next to NAME.</span>
+                      </div>
+                    </div>
+                    <button className="idle-guide-dismiss" onClick={() => setShowIdleHelp(false)}>
+                      ✕
+                    </button>
                   </div>
                 )}
 
@@ -696,7 +738,8 @@ function DayView({ loading, timeData, onTodayTotalReconciled, onOpenWorklogReass
                                       left: `${block.left}%`,
                                       width: `${block.width}%`
                                     }}
-                                    title={getBlockTooltip(block)}
+                                    onMouseEnter={() => setHoveredBlock({ text: getBlockTooltip(block), type: 'active' })}
+                                    onMouseLeave={() => setHoveredBlock(null)}
                                   ></div>
                                 ))}
                                 {/* Idle blocks with striped pattern */}
@@ -708,7 +751,8 @@ function DayView({ loading, timeData, onTodayTotalReconciled, onOpenWorklogReass
                                       left: `${block.left}%`,
                                       width: `${block.width}%`
                                     }}
-                                    title={getIdleBlockTooltip(block)}
+                                    onMouseEnter={() => setHoveredBlock({ text: getIdleBlockTooltip(block), type: block.converted ? 'converted' : 'idle' })}
+                                    onMouseLeave={() => setHoveredBlock(null)}
                                   >
                                     {/* Show + button on hover for own unconverted idle blocks */}
                                     {isOwnUser && !block.converted && (
@@ -735,41 +779,62 @@ function DayView({ loading, timeData, onTodayTotalReconciled, onOpenWorklogReass
                         {/* Time total */}
                         <div className="member-total-section">
                           <span className="member-total">{formatTime(user.totalSeconds)}</span>
-                          {/* Dropdown arrow temporarily disabled */}
+                          {(() => {
+                            const unassignedSecs = timeBlocks
+                              .filter(b => !b.hasIssue)
+                              .reduce((sum, b) => sum + (b.durationSeconds || 0), 0);
+                            if (unassignedSecs >= 60) {
+                              return (
+                                <span className="member-unassigned-hint" title="Time tracked without an issue selected">
+                                  {formatTime(unassignedSecs)} unassigned
+                                </span>
+                              );
+                            }
+                            return null;
+                          })()}
                         </div>
                       </div>
 
-                      {/* Expandable issue breakdown - temporarily disabled */}
-                      {false && isOwnUser && expandedUsers[user.userId] && user.tasks.length > 0 && (
+                      {/* Hover info strip — shows block details on hover */}
+                      {hoveredBlock && (
+                        <div className={`timeline-hover-strip ${hoveredBlock.type}`}>
+                          <span className={`hover-strip-dot ${hoveredBlock.type}`}></span>
+                          <span className="hover-strip-text">{hoveredBlock.text}</span>
+                        </div>
+                      )}
+
+                      {/* Expandable issue breakdown with worklog reassignment — temporarily disabled */}
+                      {false && isOwnUser && expandedUsers[user.userId] && user.tasks && user.tasks.length > 0 && (
                         <div className="issue-breakdown">
                           {user.tasks.map((task, taskIdx) => {
                             const issueKey = task.task_key || task.issue_key || task.active_task_key;
                             return (
-                            <div key={taskIdx} className="issue-row">
-                              <span className="issue-row-key">{issueKey || 'Unassigned'}</span>
-                              <span className="issue-row-summary">{task.issue_summary || ''}</span>
-                              <span className="issue-row-time">{formatTime(task.total_seconds || 0)}</span>
-                              {onOpenWorklogReassignModal && (
-                                <button
-                                  className="reassign-worklog-btn"
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    onOpenWorklogReassignModal({
-                                      fromIssueKey: issueKey || null,
-                                      timeSpentSeconds: task.total_seconds || 0,
-                                      issueSummary: task.issue_summary || (issueKey ? '' : 'Unassigned work')
-                                    });
-                                  }}
-                                  title={issueKey ? 'Reassign worklog to another issue' : 'Assign to an issue'}
-                                >
-                                  {issueKey ? '⇄' : '→'}
-                                </button>
-                              )}
-                            </div>
+                              <div key={taskIdx} className="issue-row">
+                                <span className="issue-row-key">{issueKey || 'Unassigned'}</span>
+                                <span className="issue-row-summary">{task.issue_summary || ''}</span>
+                                <span className="issue-row-time">{formatTime(task.total_seconds || 0)}</span>
+                                {onOpenWorklogReassignModal && (
+                                  <button
+                                    className="reassign-worklog-btn"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      onOpenWorklogReassignModal({
+                                        fromIssueKey: issueKey || null,
+                                        timeSpentSeconds: task.total_seconds || 0,
+                                        issueSummary: task.issue_summary || (issueKey ? '' : 'Unassigned work')
+                                      });
+                                    }}
+                                    title={issueKey ? 'Reassign worklog to another issue' : 'Assign to an issue'}
+                                  >
+                                    {issueKey ? '⇄' : '→'}
+                                  </button>
+                                )}
+                              </div>
                             );
                           })}
                         </div>
                       )}
+
                     </div>
                   );
                 })}
