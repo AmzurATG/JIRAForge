@@ -2,17 +2,23 @@ import React, { useState, useEffect, useRef } from 'react';
 import { invoke } from '@forge/bridge';
 import { formatTime } from '../../../utils';
 import { normalizeDate, formatLocalDate, parseUTC } from './dateUtils';
+import { useApp } from '../../../context';
 
 /**
  * Day View Component
  * Displays today's timesheet with team member cards and activity timeline
  */
 function DayView({ loading, timeData, onTodayTotalReconciled, onOpenWorklogReassignModal }) {
+  const { loadActiveIssues } = useApp();
   const [timelineData, setTimelineData] = useState(null);
   const [myTimelineData, setMyTimelineData] = useState(null);
   const [convertingIdle, setConvertingIdle] = useState(null); // { id, startTime, endTime, durationSeconds }
-  const [convertForm, setConvertForm] = useState({ issueKey: '', reason: '', mode: 'existing' }); // mode: 'existing' | 'new'
+  const [convertForm, setConvertForm] = useState({ issueKey: '', reason: '', mode: 'existing', projectKey: '' }); // mode: 'existing' | 'new'
   const [convertLoading, setConvertLoading] = useState(false);
+  const [userProjects, setUserProjects] = useState([]); // Projects for "Create New" dropdown
+  const [userIssues, setUserIssues] = useState([]); // Issues for "Existing Issue" dropdown
+  const [issueSearch, setIssueSearch] = useState(''); // Filter text for issue dropdown
+  const [dropdownsLoading, setDropdownsLoading] = useState(false);
   const [expandedUsers, setExpandedUsers] = useState({}); // { [userId]: true } for showing issue breakdown
   const popoverRef = useRef(null);
   // Helper function to get user initials
@@ -353,7 +359,9 @@ function DayView({ loading, timeData, onTodayTotalReconciled, onOpenWorklogReass
         endTime,
         durationSeconds: block.durationSeconds || 0,
         converted: !!block.reclassifiedFrom,
-        convertedIssueKey: block.convertedIssueKey
+        convertedIssueKey: block.convertedIssueKey,
+        convertedReason: block.reason || null,
+        projectKey: block.projectKey || null
       };
     }).filter(block => block && block.left < 100 && (block.left + block.width) > 0);
   };
@@ -362,6 +370,7 @@ function DayView({ loading, timeData, onTodayTotalReconciled, onOpenWorklogReass
   const handleConvertIdle = async () => {
     if (!convertingIdle || !convertForm.reason) return;
     if (convertForm.mode === 'existing' && !convertForm.issueKey) return;
+    if (convertForm.mode === 'new' && !convertForm.projectKey) return;
     setConvertLoading(true);
     try {
       const payload = {
@@ -371,15 +380,16 @@ function DayView({ loading, timeData, onTodayTotalReconciled, onOpenWorklogReass
       if (convertForm.mode === 'existing') {
         payload.issueKey = convertForm.issueKey.trim();
       } else {
-        // Create new issue mode — issueKey is empty, backend will handle
+        // Create new issue mode — use the user-selected project
         payload.createNewIssue = true;
         payload.issueSummary = convertForm.reason.trim();
+        payload.projectKey = convertForm.projectKey;
       }
       const result = await invoke('convertIdleToWorklog', payload);
       if (result.success) {
         // Refresh timeline data
         setConvertingIdle(null);
-        setConvertForm({ issueKey: '', reason: '', mode: 'existing' });
+        setConvertForm({ issueKey: '', reason: '', mode: 'existing', projectKey: '' });
         // Re-fetch timeline to show updated state
         if (timeData?.canViewAllUsers) {
           const refreshResult = await invoke('getTeamDayTimeline', { projectKey: null, date: todayStr });
@@ -387,6 +397,12 @@ function DayView({ loading, timeData, onTodayTotalReconciled, onOpenWorklogReass
         } else {
           const refreshResult = await invoke('getMyDayTimeline', { date: todayStr });
           if (refreshResult.success) setMyTimelineData(refreshResult.data);
+        }
+        // Refresh My Focus dashboard so the newly created/linked issue appears immediately
+        try {
+          await loadActiveIssues();
+        } catch (e) {
+          console.warn('[DayView] Failed to refresh active issues after idle conversion:', e);
         }
       } else {
         console.error('Failed to convert idle block:', result.error);
@@ -404,11 +420,32 @@ function DayView({ loading, timeData, onTodayTotalReconciled, onOpenWorklogReass
     const handleClickOutside = (e) => {
       if (popoverRef.current && !popoverRef.current.contains(e.target)) {
         setConvertingIdle(null);
-        setConvertForm({ issueKey: '', reason: '', mode: 'existing' });
+        setConvertForm({ issueKey: '', reason: '', mode: 'existing', projectKey: '' });
+        setIssueSearch('');
       }
     };
     document.addEventListener('mousedown', handleClickOutside);
     return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, [convertingIdle]);
+
+  // Load user projects and issues when convert popover opens
+  useEffect(() => {
+    if (!convertingIdle) return;
+    let cancelled = false;
+    setDropdownsLoading(true);
+    Promise.all([
+      invoke('getUserProjects'),
+      invoke('getAllUserAssignedIssues')
+    ]).then(([projResult, issResult]) => {
+      if (cancelled) return;
+      if (projResult?.success) setUserProjects(projResult.projects || []);
+      if (issResult?.success) setUserIssues(issResult.issues || []);
+    }).catch(err => {
+      console.warn('[DayView] Failed to load projects/issues for idle convert:', err);
+    }).finally(() => {
+      if (!cancelled) setDropdownsLoading(false);
+    });
+    return () => { cancelled = true; };
   }, [convertingIdle]);
 
   // Get last activity info for a user
@@ -441,7 +478,12 @@ function DayView({ loading, timeData, onTodayTotalReconciled, onOpenWorklogReass
     const start = block.startTime.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true });
     const end = block.endTime.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true });
     const mins = Math.round(block.durationSeconds / 60);
-    if (block.converted) return `Converted to worklog (${block.convertedIssueKey}) ${start} – ${end}`;
+    if (block.converted) {
+      const parts = [`${block.convertedIssueKey}`];
+      if (block.convertedReason) parts.push(`— ${block.convertedReason}`);
+      parts.push(`(${start} – ${end}, ${mins}m)`);
+      return parts.join(' ');
+    }
     return `Idle ${start} – ${end} (${mins}m)`;
   };
 
@@ -675,7 +717,8 @@ function DayView({ loading, timeData, onTodayTotalReconciled, onOpenWorklogReass
                                         onClick={(e) => {
                                           e.stopPropagation();
                                           setConvertingIdle(block);
-                                          setConvertForm({ issueKey: '', reason: '', mode: 'existing' });
+                                          setConvertForm({ issueKey: '', reason: '', mode: 'existing', projectKey: '' });
+                                          setIssueSearch('');
                                         }}
                                         title="Convert to worklog"
                                       >+</button>
@@ -687,63 +730,7 @@ function DayView({ loading, timeData, onTodayTotalReconciled, onOpenWorklogReass
                           </div>
                         )}
 
-                        {/* Convert idle popover — rendered outside timeline for better visibility */}
-                        {convertingIdle && idleBlocks.some(b => b.id === convertingIdle.id) && (
-                          <div className="idle-convert-popover-outer" ref={popoverRef} onClick={(e) => e.stopPropagation()}>
-                            <div className="popover-header">
-                              <span className="popover-title">Convert idle to worklog</span>
-                              <span className="popover-duration">{Math.round(convertingIdle.durationSeconds / 60)}m idle</span>
-                            </div>
-
-                            {/* Step 1: Reason */}
-                            <label className="popover-label">What were you working on?</label>
-                            <input
-                              type="text"
-                              className="popover-input"
-                              placeholder="e.g. Code review, standup meeting"
-                              value={convertForm.reason}
-                              onChange={(e) => setConvertForm(f => ({ ...f, reason: e.target.value }))}
-                              autoFocus
-                            />
-
-                            {/* Step 2: Assign to issue */}
-                            <label className="popover-label">Assign to issue</label>
-                            <div className="popover-mode-tabs">
-                              <button
-                                className={`popover-mode-tab${convertForm.mode === 'existing' ? ' active' : ''}`}
-                                onClick={() => setConvertForm(f => ({ ...f, mode: 'existing' }))}
-                              >Existing Issue</button>
-                              <button
-                                className={`popover-mode-tab${convertForm.mode === 'new' ? ' active' : ''}`}
-                                onClick={() => setConvertForm(f => ({ ...f, mode: 'new' }))}
-                              >Create New</button>
-                            </div>
-
-                            {convertForm.mode === 'existing' ? (
-                              <input
-                                type="text"
-                                className="popover-input"
-                                placeholder="Issue key (e.g. PROJ-123)"
-                                value={convertForm.issueKey}
-                                onChange={(e) => setConvertForm(f => ({ ...f, issueKey: e.target.value }))}
-                              />
-                            ) : (
-                              <p className="popover-hint">A new issue will be created with the reason above as the summary.</p>
-                            )}
-
-                            <div className="popover-actions">
-                              <button
-                                className="popover-btn cancel"
-                                onClick={() => { setConvertingIdle(null); setConvertForm({ issueKey: '', reason: '', mode: 'existing' }); }}
-                              >Cancel</button>
-                              <button
-                                className="popover-btn confirm"
-                                disabled={!convertForm.reason.trim() || (convertForm.mode === 'existing' && !convertForm.issueKey.trim()) || convertLoading}
-                                onClick={handleConvertIdle}
-                              >{convertLoading ? 'Saving...' : 'Convert'}</button>
-                            </div>
-                          </div>
-                        )}
+                        {/* Convert idle popover — moved to fixed overlay outside timeline */}
 
                         {/* Time total */}
                         <div className="member-total-section">
@@ -789,6 +776,116 @@ function DayView({ loading, timeData, onTodayTotalReconciled, onOpenWorklogReass
               </>
             );
           })()}
+        </div>
+      )}
+
+      {/* Convert idle popover — fixed overlay outside the timeline */}
+      {convertingIdle && (
+        <div className="idle-convert-overlay" onClick={() => { setConvertingIdle(null); setConvertForm({ issueKey: '', reason: '', mode: 'existing', projectKey: '' }); setIssueSearch(''); }}>
+          <div className="idle-convert-modal" ref={popoverRef} onClick={(e) => e.stopPropagation()}>
+            <div className="popover-header">
+              <span className="popover-title">Convert idle to worklog</span>
+              <span className="popover-duration">{Math.round(convertingIdle.durationSeconds / 60)}m idle</span>
+            </div>
+
+            {/* Step 1: Reason */}
+            <label className="popover-label">What were you working on?</label>
+            <input
+              type="text"
+              className="popover-input"
+              placeholder="e.g. Code review, standup meeting"
+              value={convertForm.reason}
+              onChange={(e) => setConvertForm(f => ({ ...f, reason: e.target.value }))}
+              autoFocus
+            />
+
+            {/* Step 2: Assign to issue */}
+            <label className="popover-label">Assign to issue</label>
+            <div className="popover-mode-tabs">
+              <button
+                className={`popover-mode-tab${convertForm.mode === 'existing' ? ' active' : ''}`}
+                onClick={() => setConvertForm(f => ({ ...f, mode: 'existing' }))}
+              >Existing Issue</button>
+              <button
+                className={`popover-mode-tab${convertForm.mode === 'new' ? ' active' : ''}`}
+                onClick={() => setConvertForm(f => ({ ...f, mode: 'new' }))}
+              >Create New</button>
+            </div>
+
+            {convertForm.mode === 'existing' ? (
+              <div className="popover-issue-selector">
+                <input
+                  type="text"
+                  className="popover-input"
+                  placeholder="Search issues by key or summary..."
+                  value={issueSearch}
+                  onChange={(e) => setIssueSearch(e.target.value)}
+                />
+                {dropdownsLoading ? (
+                  <div className="popover-hint">Loading issues...</div>
+                ) : (
+                  <div className="popover-dropdown-list">
+                    {userIssues
+                      .filter(iss => {
+                        if (!issueSearch) return true;
+                        const q = issueSearch.toLowerCase();
+                        return iss.key.toLowerCase().includes(q) || (iss.summary || '').toLowerCase().includes(q);
+                      })
+                      .slice(0, 20)
+                      .map(iss => (
+                        <div
+                          key={iss.key}
+                          className={`popover-dropdown-item${convertForm.issueKey === iss.key ? ' selected' : ''}`}
+                          onClick={() => setConvertForm(f => ({ ...f, issueKey: iss.key }))}
+                        >
+                          <span className="dropdown-item-key">{iss.key}</span>
+                          <span className="dropdown-item-summary">{iss.summary}</span>
+                        </div>
+                      ))
+                    }
+                    {userIssues.length === 0 && !dropdownsLoading && (
+                      <div className="popover-hint">No assigned issues found</div>
+                    )}
+                  </div>
+                )}
+                {convertForm.issueKey && (
+                  <div className="popover-selected-issue">
+                    Selected: <strong>{convertForm.issueKey}</strong>
+                  </div>
+                )}
+              </div>
+            ) : (
+              <div className="popover-project-selector">
+                <label className="popover-label">Select project</label>
+                {dropdownsLoading ? (
+                  <div className="popover-hint">Loading projects...</div>
+                ) : (
+                  <select
+                    className="popover-select"
+                    value={convertForm.projectKey}
+                    onChange={(e) => setConvertForm(f => ({ ...f, projectKey: e.target.value }))}
+                  >
+                    <option value="">— Select a project —</option>
+                    {userProjects.map(p => (
+                      <option key={p.key} value={p.key}>{p.key} — {p.name}</option>
+                    ))}
+                  </select>
+                )}
+              </div>
+            )}
+
+            <div className="popover-actions">
+              <button
+                className="popover-btn cancel"
+                onClick={() => { setConvertingIdle(null); setConvertForm({ issueKey: '', reason: '', mode: 'existing', projectKey: '' }); setIssueSearch(''); }}
+              >Cancel</button>
+              <button
+                className="popover-btn confirm"
+                disabled={!convertForm.reason.trim() || (convertForm.mode === 'existing' && !convertForm.issueKey.trim()) || (convertForm.mode === 'new' && !convertForm.projectKey) || convertLoading}
+                onClick={handleConvertIdle}
+              >{convertLoading ? 'Saving...' : 'Convert'}</button>
+            </div>
+          </div>
         </div>
       )}
     </div>

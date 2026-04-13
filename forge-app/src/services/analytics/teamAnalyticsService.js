@@ -573,7 +573,7 @@ async function resolveTeamPermissions(isAdmin, projectKey) {
 }
 
 // Columns from the idle-time migration (20260325) — may not exist in older databases
-const IDLE_COLUMNS = ',is_idle,idle_start_time,idle_end_time,reclassified_from,converted_issue_key,user_timezone';
+const IDLE_COLUMNS = ',is_idle,idle_start_time,idle_end_time,reclassified_from,reclassification_reason,converted_issue_key,user_timezone';
 const BASE_ACTIVITY_SELECT = 'id,user_id,start_time,end_time,duration_seconds,project_key,classification';
 
 /**
@@ -785,7 +785,9 @@ export async function fetchTeamDayTimeline(accountId, cloudId, projectKey, date,
         classification: record.classification,
         convertedIssueKey: record.converted_issue_key || null,
         reclassifiedFrom: record.reclassified_from || null,
-        userTimezone: record.user_timezone || null
+        reason: record.reclassification_reason || null,
+        userTimezone: record.user_timezone || null,
+        projectKey: record.project_key || null
       });
     } else {
       // Add session with start_time, end_time for accurate timeline rendering
@@ -1014,7 +1016,9 @@ export async function fetchMyDayTimeline(accountId, cloudId, date) {
         classification: record.classification,
         convertedIssueKey: record.converted_issue_key || null,
         reclassifiedFrom: record.reclassified_from || null,
-        userTimezone: record.user_timezone || null
+        reason: record.reclassification_reason || null,
+        userTimezone: record.user_timezone || null,
+        projectKey: record.project_key || null
       });
     } else {
       sessions.push({

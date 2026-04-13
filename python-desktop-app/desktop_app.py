@@ -1821,8 +1821,21 @@ class AtlassianAuthManager:
         # If we have expiry info and the token is expired, try to refresh it now
         expires_at = self.tokens.get('expires_at', 0)
         if expires_at and time.time() > expires_at:
-            print("[INFO] Access token expired, attempting refresh...")
-            return self.refresh_access_token()
+            # Retry refresh up to 3 times with backoff for transient failures
+            # (network not ready after sleep, AI server cold start, etc.)
+            for attempt in range(3):
+                print(f"[INFO] Access token expired, attempting refresh (attempt {attempt + 1}/3)...")
+                if self.refresh_access_token():
+                    return True
+                # If refresh token is permanently invalid, don't retry
+                if getattr(self, '_refresh_token_invalid', False):
+                    return False
+                if attempt < 2:
+                    wait = (attempt + 1) * 2  # 2s, 4s backoff
+                    print(f"[INFO] Refresh failed, retrying in {wait}s...")
+                    time.sleep(wait)
+            print("[WARN] All refresh attempts failed — session may require re-authentication")
+            return False
         return True
 
     def get_supabase_token(self):
@@ -4394,6 +4407,7 @@ class TimeTracker:
         self.last_activity_time = time.time()  # Last mouse/keyboard activity
         self.idle_timeout = 300  # 5 minutes idle timeout (in seconds)
         self.idle_start_time = None  # When the current idle period began (UTC datetime)
+        self.idle_project_key = None  # Project key at idle entry — used for idle record's project_key
         self._pending_idle_records = []  # Idle records waiting to be uploaded in next batch
         self._tracking_thread = None
         self._activity_monitor_thread = None  # Activity monitoring thread
@@ -7885,9 +7899,36 @@ class TimeTracker:
 
             # Restore sessions to SQLite so they can be retried on next cycle
             if sessions:
+                # If idle records were in the batch, retry work sessions WITHOUT idle records
+                # to prevent failed idle records from poisoning all future batch uploads
+                if idle_records and sessions:
+                    print(f"[BATCH] Retrying {len(sessions)} work sessions WITHOUT {len(idle_records)} idle records...")
+                    try:
+                        work_only_records = [r for r in records if not r.get('is_idle')]
+                        if work_only_records:
+                            retry_result = self.supabase.table('activity_records').insert(work_only_records).execute()
+                            if retry_result.data:
+                                print(f"[BATCH] Work-only retry succeeded — {len(retry_result.data)} work records uploaded")
+                                print(f"[BATCH] Idle records failed separately — discarding to prevent batch poisoning")
+                                self._pending_idle_records.clear()  # Discard problematic idle records
+                                self.current_window_key = None
+                                self.batch_start_time = datetime.now(timezone.utc)
+                                self.last_batch_upload_time = time.time()
+                                self.add_admin_log('WARN', f'Batch uploaded {len(retry_result.data)} work records. Idle records failed — check DB constraints.')
+                                return
+                    except Exception as retry_e:
+                        print(f"[BATCH] Work-only retry also failed: {retry_e}")
+
                 self.session_manager.restore_sessions(sessions)
                 print(f"       {len(sessions)} records restored to SQLite for retry on next cycle")
                 self.add_admin_log('WARN', f'{len(sessions)} records queued for retry on next cycle')
+            elif idle_records:
+                # Only idle records in the batch and they failed — discard to prevent poisoning
+                print(f"[BATCH] Idle-only batch failed — discarding {len(idle_records)} idle records to prevent batch poisoning")
+                print(f"[BATCH] This likely means the database CHECK constraint does not allow classification='idle'")
+                print(f"[BATCH] FIX: Run migration 20260325_add_idle_time_support.sql in Supabase SQL Editor")
+                self._pending_idle_records.clear()
+                self.add_admin_log('ERROR', f'Idle record insert failed — CHECK constraint may not allow classification=idle. Run migration 20260325.')
             self.last_batch_upload_time = time.time()
 
     def process_window_event(self, window_info):
@@ -8754,7 +8795,7 @@ class TimeTracker:
             self.idle_start_time = None
             return
 
-        project_key = self.current_project_key or self.get_user_project_key()
+        project_key = getattr(self, 'idle_project_key', None) or self.current_project_key or self.get_user_project_key()
         record = {
             'user_id': self.current_user_id,
             'organization_id': self.organization_id,
@@ -8866,6 +8907,7 @@ class TimeTracker:
                                 self._finalize_active_session("system sleep")
                                 self.session_manager.stop_current_timer()  # Stop SQLite activity timer so idle time isn't counted in activity_records
                                 self.idle_start_time = datetime.fromtimestamp(self.last_activity_time, tz=timezone.utc)
+                                self.idle_project_key = self.current_project_key
                                 self.is_idle = True
                                 self.update_tray_icon()
                                 self.add_admin_log('INFO', 'System sleep detected — entered idle')
@@ -8880,6 +8922,7 @@ class TimeTracker:
                                 self._finalize_active_session("screen lock")
                                 self.session_manager.stop_current_timer()  # Stop SQLite activity timer so idle time isn't counted in activity_records
                                 self.idle_start_time = datetime.fromtimestamp(self.last_activity_time, tz=timezone.utc)
+                                self.idle_project_key = self.current_project_key
                                 self.is_idle = True
                                 self.update_tray_icon()
                                 self.add_admin_log('INFO', 'Screen locked — entered idle')
@@ -9126,6 +9169,14 @@ class TimeTracker:
                     # Finalize current session using last known activity time
                     self._finalize_active_session("system suspension detected")
                     self.session_manager.stop_current_timer()  # Stop SQLite activity timer so suspension time isn't counted in activity_records
+
+                    # If we were idle when suspension happened, create the idle record NOW
+                    # before resetting state — otherwise the idle period is silently lost.
+                    # The system event monitor (PBT_APMRESUMEAUTOMATIC) may also create one,
+                    # but if it hasn't fired yet, this ensures we don't lose the idle period.
+                    if self.is_idle and self.idle_start_time:
+                        self._create_idle_record("system suspension detected")
+
                     # Upload accumulated data before resetting state to prevent data loss
                     try:
                         self.upload_activity_batch()
@@ -9253,6 +9304,9 @@ class TimeTracker:
 
                         # Record when idle started (backdate to last activity)
                         self.idle_start_time = last_activity
+                        # Store the project key at idle entry — this is the project the user
+                        # was actually working on, not whatever project is active when they resume
+                        self.idle_project_key = self.current_project_key
 
                         self.is_idle = True
                         self.update_tray_icon()
@@ -9272,6 +9326,15 @@ class TimeTracker:
 
                     # Create an idle record for the period the user was away
                     self._create_idle_record("idle timeout")
+
+                    # Immediately flush idle records to database instead of waiting
+                    # for the next periodic batch upload cycle
+                    if self._pending_idle_records:
+                        try:
+                            print(f"[IDLE] Flushing {len(self._pending_idle_records)} idle record(s) to database...")
+                            self.upload_activity_batch()
+                        except Exception as e:
+                            print(f"[WARN] Immediate idle record flush failed: {e} — will retry on next batch cycle")
 
                     self.is_idle = False
                     self.needs_idle_resume = False
@@ -10208,7 +10271,13 @@ class TimeTracker:
         # This ensures admin panel and tracking work even before server verification completes.
         # Without this, routes are initialized with organization_id=None, causing admin panel
         # to show "locked" message even when user has valid cached credentials.
-        if self.auth_manager.is_authenticated():
+        # NOTE: Use a lightweight token-existence check instead of is_authenticated() here.
+        # is_authenticated() triggers a network refresh call if the access token is expired,
+        # but the network may not be ready yet (WiFi reconnecting after sleep/restart).
+        # The full auth verification happens later after the connectivity check.
+        has_stored_tokens = (self.auth_manager.tokens.get('access_token') or
+                             self.auth_manager.tokens.get('refresh_token'))
+        if has_stored_tokens:
             try:
                 cached_user = self._load_cached_user_info()
                 if cached_user and cached_user.get('organization_id'):
