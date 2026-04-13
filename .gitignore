@@ -82,6 +82,9 @@ supabase/.branches/
 # Forge local
 .forge/
 
+# Claude Code
+CLAUDE.md
+
 # Testing
 .pytest_cache/
 .tox/

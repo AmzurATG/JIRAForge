@@ -1,0 +1,343 @@
+/* Admin User Status Tab Styles */
+
+.admin-user-status {
+  background: #F4F5F7;
+  min-height: calc(100vh - 100px);
+  padding: 16px;
+}
+
+.admin-user-status-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  margin-bottom: 20px;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.admin-user-status-header h2 {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 700;
+  color: var(--ds-text, #172B4D);
+  letter-spacing: -0.3px;
+}
+
+.admin-user-status-header .subtitle {
+  font-size: 13px;
+  color: #5E6C84;
+  margin-top: 4px;
+}
+
+.admin-user-status-header .header-meta {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.admin-user-status-header .last-refreshed {
+  font-size: 12px;
+  color: #6B778C;
+}
+
+.admin-user-status-header .refresh-btn {
+  padding: 6px 14px;
+  border: 1px solid var(--ds-border, #DFE1E6);
+  border-radius: 3px;
+  background: white;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--ds-text, #172B4D);
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+
+.admin-user-status-header .refresh-btn:hover {
+  background: #F4F5F7;
+}
+
+/* KPI Cards */
+.admin-user-status-kpi-cards {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 16px;
+  margin-bottom: 24px;
+}
+
+@media (max-width: 1200px) {
+  .admin-user-status-kpi-cards {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+@media (max-width: 600px) {
+  .admin-user-status-kpi-cards {
+    grid-template-columns: 1fr;
+  }
+}
+
+.admin-user-status-kpi-card {
+  background: white;
+  border-radius: 8px;
+  padding: 16px;
+  box-shadow: rgba(99, 99, 99, 0.1) 0px 2px 8px 0px;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  border: 1px solid #e1e4e8;
+  min-height: 80px;
+}
+
+.admin-user-status-kpi-card .kpi-icon {
+  width: 48px;
+  height: 48px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 8px;
+  flex-shrink: 0;
+  color: #fff;
+}
+
+.admin-user-status-kpi-card .kpi-icon.blue { background: #4facfe; }
+.admin-user-status-kpi-card .kpi-icon.green { background: #00875A; }
+.admin-user-status-kpi-card .kpi-icon.orange { background: #FF991F; }
+.admin-user-status-kpi-card .kpi-icon.purple { background: #6554C0; }
+
+.admin-user-status-kpi-card .kpi-content {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.admin-user-status-kpi-card .kpi-value {
+  font-size: 28px;
+  font-weight: 700;
+  color: #172B4D;
+  line-height: 1;
+  letter-spacing: -0.5px;
+}
+
+.admin-user-status-kpi-card .kpi-label {
+  font-size: 11px;
+  color: #5E6C84;
+  text-transform: uppercase;
+  letter-spacing: 0.8px;
+  margin-top: 4px;
+  font-weight: 600;
+}
+
+/* User Table Section */
+.admin-user-status-table-section {
+  background: white;
+  border-radius: 8px;
+  box-shadow: rgba(99, 99, 99, 0.1) 0px 2px 8px 0px;
+  border: 1px solid #e1e4e8;
+  overflow: hidden;
+}
+
+.admin-user-status-table-section .section-header {
+  padding: 16px 20px;
+  border-bottom: 1px solid #e1e4e8;
+}
+
+.admin-user-status-table-section .section-header h3 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--ds-text, #172B4D);
+}
+
+.admin-user-status-table-section .section-subtitle {
+  font-size: 12px;
+  color: #6B778C;
+  margin-top: 2px;
+  display: block;
+}
+
+.admin-user-status-table-container {
+  overflow-x: auto;
+}
+
+.admin-user-status-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.admin-user-status-table thead th {
+  padding: 10px 16px;
+  text-align: left;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: #5E6C84;
+  font-weight: 600;
+  background: #FAFBFC;
+  border-bottom: 1px solid #e1e4e8;
+  white-space: nowrap;
+}
+
+.admin-user-status-table tbody td {
+  padding: 10px 16px;
+  font-size: 14px;
+  color: var(--ds-text, #172B4D);
+  border-bottom: 1px solid #f1f3f5;
+  vertical-align: middle;
+}
+
+.admin-user-status-table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.admin-user-status-table tbody tr:hover td {
+  background: #f8f9fa;
+}
+
+.admin-user-status-table .user-name-cell {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-weight: 500;
+}
+
+.admin-user-status-table .user-avatar {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: white;
+  font-size: 12px;
+  font-weight: 600;
+  flex-shrink: 0;
+}
+
+.admin-user-status-table .email-cell {
+  font-size: 13px;
+  color: #6B778C;
+}
+
+.admin-user-status-table .time-cell {
+  font-size: 13px;
+  color: #6B778C;
+  white-space: nowrap;
+}
+
+/* Status Pills */
+.admin-user-status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 10px;
+  border-radius: 12px;
+  font-size: 12px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.admin-user-status-pill .status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.admin-user-status-pill.installed {
+  background: #E3FCEF;
+  color: #006644;
+}
+
+.admin-user-status-pill.installed .status-dot {
+  background: #00875A;
+}
+
+.admin-user-status-pill.not-installed {
+  background: #F4F5F7;
+  color: #6B778C;
+}
+
+.admin-user-status-pill.not-installed .status-dot {
+  background: #B3BAC5;
+}
+
+.admin-user-status-pill.active-now {
+  background: #E3FCEF;
+  color: #006644;
+}
+
+.admin-user-status-pill.active-now .status-dot {
+  background: #00875A;
+}
+
+.admin-user-status-pill.logged-in {
+  background: #DEEBFF;
+  color: #0052CC;
+}
+
+.admin-user-status-pill.logged-in .status-dot {
+  background: #0052CC;
+}
+
+.admin-user-status-pill.logged-out {
+  background: #FFEBE6;
+  color: #BF2600;
+}
+
+.admin-user-status-pill.logged-out .status-dot {
+  background: #DE350B;
+}
+
+/* Loading & Error States */
+.admin-user-status .loading-state {
+  text-align: center;
+  padding: 60px 20px;
+  color: #6B778C;
+}
+
+.admin-user-status .loading-spinner {
+  width: 32px;
+  height: 32px;
+  border: 3px solid #DFE1E6;
+  border-top: 3px solid #0052CC;
+  border-radius: 50%;
+  animation: admin-user-status-spin 0.8s linear infinite;
+  margin: 0 auto 16px auto;
+}
+
+@keyframes admin-user-status-spin {
+  to { transform: rotate(360deg); }
+}
+
+.admin-user-status .error-state {
+  text-align: center;
+  padding: 40px 20px;
+  color: #BF2600;
+}
+
+.admin-user-status .error-state p {
+  margin: 0 0 16px 0;
+}
+
+.admin-user-status .error-state .retry-btn {
+  padding: 8px 16px;
+  border: 1px solid #DE350B;
+  border-radius: 3px;
+  background: white;
+  color: #DE350B;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.admin-user-status .error-state .retry-btn:hover {
+  background: #FFEBE6;
+}
+
+.admin-user-status .empty-row td {
+  text-align: center;
+  color: #6B778C;
+  padding: 40px 16px;
+  font-style: italic;
+}

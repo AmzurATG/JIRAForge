@@ -5,7 +5,7 @@ import './components/common/Sidebar.css';
 import './components/modals/Modals.css';
 import UnassignedWork from './components/UnassignedWork';
 import TimesheetSettings from './shared/components/TimesheetSettings';
-import { DashboardTab, TimeAnalyticsTab, TeamAnalyticsTab, OrgAnalyticsTab, ProjectSettingsTab } from './components/tabs';
+import { DashboardTab, TimeAnalyticsTab, TeamAnalyticsTab, OrgAnalyticsTab, ProjectSettingsTab, AdminUserStatusTab } from './components/tabs';
 import { SessionReassignModal, WorklogReassignModal, FeedbackModal } from './components/modals';
 import { DesktopAppStatusBanner } from './components/common';
 import { AppProvider, useApp } from './context';
@@ -247,6 +247,22 @@ function AppContent() {
                 {sidebarOpen && <span className="sidebar-label">Timesheet Settings</span>}
               </button>
             )}
+            {userPermissions.isJiraAdmin && (
+              <button
+                className={`sidebar-item ${activeTab === 'admin-user-status' ? 'active' : ''}`}
+                onClick={() => setActiveTab('admin-user-status')}
+                title="User Status"
+              >
+                <span className="sidebar-icon">
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path>
+                    <circle cx="9" cy="7" r="4"></circle>
+                    <polyline points="22 11 16 17 13 14"></polyline>
+                  </svg>
+                </span>
+                {sidebarOpen && <span className="sidebar-label">User Status</span>}
+              </button>
+            )}
             <div className="sidebar-spacer"></div>
             <button
               className="sidebar-item sidebar-feedback"
@@ -279,6 +295,9 @@ function AppContent() {
           )}
           {activeTab === 'timesheet-settings' && userPermissions.isJiraAdmin && (
             <TimesheetSettings />
+          )}
+          {activeTab === 'admin-user-status' && userPermissions.isJiraAdmin && (
+            <AdminUserStatusTab />
           )}
         </main>
       </div>

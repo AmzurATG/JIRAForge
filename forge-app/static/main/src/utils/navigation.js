@@ -31,7 +31,7 @@ export const navigateToIssue = (issueKey) => {
 export const getInitialTab = () => {
   try {
     const hash = window.location.hash.replace('#', '');
-    const validTabs = ['dashboard', 'analytics', 'unassigned-work', 'org-analytics', 'timesheet-settings'];
+    const validTabs = ['dashboard', 'analytics', 'unassigned-work', 'org-analytics', 'timesheet-settings', 'admin-user-status'];
     if (hash && validTabs.includes(hash)) {
       return hash;
     }
