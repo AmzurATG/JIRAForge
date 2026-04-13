@@ -8,6 +8,7 @@ This is the main entry point for OCR operations in the application.
 Maintains backward compatibility with existing extract_text_from_image() function.
 """
 import logging
+import re
 import time
 from typing import Dict, Any, Optional, List
 import numpy as np
@@ -17,6 +18,7 @@ from .config import OCRConfig, OCREngineConfig
 from .engine_factory import EngineFactory
 from .base_engine import BaseOCREngine
 from .image_processor import preprocess_image, preprocess_screenshot, resize_if_needed
+from .tabular_enricher import TabularContextEnricher
 
 logger = logging.getLogger(__name__)
 
@@ -68,6 +70,9 @@ class OCRFacade:
         
         # Privacy filter for redacting sensitive information
         self._privacy_filter = None
+        
+        # Tabular context enricher for better PII detection in spreadsheets/tables
+        self._tabular_enricher = TabularContextEnricher()
         
         # Initialize engines
         self._initialize_engines()
@@ -196,13 +201,14 @@ class OCRFacade:
             self._privacy_filter = None
             logger.error(f"Failed to initialize privacy filter: {e}")
     
-    def _apply_privacy_filter(self, text: str, engine_name: str) -> Dict[str, Any]:
+    def _apply_privacy_filter(self, text: str, engine_name: str, app_name: str = '') -> Dict[str, Any]:
         """
         Apply privacy filtering to extracted text and log results.
         
         Args:
             text: OCR-extracted text
             engine_name: Name of OCR engine used (for logging context)
+            app_name: Application name for app-specific PII rules
             
         Returns:
             Dict with:
@@ -222,7 +228,7 @@ class OCRFacade:
             }
         
         try:
-            result = self._privacy_filter.redact(text)
+            result = self._privacy_filter.redact(text, app_name=app_name)
             
             redactions = result.get('redactions', [])
             redaction_count = result.get('redactions_count', 0)
@@ -558,9 +564,31 @@ class OCRFacade:
                         self._engine_failure_counts[engine_name] = 0
                         self._engine_backoff_until.pop(engine_name, None)
                         
+                        # Enrich text with tabular context (column headers → values)
+                        # This helps detect PII in spreadsheets where OCR loses structure
+                        ocr_boxes = result.get('boxes')
+                        if ocr_boxes and app_name:
+                            text = self._tabular_enricher.enrich(text, ocr_boxes)
+                        
                         # Apply privacy filter to redact sensitive information
-                        privacy_result = self._apply_privacy_filter(text, engine_name)
+                        privacy_result = self._apply_privacy_filter(text, engine_name, app_name=app_name)
                         filtered_text = privacy_result['text']
+                        
+                        # Flag low-confidence OCR that may contain unredacted PII
+                        pii_risk_flag = False
+                        if result.get('confidence', 0) < 0.6 and privacy_result['privacy_redactions'] == 0:
+                            partial_pii_patterns = [
+                                (r'\d{12,16}', 'POSSIBLE_CREDIT_CARD'),
+                                (r'\d{3}.*\d{2}.*\d{4}', 'POSSIBLE_SSN'),
+                            ]
+                            for pattern, entity_type in partial_pii_patterns:
+                                if re.search(pattern, filtered_text):
+                                    pii_risk_flag = True
+                                    logger.warning(
+                                        f"[PRIVACY] LOW_CONFIDENCE_PII_RISK: OCR confidence "
+                                        f"{result['confidence']:.2f}, potential {entity_type} "
+                                        f"detected in possibly garbled text from {engine_name}"
+                                    )
                         
                         logger.info(
                             f"OCR succeeded with {engine_name} "
@@ -580,6 +608,7 @@ class OCRFacade:
                             'privacy_applied': privacy_result['privacy_applied'],
                             'privacy_redactions': privacy_result['privacy_redactions'],
                             'privacy_detectors': privacy_result.get('privacy_detectors', []),
+                            'pii_risk_flag': pii_risk_flag,
                             'total_ms': (time.perf_counter() - total_start) * 1000.0,
                             'window_title': window_title,
                             'app_name': app_name,

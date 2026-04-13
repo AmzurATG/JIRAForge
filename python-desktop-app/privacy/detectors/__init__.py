@@ -3,6 +3,7 @@ Privacy Detectors Module
 
 Provides detection strategies for different types of sensitive data.
 """
+import warnings
 
 # Check for optional dependencies
 # Note: We catch (ImportError, OSError) because on Windows, DLL loading failures
@@ -17,7 +18,15 @@ try:
     PRESIDIO_AVAILABLE = True
 except (ImportError, OSError) as e:
     _PRESIDIO_ERROR = str(e)
-    pass
+    warnings.warn(
+        "CRITICAL: Presidio is NOT installed or failed to load. "
+        "PII detection is DEGRADED — credit card Luhn validation, phone number "
+        "format detection, and NER-based name/address detection are DISABLED. "
+        f"Error: {e}. "
+        "Install with: pip install presidio-analyzer && python -m spacy download en_core_web_sm",
+        RuntimeWarning,
+        stacklevel=2
+    )
 
 try:
     from detect_secrets.core.scan import scan_line
@@ -32,6 +41,9 @@ from .base import BaseDetector, Detection
 
 # Custom patterns (always available - no external deps)
 from .custom_patterns import CustomPatternDetector
+
+# Entropy detector (always available - no external deps)
+from .entropy_detector import EntropyDetector
 
 # Optional detectors - imported on demand
 # from .presidio_detector import PresidioDetector  # Requires presidio-analyzer
@@ -48,6 +60,7 @@ __all__ = [
     
     # Detectors
     'CustomPatternDetector',
+    'EntropyDetector',
 ]
 
 # Add optional detectors to exports if available
