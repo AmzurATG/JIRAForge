@@ -795,6 +795,32 @@
   border: 1px solid #DFE1E6;
 }
 
+/* Fixed overlay for idle convert modal */
+.idle-convert-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(9, 30, 66, 0.4);
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.idle-convert-modal {
+  background: white;
+  border-radius: 8px;
+  box-shadow: 0 8px 32px rgba(9, 30, 66, 0.35);
+  padding: 20px;
+  width: 400px;
+  max-width: 90vw;
+  max-height: 80vh;
+  overflow-y: auto;
+  border: 1px solid #DFE1E6;
+}
+
 /* Legacy: in-timeline popover (kept for backward compat) */
 .idle-convert-popover {
   position: absolute;
@@ -933,6 +959,80 @@
 .popover-btn.confirm:disabled {
   background: #B3D4FF;
   cursor: not-allowed;
+}
+
+/* Issue dropdown list */
+.popover-dropdown-list {
+  max-height: 150px;
+  overflow-y: auto;
+  border: 1px solid #DFE1E6;
+  border-radius: 4px;
+  margin-bottom: 6px;
+}
+
+.popover-dropdown-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  cursor: pointer;
+  font-size: 12px;
+  border-bottom: 1px solid #F4F5F7;
+  transition: background 0.1s ease;
+}
+
+.popover-dropdown-item:last-child {
+  border-bottom: none;
+}
+
+.popover-dropdown-item:hover {
+  background: #F4F5F7;
+}
+
+.popover-dropdown-item.selected {
+  background: #DEEBFF;
+}
+
+.dropdown-item-key {
+  font-weight: 600;
+  color: #0052CC;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.dropdown-item-summary {
+  color: #42526E;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.popover-selected-issue {
+  font-size: 11px;
+  color: #42526E;
+  margin-bottom: 6px;
+  padding: 4px 6px;
+  background: #DEEBFF;
+  border-radius: 3px;
+}
+
+/* Project select dropdown */
+.popover-select {
+  width: 100%;
+  padding: 6px 8px;
+  border: 1px solid #DFE1E6;
+  border-radius: 4px;
+  font-size: 12px;
+  margin-bottom: 6px;
+  box-sizing: border-box;
+  outline: none;
+  background: white;
+  color: #172B4D;
+  cursor: pointer;
+}
+
+.popover-select:focus {
+  border-color: #0052CC;
 }
 
 /* Total section */
