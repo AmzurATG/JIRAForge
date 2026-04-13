@@ -4407,6 +4407,7 @@ class TimeTracker:
         self.last_activity_time = time.time()  # Last mouse/keyboard activity
         self.idle_timeout = 300  # 5 minutes idle timeout (in seconds)
         self.idle_start_time = None  # When the current idle period began (UTC datetime)
+        self.idle_project_key = None  # Project key at idle entry — used for idle record's project_key
         self._pending_idle_records = []  # Idle records waiting to be uploaded in next batch
         self._tracking_thread = None
         self._activity_monitor_thread = None  # Activity monitoring thread
@@ -8794,7 +8795,7 @@ class TimeTracker:
             self.idle_start_time = None
             return
 
-        project_key = self.current_project_key or self.get_user_project_key()
+        project_key = getattr(self, 'idle_project_key', None) or self.current_project_key or self.get_user_project_key()
         record = {
             'user_id': self.current_user_id,
             'organization_id': self.organization_id,
@@ -8906,6 +8907,7 @@ class TimeTracker:
                                 self._finalize_active_session("system sleep")
                                 self.session_manager.stop_current_timer()  # Stop SQLite activity timer so idle time isn't counted in activity_records
                                 self.idle_start_time = datetime.fromtimestamp(self.last_activity_time, tz=timezone.utc)
+                                self.idle_project_key = self.current_project_key
                                 self.is_idle = True
                                 self.update_tray_icon()
                                 self.add_admin_log('INFO', 'System sleep detected — entered idle')
@@ -8920,6 +8922,7 @@ class TimeTracker:
                                 self._finalize_active_session("screen lock")
                                 self.session_manager.stop_current_timer()  # Stop SQLite activity timer so idle time isn't counted in activity_records
                                 self.idle_start_time = datetime.fromtimestamp(self.last_activity_time, tz=timezone.utc)
+                                self.idle_project_key = self.current_project_key
                                 self.is_idle = True
                                 self.update_tray_icon()
                                 self.add_admin_log('INFO', 'Screen locked — entered idle')
@@ -9301,6 +9304,9 @@ class TimeTracker:
 
                         # Record when idle started (backdate to last activity)
                         self.idle_start_time = last_activity
+                        # Store the project key at idle entry — this is the project the user
+                        # was actually working on, not whatever project is active when they resume
+                        self.idle_project_key = self.current_project_key
 
                         self.is_idle = True
                         self.update_tray_icon()

@@ -785,7 +785,8 @@ export async function fetchTeamDayTimeline(accountId, cloudId, projectKey, date,
         classification: record.classification,
         convertedIssueKey: record.converted_issue_key || null,
         reclassifiedFrom: record.reclassified_from || null,
-        userTimezone: record.user_timezone || null
+        userTimezone: record.user_timezone || null,
+        projectKey: record.project_key || null
       });
     } else {
       // Add session with start_time, end_time for accurate timeline rendering
@@ -1014,7 +1015,8 @@ export async function fetchMyDayTimeline(accountId, cloudId, date) {
         classification: record.classification,
         convertedIssueKey: record.converted_issue_key || null,
         reclassifiedFrom: record.reclassified_from || null,
-        userTimezone: record.user_timezone || null
+        userTimezone: record.user_timezone || null,
+        projectKey: record.project_key || null
       });
     } else {
       sessions.push({

@@ -171,7 +171,7 @@ export function registerAnalyticsResolvers(resolver) {
    */
   resolver.define('convertIdleToWorklog', async (req) => {
     const { payload, context } = req;
-    const { idleRecordId, issueKey: existingIssueKey, reason, createNewIssue, issueSummary } = payload;
+    const { idleRecordId, issueKey: existingIssueKey, reason, createNewIssue, issueSummary, projectKey: frontendProjectKey } = payload;
     const accountId = context.accountId;
     const cloudId = context.cloudId;
 
@@ -180,9 +180,13 @@ export function registerAnalyticsResolvers(resolver) {
 
       // If creating a new issue, do it here (Forge API must run in resolver context)
       if (createNewIssue && !issueKey) {
-        // Determine project key from the idle record's project or fall back
-        const { getIdleRecordProjectKey } = await import('../services/analyticsService.js');
-        const projectKey = await getIdleRecordProjectKey(accountId, cloudId, idleRecordId);
+        // Use the project key from the frontend (the project the user is viewing)
+        // and fall back to the idle record's stored project key
+        let projectKey = frontendProjectKey;
+        if (!projectKey) {
+          const { getIdleRecordProjectKey } = await import('../services/analyticsService.js');
+          projectKey = await getIdleRecordProjectKey(accountId, cloudId, idleRecordId);
+        }
         if (!projectKey) {
           throw new Error('Cannot determine project for new issue. Please use "Existing Issue" instead.');
         }

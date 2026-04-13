@@ -2,12 +2,14 @@ import React, { useState, useEffect, useRef } from 'react';
 import { invoke } from '@forge/bridge';
 import { formatTime } from '../../../utils';
 import { normalizeDate, formatLocalDate, parseUTC } from './dateUtils';
+import { useApp } from '../../../context';
 
 /**
  * Day View Component
  * Displays today's timesheet with team member cards and activity timeline
  */
 function DayView({ loading, timeData, onTodayTotalReconciled, onOpenWorklogReassignModal }) {
+  const { loadActiveIssues } = useApp();
   const [timelineData, setTimelineData] = useState(null);
   const [myTimelineData, setMyTimelineData] = useState(null);
   const [convertingIdle, setConvertingIdle] = useState(null); // { id, startTime, endTime, durationSeconds }
@@ -353,7 +355,8 @@ function DayView({ loading, timeData, onTodayTotalReconciled, onOpenWorklogReass
         endTime,
         durationSeconds: block.durationSeconds || 0,
         converted: !!block.reclassifiedFrom,
-        convertedIssueKey: block.convertedIssueKey
+        convertedIssueKey: block.convertedIssueKey,
+        projectKey: block.projectKey || null
       };
     }).filter(block => block && block.left < 100 && (block.left + block.width) > 0);
   };
@@ -374,6 +377,10 @@ function DayView({ loading, timeData, onTodayTotalReconciled, onOpenWorklogReass
         // Create new issue mode — issueKey is empty, backend will handle
         payload.createNewIssue = true;
         payload.issueSummary = convertForm.reason.trim();
+        // Pass the idle block's project key so the issue is created in the correct project
+        if (convertingIdle.projectKey) {
+          payload.projectKey = convertingIdle.projectKey;
+        }
       }
       const result = await invoke('convertIdleToWorklog', payload);
       if (result.success) {
@@ -387,6 +394,12 @@ function DayView({ loading, timeData, onTodayTotalReconciled, onOpenWorklogReass
         } else {
           const refreshResult = await invoke('getMyDayTimeline', { date: todayStr });
           if (refreshResult.success) setMyTimelineData(refreshResult.data);
+        }
+        // Refresh My Focus dashboard so the newly created/linked issue appears immediately
+        try {
+          await loadActiveIssues();
+        } catch (e) {
+          console.warn('[DayView] Failed to refresh active issues after idle conversion:', e);
         }
       } else {
         console.error('Failed to convert idle block:', result.error);
