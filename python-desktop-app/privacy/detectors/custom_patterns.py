@@ -48,6 +48,24 @@ class CustomPatternDetector(BaseDetector):
             0.75
         ),
         
+        # Password adjacent to keyword (space-separated, common in OCR from Excel/Notepad)
+        # Matches: password iswarya@123, passwords MySecret123, pass admin2024
+        # This handles OCR text where column headers/labels are space-separated from values
+        (
+            r'(?i)(?:password|passwd|pwd|passwords|pass|secret|passphrase)\s+([^\s]{4,})',
+            'PASSWORD',
+            0.7
+        ),
+        
+        # Credential-like strings: word@digits pattern (common password format)
+        # Matches: iswarya@123, admin@456, mounika@123
+        # These look like emails but have no valid TLD — likely passwords
+        (
+            r'\b([a-zA-Z][a-zA-Z0-9._-]*@\d{2,})\b',
+            'PASSWORD',
+            0.7
+        ),
+        
         # API keys - AWS
         # Matches: AKIA... (AWS Access Key ID pattern)
         (
@@ -355,6 +373,14 @@ class CustomPatternDetector(BaseDetector):
             r'(?i)(?:ssn|social.?security)\s*[=:]+\s*["\']?(\d{9})["\']?',
             'US_SSN',
             0.85
+        ),
+        
+        # SSN near keyword (space-separated, common in OCR from Excel)
+        # Matches: ssn 123456789, social security 123-45-6789
+        (
+            r'(?i)(?:ssn|social.?security)\s+(\d{3}-?\d{2}-?\d{4})',
+            'US_SSN',
+            0.8
         ),
         
         # ============================================

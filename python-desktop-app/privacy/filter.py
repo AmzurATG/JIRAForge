@@ -5,6 +5,7 @@ Main entry point for privacy filtering.
 Coordinates detection, merging, and redaction of sensitive data.
 """
 import logging
+import re
 import time
 from typing import Dict, Any, Optional, List
 
@@ -13,12 +14,67 @@ from .detectors import (
     BaseDetector,
     Detection,
     CustomPatternDetector,
+    EntropyDetector,
     PRESIDIO_AVAILABLE,
     SECRETS_AVAILABLE,
 )
 from .redactors import TextRedactor
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Application-specific elevated PII detection rules
+# ---------------------------------------------------------------------------
+# When the user is working in certain applications, we lower the confidence
+# threshold and add extra regex patterns to catch PII that normally lacks
+# recognizable context (e.g., standalone numbers in Excel cells).
+# ---------------------------------------------------------------------------
+APP_ELEVATED_DETECTION: Dict[str, Dict[str, Any]] = {
+    # Spreadsheet apps — tabular data likely contains structured PII
+    'excel.exe': {
+        'lower_confidence': 0.5,
+        'extra_patterns': [
+            # Standalone 9-digit numbers (possible SSN without dashes)
+            (r'\b(?!000|666|9\d{2})\d{3}(?!00)\d{2}(?!0000)\d{4}\b', 'POSSIBLE_SSN', 0.55),
+            # Standalone 15-16 digit numbers (possible credit card)
+            (r'\b\d{15,16}\b', 'POSSIBLE_CREDIT_CARD', 0.6),
+        ],
+    },
+    'libreofficecalc.exe': {
+        'lower_confidence': 0.5,
+        'extra_patterns': [
+            (r'\b(?!000|666|9\d{2})\d{3}(?!00)\d{2}(?!0000)\d{4}\b', 'POSSIBLE_SSN', 0.55),
+            (r'\b\d{15,16}\b', 'POSSIBLE_CREDIT_CARD', 0.6),
+        ],
+    },
+    'soffice.bin': {
+        'lower_confidence': 0.5,
+        'extra_patterns': [
+            (r'\b(?!000|666|9\d{2})\d{3}(?!00)\d{2}(?!0000)\d{4}\b', 'POSSIBLE_SSN', 0.55),
+            (r'\b\d{15,16}\b', 'POSSIBLE_CREDIT_CARD', 0.6),
+        ],
+    },
+    # Text editors — config / credential files often opened here
+    'notepad.exe': {
+        'lower_confidence': 0.6,
+        'extra_patterns': [
+            # Lines that look like key:value or key=value pairs
+            (r'(?i)^[\w.-]+\s*[=:]\s*\S+.*$', 'POSSIBLE_CREDENTIAL', 0.55),
+        ],
+    },
+    'notepad++.exe': {
+        'lower_confidence': 0.6,
+        'extra_patterns': [
+            (r'(?i)^[\w.-]+\s*[=:]\s*\S+.*$', 'POSSIBLE_CREDENTIAL', 0.55),
+        ],
+    },
+    # Code editors — source files may contain hardcoded secrets
+    'code.exe': {
+        'lower_confidence': 0.6,
+        'extra_patterns': [],
+    },
+}
 
 
 class PrivacyFilter:
@@ -108,6 +164,14 @@ class PrivacyFilter:
         elif self.config.detect_pii:
             logger.info("Presidio not available - install with: pip install presidio-analyzer")
         
+        # Entropy detector for standalone high-entropy secrets (always available)
+        try:
+            entropy_detector = EntropyDetector()
+            self._detectors.append(entropy_detector)
+            logger.debug("Entropy detector initialized")
+        except Exception as e:
+            logger.warning(f"Failed to initialize entropy detector: {e}")
+        
         if self.config.detect_secrets and SECRETS_AVAILABLE:
             try:
                 from .detectors import SecretsDetector
@@ -138,12 +202,14 @@ class PrivacyFilter:
         except Exception as e:
             logger.warning(f"Failed to initialize audit logger: {e}")
     
-    def redact(self, text: str) -> Dict[str, Any]:
+    def redact(self, text: str, app_name: str = '') -> Dict[str, Any]:
         """
         Detect and redact sensitive information from text.
         
         Args:
             text: The text to filter
+            app_name: Optional application name (e.g. 'excel.exe') for
+                      app-specific elevated detection rules.
             
         Returns:
             Dict with redacted text and metadata:
@@ -168,6 +234,19 @@ class PrivacyFilter:
         if len(text) < self.config.skip_short_text:
             return self._create_result(text, [], time.perf_counter() - start_time)
         
+        # Determine effective confidence threshold (may be lowered for certain apps)
+        effective_confidence = self.config.min_confidence
+        app_rules = None
+        if app_name:
+            app_key = app_name.lower().strip()
+            app_rules = APP_ELEVATED_DETECTION.get(app_key)
+            if app_rules and 'lower_confidence' in app_rules:
+                effective_confidence = app_rules['lower_confidence']
+                logger.debug(
+                    f"[PRIVACY] App-specific rules for '{app_key}': "
+                    f"confidence lowered from {self.config.min_confidence} to {effective_confidence}"
+                )
+        
         # Truncate very long text for performance
         original_length = len(text)
         text_to_scan = text[:self.config.max_text_length] if len(text) > self.config.max_text_length else text
@@ -191,8 +270,28 @@ class PrivacyFilter:
             # Filter by confidence threshold
             filtered_detections = [
                 d for d in all_detections
-                if d.confidence >= self.config.min_confidence
+                if d.confidence >= effective_confidence
             ]
+            
+            # Run app-specific extra patterns if applicable
+            if app_rules and app_rules.get('extra_patterns'):
+                for pattern_str, entity_type, confidence in app_rules['extra_patterns']:
+                    try:
+                        for match in re.finditer(pattern_str, text_to_scan, re.MULTILINE):
+                            detection = Detection(
+                                entity_type=entity_type,
+                                start=match.start(),
+                                end=match.end(),
+                                confidence=confidence,
+                                text=match.group(),
+                                detector='app_specific',
+                            )
+                            if detection.confidence >= effective_confidence:
+                                filtered_detections.append(detection)
+                    except re.error as e:
+                        logger.warning(f"App-specific pattern error: {e}")
+                if filtered_detections:
+                    detectors_used.append('app_specific')
             
             # Merge overlapping detections
             merged_detections = self._merge_overlapping(filtered_detections)

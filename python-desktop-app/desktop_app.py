@@ -7951,6 +7951,21 @@ class TimeTracker:
         ocr_result = None
         display_title = window_title
 
+        # Apply PII check to window title for non-private apps
+        # Window titles can contain PII (e.g., "john.doe@company.com - Outlook")
+        if classification != 'private' and window_title:
+            try:
+                from ocr.facade import get_facade
+                facade = get_facade()
+                if facade._privacy_filter:
+                    title_result = facade._privacy_filter.redact(window_title)
+                    if title_result.get('redactions_count', 0) > 0:
+                        display_title = title_result['text']
+                        print(f"[PRIVACY] Window title redacted: {title_result['redactions_count']} PII item(s)")
+            except Exception:
+                # Non-fatal: if title PII check fails, use original title
+                pass
+
         if classification == 'private':
             # Private app: redact window title, no OCR
             display_title = '[PRIVATE]'

@@ -41,6 +41,7 @@ from .config import PrivacyConfig
 from .detectors import (
     BaseDetector,
     CustomPatternDetector,
+    EntropyDetector,
 )
 
 # Redaction utilities
