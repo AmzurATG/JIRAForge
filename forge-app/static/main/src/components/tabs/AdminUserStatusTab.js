@@ -32,9 +32,12 @@ function formatRelativeTime(isoStr) {
   const diff = Date.now() - new Date(isoStr).getTime();
   if (diff < 0) return 'Just now';
   if (diff < 60 * 1000) return 'Just now';
-  if (diff < 60 * 60 * 1000) return Math.floor(diff / 60000) + ' min ago';
-  if (diff < 24 * 60 * 60 * 1000) return Math.floor(diff / 3600000) + ' hr ago';
-  return Math.floor(diff / 86400000) + ' day ago';
+  const mins = Math.floor(diff / 60000);
+  if (diff < 60 * 60 * 1000) return mins + (mins === 1 ? ' min ago' : ' mins ago');
+  const hrs = Math.floor(diff / 3600000);
+  if (diff < 24 * 60 * 60 * 1000) return hrs + (hrs === 1 ? ' hr ago' : ' hrs ago');
+  const days = Math.floor(diff / 86400000);
+  return days + (days === 1 ? ' day ago' : ' days ago');
 }
 
 function AdminUserStatusTab() {
@@ -44,6 +47,7 @@ function AdminUserStatusTab() {
   const [lastRefreshed, setLastRefreshed] = useState(null);
 
   const loadData = useCallback(async (isInitial) => {
+    if (isInitial) setLoading(true);
     setError(null);
     try {
       const result = await invoke('getAdminUserStatus');
@@ -89,7 +93,7 @@ function AdminUserStatusTab() {
         <h2>User Status</h2>
         <div className="error-state">
           <p>Error: {error}</p>
-          <button className="retry-btn" onClick={() => loadData(false)}>Retry</button>
+          <button className="retry-btn" onClick={() => loadData(true)}>Retry</button>
         </div>
       </div>
     );
