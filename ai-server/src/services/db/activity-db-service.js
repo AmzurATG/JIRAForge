@@ -68,17 +68,24 @@ async function updateActivityRecordAnalysis(recordId, analysisResult) {
   const confidenceScore = analysisResult.metadata?.confidenceScore ?? 0;
   const taskKeyMeetsThreshold = analysisResult.taskKey && confidenceScore >= MIN_CONFIDENCE_THRESHOLD;
 
+  // Derive project_key from the validated taskKey (set by validateAnalysisKeys).
+  // If taskKey didn't meet confidence threshold, project_key is also cleared to null
+  // so the record shows as "unassigned" rather than under a potentially wrong project.
+  const effectiveTaskKey = taskKeyMeetsThreshold ? analysisResult.taskKey : null;
+  let projectKey = null;
+  if (effectiveTaskKey) {
+    const match = effectiveTaskKey.match(/^([A-Z][A-Z0-9]+)-\d+$/);
+    projectKey = match ? match[1] : null;
+  }
+
   const updateData = {
     status: 'analyzed',
-    user_assigned_issue_key: taskKeyMeetsThreshold ? analysisResult.taskKey : null,
+    user_assigned_issue_key: effectiveTaskKey,
+    project_key: projectKey,
     metadata: analysisResult.metadata || {},
     analyzed_at: new Date().toISOString(),
     updated_at: new Date().toISOString()
   };
-  // Preserve existing row project_key unless AI explicitly resolves one.
-  if (analysisResult.projectKey) {
-    updateData.project_key = analysisResult.projectKey;
-  }
 
   const { data, error } = await supabase
     .from('activity_records')

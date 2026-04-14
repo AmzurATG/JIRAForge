@@ -7620,16 +7620,12 @@ class TimeTracker:
                         ocr_confidence = 0.0
                         ocr_error_message = 'OCR skipped (throttled, not backfilled)'
 
-                # Resolve project key per-record from window title + OCR context.
-                # This allows records from different projects in the same batch
-                # to carry their correct project_key. Returns None when detection
-                # fails — the AI server will determine the project from full context.
-                record_project_key = self._resolve_record_project_key(
-                    s.get('window_title', ''), None, ocr_text=ocr_text
-                )
-                # Track successful resolutions for affinity-based fallback
-                if record_project_key:
-                    self._record_project_affinity(record_project_key)
+                # project_key is now derived server-side from the matched issue key
+                # (e.g., PROJ-123 → PROJ). For non_productive/private records that
+                # skip AI analysis, project_key stays None (shown as "unassigned").
+                # For productive/unknown records, the AI server sets project_key
+                # after matching the activity to a Jira issue.
+                record_project_key = None
 
                 record = {
                     'user_id': self.current_user_id,
