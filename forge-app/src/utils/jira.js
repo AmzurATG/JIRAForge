@@ -60,12 +60,16 @@ export async function getUserAssignedIssues(statuses = JQL_ACTIVE_STATUSES, maxR
 /**
  * Get ALL user's assigned issues from Jira (regardless of status)
  * Uses pagination to fetch all issues (Jira API returns max 50 per request)
+ * @param {Object} [options] - Optional configuration
+ * @param {string} [options.jqlFilter] - Additional JQL condition appended with AND (e.g., 'sprint in openSprints()')
  * @returns {Promise<Object>} Jira search response with all issues
  */
-export async function getAllUserAssignedIssues() {
-  // Fetch all non-Done assigned issues across ALL project types (software, service desk, business).
-  // Avoid Sprint/dueDate/rank fields — these are software-only and return nothing for JSM/business projects.
-  const jql = 'assignee = currentUser() ORDER BY updated DESC';
+export async function getAllUserAssignedIssues({ jqlFilter } = {}) {
+  // Fetch assigned issues across ALL project types (software, service desk, business).
+  // Avoid Sprint/dueDate/rank fields in SELECT — these are software-only and return nothing for JSM/business projects.
+  const jql = jqlFilter
+    ? `assignee = currentUser() AND ${jqlFilter} ORDER BY updated DESC`
+    : 'assignee = currentUser() ORDER BY updated DESC';
   const fields = ['summary', 'status', 'project', 'issuetype', 'priority', 'updated'];
 
   console.log('[JIRA API] Fetching issues with JQL:', jql);

@@ -387,16 +387,25 @@ export async function fetchProjectTeamAnalytics(accountId, cloudId, projectKey, 
   // Fetch daily_time_summary for the full date range needed (trend + month)
   // This includes ALL time (legacy screenshot data + activity_records, all classifications)
   // matching exactly what the individual user Time Analytics page shows.
-  const teamDailySummaryFull = await supabaseRequestPaginated(
-    supabaseConfig,
-    `daily_time_summary?organization_id=eq.${organization.id}&project_key=eq.${projectKey}&work_date=gte.${queryStartStr}&work_date=lte.${todayStr}&select=user_id,work_date,total_seconds,task_key&order=work_date.desc`
-  );
+  // Two queries: one for the selected project, one for unassigned (NULL project_key).
+  const [teamDailySummaryFull, unassignedDailySummary] = await Promise.all([
+    supabaseRequestPaginated(
+      supabaseConfig,
+      `daily_time_summary?organization_id=eq.${organization.id}&project_key=eq.${projectKey}&work_date=gte.${queryStartStr}&work_date=lte.${todayStr}&select=user_id,work_date,total_seconds,task_key&order=work_date.desc`
+    ),
+    supabaseRequestPaginated(
+      supabaseConfig,
+      `daily_time_summary?organization_id=eq.${organization.id}&project_key=is.null&work_date=gte.${queryStartStr}&work_date=lte.${todayStr}&select=user_id,work_date,total_seconds&order=work_date.desc`
+    )
+  ]);
 
-  // Use all project users, not just those in the last 30 days
+  // Use all project users, not just those in the last 30 days.
+  // Also include users who have unassigned time so they appear in the table.
   const projectUserIds = new Set([
     ...(teamDailySummary || []).map(d => d.user_id),
     ...(allProjectUsers || []).map(d => d.user_id),
-    ...(teamDailySummaryFull || []).map(d => d.user_id)
+    ...(teamDailySummaryFull || []).map(d => d.user_id),
+    ...(unassignedDailySummary || []).map(d => d.user_id)
   ]);
 
   const teamMemberActivity = Array.from(projectUserIds).map(userId => {
@@ -405,6 +414,8 @@ export async function fetchProjectTeamAnalytics(accountId, cloudId, projectKey, 
 
     // Filter daily_time_summary records for this user
     const userDailySummaries = (teamDailySummaryFull || []).filter(d => d.user_id === userId);
+    // Unassigned records (NULL project_key) — time not matched to any project
+    const userUnassignedSummaries = (unassignedDailySummary || []).filter(d => d.user_id === userId);
 
     // Helper to filter by date range
     const filterByDate = (records, startStr, endStr) =>
@@ -416,22 +427,19 @@ export async function fetchProjectTeamAnalytics(accountId, cloudId, projectKey, 
     // Today
     const todayRecords = filterByDate(userDailySummaries, todayStr, todayStr);
     const todaySeconds = todayRecords.reduce((sum, d) => sum + (d.total_seconds || 0), 0);
-    const todayUnassignedSeconds = todayRecords
-      .filter(d => !d.task_key)
+    const todayUnassignedSeconds = filterByDate(userUnassignedSummaries, todayStr, todayStr)
       .reduce((sum, d) => sum + (d.total_seconds || 0), 0);
 
     // This week
     const weekRecords = filterByDate(userDailySummaries, weekStartStr, todayStr);
     const weekSeconds = weekRecords.reduce((sum, d) => sum + (d.total_seconds || 0), 0);
-    const weekUnassignedSeconds = weekRecords
-      .filter(d => !d.task_key)
+    const weekUnassignedSeconds = filterByDate(userUnassignedSummaries, weekStartStr, todayStr)
       .reduce((sum, d) => sum + (d.total_seconds || 0), 0);
 
     // This month
     const monthRecords = filterByDate(userDailySummaries, monthStartStr, todayStr);
     const monthSeconds = monthRecords.reduce((sum, d) => sum + (d.total_seconds || 0), 0);
-    const monthUnassignedSeconds = monthRecords
-      .filter(d => !d.task_key)
+    const monthUnassignedSeconds = filterByDate(userUnassignedSummaries, monthStartStr, todayStr)
       .reduce((sum, d) => sum + (d.total_seconds || 0), 0);
 
     const todayHours = Math.round(todaySeconds / 3600 * 100) / 100;

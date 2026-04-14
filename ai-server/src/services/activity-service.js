@@ -160,7 +160,6 @@ Return ONLY valid JSON (no markdown code blocks, no extra text). Your response m
   {
     "recordIndex": 0,
     "taskKey": "PROJECT-123" or null,
-    "projectKey": "PROJECT" or null,
     "confidenceScore": 0.0-1.0,
     "workType": "office" or "non-office",
     "reasoning": "Brief explanation"
