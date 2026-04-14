@@ -81,12 +81,20 @@ function UnassignedWork() {
     try {
       const offset = append ? nextOffset : 0;
 
-      // Fetch groups and sessions independently so a groups failure
-      // doesn't prevent sessions from loading
-      const [groupsResult, sessionsResult] = await Promise.all([
+      // Fetch groups and sessions independently so a failure in one
+      // request doesn't prevent the other result from being processed
+      const [groupsOutcome, sessionsOutcome] = await Promise.allSettled([
         invoke('getUnassignedGroups', { limit: GROUPS_PER_PAGE, offset }),
         !append ? invoke('getUnassignedWork', { limit: 100 }) : Promise.resolve(null)
       ]);
+
+      const groupsResult = groupsOutcome.status === 'fulfilled'
+        ? groupsOutcome.value
+        : { success: false, error: groupsOutcome.reason?.message || 'Failed to load unassigned groups' };
+
+      const sessionsResult = sessionsOutcome.status === 'fulfilled'
+        ? sessionsOutcome.value
+        : { success: false, error: sessionsOutcome.reason?.message || 'Failed to load unassigned work' };
 
       // Process sessions (independent of groups success)
       if (!append && sessionsResult?.success) {

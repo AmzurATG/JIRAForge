@@ -51,7 +51,9 @@ function AdminUserStatusTab() {
     if (isInitial) setLoading(true);
     setError(null);
     try {
-      const result = await invoke('getAdminUserStatus');
+      const result = await invoke('getAdminUserStatus', {
+        clientToday: new Date().toLocaleDateString('sv-SE')
+      });
       if (result.success) {
         setData(result.data);
         setLastRefreshed(new Date());

@@ -19,9 +19,10 @@ export function registerAdminUserStatusResolvers(resolver) {
    * Admin only — returns summary stats + per-user desktop status
    */
   resolver.define('getAdminUserStatus', async (req) => {
-    const { context } = req;
+    const { context, payload } = req;
     const accountId = context.accountId;
     const cloudId = context.cloudId;
+    const clientToday = payload?.clientToday;
 
     try {
       const adminCheck = await isJiraAdmin();
@@ -39,8 +40,10 @@ export function registerAdminUserStatusResolvers(resolver) {
         return { success: false, error: 'Unable to get organization information' };
       }
 
-      // Today's date in YYYY-MM-DD (UTC) for the time summary query
-      const today = new Date().toISOString().split('T')[0];
+      // Use client's local date if provided and valid, fall back to UTC
+      const today = (clientToday && /^\d{4}-\d{2}-\d{2}$/.test(clientToday))
+        ? clientToday
+        : new Date().toISOString().split('T')[0];
 
       const [users, dailySummary] = await Promise.all([
         supabaseRequest(
