@@ -9,6 +9,7 @@ function UnassignedWork() {
   const [sessions, setSessions] = useState([]);
   const [groups, setGroups] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
   const [userIssues, setUserIssues] = useState([]);
   const [userProjects, setUserProjects] = useState([]);
 
@@ -74,15 +75,33 @@ function UnassignedWork() {
 
     if (!append) {
       setLoading(true);
+      setError(null);
     }
 
     try {
       const offset = append ? nextOffset : 0;
-      const groupsResult = await invoke('getUnassignedGroups', {
-        limit: GROUPS_PER_PAGE,
-        offset
-      });
 
+      // Fetch groups and sessions independently so a failure in one
+      // request doesn't prevent the other result from being processed
+      const [groupsOutcome, sessionsOutcome] = await Promise.allSettled([
+        invoke('getUnassignedGroups', { limit: GROUPS_PER_PAGE, offset }),
+        !append ? invoke('getUnassignedWork', { limit: 100 }) : Promise.resolve(null)
+      ]);
+
+      const groupsResult = groupsOutcome.status === 'fulfilled'
+        ? groupsOutcome.value
+        : { success: false, error: groupsOutcome.reason?.message || 'Failed to load unassigned groups' };
+
+      const sessionsResult = sessionsOutcome.status === 'fulfilled'
+        ? sessionsOutcome.value
+        : { success: false, error: sessionsOutcome.reason?.message || 'Failed to load unassigned work' };
+
+      // Process sessions (independent of groups success)
+      if (!append && sessionsResult?.success) {
+        setSessions(sessionsResult.sessions || []);
+      }
+
+      // Process groups
       if (groupsResult.success) {
         const newGroups = groupsResult.groups || [];
 
@@ -96,13 +115,11 @@ function UnassignedWork() {
         setNextOffset(groupsResult.next_offset || 0);
         setTotalGroups(groupsResult.total_groups || 0);
 
-        if (!append) {
-          const sessionsResult = await invoke('getUnassignedWork', { limit: 100 });
-          if (sessionsResult.success) {
-            setSessions(sessionsResult.sessions || []);
-          }
-        }
-
+        setLoading(false);
+        setLoadingMore(false);
+      } else if (!append && sessionsResult?.success && (sessionsResult.sessions || []).length > 0) {
+        // Groups failed but sessions loaded — show what we have
+        console.warn('[UnassignedWork] Groups query failed but sessions loaded:', groupsResult.error);
         setLoading(false);
         setLoadingMore(false);
       } else if (!append && retryCount < MAX_RETRIES) {
@@ -110,6 +127,7 @@ function UnassignedWork() {
         setTimeout(() => loadUnassignedWork(false, retryCount + 1), RETRY_DELAY_MS);
       } else {
         console.error('[UnassignedWork] Load failed:', groupsResult.error);
+        setError(groupsResult.error || 'Failed to load unassigned work');
         setLoading(false);
         setLoadingMore(false);
       }
@@ -119,6 +137,7 @@ function UnassignedWork() {
         setTimeout(() => loadUnassignedWork(false, retryCount + 1), RETRY_DELAY_MS);
       } else {
         console.error('[UnassignedWork] Load error:', err);
+        setError(err.message || 'Failed to load unassigned work');
         setLoading(false);
         setLoadingMore(false);
       }
@@ -211,6 +230,19 @@ function UnassignedWork() {
 
   if (loading) {
     return <div className="unassigned-work-container"><div className="loading">Loading unassigned work...</div></div>;
+  }
+
+  if (error && sessions.length === 0) {
+    return (
+      <div className="unassigned-work-container">
+        <h2>Unassigned Work</h2>
+        <div className="empty-state">
+          <p>Unable to load unassigned work data.</p>
+          <p className="empty-subtitle">{error}</p>
+          <button className="retry-btn" onClick={() => loadUnassignedWork()}>Retry</button>
+        </div>
+      </div>
+    );
   }
 
   if (sessions.length === 0) {
