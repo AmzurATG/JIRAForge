@@ -39,10 +39,25 @@ export function registerAdminUserStatusResolvers(resolver) {
         return { success: false, error: 'Unable to get organization information' };
       }
 
-      const users = await supabaseRequest(
-        supabaseConfig,
-        `users?organization_id=eq.${organization.id}&select=id,email,display_name,is_active,desktop_logged_in,desktop_last_heartbeat,desktop_app_version&order=display_name.asc`
-      );
+      // Today's date in YYYY-MM-DD (UTC) for the time summary query
+      const today = new Date().toISOString().split('T')[0];
+
+      const [users, dailySummary] = await Promise.all([
+        supabaseRequest(
+          supabaseConfig,
+          `users?organization_id=eq.${organization.id}&select=id,display_name,is_active,desktop_logged_in,desktop_last_heartbeat,desktop_app_version&order=display_name.asc`
+        ),
+        supabaseRequest(
+          supabaseConfig,
+          `daily_time_summary?organization_id=eq.${organization.id}&work_date=eq.${today}&select=user_id,total_seconds`
+        )
+      ]);
+
+      // Aggregate total seconds per user from the daily summary (view has multiple rows per user per project/task)
+      const timeTodayByUser = {};
+      (dailySummary || []).forEach(row => {
+        timeTodayByUser[row.user_id] = (timeTodayByUser[row.user_id] || 0) + (row.total_seconds || 0);
+      });
 
       const now = Date.now();
 
@@ -57,7 +72,6 @@ export function registerAdminUserStatusResolvers(resolver) {
 
         return {
           id: u.id,
-          email: u.email,
           displayName: u.display_name,
           isActive: u.is_active,
           desktopInstalled: hasDesktopInstalled,
@@ -65,6 +79,7 @@ export function registerAdminUserStatusResolvers(resolver) {
           activeNow: isActiveNow,
           lastHeartbeat: u.desktop_last_heartbeat,
           appVersion: u.desktop_app_version,
+          timeTodaySeconds: timeTodayByUser[u.id] || 0,
         };
       });
 

@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { invoke } from '@forge/bridge';
+import { formatTime } from '../../utils';
 import './AdminUserStatusTab.css';
 
 const REFRESH_INTERVAL_MS = 30 * 1000;
@@ -188,9 +189,8 @@ function AdminUserStatusTab() {
             <thead>
               <tr>
                 <th>Name</th>
-                <th>Email</th>
                 <th>Desktop</th>
-                <th>Status</th>
+                <th>Time Today</th>
                 <th>Last Heartbeat</th>
                 <th>App Version</th>
               </tr>
@@ -198,7 +198,7 @@ function AdminUserStatusTab() {
             <tbody>
               {users.length === 0 ? (
                 <tr className="empty-row">
-                  <td colSpan="6">No users found in your organization</td>
+                  <td colSpan="5">No users found in your organization</td>
                 </tr>
               ) : (
                 users.map(user => (
@@ -214,7 +214,6 @@ function AdminUserStatusTab() {
                         <span>{user.displayName || '\u2014'}</span>
                       </div>
                     </td>
-                    <td className="email-cell">{user.email || '\u2014'}</td>
                     <td>
                       {user.desktopInstalled ? (
                         <span className="admin-user-status-pill installed">
@@ -228,23 +227,8 @@ function AdminUserStatusTab() {
                         </span>
                       )}
                     </td>
-                    <td>
-                      {user.activeNow ? (
-                        <span className="admin-user-status-pill active-now">
-                          <span className="status-dot"></span>
-                          Active Now
-                        </span>
-                      ) : user.desktopLoggedIn ? (
-                        <span className="admin-user-status-pill logged-in">
-                          <span className="status-dot"></span>
-                          Logged In
-                        </span>
-                      ) : (
-                        <span className="admin-user-status-pill logged-out">
-                          <span className="status-dot"></span>
-                          Logged Out
-                        </span>
-                      )}
+                    <td className="time-cell">
+                      {user.timeTodaySeconds > 0 ? formatTime(user.timeTodaySeconds) : '\u2014'}
                     </td>
                     <td className="time-cell">
                       {user.lastHeartbeat ? formatRelativeTime(user.lastHeartbeat) : '\u2014'}
