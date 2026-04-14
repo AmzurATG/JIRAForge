@@ -449,9 +449,9 @@ function TeamAnalyticsTab() {
                               <strong>{formatTime(member.monthSeconds)}</strong>
                             </td>
                             <td className="hours-cell unassigned-cell">
-                              {(member.todayUnassignedProjectSeconds > 0) ? (
+                              {(member.todayUnassignedSeconds > 0) ? (
                                 <span className="unassigned-time" title="Time not matched to any Jira issue — cannot be attributed to a project">
-                                  {formatTime(member.todayUnassignedProjectSeconds)}
+                                  {formatTime(member.todayUnassignedSeconds)}
                                 </span>
                               ) : (
                                 <span className="no-unassigned">{'\u2014'}</span>
