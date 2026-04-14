@@ -422,6 +422,7 @@ function TeamAnalyticsTab() {
                         <th>Today</th>
                         <th>This Week</th>
                         <th>This Month</th>
+                        <th>Unassigned</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -429,7 +430,7 @@ function TeamAnalyticsTab() {
                         teamAnalytics.teamMemberActivity.map((member, idx) => (
                           <tr key={idx}>
                             <td className="member-name-cell clickable" onClick={() => handleMemberNameClick(member)}>
-                              <div 
+                              <div
                                 className="member-avatar"
                                 style={{ backgroundColor: getAvatarColor(member.displayName) }}
                                 title={member.displayName}
@@ -447,11 +448,20 @@ function TeamAnalyticsTab() {
                             <td className="hours-cell clickable" onClick={() => handleMonthClick(member)}>
                               <strong>{formatTime(member.monthSeconds)}</strong>
                             </td>
+                            <td className="hours-cell unassigned-cell">
+                              {(member.todayUnassignedProjectSeconds > 0) ? (
+                                <span className="unassigned-time" title="Time not matched to any Jira issue — cannot be attributed to a project">
+                                  {formatTime(member.todayUnassignedProjectSeconds)}
+                                </span>
+                              ) : (
+                                <span className="no-unassigned">{'\u2014'}</span>
+                              )}
+                            </td>
                           </tr>
                         ))
                       ) : (
                         <tr>
-                          <td colSpan="4" className="empty-state">No team member activity yet</td>
+                          <td colSpan="5" className="empty-state">No team member activity yet</td>
                         </tr>
                       )}
                     </tbody>

@@ -1,7 +1,7 @@
 app:
   id: ari:cloud:ecosystem::app/c8bab1dc-ae32-4e6f-9dbd-eb242cc6c14a
   runtime:
-    name: nodejs20.x
+    name: nodejs22.x
 
 remotes:
   - key: ai-server

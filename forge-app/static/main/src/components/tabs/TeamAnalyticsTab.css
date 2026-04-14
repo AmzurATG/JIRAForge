@@ -441,6 +441,16 @@
   font-weight: 400;
 }
 
+.unassigned-cell .unassigned-time {
+  color: #DE350B;
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.unassigned-cell .no-unassigned {
+  color: #B3BAC5;
+}
+
 /* Activity Trend Chart */
 .trend-chart-container {
   min-height: 280px;
