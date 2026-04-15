@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { invoke } from '@forge/bridge';
 import { generateExcelReport } from '../../utils/excelExport';
 import './ExportTeamAnalyticsModal.css';
@@ -17,8 +17,57 @@ function ExportTeamAnalyticsModal({ isOpen, onClose, projectKey, teamAnalytics, 
   const [selectedUserIds, setSelectedUserIds] = useState([]); // empty = all users
   const [selectedProjectKeys, setSelectedProjectKeys] = useState([projectKey]); // default to current project
   const [projectSelectAll, setProjectSelectAll] = useState(false);
+  const [membersByProject, setMembersByProject] = useState(() => ({
+    [projectKey]: (teamAnalytics?.teamMemberActivity || [])
+  }));
+  const [loadingMembers, setLoadingMembers] = useState(false);
 
-  const members = (teamAnalytics && teamAnalytics.teamMemberActivity) || [];
+  // Fetch team members for newly selected projects
+  useEffect(() => {
+    const missingProjects = selectedProjectKeys.filter(pk => !membersByProject[pk]);
+    if (missingProjects.length === 0) return;
+
+    let cancelled = false;
+    setLoadingMembers(true);
+
+    Promise.all(missingProjects.map(pk =>
+      invoke('getProjectTeamAnalytics', {
+        projectKey: pk,
+        clientToday: new Date().toLocaleDateString('sv-SE')
+      }).then(result => ({
+        pk,
+        members: result.success ? (result.data?.teamMemberActivity || []) : []
+      })).catch(() => ({ pk, members: [] }))
+    )).then(results => {
+      if (cancelled) return;
+      setMembersByProject(prev => {
+        const updated = { ...prev };
+        results.forEach(({ pk, members: m }) => { updated[pk] = m; });
+        return updated;
+      });
+    }).finally(() => {
+      if (!cancelled) setLoadingMembers(false);
+    });
+
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedProjectKeys]);
+
+  // Combine members from all selected projects, deduplicating by userId
+  const members = useMemo(() => {
+    const memberMap = {};
+    selectedProjectKeys.forEach(pk => {
+      (membersByProject[pk] || []).forEach(m => {
+        if (!memberMap[m.userId]) {
+          memberMap[m.userId] = { ...m };
+        } else {
+          // Sum hours across projects for multi-project selection
+          memberMap[m.userId].monthHours = Math.round(((memberMap[m.userId].monthHours || 0) + (m.monthHours || 0)) * 100) / 100;
+        }
+      });
+    });
+    return Object.values(memberMap);
+  }, [selectedProjectKeys, membersByProject]);
 
   const toggleUser = (userId) => {
     setSelectedUserIds(prev =>
@@ -35,16 +84,19 @@ function ExportTeamAnalyticsModal({ isOpen, onClose, projectKey, teamAnalytics, 
     setSelectedProjectKeys(prev =>
       prev.includes(pk) ? prev.filter(k => k !== pk) : [...prev, pk]
     );
+    setSelectedUserIds([]); // Reset to "All Users" when projects change
   };
 
   const handleSelectAllProjects = () => {
     setProjectSelectAll(true);
     setSelectedProjectKeys([...allProjects]);
+    setSelectedUserIds([]); // Reset to "All Users" when projects change
   };
 
   const handleSelectCurrentProject = () => {
     setProjectSelectAll(false);
     setSelectedProjectKeys([projectKey]);
+    setSelectedUserIds([]); // Reset to "All Users" when projects change
   };
 
   const handleExport = async () => {
@@ -245,7 +297,12 @@ function ExportTeamAnalyticsModal({ isOpen, onClose, projectKey, teamAnalytics, 
                   <span className="selected-count">{selectedUserIds.length} selected</span>
                 )}
               </div>
-              {members.length > 0 && (
+              {loadingMembers && (
+                <div className="user-checkbox-list" style={{ padding: '8px', color: '#6b778c', fontSize: '12px' }}>
+                  Loading users...
+                </div>
+              )}
+              {!loadingMembers && members.length > 0 && (
                 <div className="user-checkbox-list">
                   {members.map((m) => (
                     <label key={m.userId} className="user-checkbox-item">

@@ -58,7 +58,7 @@ function TimesheetSettings() {
   const loadProjects = async () => {
     setLoadingProjects(true);
     try {
-      const result = await invoke('getAllProjects');
+      const result = await invoke('getJiraProjects');
       if (result.success && result.projects) {
         setAvailableProjects(result.projects);
       }

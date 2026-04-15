@@ -673,10 +673,7 @@ function TeamAnalyticsTab() {
       {activityModalOpen && selectedMember && (
         <TeamMemberActivityModal
           isOpen={activityModalOpen}
-          onClose={() => {
-            setActivityModalOpen(false);
-            loadTeamAnalytics(); // Refresh table data to stay in sync with modal
-          }}
+          onClose={() => setActivityModalOpen(false)}
           member={selectedMember}
           viewType={activityViewType}
           projectKey={selectedProjectKey}
