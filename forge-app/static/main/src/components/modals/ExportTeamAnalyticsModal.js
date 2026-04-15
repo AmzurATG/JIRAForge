@@ -21,9 +21,23 @@ function ExportTeamAnalyticsModal({ isOpen, onClose, projectKey, teamAnalytics, 
   const members = (teamAnalytics && teamAnalytics.teamMemberActivity) || [];
 
   const toggleUser = (userId) => {
-    setSelectedUserIds(prev =>
-      prev.includes(userId) ? prev.filter(id => id !== userId) : [...prev, userId]
-    );
+    if (selectedUserIds.length === 0) {
+      // "All Users" mode — uncheck this one user, keep the rest selected
+      setSelectedUserIds(members.filter(m => m.userId !== userId).map(m => m.userId));
+    } else {
+      const isSelected = selectedUserIds.includes(userId);
+      if (isSelected) {
+        setSelectedUserIds(prev => prev.filter(id => id !== userId));
+      } else {
+        const newSelected = [...selectedUserIds, userId];
+        // If all members are now selected, switch back to "All Users" mode
+        if (newSelected.length === members.length) {
+          setSelectedUserIds([]);
+        } else {
+          setSelectedUserIds(newSelected);
+        }
+      }
+    }
   };
 
   const selectAllUsers = () => setSelectedUserIds([]);
@@ -251,7 +265,7 @@ function ExportTeamAnalyticsModal({ isOpen, onClose, projectKey, teamAnalytics, 
                     <label key={m.userId} className="user-checkbox-item">
                       <input
                         type="checkbox"
-                        checked={selectedUserIds.includes(m.userId)}
+                      checked={selectedUserIds.length === 0 || selectedUserIds.includes(m.userId)}
                         onChange={() => toggleUser(m.userId)}
                       />
                       <span className="user-checkbox-name">{m.displayName}</span>

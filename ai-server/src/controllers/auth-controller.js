@@ -540,8 +540,10 @@ exports.refreshToken = async (req, res) => {
   } catch (error) {
     logger.error('[Auth] Token refresh error:', error.response?.data || error.message);
 
-    // Check if refresh token is expired/invalid
-    if (error.response?.status === 400 || error.response?.status === 401) {
+    // Only signal requiresReauth for true 401 (token revoked/expired).
+    // HTTP 400 can be a transient malformed-request issue and should NOT
+    // permanently kill the client session.
+    if (error.response?.status === 401) {
       return res.status(401).json({
         success: false,
         error: 'Refresh token expired or invalid. User must re-authenticate.',
@@ -549,6 +551,8 @@ exports.refreshToken = async (req, res) => {
       });
     }
 
+    // For 400 and other errors, return the status as-is without requiresReauth
+    // so the client treats them as transient/retryable failures.
     res.status(error.response?.status || 500).json({
       success: false,
       error: `Token refresh failed: ${formatAtlassianError(error)}`
