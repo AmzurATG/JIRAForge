@@ -1429,6 +1429,12 @@ class AtlassianAuthManager:
         # refresh_token — the second call arrives after rotation and gets "token invalid".
         self._refresh_lock = threading.Lock()
 
+        # Session resilience: track when the invalid flag was set so it can auto-expire.
+        # This prevents a transient outage from permanently killing the session.
+        self._refresh_token_invalid = False
+        self._refresh_fail_count = 0
+        self._refresh_invalid_set_at = 0  # timestamp when _refresh_token_invalid was set
+
         # Initialize secure storage
         self.secure_storage = SecureTokenStorage(get_app_data_dir())
 
@@ -1663,6 +1669,8 @@ class AtlassianAuthManager:
         self._save_tokens()
         self._refresh_token_invalid = False  # Clear any prior permanent-failure flag
         self._refresh_fail_count = 0  # Reset consecutive failure counter
+        self._refresh_invalid_set_at = 0  # Clear grace-period timestamp
+        self._last_refresh_fail_time = 0  # Reset failure window
 
         print("[OK] OAuth tokens received via AI Server")
         return result
@@ -1726,12 +1734,20 @@ class AtlassianAuthManager:
         while waiting for the lock, another thread already did the refresh successfully,
         so we skip the network call and return True.
         """
-        # Fast-path: if the refresh token is permanently invalid (revoked/expired),
-        # don't even acquire the lock. This guards both the sync-loop path (via
-        # is_authenticated) and direct callers (401 handlers in API wrappers).
+        # Fast-path: if the refresh token was marked invalid, check if the grace
+        # period (30 min) has elapsed. If so, auto-clear and allow one more attempt.
+        # This prevents a transient outage from permanently killing the session.
         if getattr(self, '_refresh_token_invalid', False):
-            print("[WARN] Refresh token is permanently invalid — re-authentication required")
-            return False
+            grace_period = 1800  # 30 minutes
+            invalid_since = getattr(self, '_refresh_invalid_set_at', 0)
+            if invalid_since and (time.time() - invalid_since) >= grace_period:
+                print("[INFO] Refresh invalid flag expired after grace period — allowing retry")
+                self._refresh_token_invalid = False
+                self._refresh_fail_count = 0
+                self._refresh_invalid_set_at = 0
+            else:
+                print("[WARN] Refresh token is marked invalid — re-authentication required")
+                return False
 
         refresh_token_before = self.tokens.get('refresh_token')
         if not refresh_token_before:
@@ -1739,6 +1755,19 @@ class AtlassianAuthManager:
             return False
 
         with self._refresh_lock:
+            # Re-check invalid flag inside the lock — another thread may have set it
+            # while we were waiting to acquire the lock.
+            if getattr(self, '_refresh_token_invalid', False):
+                grace_period = 1800
+                invalid_since = getattr(self, '_refresh_invalid_set_at', 0)
+                if not (invalid_since and (time.time() - invalid_since) >= grace_period):
+                    print("[INFO] Another thread marked token invalid while waiting for lock")
+                    return False
+                # Grace period expired — clear and proceed
+                self._refresh_token_invalid = False
+                self._refresh_fail_count = 0
+                self._refresh_invalid_set_at = 0
+
             # Double-check: if the refresh_token in self.tokens changed while we were
             # waiting for the lock, another thread already refreshed successfully.
             # The new access_token is in self.tokens — caller will pick it up.
@@ -1780,14 +1809,21 @@ class AtlassianAuthManager:
                         response.status_code == 403
                     )
                     if is_permanent_failure:
-                        # Track consecutive permanent failures before giving up.
-                        # A single transient "invalid" error should NOT kill the session.
+                        # Track consecutive permanent failures with time-windowed counting.
+                        # Reset the counter if the last failure was more than 10 minutes ago
+                        # (i.e. failures are spread out, not a rapid cascade).
+                        now = time.time()
+                        last_fail_time = getattr(self, '_last_refresh_fail_time', 0)
+                        if (now - last_fail_time) > 600:  # 10 min window
+                            self._refresh_fail_count = 0  # Reset — failures are not consecutive
+                        self._last_refresh_fail_time = now
                         self._refresh_fail_count = getattr(self, '_refresh_fail_count', 0) + 1
-                        if self._refresh_fail_count >= 3:
-                            print(f"[WARN] Refresh token failed {self._refresh_fail_count} consecutive times - user must re-authenticate")
-                            self._refresh_token_invalid = True  # Prevents endless 30-second retry loop
+                        if self._refresh_fail_count >= 5:
+                            print(f"[WARN] Refresh token failed {self._refresh_fail_count} times within window - marking invalid (will auto-recover in 30 min)")
+                            self._refresh_token_invalid = True
+                            self._refresh_invalid_set_at = now  # Record when flag was set for auto-expiry
                         else:
-                            print(f"[WARN] Refresh token failure {self._refresh_fail_count}/3 - will retry before requiring re-auth")
+                            print(f"[WARN] Refresh token failure {self._refresh_fail_count}/5 - will retry before requiring re-auth")
                     return False
 
                 result = response.json()
@@ -1804,6 +1840,8 @@ class AtlassianAuthManager:
 
                 self._refresh_token_invalid = False  # Clear permanent-failure flag
                 self._refresh_fail_count = 0  # Reset consecutive failure counter
+                self._refresh_invalid_set_at = 0  # Clear grace-period timestamp
+                self._last_refresh_fail_time = 0  # Reset failure window
                 print("[OK] Access token refreshed successfully via AI Server")
                 return True
             except Exception as e:
@@ -1814,10 +1852,18 @@ class AtlassianAuthManager:
         """Check if user is authenticated (has a valid or refreshable access token)"""
         if not self.tokens.get('access_token'):
             return False
-        # If refresh token is known-invalid, don't hammer the server every 30 seconds.
-        # The user must re-authenticate; no point retrying until they do.
+        # If refresh token is marked invalid, check if the 30-min grace period
+        # has elapsed. If so, auto-clear the flag and allow a retry.
         if getattr(self, '_refresh_token_invalid', False):
-            return False
+            grace_period = 1800  # 30 minutes
+            invalid_since = getattr(self, '_refresh_invalid_set_at', 0)
+            if invalid_since and (time.time() - invalid_since) >= grace_period:
+                print("[INFO] is_authenticated: invalid flag grace period expired — allowing retry")
+                self._refresh_token_invalid = False
+                self._refresh_fail_count = 0
+                self._refresh_invalid_set_at = 0
+            else:
+                return False
         # If we have expiry info and the token is expired, try to refresh it now
         expires_at = self.tokens.get('expires_at', 0)
         if expires_at and time.time() > expires_at:
@@ -1857,11 +1903,33 @@ class AtlassianAuthManager:
             )
 
             if response.status_code == 401:
-                # Atlassian token expired, try to refresh
+                # Atlassian token expired, try to refresh (non-recursive: single retry)
                 print("[WARN] Atlassian token expired, attempting refresh...")
                 if self.refresh_access_token():
-                    # Retry with new token
-                    return self.get_supabase_token()
+                    # Retry ONCE with the new token (no recursion)
+                    new_access_token = self.tokens.get('access_token')
+                    retry_response = requests.post(
+                        f"{self.ai_server_url}/api/auth/exchange-token",
+                        json={'atlassian_token': new_access_token},
+                        headers={'Content-Type': 'application/json'},
+                        timeout=(10, 60)
+                    )
+                    if retry_response.status_code == 200:
+                        result = retry_response.json()
+                        if result.get('success'):
+                            supabase_token = result.get('supabase_token')
+                            expires_in = result.get('expires_in', 3600)
+                            self.tokens['supabase_token'] = supabase_token
+                            self.tokens['supabase_token_expires_at'] = time.time() + expires_in
+                            user_data = result.get('user', {})
+                            if user_data:
+                                self.tokens['exchange_user_id'] = user_data.get('id')
+                                self.tokens['exchange_organization_id'] = user_data.get('organization_id')
+                            self._save_tokens()
+                            print(f"[OK] Supabase token received on retry (expires in {expires_in}s)")
+                            return supabase_token
+                    print("[ERROR] Supabase token retry after refresh also failed")
+                    return None
                 print("[ERROR] Could not refresh Atlassian token")
                 return None
 
@@ -2029,6 +2097,8 @@ class AtlassianAuthManager:
         self.tokens = {}
         self._refresh_token_invalid = False
         self._refresh_fail_count = 0
+        self._refresh_invalid_set_at = 0
+        self._last_refresh_fail_time = 0
 
         # Clear sensitive tokens from secure storage (keyring + encrypted fallback)
         try:
@@ -9115,8 +9185,21 @@ class TimeTracker:
                                     print("[WARN] Supabase JWT refresh failed — will retry on next cycle")
 
                     elif getattr(self.auth_manager, '_refresh_token_invalid', False):
-                        # Refresh token is permanently invalid — remind user every 15 min
-                        self._show_reauth_notification()
+                        # Refresh token is marked invalid — check if grace period allows retry
+                        grace_period = 1800  # 30 minutes
+                        invalid_since = getattr(self.auth_manager, '_refresh_invalid_set_at', 0)
+                        if invalid_since and (time.time() - invalid_since) >= grace_period:
+                            print("[INFO] Sync thread: invalid flag grace period expired — attempting recovery refresh")
+                            self.auth_manager._refresh_token_invalid = False
+                            self.auth_manager._refresh_fail_count = 0
+                            self.auth_manager._refresh_invalid_set_at = 0
+                            if self.auth_manager.refresh_access_token():
+                                print("[OK] Session recovered automatically after grace period")
+                            else:
+                                print("[WARN] Recovery refresh failed — will show re-auth notification")
+                                self._show_reauth_notification()
+                        else:
+                            self._show_reauth_notification()
 
                 except Exception as e:
                     print(f"[ERROR] Sync thread error: {e}")
