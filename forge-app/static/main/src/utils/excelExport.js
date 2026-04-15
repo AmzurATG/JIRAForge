@@ -382,7 +382,7 @@ async function generateSingleProjectExcelReport(data, filename) {
     // Today/Week/Month = project-matched time + unassigned (NULL project_key) time so
     // the columns reflect each member's actual total work time. "Unassigned (Month)"
     // stays as an informational breakdown column (subset of "This Month").
-    const effSeconds = (m, bucket) => (m[`${bucket}Seconds`] || Math.round((m[`${bucket}Hours`] || 0) * 3600)) + (m[`${bucket}UnassignedSeconds`] || 0);
+    const effSeconds = (m, bucket) => (m[`${bucket}Seconds`] ?? Math.round((m[`${bucket}Hours`] ?? 0) * 3600)) + (m[`${bucket}UnassignedSeconds`] ?? 0);
 
     const totalMonthSeconds = data.memberSummary.reduce((s, m) => s + effSeconds(m, 'month'), 0);
 
@@ -713,7 +713,7 @@ async function generateMultiProjectExcelReport(data, filename) {
   // Today/Week/Month = project-matched time + unassigned (NULL project_key) time so
   // the columns reflect each member's actual total work time. "Unassigned (Month)"
   // stays as an informational breakdown column (subset of "This Month").
-  const effSeconds = (m, bucket) => (m[`${bucket}Seconds`] || Math.round((m[`${bucket}Hours`] || 0) * 3600)) + (m[`${bucket}UnassignedSeconds`] || 0);
+  const effSeconds = (m, bucket) => (m[`${bucket}Seconds`] ?? Math.round((m[`${bucket}Hours`] ?? 0) * 3600)) + (m[`${bucket}UnassignedSeconds`] ?? 0);
 
   // Per-project summary sections
   const projectMonthSeconds = []; // per-project actual total for grand total aggregation
