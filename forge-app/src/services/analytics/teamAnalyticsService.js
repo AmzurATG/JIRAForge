@@ -400,12 +400,13 @@ export async function fetchProjectTeamAnalytics(accountId, cloudId, projectKey, 
   ]);
 
   // Use all project users, not just those in the last 30 days.
-  // Also include users who have unassigned time so they appear in the table.
+  // NOTE: Don't include users from unassignedDailySummary — that query is org-wide,
+  // so adding them would surface unrelated users in this project's Team Analytics.
+  // Unassigned time is only shown for users who are already part of this project.
   const projectUserIds = new Set([
     ...(teamDailySummary || []).map(d => d.user_id),
     ...(allProjectUsers || []).map(d => d.user_id),
-    ...(teamDailySummaryFull || []).map(d => d.user_id),
-    ...(unassignedDailySummary || []).map(d => d.user_id)
+    ...(teamDailySummaryFull || []).map(d => d.user_id)
   ]);
 
   const teamMemberActivity = Array.from(projectUserIds).map(userId => {
@@ -1237,16 +1238,18 @@ export async function fetchMemberDayDetails(accountId, cloudId, projectKey, user
  
   // Fetch total time from daily_time_summary (same source as individual Time Analytics page)
   // This ensures the modal total matches the individual user's view exactly.
+  // Include unassigned (NULL project_key) records so the modal matches the Team Analytics
+  // Team Member Activity row (which already sums project + unassigned time for each member).
   let summaryQuery = `daily_time_summary?organization_id=eq.${organization.id}&user_id=eq.${userId}&work_date=eq.${date}&select=task_key,total_seconds`;
   if (projectKey && projectKey !== 'null') {
-    summaryQuery += `&project_key=eq.${projectKey}`;
+    summaryQuery += `&or=(project_key.eq.${projectKey},project_key.is.null)`;
   }
   const dailySummaryRecords = await supabaseRequest(supabaseConfig, summaryQuery);
 
   // Also fetch activity_records for session-level detail (start/end times)
   let baseQuery = `activity_records?organization_id=eq.${organization.id}&user_id=eq.${userId}&work_date=eq.${date}&status=in.(pending,processing,analyzed)&select=user_assigned_issue_key,project_key,duration_seconds,start_time,end_time,classification&order=start_time.asc,id.asc`;
   if (projectKey && projectKey !== 'null') {
-    baseQuery += `&project_key=eq.${projectKey}`;
+    baseQuery += `&or=(project_key.eq.${projectKey},project_key.is.null)`;
   }
  
   const allRecords = await supabaseRequestPaginated(supabaseConfig, baseQuery);
@@ -1373,17 +1376,19 @@ export async function fetchMemberWeekDetails(accountId, cloudId, projectKey, use
  
   // Get detailed breakdown from activity_records (for session-level detail: start/end times)
   // Uses pagination because PostgREST max_rows=1000 could truncate high-session-count users
+  // Include unassigned (NULL project_key) records so the weekly modal matches the Team Member
+  // Activity row (which sums project + unassigned time for each member).
   let baseQuery = `activity_records?organization_id=eq.${organization.id}&user_id=eq.${userId}&work_date=gte.${weekStartDate}&work_date=lte.${weekEndStr}&status=in.(pending,processing,analyzed)&select=work_date,user_assigned_issue_key,project_key,duration_seconds,start_time,end_time,classification&order=work_date.asc,start_time.asc,id.asc`;
   if (projectKey && projectKey !== 'null') {
-    baseQuery += `&project_key=eq.${projectKey}`;
+    baseQuery += `&or=(project_key.eq.${projectKey},project_key.is.null)`;
   }
- 
+
   const allRecords = await supabaseRequestPaginated(supabaseConfig, baseQuery);
 
   // Fetch daily_time_summary for week totals (matches individual Time Analytics page)
   let weekSummaryQuery = `daily_time_summary?organization_id=eq.${organization.id}&user_id=eq.${userId}&work_date=gte.${weekStartDate}&work_date=lte.${weekEndStr}&select=work_date,task_key,total_seconds`;
   if (projectKey && projectKey !== 'null') {
-    weekSummaryQuery += `&project_key=eq.${projectKey}`;
+    weekSummaryQuery += `&or=(project_key.eq.${projectKey},project_key.is.null)`;
   }
   const weekDailySummary = await supabaseRequest(supabaseConfig, weekSummaryQuery);
 
@@ -1543,15 +1548,17 @@ export async function fetchMemberMonthDetails(accountId, cloudId, projectKey, us
   // Uses pagination because PostgREST max_rows=1000 could truncate high-session-count users
   let baseQuery = `activity_records?organization_id=eq.${organization.id}&user_id=eq.${userId}&work_date=gte.${monthStartStr}&work_date=lte.${monthEndStr}&status=in.(pending,processing,analyzed)&select=work_date,user_assigned_issue_key,project_key,duration_seconds,start_time,end_time,classification&order=work_date.asc,start_time.asc,id.asc`;
   if (projectKey && projectKey !== 'null') {
-    baseQuery += `&project_key=eq.${projectKey}`;
+    // Include project's records AND records with NULL project_key (unassigned work)
+    baseQuery += `&or=(project_key.eq.${projectKey},project_key.is.null)`;
   }
- 
+
   const allRecords = await supabaseRequestPaginated(supabaseConfig, baseQuery);
 
   // Fetch daily_time_summary for month totals (matches individual Time Analytics page)
   let monthSummaryQuery = `daily_time_summary?organization_id=eq.${organization.id}&user_id=eq.${userId}&work_date=gte.${monthStartStr}&work_date=lte.${monthEndStr}&select=work_date,task_key,total_seconds`;
   if (projectKey && projectKey !== 'null') {
-    monthSummaryQuery += `&project_key=eq.${projectKey}`;
+    // Include project's records AND records with NULL project_key (unassigned work)
+    monthSummaryQuery += `&or=(project_key.eq.${projectKey},project_key.is.null)`;
   }
   const monthDailySummary = await supabaseRequest(supabaseConfig, monthSummaryQuery);
 
@@ -1772,16 +1779,19 @@ export async function generateTeamExportData(accountId, cloudId, projectKey, sta
    
     lines.push(`DETAILED ACTIVITY - ${member.displayName}`);
     lines.push('Member,Date,Issue Key,Classification,Total Time,Time (Start - End)');
-   
+    let memberTotalSeconds = 0;
+
     try {
       let baseQuery = `activity_records?organization_id=eq.${organization.id}&user_id=eq.${member.userId}&work_date=gte.${startDate}&work_date=lte.${endDate}&status=in.(pending,processing,analyzed)&select=user_assigned_issue_key,work_date,start_time,end_time,duration_seconds,classification&order=work_date.asc,start_time.asc,id.asc`;
-     
+
       if (projectKey && projectKey !== 'null') {
-        baseQuery += `&project_key=eq.${projectKey}`;
+        // Include project's records AND records with NULL project_key (unassigned work)
+        // so the DETAILED ACTIVITY / Time by Issue / Daily Pivot sections match the Member Summary totals.
+        baseQuery += `&or=(project_key.eq.${projectKey},project_key.is.null)`;
       }
-     
+
       const allRecords = await supabaseRequestPaginated(supabaseConfig, baseQuery);
-     
+
       // Split into productive and non-productive
       const records = (allRecords || []).filter(r =>
         r.classification === 'productive' || r.classification === 'unknown' || !r.classification
@@ -1789,7 +1799,7 @@ export async function generateTeamExportData(accountId, cloudId, projectKey, sta
       const npRecords = (allRecords || []).filter(r =>
         r.classification === 'non_productive' || r.classification === 'private'
       );
-     
+
       // Group by date + issue key
       const grouped = {};
       (records || []).forEach(record => {
@@ -1956,13 +1966,15 @@ export async function generateTeamExportDataStructured(accountId, cloudId, proje
    
     try {
       let baseQuery = `activity_records?organization_id=eq.${organization.id}&user_id=eq.${member.userId}&work_date=gte.${startDate}&work_date=lte.${endDate}&status=in.(pending,processing,analyzed)&select=user_assigned_issue_key,work_date,start_time,end_time,duration_seconds,classification&order=work_date.asc,start_time.asc,id.asc`;
-     
+
       if (projectKey && projectKey !== 'null') {
-        baseQuery += `&project_key=eq.${projectKey}`;
+        // Include project's records AND records with NULL project_key (unassigned work)
+        // so the structured export entries match the Member Summary totals.
+        baseQuery += `&or=(project_key.eq.${projectKey},project_key.is.null)`;
       }
-     
+
       const allRecords = await supabaseRequestPaginated(supabaseConfig, baseQuery);
-     
+
       // Split into productive and non-productive
       const records = (allRecords || []).filter(r =>
         r.classification === 'productive' || r.classification === 'unknown' || !r.classification
@@ -1970,7 +1982,7 @@ export async function generateTeamExportDataStructured(accountId, cloudId, proje
       const npRecords = (allRecords || []).filter(r =>
         r.classification === 'non_productive' || r.classification === 'private'
       );
-     
+
       // Group by date + issue key
       const grouped = {};
       (records || []).forEach(record => {

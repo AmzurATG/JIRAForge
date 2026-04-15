@@ -86,9 +86,9 @@ export function registerUserResolvers(resolver) {
       const userId = await getOrCreateUser(accountId, supabaseConfig, organization.id);
 
       // Query user's desktop status and recent activity_records in parallel.
-      // activity_records.batch_end is updated every 5 min when tracking is active,
-      // while desktop_last_heartbeat is only updated every 4 hours.
-      const activityThreshold = new Date(Date.now() - 270 * 60 * 1000).toISOString();
+      // Use a 3-hour gap to match the timeline shown on the Time Analytics screen —
+      // if the timeline would show a 3h+ gap, that's when we flag the app as inactive.
+      const activityThreshold = new Date(Date.now() - 180 * 60 * 1000).toISOString();
       const [userResult, latestActivity] = await Promise.all([
         supabaseRequest(
           supabaseConfig,
@@ -143,14 +143,15 @@ export function registerUserResolvers(resolver) {
         };
       }
 
-      // Case 2: Desktop app is logged in - check if effective last active is within 4.5 hours.
-      // effectiveLastActive = MAX(desktop_last_heartbeat, activity_records.batch_end)
+      // Case 2: Desktop app is logged in - check if there's a 3h+ gap in activity.
+      // This matches what the user sees on the Time Analytics timeline — if the
+      // timeline shows a gap of 3+ hours, we flag the app as inactive.
       if (desktop_logged_in) {
         const minutesAgo = effectiveLastActive
           ? (Date.now() - effectiveLastActive.getTime()) / 60000
           : Infinity;
 
-        if (minutesAgo < 270) {  // 4.5 hours = 270 minutes (gives buffer for 4-hour heartbeat)
+        if (minutesAgo < 180) {  // No 3-hour gap — app is active
           // Active - desktop app is running
           return {
             success: true,
