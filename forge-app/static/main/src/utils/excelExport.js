@@ -17,15 +17,6 @@ function formatDuration(seconds) {
   return `${s}s`;
 }
 
-function formatDurationShort(seconds) {
-  if (!seconds || seconds <= 0) return '0s';
-  const m = Math.floor(seconds / 60);
-  const s = seconds % 60;
-  if (m > 0 && s > 0) return `${m}m ${s}s`;
-  if (m > 0) return `${m}m`;
-  return `${s}s`;
-}
-
 function formatTime(isoString) {
   if (!isoString) return '';
   const d = new Date(isoString);
@@ -663,7 +654,7 @@ async function generateMultiProjectExcelReport(data, filename) {
       .sort((a, b) => b.totalSeconds - a.totalSeconds);
     const projTotalSec = issueArray.reduce((s, i) => s + i.totalSeconds, 0);
 
-    issueArray.forEach((issue) => {
+    for (const issue of issueArray) {
       const totalMin = Math.round(issue.totalSeconds / 60);
       const pct = projTotalSec > 0 ? ((issue.totalSeconds / projTotalSec) * 100).toFixed(1) : '0.0';
       const r = issueWs.getRow(icr);
@@ -674,7 +665,7 @@ async function generateMultiProjectExcelReport(data, filename) {
       r.getCell(2).alignment = { vertical: 'middle', horizontal: 'center' };
       icr++;
       globalRowIdx++;
-    });
+    }
 
     // Subtotal per project
     const projMin = Math.round(projTotalSec / 60);
@@ -744,7 +735,8 @@ async function generateMultiProjectExcelReport(data, filename) {
       ['Issues Worked', projData.summary.issuesWorked],
       ['Avg Hours/Member', `${projActualAvgHours}h`]
     ];
-    infoRows.forEach((vals, i) => {
+    for (let i = 0; i < infoRows.length; i++) {
+      const vals = infoRows[i];
       const r = summaryWs.getRow(scr);
       r.values = ['', vals[0], vals[1], '', '', ''];
       styleDataRow(r, 3, i % 2 === 0);
@@ -752,7 +744,7 @@ async function generateMultiProjectExcelReport(data, filename) {
       r.getCell(2).alignment = { vertical: 'middle', horizontal: 'left' };
       r.getCell(3).alignment = { vertical: 'middle', horizontal: 'left' };
       scr++;
-    });
+    }
     scr++; // spacer
 
     if (projData.memberSummary && projData.memberSummary.length > 0) {
@@ -762,7 +754,8 @@ async function generateMultiProjectExcelReport(data, filename) {
       styleHeaderRow(mhRow, SC);
       scr++;
 
-      projData.memberSummary.forEach((m, i) => {
+      for (let i = 0; i < projData.memberSummary.length; i++) {
+        const m = projData.memberSummary[i];
         const memberMonthSec = effSeconds(m, 'month');
         // Recompute percentage against the new project total so it matches the column values.
         const percentage = projTotalMonthSeconds > 0 ? Math.round((memberMonthSec / projTotalMonthSeconds) * 100) : 0;
@@ -782,7 +775,7 @@ async function generateMultiProjectExcelReport(data, filename) {
         r.getCell(1).alignment = { vertical: 'middle', horizontal: 'left' };
         r.getCell(2).alignment = { vertical: 'middle', horizontal: 'left' };
         scr++;
-      });
+      }
 
       // Project total
       const totalTodaySeconds = projData.memberSummary.reduce((s, m) => s + effSeconds(m, 'today'), 0);

@@ -522,7 +522,11 @@ async function migrateAppWorklogToUser(issueKey, worklogId, mappingId, supabaseC
  * @param {number} timeTracked - Time tracked in seconds
  * @param {string} mappingId - Database mapping ID
  * @param {Object} supabaseConfig - Supabase configuration
- * @returns {Promise<boolean>} true if update succeeded
+ * @returns {Promise<boolean>} `true` if Jira returned 200. `false` if Jira returned 404
+ *   (stale mapping — caller should fall through to recreate).
+ * @throws {Error} for any other non-200 status (400/403/500/etc.). The caller must
+ *   NOT fall through to create, since the Jira worklog still exists and a create
+ *   would produce a duplicate + violate the worklog_sync unique constraint.
  */
 async function updateExistingWorklog(issueKey, worklogId, timeTracked, mappingId, supabaseConfig) {
   const updateResp = await updateJiraWorklog(issueKey, worklogId, timeTracked);
@@ -545,8 +549,15 @@ async function updateExistingWorklog(issueKey, worklogId, timeTracked, mappingId
     return false; // Will fall through to recreate
   }
 
-  console.error(`[UserSync] Update failed for ${issueKey}: HTTP ${updateResp.status}`);
-  return false;
+  // Non-404 failure (400, 403, 500, etc.) — the Jira worklog still exists and the
+  // mapping still points to it. Throw so the caller does NOT fall through to
+  // createUserWorklog, which would create a duplicate worklog in Jira and then
+  // fail on the worklog_sync unique constraint (org_id + user_id + issue_key).
+  let errBody = '';
+  try { errBody = await updateResp.text(); } catch (_) { /* ignore */ }
+  const detail = `worklogId=${worklogId} HTTP ${updateResp.status}${errBody ? ` — ${errBody}` : ''}`;
+  console.error(`[UserSync] Update failed for ${issueKey}: ${detail}`);
+  throw new Error(`Update failed for ${issueKey}: ${detail}`);
 }
 
 /**
@@ -648,7 +659,9 @@ async function syncSingleEntryAsCurrentUser(supabaseConfig, organizationId, user
       if (updated) {
         return true;
       }
-      // If update returned false (404), fall through to recreate
+      // Update returned false (404 = stale mapping) — fall through to recreate.
+      // Non-404 failures throw out of updateExistingWorklog and are caught by the
+      // per-entry try/catch in syncCurrentUserWorklogs.
     }
   }
 
