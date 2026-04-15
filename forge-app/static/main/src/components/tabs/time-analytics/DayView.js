@@ -19,7 +19,7 @@ function DayView({ loading, timeData, onTodayTotalReconciled, onOpenWorklogReass
   const [userIssues, setUserIssues] = useState([]); // Issues for "Existing Issue" dropdown
   const [issueSearch, setIssueSearch] = useState(''); // Filter text for issue dropdown
   const [dropdownsLoading, setDropdownsLoading] = useState(false);
-  const [expandedUsers, setExpandedUsers] = useState({});
+  const [expandedUsers] = useState({});
   const [showIdleHelp, setShowIdleHelp] = useState(true);
   const [hoveredBlock, setHoveredBlock] = useState(null); // { text, type }
   const popoverRef = useRef(null);

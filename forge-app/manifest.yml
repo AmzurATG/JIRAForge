@@ -29,6 +29,7 @@ modules:
       resolver:
         function: main
       title: Time Tracker
+      layout: blank
 
   jira:issuePanel:
     - key: brd-time-tracker-issue-panel

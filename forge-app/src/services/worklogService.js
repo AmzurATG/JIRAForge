@@ -545,8 +545,12 @@ async function updateExistingWorklog(issueKey, worklogId, timeTracked, mappingId
     return false; // Will fall through to recreate
   }
 
+  // Non-404 failure (400, 403, 500, etc.) — the Jira worklog still exists and the
+  // mapping still points to it. Throw so the caller does NOT fall through to
+  // createUserWorklog, which would create a duplicate worklog in Jira and then
+  // fail on the worklog_sync unique constraint (org_id + user_id + issue_key).
   console.error(`[UserSync] Update failed for ${issueKey}: HTTP ${updateResp.status}`);
-  return false;
+  throw new Error(`Update failed for ${issueKey}: HTTP ${updateResp.status}`);
 }
 
 /**
