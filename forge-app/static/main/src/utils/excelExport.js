@@ -254,7 +254,13 @@ async function generateSingleProjectExcelReport(data, filename) {
       const mSummaryRow = ws.getRow(cr);
       mSummaryRow.getCell(1).value = member.displayName;
       ws.mergeCells(cr, 2, cr, COL_COUNT);
-      mSummaryRow.getCell(2).value = `Total Time → Today: ${formatDuration(member.todaySeconds || 0)}  |  This Week: ${formatDuration(member.weekSeconds || 0)}  |  This Month: ${formatDuration(member.monthSeconds || 0)}`;
+      // Total Time = project-matched time + unassigned (NULL project_key) time
+      // so this line reflects the member's actual total work time, not just the
+      // portion that could be attributed to a specific issue under this project.
+      const mTodayTotal = (member.todaySeconds || 0) + (member.todayUnassignedSeconds || 0);
+      const mWeekTotal = (member.weekSeconds || 0) + (member.weekUnassignedSeconds || 0);
+      const mMonthTotal = (member.monthSeconds || 0) + (member.monthUnassignedSeconds || 0);
+      mSummaryRow.getCell(2).value = `Total Time → Today: ${formatDuration(mTodayTotal)}  |  This Week: ${formatDuration(mWeekTotal)}  |  This Month: ${formatDuration(mMonthTotal)}`;
       mSummaryRow.height = 24;
       mSummaryRow.eachCell({ includeEmpty: true }, (cell, colNumber) => {
         if (colNumber > COL_COUNT) return;
@@ -356,113 +362,7 @@ async function generateSingleProjectExcelReport(data, filename) {
   styleTotalRow(totalR, IC);
 
   // ═══════════════════════════════════════════════════
-  // SHEET 3: Daily Time Pivot
-  // ═══════════════════════════════════════════════════
-  const pivotWs = workbook.addWorksheet('Daily Time Pivot');
-
-  // Get unique dates and issue keys
-  const dateSet = new Set();
-  const issueKeySet = new Set();
-  for (const entry of allEntries) {
-    dateSet.add(entry.date);
-    issueKeySet.add(entry.issueKey);
-  }
-  const dates = [...dateSet].sort();
-  // Sort issue keys by total time descending
-  const issueKeys = issueArray.map(i => i.issueKey);
-  const PC = issueKeys.length + 2; // Date + issues + Day Total
-
-  // Set columns
-  pivotWs.columns = [
-    { key: 'date', width: 16 },
-    ...issueKeys.map(k => ({ key: k, width: 16 })),
-    { key: 'dayTotal', width: 14 }
-  ];
-
-  // Title
-  let pcr = addTitleRow(pivotWs, 'Daily Time Pivot – Minutes per Issue per Day', PC, 1);
-
-  // Header row
-  const phRow = pivotWs.getRow(pcr);
-  phRow.values = ['Date', ...issueKeys, 'Day Total'];
-  phRow.height = 30;
-  phRow.eachCell({ includeEmpty: true }, (cell, colNumber) => {
-    if (colNumber > PC) return;
-    cell.font = { bold: true, size: 10, color: { argb: COLORS.headerFont } };
-    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: COLORS.headerBg } };
-    cell.alignment = { vertical: 'middle', horizontal: 'center', wrapText: true };
-    cell.border = thinBorder;
-  });
-  pivotWs.views = [{ state: 'frozen', ySplit: pcr }];
-  pcr++;
-
-  // Build pivot data: { date -> { issueKey -> minutes } }
-  const pivotData = {};
-  for (const entry of allEntries) {
-    if (!pivotData[entry.date]) pivotData[entry.date] = {};
-    pivotData[entry.date][entry.issueKey] = (pivotData[entry.date][entry.issueKey] || 0) + Math.round(entry.totalSeconds / 60);
-  }
-
-  // Column totals
-  const colTotals = {};
-  issueKeys.forEach(k => { colTotals[k] = 0; });
-  let grandDayTotal = 0;
-
-  dates.forEach((date, di) => {
-    const row = pivotWs.getRow(pcr);
-    const dayData = pivotData[date] || {};
-    let dayTotal = 0;
-    const vals = [formatDateFriendly(date)];
-    issueKeys.forEach(k => {
-      const min = dayData[k] || 0;
-      vals.push(min > 0 ? min : '–');
-      colTotals[k] += min;
-      dayTotal += min;
-    });
-    vals.push(dayTotal);
-    grandDayTotal += dayTotal;
-    row.values = vals;
-
-    // Style
-    row.eachCell({ includeEmpty: true }, (cell, colNumber) => {
-      if (colNumber > PC) return;
-      cell.border = thinBorder;
-      cell.alignment = { vertical: 'middle', horizontal: 'center' };
-      cell.font = { size: 10, color: { argb: 'FF172B4D' } };
-
-      if (colNumber === 1) {
-        // Date column - bold
-        cell.font = { bold: true, size: 10, color: { argb: 'FF172B4D' } };
-        cell.alignment = { vertical: 'middle', horizontal: 'left' };
-        cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: di % 2 === 0 ? 'FFE8EAF6' : 'FFFFFFFF' } };
-      } else if (colNumber === PC) {
-        // Day Total - bold
-        cell.font = { bold: true, size: 10, color: { argb: 'FF1A237E' } };
-        cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFBBDEFB' } };
-      } else {
-        // Issue columns - pastel colors
-        const colorIdx = (colNumber - 2) % COLORS.pivotColors.length;
-        cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: COLORS.pivotColors[colorIdx] } };
-        if (cell.value === '–') {
-          cell.font = { size: 10, color: { argb: 'FFBDBDBD' } };
-        }
-      }
-    });
-    row.height = 22;
-    pcr++;
-  });
-
-  // TOTAL row
-  const ptRow = pivotWs.getRow(pcr);
-  const ptVals = ['TOTAL'];
-  issueKeys.forEach(k => { ptVals.push(colTotals[k]); });
-  ptVals.push(grandDayTotal);
-  ptRow.values = ptVals;
-  styleTotalRow(ptRow, PC);
-  ptRow.getCell(1).alignment = { vertical: 'middle', horizontal: 'center' };
-
-  // ═══════════════════════════════════════════════════
-  // SHEET 4: Summary
+  // SHEET 3: Summary
   // ═══════════════════════════════════════════════════
   if (data.memberSummary && data.memberSummary.length > 0) {
     const summaryWs = workbook.addWorksheet('Summary');
@@ -479,12 +379,21 @@ async function generateSingleProjectExcelReport(data, filename) {
 
     let scr = addTitleRow(summaryWs, `Team Summary – ${data.projectKey || 'All'} Project  |  ${dateRangeStr}`, SC, 1);
 
-    // Info rows
+    // Today/Week/Month = project-matched time + unassigned (NULL project_key) time so
+    // the columns reflect each member's actual total work time. "Unassigned (Month)"
+    // stays as an informational breakdown column (subset of "This Month").
+    const effSeconds = (m, bucket) => (m[`${bucket}Seconds`] ?? Math.round((m[`${bucket}Hours`] ?? 0) * 3600)) + (m[`${bucket}UnassignedSeconds`] ?? 0);
+
+    const totalMonthSeconds = data.memberSummary.reduce((s, m) => s + effSeconds(m, 'month'), 0);
+
+    // Info rows — recompute Total Hours / Avg Hours from actual totals (project + unassigned)
+    const actualTotalHours = Math.round(totalMonthSeconds / 3600 * 10) / 10;
+    const actualAvgHours = data.memberSummary.length > 0 ? Math.round(totalMonthSeconds / 3600 / data.memberSummary.length * 10) / 10 : 0;
     const infoRows = [
       ['Active Members', data.summary.activeMembers],
-      ['Total Hours', `${data.summary.totalHours}h`],
+      ['Total Hours', `${actualTotalHours}h`],
       ['Issues Worked', data.summary.issuesWorked],
-      ['Avg Hours/Member', `${data.summary.avgHoursPerMember}h`]
+      ['Avg Hours/Member', `${actualAvgHours}h`]
     ];
     infoRows.forEach((vals, i) => {
       const r = summaryWs.getRow(scr);
@@ -504,15 +413,18 @@ async function generateSingleProjectExcelReport(data, filename) {
     scr++;
 
     data.memberSummary.forEach((m, i) => {
+      const memberMonthSec = effSeconds(m, 'month');
+      // Recompute percentage against the new total (project + unassigned) so it matches the column values.
+      const percentage = totalMonthSeconds > 0 ? Math.round((memberMonthSec / totalMonthSeconds) * 100) : 0;
       const r = summaryWs.getRow(scr);
       r.values = [
         m.displayName,
-        formatDuration(m.todaySeconds || Math.round((m.todayHours || 0) * 3600)),
-        formatDuration(m.weekSeconds || Math.round((m.weekHours || 0) * 3600)),
-        formatDuration(m.monthSeconds || Math.round((m.monthHours || 0) * 3600)),
+        formatDuration(effSeconds(m, 'today')),
+        formatDuration(effSeconds(m, 'week')),
+        formatDuration(memberMonthSec),
         formatDuration(m.monthUnassignedSeconds || 0),
         formatDuration(m.monthNonProductiveSeconds || 0),
-        `${m.percentage}%`
+        `${percentage}%`
       ];
       styleDataRow(r, SC, i % 2 === 0);
       r.getCell(1).alignment = { vertical: 'middle', horizontal: 'left' };
@@ -520,9 +432,8 @@ async function generateSingleProjectExcelReport(data, filename) {
     });
 
     // Total
-    const totalMonthSeconds = data.memberSummary.reduce((s, m) => s + (m.monthSeconds || Math.round((m.monthHours || 0) * 3600)), 0);
-    const totalTodaySeconds = data.memberSummary.reduce((s, m) => s + (m.todaySeconds || Math.round((m.todayHours || 0) * 3600)), 0);
-    const totalWeekSeconds = data.memberSummary.reduce((s, m) => s + (m.weekSeconds || Math.round((m.weekHours || 0) * 3600)), 0);
+    const totalTodaySeconds = data.memberSummary.reduce((s, m) => s + effSeconds(m, 'today'), 0);
+    const totalWeekSeconds = data.memberSummary.reduce((s, m) => s + effSeconds(m, 'week'), 0);
     const totalUnassignedSeconds = data.memberSummary.reduce((s, m) => s + (m.monthUnassignedSeconds || 0), 0);
     const totalNpSeconds = data.memberSummary.reduce((s, m) => s + (m.monthNonProductiveSeconds || 0), 0);
     const stRow = summaryWs.getRow(scr);
@@ -662,7 +573,13 @@ async function generateMultiProjectExcelReport(data, filename) {
         mSummaryRow.getCell(1).value = projData.projectKey;
         mSummaryRow.getCell(2).value = member.displayName;
         ws.mergeCells(cr, 3, cr, COL_COUNT);
-        mSummaryRow.getCell(3).value = `Total Time → Today: ${formatDuration(member.todaySeconds || 0)}  |  This Week: ${formatDuration(member.weekSeconds || 0)}  |  This Month: ${formatDuration(member.monthSeconds || 0)}`;
+        // Total Time = project-matched time + unassigned (NULL project_key) time
+        // so this line reflects the member's actual total work time, not just the
+        // portion that could be attributed to a specific issue under this project.
+        const mTodayTotal = (member.todaySeconds || 0) + (member.todayUnassignedSeconds || 0);
+        const mWeekTotal = (member.weekSeconds || 0) + (member.weekUnassignedSeconds || 0);
+        const mMonthTotal = (member.monthSeconds || 0) + (member.monthUnassignedSeconds || 0);
+        mSummaryRow.getCell(3).value = `Total Time → Today: ${formatDuration(mTodayTotal)}  |  This Week: ${formatDuration(mWeekTotal)}  |  This Month: ${formatDuration(mMonthTotal)}`;
         mSummaryRow.height = 24;
         mSummaryRow.eachCell({ includeEmpty: true }, (cell, colNumber) => {
           if (colNumber > COL_COUNT) return;
@@ -776,113 +693,7 @@ async function generateMultiProjectExcelReport(data, filename) {
   styleTotalRow(gtRow, IC);
 
   // ═══════════════════════════════════════════════════
-  // SHEET 3: Daily Time Pivot (with Project column)
-  // ═══════════════════════════════════════════════════
-  const pivotWs = workbook.addWorksheet('Daily Time Pivot');
-
-  const allIssueKeys = [...new Set(allEntries.map(e => e.issueKey))];
-  // Sort by total time desc
-  const issueSecMap = {};
-  for (const e of allEntries) {
-    issueSecMap[e.issueKey] = (issueSecMap[e.issueKey] || 0) + e.totalSeconds;
-  }
-  allIssueKeys.sort((a, b) => (issueSecMap[b] || 0) - (issueSecMap[a] || 0));
-
-  const PC = allIssueKeys.length + 3; // Project + Date + issues + Day Total
-
-  pivotWs.columns = [
-    { key: 'project', width: 16 },
-    { key: 'date', width: 16 },
-    ...allIssueKeys.map(k => ({ key: k, width: 16 })),
-    { key: 'dayTotal', width: 14 }
-  ];
-
-  let pcr = addTitleRow(pivotWs, 'Daily Time Pivot – Minutes per Issue per Day (by Project)', PC, 1);
-
-  const phRow = pivotWs.getRow(pcr);
-  phRow.values = ['Project', 'Date', ...allIssueKeys, 'Day Total'];
-  phRow.height = 30;
-  phRow.eachCell({ includeEmpty: true }, (cell, colNumber) => {
-    if (colNumber > PC) return;
-    cell.font = { bold: true, size: 10, color: { argb: COLORS.headerFont } };
-    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: COLORS.headerBg } };
-    cell.alignment = { vertical: 'middle', horizontal: 'center', wrapText: true };
-    cell.border = thinBorder;
-  });
-  pivotWs.views = [{ state: 'frozen', ySplit: pcr }];
-  pcr++;
-
-  let grandDayTotal = 0;
-  const colTotals = {};
-  allIssueKeys.forEach(k => { colTotals[k] = 0; });
-
-  for (const projData of projects) {
-    const projEntries = allEntries.filter(e => e.projectKey === projData.projectKey);
-    const dateSet = new Set(projEntries.map(e => e.date));
-    const dates = [...dateSet].sort();
-
-    const pivotData = {};
-    for (const entry of projEntries) {
-      if (!pivotData[entry.date]) pivotData[entry.date] = {};
-      pivotData[entry.date][entry.issueKey] = (pivotData[entry.date][entry.issueKey] || 0) + Math.round(entry.totalSeconds / 60);
-    }
-
-    dates.forEach((date, di) => {
-      const row = pivotWs.getRow(pcr);
-      const dayData = pivotData[date] || {};
-      let dayTotal = 0;
-      const vals = [projData.projectKey, formatDateFriendly(date)];
-      allIssueKeys.forEach(k => {
-        const min = dayData[k] || 0;
-        vals.push(min > 0 ? min : '–');
-        colTotals[k] += min;
-        dayTotal += min;
-      });
-      vals.push(dayTotal);
-      grandDayTotal += dayTotal;
-      row.values = vals;
-
-      row.eachCell({ includeEmpty: true }, (cell, colNumber) => {
-        if (colNumber > PC) return;
-        cell.border = thinBorder;
-        cell.alignment = { vertical: 'middle', horizontal: 'center' };
-        cell.font = { size: 10, color: { argb: 'FF172B4D' } };
-
-        if (colNumber === 1) {
-          cell.font = { bold: true, size: 10, color: { argb: 'FF0052CC' } };
-          cell.alignment = { vertical: 'middle', horizontal: 'left' };
-          cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: di % 2 === 0 ? 'FFE8EAF6' : 'FFFFFFFF' } };
-        } else if (colNumber === 2) {
-          cell.font = { bold: true, size: 10, color: { argb: 'FF172B4D' } };
-          cell.alignment = { vertical: 'middle', horizontal: 'left' };
-          cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: di % 2 === 0 ? 'FFE8EAF6' : 'FFFFFFFF' } };
-        } else if (colNumber === PC) {
-          cell.font = { bold: true, size: 10, color: { argb: 'FF1A237E' } };
-          cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFBBDEFB' } };
-        } else {
-          const colorIdx = (colNumber - 3) % COLORS.pivotColors.length;
-          cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: COLORS.pivotColors[colorIdx] } };
-          if (cell.value === '–') {
-            cell.font = { size: 10, color: { argb: 'FFBDBDBD' } };
-          }
-        }
-      });
-      row.height = 22;
-      pcr++;
-    });
-  }
-
-  // Grand TOTAL row
-  const ptRow = pivotWs.getRow(pcr);
-  const ptVals = ['', 'TOTAL'];
-  allIssueKeys.forEach(k => { ptVals.push(colTotals[k]); });
-  ptVals.push(grandDayTotal);
-  ptRow.values = ptVals;
-  styleTotalRow(ptRow, PC);
-  ptRow.getCell(2).alignment = { vertical: 'middle', horizontal: 'center' };
-
-  // ═══════════════════════════════════════════════════
-  // SHEET 4: Summary (per Project)
+  // SHEET 3: Summary (per Project)
   // ═══════════════════════════════════════════════════
   const summaryWs = workbook.addWorksheet('Summary');
   const SC = 8;
@@ -899,7 +710,13 @@ async function generateMultiProjectExcelReport(data, filename) {
 
   let scr = addTitleRow(summaryWs, `Team Summary – ${projectKeys.join(', ')}  |  ${dateRangeStr}`, SC, 1);
 
+  // Today/Week/Month = project-matched time + unassigned (NULL project_key) time so
+  // the columns reflect each member's actual total work time. "Unassigned (Month)"
+  // stays as an informational breakdown column (subset of "This Month").
+  const effSeconds = (m, bucket) => (m[`${bucket}Seconds`] ?? Math.round((m[`${bucket}Hours`] ?? 0) * 3600)) + (m[`${bucket}UnassignedSeconds`] ?? 0);
+
   // Per-project summary sections
+  const projectMonthSeconds = []; // per-project actual total for grand total aggregation
   for (const projData of projects) {
     // Project header
     const projHeaderRow = summaryWs.getRow(scr);
@@ -913,12 +730,19 @@ async function generateMultiProjectExcelReport(data, filename) {
     projHeaderRow.height = 28;
     scr++;
 
+    // Project actual totals (include unassigned)
+    const projTotalMonthSeconds = (projData.memberSummary || []).reduce((s, m) => s + effSeconds(m, 'month'), 0);
+    const projActualTotalHours = Math.round(projTotalMonthSeconds / 3600 * 10) / 10;
+    const projMemberCount = (projData.memberSummary || []).length;
+    const projActualAvgHours = projMemberCount > 0 ? Math.round(projTotalMonthSeconds / 3600 / projMemberCount * 10) / 10 : 0;
+    projectMonthSeconds.push(projTotalMonthSeconds);
+
     // Info rows
     const infoRows = [
       ['Active Members', projData.summary.activeMembers],
-      ['Total Hours', `${projData.summary.totalHours}h`],
+      ['Total Hours', `${projActualTotalHours}h`],
       ['Issues Worked', projData.summary.issuesWorked],
-      ['Avg Hours/Member', `${projData.summary.avgHoursPerMember}h`]
+      ['Avg Hours/Member', `${projActualAvgHours}h`]
     ];
     infoRows.forEach((vals, i) => {
       const r = summaryWs.getRow(scr);
@@ -939,16 +763,19 @@ async function generateMultiProjectExcelReport(data, filename) {
       scr++;
 
       projData.memberSummary.forEach((m, i) => {
+        const memberMonthSec = effSeconds(m, 'month');
+        // Recompute percentage against the new project total so it matches the column values.
+        const percentage = projTotalMonthSeconds > 0 ? Math.round((memberMonthSec / projTotalMonthSeconds) * 100) : 0;
         const r = summaryWs.getRow(scr);
         r.values = [
           projData.projectKey,
           m.displayName,
-          formatDuration(m.todaySeconds || Math.round((m.todayHours || 0) * 3600)),
-          formatDuration(m.weekSeconds || Math.round((m.weekHours || 0) * 3600)),
-          formatDuration(m.monthSeconds || Math.round((m.monthHours || 0) * 3600)),
+          formatDuration(effSeconds(m, 'today')),
+          formatDuration(effSeconds(m, 'week')),
+          formatDuration(memberMonthSec),
           formatDuration(m.monthUnassignedSeconds || 0),
           formatDuration(m.monthNonProductiveSeconds || 0),
-          `${m.percentage}%`
+          `${percentage}%`
         ];
         styleDataRow(r, SC, i % 2 === 0);
         r.getCell(1).font = { bold: true, size: 10, color: { argb: 'FF0052CC' } };
@@ -958,9 +785,8 @@ async function generateMultiProjectExcelReport(data, filename) {
       });
 
       // Project total
-      const totalMonthSeconds = projData.memberSummary.reduce((s, m) => s + (m.monthSeconds || Math.round((m.monthHours || 0) * 3600)), 0);
-      const totalTodaySeconds = projData.memberSummary.reduce((s, m) => s + (m.todaySeconds || Math.round((m.todayHours || 0) * 3600)), 0);
-      const totalWeekSeconds = projData.memberSummary.reduce((s, m) => s + (m.weekSeconds || Math.round((m.weekHours || 0) * 3600)), 0);
+      const totalTodaySeconds = projData.memberSummary.reduce((s, m) => s + effSeconds(m, 'today'), 0);
+      const totalWeekSeconds = projData.memberSummary.reduce((s, m) => s + effSeconds(m, 'week'), 0);
       const totalUnassignedSeconds = projData.memberSummary.reduce((s, m) => s + (m.monthUnassignedSeconds || 0), 0);
       const totalNpSeconds = projData.memberSummary.reduce((s, m) => s + (m.monthNonProductiveSeconds || 0), 0);
       const stRow = summaryWs.getRow(scr);
@@ -969,7 +795,7 @@ async function generateMultiProjectExcelReport(data, filename) {
         `${projData.projectKey} TOTAL`,
         formatDuration(totalTodaySeconds),
         formatDuration(totalWeekSeconds),
-        formatDuration(totalMonthSeconds),
+        formatDuration(projTotalMonthSeconds),
         formatDuration(totalUnassignedSeconds),
         formatDuration(totalNpSeconds),
         '100%'
@@ -983,7 +809,7 @@ async function generateMultiProjectExcelReport(data, filename) {
 
   // Grand totals across all projects
   const grandActiveMembers = [...new Set(projects.flatMap(p => (p.memberSummary || []).map(m => m.displayName)))].length;
-  const grandTotalHours = projects.reduce((s, p) => s + (p.summary?.totalHours || 0), 0);
+  const grandTotalHours = Math.round(projectMonthSeconds.reduce((s, sec) => s + sec, 0) / 3600 * 10) / 10;
   const grandIssuesWorked = projects.reduce((s, p) => s + (p.summary?.issuesWorked || 0), 0);
 
   const grandHeaderRow = summaryWs.getRow(scr);
