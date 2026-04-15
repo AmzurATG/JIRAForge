@@ -324,6 +324,53 @@ describe('worklogService — syncCurrentUserWorklogs', () => {
     });
   });
 
+  describe('when updating a user-created worklog fails with a non-404 status', () => {
+    it('counts the entry as an error and does NOT create a duplicate worklog', async () => {
+      mockSupabaseRequest.mockImplementation(
+        buildSupabaseRequestMock({
+          activityRecords: [{
+            user_assigned_issue_key: ISSUE_KEY,
+            duration_seconds: 300,
+            total_time_seconds: 300,
+            end_time: '2026-03-12T10:00:00Z',
+          }],
+          existingMappings: [{
+            id: 'mapping-user-nonfatal',
+            issue_key: ISSUE_KEY,
+            jira_worklog_id: 'jira-worklog-user-nonfatal',
+            last_synced_seconds: 120,
+            created_as_user: true,
+          }],
+        })
+      );
+
+      // Jira returns 500 — transient/server failure. The worklog still exists
+      // in Jira, so the caller MUST NOT fall through to create (which would
+      // duplicate the worklog and fail the worklog_sync unique constraint).
+      mockUpdateJiraWorklog.mockResolvedValue({
+        status: 500,
+        text: async () => 'Internal Server Error',
+      });
+
+      const result = await syncCurrentUserWorklogs(ACCOUNT_ID, CLOUD_ID);
+
+      expect(result.success).toBe(true);
+      expect(result.synced).toBe(0);
+      expect(result.errors).toBe(1);
+
+      expect(mockUpdateJiraWorklog).toHaveBeenCalledWith(
+        ISSUE_KEY, 'jira-worklog-user-nonfatal', 300
+      );
+      // Critical: create must NOT be called on a non-404 update failure.
+      expect(mockCreateJiraWorklog).not.toHaveBeenCalled();
+      // Mapping row must not be deleted on non-404 failure (it's only deleted on 404).
+      const mappingDelete = mockSupabaseRequest.mock.calls.find(
+        ([, q, opts]) => q === `worklog_sync?id=eq.mapping-user-nonfatal` && opts?.method === 'DELETE'
+      );
+      expect(mappingDelete).toBeUndefined();
+    });
+  });
+
   describe('when a user-created worklog has unchanged time', () => {
     it('skips syncing', async () => {
       mockSupabaseRequest.mockImplementation(
