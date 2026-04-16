@@ -141,8 +141,8 @@ async function aggregateUserTrackedTime(supabaseConfig, organizationId, userId) 
 
 /**
  * Aggregate unassigned records (no user_assigned_issue_key) and attribute them
- * to the user's first in-progress Jira issue in the same project. This mirrors
- * the fallback matching in getActiveIssuesWithTime (issueQueryService.js) so
+ * to issues by extracting issue keys from window titles. This mirrors the
+ * fallback matching in getActiveIssuesWithTime (issueQueryService.js) so
  * time that appears in the dashboard UI also gets synced to Jira.
  *
  * Only used in the interactive user sync path (not the scheduled trigger),
@@ -155,48 +155,31 @@ async function aggregateUserTrackedTime(supabaseConfig, organizationId, userId) 
  */
 async function aggregateUnassignedTimeWithFallback(supabaseConfig, organizationId, userId) {
   const PAGE_SIZE = 1000;
-  const timeByProject = {};
-  const lastWorkedByProject = {};
+  const allUnassignedRecords = [];
   let offset = 0;
   let totalFetched = 0;
 
   while (true) {
     // Fetch records with NO user_assigned_issue_key but WITH a project_key
+    // Include window_title for issue key extraction
     // eslint-disable-next-line deprecation/deprecation
     const page = await supabaseRequest(
       supabaseConfig,
-      `activity_records?organization_id=eq.${organizationId}&user_id=eq.${userId}&status=in.(pending,processing,analyzed)&classification=in.(productive,unknown)&user_assigned_issue_key=is.null&project_key=not.is.null&select=project_key,duration_seconds,total_time_seconds,end_time&order=created_at.desc&limit=${PAGE_SIZE}&offset=${offset}`
+      `activity_records?organization_id=eq.${organizationId}&user_id=eq.${userId}&status=in.(pending,processing,analyzed)&classification=in.(productive,unknown)&user_assigned_issue_key=is.null&project_key=not.is.null&select=project_key,window_title,duration_seconds,total_time_seconds,end_time&order=created_at.desc&limit=${PAGE_SIZE}&offset=${offset}`
     );
 
     if (!page || !Array.isArray(page) || page.length === 0) break;
 
-    page.forEach(entry => {
-      const pk = entry.project_key;
-      if (!pk) return;
-      if (!timeByProject[pk]) {
-        timeByProject[pk] = 0;
-        lastWorkedByProject[pk] = null;
-      }
-      timeByProject[pk] += entry.duration_seconds || entry.total_time_seconds || 0;
-      const ts = entry.end_time;
-      if (ts && (!lastWorkedByProject[pk] || ts > lastWorkedByProject[pk])) {
-        lastWorkedByProject[pk] = ts;
-      }
-    });
-
+    allUnassignedRecords.push(...page);
     totalFetched += page.length;
     offset += page.length;
     if (page.length < PAGE_SIZE) break;
     if (totalFetched > 5000) break;
   }
 
-  const projectsWithTime = Object.keys(timeByProject);
-  if (projectsWithTime.length === 0) return [];
+  if (allUnassignedRecords.length === 0) return [];
 
-  console.log(`[UserSync] Found unassigned time in ${projectsWithTime.length} projects: ${JSON.stringify(timeByProject)}`);
-
-  // Fetch user's in-progress issues to map project_key -> issue_key
-  // Uses the same Jira API as getActiveIssuesWithTime (getAllUserAssignedIssues)
+  // Fetch user's issues to build a set of valid issue keys
   let jiraIssues;
   try {
     const jiraData = await getAllUserAssignedIssues();
@@ -206,31 +189,54 @@ async function aggregateUnassignedTimeWithFallback(supabaseConfig, organizationI
     return [];
   }
 
-  // Build map: project_key -> first in-progress issue key (same logic as issueQueryService)
-  const inProgressIssuesByProject = {};
-  jiraIssues.forEach(issue => {
-    const projectKey = issue.fields?.project?.key;
-    const statusCategory = issue.fields?.status?.statusCategory?.key;
-    if (projectKey && statusCategory === 'indeterminate' && !inProgressIssuesByProject[projectKey]) {
-      inProgressIssuesByProject[projectKey] = issue.key;
+  const validIssueKeys = new Set(jiraIssues.map(issue => issue.key));
+
+  // Try to extract issue keys from window titles (same logic as issueQueryService)
+  const timeByIssue = {};
+  const lastWorkedByIssue = {};
+  let matchedCount = 0;
+
+  allUnassignedRecords.forEach(entry => {
+    const pk = entry.project_key;
+    if (!pk) return;
+
+    let issueKey = null;
+    if (entry.window_title) {
+      const issueKeyPattern = new RegExp(`${pk}-\\d+`, 'g');
+      const matches = entry.window_title.match(issueKeyPattern);
+      if (matches) {
+        const validMatch = matches.find(m => validIssueKeys.has(m));
+        if (validMatch) {
+          issueKey = validMatch;
+          matchedCount++;
+        }
+      }
+    }
+
+    if (!issueKey) return; // No issue key found in window title — skip
+
+    if (!timeByIssue[issueKey]) {
+      timeByIssue[issueKey] = 0;
+      lastWorkedByIssue[issueKey] = null;
+    }
+    timeByIssue[issueKey] += entry.duration_seconds || entry.total_time_seconds || 0;
+    const ts = entry.end_time;
+    if (ts && (!lastWorkedByIssue[issueKey] || ts > lastWorkedByIssue[issueKey])) {
+      lastWorkedByIssue[issueKey] = ts;
     }
   });
 
-  // Map unassigned project time to in-progress issues
+  console.log(`[UserSync] Window-title fallback: matched ${matchedCount}/${allUnassignedRecords.length} unassigned records to issues`);
+
   const fallbackEntries = [];
-  for (const [projectKey, seconds] of Object.entries(timeByProject)) {
-    const issueKey = inProgressIssuesByProject[projectKey];
-    if (!issueKey) {
-      console.log(`[UserSync] No in-progress issue for project ${projectKey}, skipping ${Math.round(seconds)}s of unassigned time`);
-      continue;
-    }
+  for (const [issueKey, seconds] of Object.entries(timeByIssue)) {
     const rounded = Math.round(seconds);
     fallbackEntries.push({
       issueKey,
       timeTracked: rounded < MIN_SYNC_SECONDS ? MIN_SYNC_SECONDS : rounded,
-      lastWorkedOn: lastWorkedByProject[projectKey]
+      lastWorkedOn: lastWorkedByIssue[issueKey]
     });
-    console.log(`[UserSync] Fallback: ${Math.round(seconds)}s unassigned time in ${projectKey} → ${issueKey}`);
+    console.log(`[UserSync] Fallback: ${Math.round(seconds)}s unassigned time → ${issueKey} (from window title)`);
   }
 
   return fallbackEntries;
