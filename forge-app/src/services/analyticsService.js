@@ -15,6 +15,7 @@ export {
   fetchProjectTeamAnalytics, 
   fetchTeamDayTimeline, 
   fetchMyDayTimeline, 
+  fetchMyDayIssueBreakdown,
   convertIdleToWorklog, 
   getIdleRecordProjectKey,
   fetchMemberDayDetails,

@@ -3,7 +3,7 @@
  * Resolver definitions for time analytics endpoints
  */
 
-import { fetchTimeAnalytics, fetchTimeAnalyticsBatch, fetchAllAnalytics, fetchProjectAnalytics, fetchProjectTeamAnalytics, fetchTeamDayTimeline, fetchMyDayTimeline, convertIdleToWorklog, fetchMemberDayDetails, fetchMemberWeekDetails, fetchMemberMonthDetails, generateTeamExportData, generateTeamExportDataStructured } from '../services/analyticsService.js';
+import { fetchTimeAnalytics, fetchTimeAnalyticsBatch, fetchAllAnalytics, fetchProjectAnalytics, fetchProjectTeamAnalytics, fetchTeamDayTimeline, fetchMyDayTimeline, fetchMyDayIssueBreakdown, convertIdleToWorklog, fetchMemberDayDetails, fetchMemberWeekDetails, fetchMemberMonthDetails, generateTeamExportData, generateTeamExportDataStructured } from '../services/analyticsService.js';
 import { isJiraAdmin, checkUserPermissions, createJiraIssue, getIssueTransitions, transitionIssue, createJiraWorklog } from '../utils/jira.js';
 
 // Feature flag for using batch API (set to true for production)
@@ -158,6 +158,31 @@ export function registerAnalyticsResolvers(resolver) {
       };
     } catch (error) {
       console.error('Error fetching my day timeline:', error);
+      return {
+        success: false,
+        error: error.message
+      };
+    }
+  });
+
+  /**
+   * Resolver for fetching current user's issue-level details for a specific day
+   * Available to ALL users - returns only the caller's own data
+   */
+  resolver.define('getMyDayIssueBreakdown', async (req) => {
+    const { payload, context } = req;
+    const { date } = payload;
+    const accountId = context.accountId;
+    const cloudId = context.cloudId;
+
+    try {
+      const data = await fetchMyDayIssueBreakdown(accountId, cloudId, date);
+      return {
+        success: true,
+        data
+      };
+    } catch (error) {
+      console.error('Error fetching my day issue breakdown:', error);
       return {
         success: false,
         error: error.message

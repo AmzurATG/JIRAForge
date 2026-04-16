@@ -261,6 +261,43 @@
   letter-spacing: -0.5px;
 }
 
+.cumulative-card .stat-value--drilldown {
+  border: none;
+  background: #F4F8FF;
+  border: 1px dashed #85B8FF;
+  border-radius: 8px;
+  padding: 6px 10px;
+  margin: 0;
+  font: inherit;
+  color: #0747A6;
+  cursor: pointer;
+  box-shadow: inset 0 0 0 1px rgba(9, 30, 66, 0.02);
+  transition: color 0.15s ease, background 0.15s ease, border-color 0.15s ease, transform 0.15s ease;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.cumulative-card .stat-value--drilldown::after {
+  content: 'View';
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.4px;
+  text-transform: uppercase;
+  color: #0052CC;
+  background: #DEEBFF;
+  border-radius: 999px;
+  padding: 2px 6px;
+}
+
+.cumulative-card .stat-value--drilldown:hover,
+.cumulative-card .stat-value--drilldown:focus-visible {
+  color: #0052CC;
+  background: #DEEBFF;
+  border-color: #4C9AFF;
+  transform: translateY(-1px);
+}
+
 .cumulative-card .cumulative-stat {
   padding: 0;
 }
@@ -1331,6 +1368,25 @@
   min-width: 70px;
 }
 
+.time-drilldown-btn {
+  border: none;
+  background: #F4F8FF;
+  color: #0747A6;
+  font: inherit;
+  padding: 3px 8px;
+  border-radius: 999px;
+  border: 1px solid #C1D8FF;
+  cursor: pointer;
+  transition: color 0.15s ease, background 0.15s ease, border-color 0.15s ease;
+}
+
+.time-drilldown-btn:hover,
+.time-drilldown-btn.active {
+  color: #0052CC;
+  background: #DEEBFF;
+  border-color: #4C9AFF;
+}
+
 .total-cell {
   text-align: start;
   font-weight: 600;
@@ -1363,6 +1419,16 @@
   display: flex;
   gap: var(--ds-space-300);
   align-items: flex-start;
+}
+
+.month-right-column {
+  width: 360px;
+  min-width: 320px;
+  max-width: 360px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
 }
 
 /* Calendar Card */
@@ -1484,6 +1550,187 @@
   font-weight: 600;
   color: #00875A;
   line-height: 1.2;
+}
+
+.cell-time-drilldown {
+  border: none;
+  background: rgba(255, 255, 255, 0.72);
+  font: inherit;
+  color: #0747A6;
+  padding: 2px 6px;
+  border-radius: 6px;
+  border: 1px solid rgba(76, 154, 255, 0.35);
+  cursor: pointer;
+  text-align: left;
+  transition: color 0.15s ease, background 0.15s ease, border-color 0.15s ease;
+}
+
+.cell-time-drilldown:hover,
+.cell-time-drilldown.active {
+  color: #0052CC;
+  background: #DEEBFF;
+  border-color: #4C9AFF;
+}
+
+.day-drilldown {
+  margin-top: 0;
+  border: 1px solid var(--ds-border);
+  border-radius: 8px;
+  background: var(--ds-background-default);
+  box-shadow: 0 1px 2px rgba(9, 30, 66, 0.08);
+  overflow: hidden;
+}
+
+.drilldown-placeholder {
+  border: 1px dashed var(--ds-border);
+  border-radius: 8px;
+  background: #fff;
+  padding: 14px 16px;
+}
+
+.drilldown-placeholder h4 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ds-text);
+}
+
+.drilldown-placeholder p {
+  margin: 6px 0 0 0;
+  font-size: 12px;
+  color: var(--ds-text-subtle);
+}
+
+@media (max-width: 1280px) {
+  .month-layout {
+    flex-direction: column;
+  }
+
+  .month-right-column,
+  .team-summary {
+    width: 100%;
+    min-width: 0;
+    max-width: 100%;
+  }
+}
+
+.day-drilldown-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--ds-border);
+  background: var(--ds-background-neutral-subtle);
+}
+
+.day-drilldown-header h4 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ds-text);
+}
+
+.day-drilldown-header p {
+  margin: 2px 0 0 0;
+  font-size: 12px;
+  color: var(--ds-text-subtle);
+}
+
+.day-drilldown-close {
+  border: 1px solid var(--ds-border);
+  background: #fff;
+  border-radius: 6px;
+  padding: 6px 10px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.day-drilldown-close:hover {
+  background: #F4F5F7;
+}
+
+.day-drilldown-summary {
+  display: flex;
+  gap: 16px;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--ds-border);
+  font-size: 12px;
+  color: var(--ds-text-subtle);
+}
+
+.day-drilldown-list {
+  padding: 8px 16px 12px;
+}
+
+.day-drilldown-item {
+  padding: 10px 0;
+  border-bottom: 1px solid #f0f1f3;
+}
+
+.day-drilldown-item:last-child {
+  border-bottom: none;
+}
+
+.day-drilldown-item-top {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.day-drilldown-issue-meta {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.day-drilldown-issue-key {
+  font-size: 13px;
+  font-weight: 600;
+  color: #0052CC;
+}
+
+.day-drilldown-issue-summary {
+  font-size: 12px;
+  color: var(--ds-text-subtle);
+}
+
+.day-drilldown-time {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ds-text);
+  white-space: nowrap;
+}
+
+.day-drilldown-pct {
+  margin-left: 4px;
+  color: var(--ds-text-subtle);
+  font-weight: 500;
+}
+
+.day-drilldown-bar-track {
+  height: 4px;
+  background: #EBECF0;
+  border-radius: 99px;
+  margin-top: 8px;
+}
+
+.day-drilldown-bar-fill {
+  height: 100%;
+  background: #36B37E;
+  border-radius: 99px;
+}
+
+.day-drilldown-state {
+  padding: 16px;
+  font-size: 13px;
+  color: var(--ds-text-subtle);
+}
+
+.day-drilldown-error {
+  color: #BF2600;
 }
 
 /* Team Summary Sidebar */

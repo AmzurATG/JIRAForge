@@ -1222,6 +1222,96 @@ async function fetchIssueDetailsBatch(issueKeys) {
 }
 
 /**
+ * Fetch detailed day activity for the current user (no admin permissions required).
+ * Used by Time Analytics inline drill-down when users click a day's hours.
+ * @param {string} accountId - Atlassian account ID
+ * @param {string} cloudId - Jira Cloud ID
+ * @param {string} date - Date string (YYYY-MM-DD)
+ * @returns {Promise<Object>} Day activity details with issue breakdown
+ */
+export async function fetchMyDayIssueBreakdown(accountId, cloudId, date) {
+  validateDateFormat(date);
+
+  const { supabaseConfig, organization } = await initializeContext(accountId, cloudId);
+  const userId = await getOrCreateUser(accountId, supabaseConfig, organization.id);
+  if (!userId) {
+    throw new Error('Unable to get user information');
+  }
+
+  // Headline total should come from daily_time_summary for consistency with card totals.
+  const dailySummaryRecords = await supabaseRequest(
+    supabaseConfig,
+    `daily_time_summary?organization_id=eq.${organization.id}&user_id=eq.${userId}&work_date=eq.${date}&select=task_key,total_seconds`
+  );
+
+  const allRecords = await supabaseRequestPaginated(
+    supabaseConfig,
+    `activity_records?organization_id=eq.${organization.id}&user_id=eq.${userId}&work_date=eq.${date}&status=in.(pending,processing,analyzed)&select=user_assigned_issue_key,project_key,duration_seconds,start_time,end_time,classification&order=start_time.asc,id.asc`
+  );
+
+  const records = (allRecords || []).filter(r =>
+    r.classification === 'productive' || r.classification === 'unknown' || !r.classification
+  );
+
+  const issueMap = {};
+  records.forEach(record => {
+    const key = record.user_assigned_issue_key || 'Unassigned';
+    if (!issueMap[key]) {
+      issueMap[key] = {
+        issueKey: key,
+        projectKey: record.project_key,
+        totalSeconds: 0,
+        sessionCount: 0,
+        sessions: []
+      };
+    }
+    issueMap[key].totalSeconds += record.duration_seconds || 0;
+    issueMap[key].sessionCount += 1;
+    issueMap[key].sessions.push({
+      startTime: record.start_time,
+      endTime: record.end_time,
+      seconds: record.duration_seconds
+    });
+  });
+
+  const issues = Object.values(issueMap).sort((a, b) => b.totalSeconds - a.totalSeconds);
+  const issueKeys = issues.map(i => i.issueKey).filter(k => k !== 'Unassigned');
+  const issueDetails = await fetchIssueDetailsBatch(issueKeys);
+
+  issues.forEach(issue => {
+    if (issue.issueKey === 'Unassigned') {
+      issue.summary = 'Work not assigned to any issue';
+      issue.status = '';
+      issue.statusCategory = '';
+      issue.priority = '';
+      issue.issueType = '';
+      return;
+    }
+    const jiraIssue = issueDetails[issue.issueKey];
+    if (jiraIssue) {
+      issue.summary = jiraIssue.summary;
+      issue.status = jiraIssue.status;
+      issue.statusCategory = jiraIssue.statusCategory;
+      issue.priority = jiraIssue.priority;
+      issue.issueType = jiraIssue.issueType;
+    }
+  });
+
+  const summaryTotalSeconds = (dailySummaryRecords || []).reduce((sum, r) => sum + (r.total_seconds || 0), 0);
+  const productiveSeconds = issues.reduce((sum, issue) => sum + issue.totalSeconds, 0);
+  const totalSeconds = summaryTotalSeconds > 0 ? summaryTotalSeconds : productiveSeconds;
+
+  return {
+    userId,
+    date,
+    totalSeconds,
+    totalHours: Math.round(totalSeconds / 3600 * 10) / 10,
+    issueCount: issues.filter(i => i.issueKey !== 'Unassigned').length,
+    issues
+  };
+}
+
+/**
  * Fetch detailed day activity for a team member
  * Shows which issues they worked on and time per issue
  * @param {string} accountId - Atlassian account ID

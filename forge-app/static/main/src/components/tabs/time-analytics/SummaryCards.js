@@ -7,7 +7,7 @@ import { normalizeDate, formatLocalDate, getMonthStr } from './dateUtils';
  * Displays Today's, Week's, and Month's total time
  * Cards are clickable to switch between Day/Week/Month views
  */
-function SummaryCards({ loading, timeData, activeView, onViewChange, reconciledTodayTotal }) {
+function SummaryCards({ loading, timeData, activeView, onViewChange, reconciledTodayTotal, onDrillDown }) {
   // Get the dailySummary total for today (before reconciliation) so we can
   // compute the delta and apply it to week/month totals as well.
   const rawTodayTotal = (() => {
@@ -81,7 +81,16 @@ function SummaryCards({ loading, timeData, activeView, onViewChange, reconciledT
             <p>Loading...</p>
           ) : (
             <div className="cumulative-stat">
-              <div className="stat-value">{formatTime(reconciledTodayTotal != null ? reconciledTodayTotal : rawTodayTotal)}</div>
+              <button
+                className="stat-value stat-value--drilldown"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  if (onDrillDown) onDrillDown('today');
+                }}
+                title="Click to view issue breakdown"
+              >
+                {formatTime(reconciledTodayTotal != null ? reconciledTodayTotal : rawTodayTotal)}
+              </button>
             </div>
           )}
         </div>
@@ -108,7 +117,16 @@ function SummaryCards({ loading, timeData, activeView, onViewChange, reconciledT
             <p>Loading...</p>
           ) : (
             <div className="cumulative-stat">
-              <div className="stat-value">{formatTime(calculateWeekTotal())}</div>
+              <button
+                className="stat-value stat-value--drilldown"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  if (onDrillDown) onDrillDown('week');
+                }}
+                title="Click to view issue breakdown"
+              >
+                {formatTime(calculateWeekTotal())}
+              </button>
             </div>
           )}
         </div>
@@ -137,7 +155,16 @@ function SummaryCards({ loading, timeData, activeView, onViewChange, reconciledT
             <p>Loading...</p>
           ) : (
             <div className="cumulative-stat">
-              <div className="stat-value">{formatTime(calculateMonthTotal())}</div>
+              <button
+                className="stat-value stat-value--drilldown"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  if (onDrillDown) onDrillDown('month');
+                }}
+                title="Click to view issue breakdown"
+              >
+                {formatTime(calculateMonthTotal())}
+              </button>
             </div>
           )}
         </div>
