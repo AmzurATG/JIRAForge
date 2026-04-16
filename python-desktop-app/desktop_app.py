@@ -10450,6 +10450,7 @@ class TimeTracker:
                                         self._clear_cached_user_info()
                                     else:
                                         print(f"[OK] User {self.current_user_id} verified in database")
+                                        self._update_desktop_status(logged_in=True)
                                 except Exception as ve:
                                     print(f"[WARN] Could not verify user in DB: {ve}")
                             # Sync app classifications from Supabase (all projects)
