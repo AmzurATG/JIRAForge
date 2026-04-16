@@ -3,12 +3,13 @@ import { invoke } from '@forge/bridge';
 import { formatTime } from '../../../utils';
 import { normalizeDate, formatLocalDate, parseUTC } from './dateUtils';
 import { useApp } from '../../../context';
+import DayIssueDrilldown from './DayIssueDrilldown';
 
 /**
  * Day View Component
  * Displays today's timesheet with team member cards and activity timeline
  */
-function DayView({ loading, timeData, onTodayTotalReconciled, onOpenWorklogReassignModal }) {
+function DayView({ loading, timeData, onTodayTotalReconciled, onOpenWorklogReassignModal, summaryDrillDate }) {
   const { loadActiveIssues } = useApp();
   const [timelineData, setTimelineData] = useState(null);
   const [myTimelineData, setMyTimelineData] = useState(null);
@@ -24,6 +25,7 @@ function DayView({ loading, timeData, onTodayTotalReconciled, onOpenWorklogReass
   const expandedUsers = {};
   const [showIdleHelp, setShowIdleHelp] = useState(true);
   const [hoveredBlock, setHoveredBlock] = useState(null); // { text, type }
+  const [selectedDate, setSelectedDate] = useState(null);
   const popoverRef = useRef(null);
   // Helper function to get user initials
   const getInitials = (name) => {
@@ -55,6 +57,12 @@ function DayView({ loading, timeData, onTodayTotalReconciled, onOpenWorklogReass
   };
   const today = new Date();
   const todayStr = formatLocalDate(today);
+
+  useEffect(() => {
+    if (summaryDrillDate && summaryDrillDate === todayStr) {
+      setSelectedDate(todayStr);
+    }
+  }, [summaryDrillDate, todayStr]);
 
   // Fetch timeline data for today
   useEffect(() => {
@@ -844,6 +852,13 @@ function DayView({ loading, timeData, onTodayTotalReconciled, onOpenWorklogReass
             );
           })()}
         </div>
+      )}
+
+      {!loading && selectedDate && (
+        <DayIssueDrilldown
+          selectedDate={selectedDate}
+          onClose={() => setSelectedDate(null)}
+        />
       )}
 
       {/* Convert idle popover — fixed overlay outside the timeline */}

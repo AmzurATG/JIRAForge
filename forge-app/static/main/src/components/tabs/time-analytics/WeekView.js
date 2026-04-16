@@ -1,12 +1,15 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import { formatTime } from '../../../utils';
 import { normalizeDate, formatLocalDate, getWeekDates } from './dateUtils';
+import DayIssueDrilldown from './DayIssueDrilldown';
 
 /**
  * Week View Component
  * Displays weekly timesheet with table layout
  */
-function WeekView({ loading, timeData }) {
+function WeekView({ loading, timeData, summaryDrillDate }) {
+  const [selectedDate, setSelectedDate] = useState(null);
+
   // Helper function to get user initials
   const getInitials = (name) => {
     if (!name) return '?';
@@ -43,6 +46,13 @@ function WeekView({ loading, timeData }) {
   startOfWeek.setDate(today.getDate() - (dow === 0 ? 6 : dow - 1));
   const weekDates = getWeekDates(today);
   const daysCount = weekDates.length;
+
+  useEffect(() => {
+    if (!summaryDrillDate) return;
+    if (weekDates.some(item => item.dateStr === summaryDrillDate)) {
+      setSelectedDate(summaryDrillDate);
+    }
+  }, [summaryDrillDate, weekDates]);
 
   const dayNames = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 
@@ -142,11 +152,24 @@ function WeekView({ loading, timeData }) {
                           </div>
                           {user.name}
                         </td>
-                        {user.days.map((seconds, dayIdx) => (
+                        {user.days.map((seconds, dayIdx) => {
+                          const dateStr = weekDates[dayIdx]?.dateStr;
+                          return (
                           <td key={dayIdx} className="time-cell">
-                            {seconds > 0 ? formatTime(seconds) : '-'}
+                            {seconds > 0 ? (
+                              <button
+                                className={`time-drilldown-btn ${selectedDate === dateStr ? 'active' : ''}`}
+                                onClick={() => setSelectedDate(selectedDate === dateStr ? null : dateStr)}
+                                title="Click for issue breakdown"
+                              >
+                                {formatTime(seconds)}
+                              </button>
+                            ) : (
+                              '-'
+                            )}
                           </td>
-                        ))}
+                          );
+                        })}
                         <td className="total-cell">{formatTime(user.total)}</td>
                       </tr>
                     ))}
@@ -172,6 +195,13 @@ function WeekView({ loading, timeData }) {
             </tbody>
           </table>
         </div>
+      )}
+
+      {!loading && selectedDate && (
+        <DayIssueDrilldown
+          selectedDate={selectedDate}
+          onClose={() => setSelectedDate(null)}
+        />
       )}
     </div>
   );

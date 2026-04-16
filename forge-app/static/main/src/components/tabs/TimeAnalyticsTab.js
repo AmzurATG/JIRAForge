@@ -18,6 +18,7 @@ function TimeAnalyticsTab({ onOpenWorklogReassignModal, refreshKey }) {
   const [error, setError] = useState(null);
   const [timeData, setTimeData] = useState(null);
   const [timesheetView, setTimesheetView] = useState('day');
+  const [summaryDrillDate, setSummaryDrillDate] = useState(null);
   const [selectedMonth, setSelectedMonth] = useState(new Date());
   const [downloadUrl, setDownloadUrl] = useState(FALLBACK_DOWNLOAD_URL);
   const [reconciledTodayTotal, setReconciledTodayTotal] = useState(null);
@@ -78,6 +79,24 @@ function TimeAnalyticsTab({ onOpenWorklogReassignModal, refreshKey }) {
     router.open(downloadUrl);
   };
 
+  const handleSummaryDrillDown = (type) => {
+    const todayStr = new Date().toLocaleDateString('sv-SE');
+    setSummaryDrillDate(todayStr);
+
+    if (type === 'today') {
+      setTimesheetView('day');
+      return;
+    }
+    if (type === 'week') {
+      setTimesheetView('week');
+      return;
+    }
+    if (type === 'month') {
+      setSelectedMonth(new Date());
+      setTimesheetView('month');
+    }
+  };
+
   return (
     <div className="time-analytics">
       <h2>Time Analytics Dashboard</h2>
@@ -116,16 +135,23 @@ function TimeAnalyticsTab({ onOpenWorklogReassignModal, refreshKey }) {
         activeView={timesheetView}
         onViewChange={setTimesheetView}
         reconciledTodayTotal={reconciledTodayTotal}
+        onDrillDown={handleSummaryDrillDown}
       />
 
       {/* Timesheet Content */}
       <div className="timesheet-content">
         {timesheetView === 'day' && (
-          <DayView loading={loading} timeData={timeData} onTodayTotalReconciled={setReconciledTodayTotal} onOpenWorklogReassignModal={onOpenWorklogReassignModal} />
+          <DayView
+            loading={loading}
+            timeData={timeData}
+            onTodayTotalReconciled={setReconciledTodayTotal}
+            onOpenWorklogReassignModal={onOpenWorklogReassignModal}
+            summaryDrillDate={summaryDrillDate}
+          />
         )}
 
         {timesheetView === 'week' && (
-          <WeekView loading={loading} timeData={timeData} />
+          <WeekView loading={loading} timeData={timeData} summaryDrillDate={summaryDrillDate} />
         )}
 
         {timesheetView === 'month' && (
@@ -135,6 +161,7 @@ function TimeAnalyticsTab({ onOpenWorklogReassignModal, refreshKey }) {
             selectedMonth={selectedMonth}
             setSelectedMonth={setSelectedMonth}
             userPermissions={userPermissions}
+            summaryDrillDate={summaryDrillDate}
           />
         )}
       </div>

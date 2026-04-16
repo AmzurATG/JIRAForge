@@ -1,46 +1,26 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import { formatTime } from '../../../utils';
 import { normalizeDate, getMonthStr } from './dateUtils';
+import DayIssueDrilldown from './DayIssueDrilldown';
 
 /**
  * Month View Component
  * Displays monthly calendar and team summary
  */
-function MonthView({ loading, timeData, selectedMonth, setSelectedMonth, userPermissions }) {
-  // Helper function to get user initials
-  const getInitials = (name) => {
-    if (!name) return '?';
-    const parts = name.trim().split(/\s+/);
-    if (parts.length >= 2) {
-      return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
-    }
-    return name.substring(0, 2).toUpperCase();
-  };
-
-  // Helper function to generate consistent avatar colors
-  const getAvatarColor = (name) => {
-    const colors = [
-      '#0052CC', // Blue
-      '#00875A', // Green
-      '#FF5630', // Red
-      '#6554C0', // Purple
-      '#FF991F', // Orange
-      '#00B8D9', // Cyan
-      '#36B37E', // Teal
-      '#FFAB00', // Yellow
-    ];
-    let hash = 0;
-    for (let i = 0; i < name.length; i++) {
-      hash = name.charCodeAt(i) + ((hash << 5) - hash);
-    }
-    return colors[Math.abs(hash) % colors.length];
-  };
-
+function MonthView({ loading, timeData, selectedMonth, setSelectedMonth, userPermissions, summaryDrillDate }) {
+  const [selectedDate, setSelectedDate] = useState(null);
 
   const today = new Date();
   const year = selectedMonth.getFullYear();
   const month = selectedMonth.getMonth();
   const selectedMonthStr = getMonthStr(selectedMonth);
+
+  useEffect(() => {
+    if (!summaryDrillDate) return;
+    if (summaryDrillDate.startsWith(selectedMonthStr)) {
+      setSelectedDate(summaryDrillDate);
+    }
+  }, [summaryDrillDate, selectedMonthStr]);
 
   const navigatePrevMonth = () => {
     setSelectedMonth(new Date(year, month - 1, 1));
@@ -69,44 +49,6 @@ function MonthView({ loading, timeData, selectedMonth, setSelectedMonth, userPer
     return timeByDate;
   };
 
-  const getUserMonthlyTime = () => {
-    const userMonthlyTime = {};
-
-    // Initialize with all known users
-    timeData?.allUsers?.forEach(user => {
-      userMonthlyTime[user.id] = {
-        userId: user.id,
-        name: user.display_name || user.email || 'User',
-        seconds: 0
-      };
-    });
-
-    // Aggregate monthly data by user
-    timeData?.dailySummary?.forEach(day => {
-      const workDateStr = normalizeDate(day.work_date);
-      if (workDateStr && workDateStr.startsWith(selectedMonthStr)) {
-        const userId = day.user_id || 'current_user';
-        if (!userMonthlyTime[userId]) {
-          userMonthlyTime[userId] = {
-            userId,
-            name: day.user_display_name || 'User',
-            seconds: 0
-          };
-        }
-        userMonthlyTime[userId].seconds += day.total_seconds || 0;
-      }
-    });
-
-    const totalSeconds = Object.values(userMonthlyTime).reduce((sum, u) => sum + u.seconds, 0);
-
-    return Object.values(userMonthlyTime)
-      .map(user => ({
-        ...user,
-        percentage: totalSeconds > 0 ? Math.round((user.seconds / totalSeconds) * 100) : 0
-      }))
-      .sort((a, b) => b.seconds - a.seconds);
-  };
-
   const renderCalendar = () => {
     const firstDayOfMonth = new Date(year, month, 1);
     let firstDay = firstDayOfMonth.getDay() - 1;
@@ -129,6 +71,7 @@ function MonthView({ loading, timeData, selectedMonth, setSelectedMonth, userPer
           const isWeekend = weekDay >= 5;
           const timeTracked = timeByDate[day] || 0;
           const currentDay = day;
+          const clickedDateStr = `${selectedMonthStr}-${String(currentDay).padStart(2, '0')}`;
 
           cells.push(
             <td
@@ -137,7 +80,13 @@ function MonthView({ loading, timeData, selectedMonth, setSelectedMonth, userPer
             >
               <div className="cell-day">{currentDay}</div>
               {timeTracked > 0 && (
-                <div className="cell-time">{formatTime(timeTracked)}</div>
+                <button
+                  className={`cell-time cell-time-drilldown ${selectedDate === clickedDateStr ? 'active' : ''}`}
+                  onClick={() => setSelectedDate(selectedDate === clickedDateStr ? null : clickedDateStr)}
+                  title="Click for issue breakdown"
+                >
+                  {formatTime(timeTracked)}
+                </button>
               )}
             </td>
           );
@@ -149,8 +98,6 @@ function MonthView({ loading, timeData, selectedMonth, setSelectedMonth, userPer
 
     return rows;
   };
-
-  const canViewTeamSummary = userPermissions.isJiraAdmin || userPermissions.projectAdminProjects?.length > 0;
 
   return (
     <div className="timesheet-month-view">
@@ -203,39 +150,19 @@ function MonthView({ loading, timeData, selectedMonth, setSelectedMonth, userPer
             </table>
           </div>
 
-          {canViewTeamSummary && (
-            <div className="team-summary">
-              <h4>Team Summary</h4>
-              <div className="team-summary-list">
-                {(() => {
-                  const users = getUserMonthlyTime();
-
-                  if (users.length === 0) {
-                    return <p className="empty-state">No users found</p>;
-                  }
-
-                  return users.map((user, idx) => (
-                    <div key={idx} className="team-summary-item">
-                      <div className="summary-member">
-                        <div 
-                          className="member-avatar-small"
-                          style={{ backgroundColor: getAvatarColor(user.name) }}
-                          title={user.name}
-                        >
-                          {getInitials(user.name)}
-                        </div>
-                        <div className="summary-info">
-                          <div className="summary-name">{user.name}</div>
-                          <div className="summary-time">{formatTime(user.seconds)}</div>
-                        </div>
-                      </div>
-                      <div className="summary-percentage">{user.percentage}%</div>
-                    </div>
-                  ));
-                })()}
+          <div className="month-right-column">
+            {selectedDate ? (
+              <DayIssueDrilldown
+                selectedDate={selectedDate}
+                onClose={() => setSelectedDate(null)}
+              />
+            ) : (
+              <div className="drilldown-placeholder">
+                <h4>Issue Breakdown</h4>
+                <p>Click any day hour value to see issue-level details.</p>
               </div>
-            </div>
-          )}
+            )}
+          </div>
         </div>
       )}
     </div>
