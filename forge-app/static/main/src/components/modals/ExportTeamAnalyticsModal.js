@@ -26,7 +26,10 @@ function ExportTeamAnalyticsModal({ isOpen, onClose, projectKey, teamAnalytics, 
   // Fetch team members for newly selected projects
   useEffect(() => {
     const missingProjects = selectedProjectKeys.filter(pk => !membersByProject[pk]);
-    if (missingProjects.length === 0) return;
+    if (missingProjects.length === 0) {
+      setLoadingMembers(false);
+      return;
+    }
 
     let cancelled = false;
     setLoadingMembers(true);
@@ -144,8 +147,23 @@ function ExportTeamAnalyticsModal({ isOpen, onClose, projectKey, teamAnalytics, 
   };
 
   const handleExport = async () => {
-    setExporting(true);
     setError(null);
+
+    // Validate selections before exporting
+    if (selectedProjectKeys.length === 0) {
+      setError('Please select at least one project');
+      return;
+    }
+    if (members.length === 0) {
+      setError('No users found for the selected project(s)');
+      return;
+    }
+    if (!userSelectAll && selectedUserIds.length === 0) {
+      setError('Please select at least one user');
+      return;
+    }
+
+    setExporting(true);
 
     try {
       let startDate, endDate;
@@ -248,6 +266,12 @@ function ExportTeamAnalyticsModal({ isOpen, onClose, projectKey, teamAnalytics, 
           <button className="modal-close-btn" onClick={onClose}>×</button>
         </div>
 
+        {error && (
+          <div className="error-message" style={{ margin: '0 20px', position: 'sticky', top: 0, zIndex: 1 }}>
+            <strong>Error:</strong> {error}
+          </div>
+        )}
+
         <div className="modal-content">
           <div className="export-options">
             {/* Project Selection */}
@@ -341,9 +365,14 @@ function ExportTeamAnalyticsModal({ isOpen, onClose, projectKey, teamAnalytics, 
                   <span className="selected-count">{selectedUserIds.length} selected</span>
                 )}
               </div>
-              {loadingMembers && (
+              {loadingMembers && selectedProjectKeys.length > 0 && (
                 <div className="user-checkbox-list" style={{ padding: '8px', color: '#6b778c', fontSize: '12px' }}>
                   Loading users...
+                </div>
+              )}
+              {!loadingMembers && members.length === 0 && (
+                <div className="user-checkbox-list" style={{ padding: '8px', color: '#6b778c', fontSize: '12px' }}>
+                  {selectedProjectKeys.length === 0 ? 'Select a project to see users' : 'No users found'}
                 </div>
               )}
               {!loadingMembers && members.length > 0 && (
@@ -389,12 +418,6 @@ function ExportTeamAnalyticsModal({ isOpen, onClose, projectKey, teamAnalytics, 
               </ul>
             </div>
           </div>
-
-          {error && (
-            <div className="error-message">
-              <strong>Error:</strong> {error}
-            </div>
-          )}
         </div>
 
         <div className="modal-footer">
