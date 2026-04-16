@@ -4,7 +4,7 @@
 
 The "My Focus" screen in the Forge app only shows issues from Scrum/Software projects because the JQL query filters by `sprint in openSprints()`. Jira Service Management (JSM) projects use queues, not sprints, so all JSM issues are excluded at the Jira API level.
 
-**Root Cause:** `issueQueryService.js:40` — `getAllUserAssignedIssues({ jqlFilter: 'sprint in openSprints()' })`
+**Root Cause:** `forge-app/src/services/issue/issueQueryService.js:40` — `getAllUserAssignedIssues({ jqlFilter: 'sprint in openSprints()' })`
 
 ## Data Flow
 
@@ -12,9 +12,9 @@ The "My Focus" screen in the Forge app only shows issues from Scrum/Software pro
 DashboardTab (My Focus UI)
   -> AppContext.loadActiveIssues()
     -> invoke('getActiveIssuesWithTime')
-      -> issueResolvers.js (resolver)
-        -> issueQueryService.getActiveIssuesWithTime()
-          -> jira.getAllUserAssignedIssues({ jqlFilter: 'sprint in openSprints()' })
+      -> forge-app/src/resolvers/issueResolvers.js (resolver)
+        -> forge-app/src/services/issue/issueQueryService.getActiveIssuesWithTime()
+          -> forge-app/src/utils/jira.getAllUserAssignedIssues({ jqlFilter: 'sprint in openSprints()' })
             -> Jira API: "assignee = currentUser() AND sprint in openSprints() ORDER BY updated DESC"
                ^^^ JSM issues have no sprint field — 0 results returned
 ```
@@ -43,7 +43,7 @@ Software project backlog items not yet assigned to a sprint will also appear sin
 
 ## Files to Change
 
-### 1. `src/services/issue/issueQueryService.js` (line 34-42)
+### 1. `forge-app/src/services/issue/issueQueryService.js` (line 34-42)
 
 **What:** Update the JQL filter and code comment.
 
@@ -59,16 +59,16 @@ getAllUserAssignedIssues({
 
 **Update comment (lines 36-38):**
 ```javascript
-// My Focus shows active sprint issues AND unresolved non-sprint issues (JSM, Kanban).
-// Sprint-based projects: only active sprint issues appear.
-// Non-sprint projects (JSM queues, Kanban boards): all unresolved active issues appear.
+// My Focus shows active sprint issues AND unresolved issues with no sprint assignment.
+// Sprint-based projects: active sprint issues appear, and sprint-less backlog issues can also match.
+// Non-sprint projects (JSM queues, Kanban boards) also contribute unresolved active issues via `sprint is EMPTY`.
 ```
 
-### 2. `src/utils/jira.js` (line 67-69) — No code change needed
+### 2. `forge-app/src/utils/jira.js` (line 67-69) — No code change needed
 
 The `getAllUserAssignedIssues()` function already supports any JQL filter string and already avoids sprint-only fields in the SELECT clause (line 69 comment). No changes needed here.
 
-### 3. `static/main/src/components/tabs/DashboardTab.js` — No code change needed
+### 3. `forge-app/static/main/src/components/tabs/DashboardTab.js` — No code change needed
 
 The frontend already handles any issues returned by the backend. The status category filter (all / in-progress / done) will work for JSM issues too since JSM statuses also have status categories.
 
@@ -82,4 +82,4 @@ The frontend already handles any issues returned by the backend. The status cate
 
 ## Rollback
 
-If issues arise, revert the JQL filter back to `sprint in openSprints()` on line 40 of `issueQueryService.js`.
+If issues arise, revert the JQL filter back to `sprint in openSprints()` on line 40 of `forge-app/src/services/issue/issueQueryService.js`.
