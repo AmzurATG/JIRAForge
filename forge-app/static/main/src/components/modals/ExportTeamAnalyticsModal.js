@@ -14,7 +14,8 @@ function ExportTeamAnalyticsModal({ isOpen, onClose, projectKey, teamAnalytics, 
   const [format, setFormat] = useState('xlsx');
   const [customStartDate, setCustomStartDate] = useState('');
   const [customEndDate, setCustomEndDate] = useState('');
-  const [selectedUserIds, setSelectedUserIds] = useState([]); // empty = all users
+  const [selectedUserIds, setSelectedUserIds] = useState([]); // explicit list of selected user IDs
+  const [userSelectAll, setUserSelectAll] = useState(true); // true = all users selected
   const [selectedProjectKeys, setSelectedProjectKeys] = useState([projectKey]); // default to current project
   const [projectSelectAll, setProjectSelectAll] = useState(false);
   const [membersByProject, setMembersByProject] = useState(() => ({
@@ -70,8 +71,9 @@ function ExportTeamAnalyticsModal({ isOpen, onClose, projectKey, teamAnalytics, 
   }, [selectedProjectKeys, membersByProject]);
 
   const toggleUser = (userId) => {
-    if (selectedUserIds.length === 0) {
-      // "All Users" mode — uncheck this one user, keep the rest selected
+    if (userSelectAll) {
+      // Switching from "All Users" to individual selection — uncheck this one user
+      setUserSelectAll(false);
       setSelectedUserIds(members.filter(m => m.userId !== userId).map(m => m.userId));
     } else {
       const isSelected = selectedUserIds.includes(userId);
@@ -81,6 +83,7 @@ function ExportTeamAnalyticsModal({ isOpen, onClose, projectKey, teamAnalytics, 
         const newSelected = [...selectedUserIds, userId];
         // If all members are now selected, switch back to "All Users" mode
         if (newSelected.length === members.length) {
+          setUserSelectAll(true);
           setSelectedUserIds([]);
         } else {
           setSelectedUserIds(newSelected);
@@ -89,28 +92,55 @@ function ExportTeamAnalyticsModal({ isOpen, onClose, projectKey, teamAnalytics, 
     }
   };
 
-  const selectAllUsers = () => setSelectedUserIds([]);
+  const toggleAllUsers = () => {
+    if (userSelectAll) {
+      // Currently all selected → deselect all
+      setUserSelectAll(false);
+      setSelectedUserIds([]);
+    } else {
+      // Currently not all selected → select all
+      setUserSelectAll(true);
+      setSelectedUserIds([]);
+    }
+  };
 
   const allProjects = availableProjectKeys || [];
 
   const toggleProject = (pk) => {
-    setProjectSelectAll(false);
-    setSelectedProjectKeys(prev =>
-      prev.includes(pk) ? prev.filter(k => k !== pk) : [...prev, pk]
-    );
-    setSelectedUserIds([]); // Reset to "All Users" when projects change
+    const isSelected = selectedProjectKeys.includes(pk);
+    let newSelected;
+    if (isSelected) {
+      newSelected = selectedProjectKeys.filter(k => k !== pk);
+    } else {
+      newSelected = [...selectedProjectKeys, pk];
+    }
+    // Auto-detect if all projects are now selected
+    const allSelected = allProjects.length > 0 && newSelected.length === allProjects.length;
+    setProjectSelectAll(allSelected);
+    setSelectedProjectKeys(newSelected);
+    setUserSelectAll(true); // Reset to "All Users" when projects change
+    setSelectedUserIds([]);
   };
 
-  const handleSelectAllProjects = () => {
-    setProjectSelectAll(true);
-    setSelectedProjectKeys([...allProjects]);
-    setSelectedUserIds([]); // Reset to "All Users" when projects change
+  const toggleAllProjects = () => {
+    if (projectSelectAll) {
+      // Currently all selected → deselect all
+      setProjectSelectAll(false);
+      setSelectedProjectKeys([]);
+    } else {
+      // Currently not all selected → select all
+      setProjectSelectAll(true);
+      setSelectedProjectKeys([...allProjects]);
+    }
+    setUserSelectAll(true); // Reset to "All Users" when projects change
+    setSelectedUserIds([]);
   };
 
   const handleSelectCurrentProject = () => {
-    setProjectSelectAll(false);
+    setProjectSelectAll(allProjects.length === 1);
     setSelectedProjectKeys([projectKey]);
-    setSelectedUserIds([]); // Reset to "All Users" when projects change
+    setUserSelectAll(true); // Reset to "All Users" when projects change
+    setSelectedUserIds([]);
   };
 
   const handleExport = async () => {
@@ -163,7 +193,7 @@ function ExportTeamAnalyticsModal({ isOpen, onClose, projectKey, teamAnalytics, 
           projectKeys: exportProjectKeys,
           startDate,
           endDate,
-          filterUserIds: selectedUserIds.length > 0 ? selectedUserIds : null
+          filterUserIds: userSelectAll ? null : (selectedUserIds.length > 0 ? selectedUserIds : null)
         });
 
         if (result.success) {
@@ -178,7 +208,7 @@ function ExportTeamAnalyticsModal({ isOpen, onClose, projectKey, teamAnalytics, 
           startDate,
           endDate,
           format,
-          filterUserIds: selectedUserIds.length > 0 ? selectedUserIds : null
+          filterUserIds: userSelectAll ? null : (selectedUserIds.length > 0 ? selectedUserIds : null)
         });
 
         if (result.success) {
@@ -227,7 +257,7 @@ function ExportTeamAnalyticsModal({ isOpen, onClose, projectKey, teamAnalytics, 
                 <button 
                   type="button"
                   className={`filter-chip ${projectSelectAll ? 'active' : ''}`}
-                  onClick={handleSelectAllProjects}
+                  onClick={toggleAllProjects}
                 >
                   All Projects
                 </button>
@@ -302,12 +332,12 @@ function ExportTeamAnalyticsModal({ isOpen, onClose, projectKey, teamAnalytics, 
               <div className="user-filter-actions">
                 <button 
                   type="button"
-                  className={`filter-chip ${selectedUserIds.length === 0 ? 'active' : ''}`}
-                  onClick={selectAllUsers}
+                  className={`filter-chip ${userSelectAll ? 'active' : ''}`}
+                  onClick={toggleAllUsers}
                 >
                   All Users
                 </button>
-                {selectedUserIds.length > 0 && (
+                {!userSelectAll && selectedUserIds.length > 0 && (
                   <span className="selected-count">{selectedUserIds.length} selected</span>
                 )}
               </div>
@@ -322,7 +352,7 @@ function ExportTeamAnalyticsModal({ isOpen, onClose, projectKey, teamAnalytics, 
                     <label key={m.userId} className="user-checkbox-item">
                       <input
                         type="checkbox"
-                      checked={selectedUserIds.length === 0 || selectedUserIds.includes(m.userId)}
+                      checked={userSelectAll || selectedUserIds.includes(m.userId)}
                         onChange={() => toggleUser(m.userId)}
                       />
                       <span className="user-checkbox-name">{m.displayName}</span>
