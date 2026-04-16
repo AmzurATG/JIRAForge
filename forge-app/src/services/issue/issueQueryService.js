@@ -33,11 +33,13 @@ export async function getAssignedIssues(accountId) {
  */
 export async function getActiveIssuesWithTime(accountId, cloudId) {
   // Fetch Jira issues and Supabase config in parallel (independent calls)
-  // My Focus shows only active sprint issues — filter by open sprints.
-  // For projects without sprints (Kanban, JSM), those issues simply won't match
-  // and won't appear in My Focus. This is intentional — My Focus is sprint-oriented.
+  // My Focus shows active sprint issues AND unresolved non-sprint issues (JSM, Kanban).
+  // Sprint-based projects: only active sprint issues appear.
+  // Non-sprint projects (JSM queues, Kanban boards): all unresolved active issues appear.
   const [jiraData, supabaseConfig] = await Promise.all([
-    getAllUserAssignedIssues({ jqlFilter: 'sprint in openSprints()' }),
+    getAllUserAssignedIssues({
+      jqlFilter: '((sprint in openSprints()) OR (sprint is EMPTY AND resolution = EMPTY AND statusCategory != Done))'
+    }),
     getSupabaseConfig(accountId)
   ]);
   console.log('[BACKEND] Jira returned issues:', jiraData.issues?.length || 0);
