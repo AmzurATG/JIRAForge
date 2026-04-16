@@ -420,12 +420,13 @@ describe('worklogService — syncCurrentUserWorklogs', () => {
   });
 
   describe('when records have no user_assigned_issue_key but have project_key', () => {
-    it('creates worklog via project fallback matching to in-progress issue', async () => {
+    it('creates worklog via window-title fallback matching', async () => {
       mockSupabaseRequest.mockImplementation(
         buildSupabaseRequestMock({
           activityRecords: [], // No directly-assigned records
           unassignedRecords: [{
             project_key: 'FEEDBACK',
+            window_title: 'FEEDBACK-33 - Fix login bug - Jira',
             duration_seconds: 484, // 8m 4s
             total_time_seconds: 484,
             end_time: '2026-04-01T10:00:00Z',
@@ -481,6 +482,7 @@ describe('worklogService — syncCurrentUserWorklogs', () => {
           }],
           unassignedRecords: [{
             project_key: 'FEEDBACK',
+            window_title: 'FEEDBACK-33 - Fix login bug - Jira',
             duration_seconds: 300,
             total_time_seconds: 300,
             end_time: '2026-04-01T10:00:00Z',

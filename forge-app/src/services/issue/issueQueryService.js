@@ -179,16 +179,9 @@ export async function getActiveIssuesWithTime(accountId, cloudId) {
 
   // Process activity records
   if (allActivityRecords.length > 0) {
-    // Build a map of project_key -> first in-progress issue for fallback matching
-    const inProgressIssuesByProject = {};
-    issues.forEach(issue => {
-      const projectKey = issue.fields?.project?.key;
-      const statusCategory = issue.fields?.status?.statusCategory?.key;
-      if (projectKey && statusCategory === 'indeterminate' && !inProgressIssuesByProject[projectKey]) {
-        inProgressIssuesByProject[projectKey] = issue.key;
-      }
-    });
-    console.log(`[getActiveIssuesWithTime] In-progress issues by project: ${JSON.stringify(inProgressIssuesByProject)}`);
+    // Build a set of valid issue keys from the user's current Jira issues
+    // Used to validate issue keys extracted from window titles
+    const validIssueKeys = new Set(issues.map(issue => issue.key));
 
     // Sort by start_time ascending to build sessions chronologically
     const sortedActivityData = allActivityRecords.sort((a, b) => {
@@ -198,16 +191,26 @@ export async function getActiveIssuesWithTime(accountId, cloudId) {
     });
 
     sortedActivityData.forEach(entry => {
-      // Use assigned issue key if available, otherwise try to match by project
+      // Use assigned issue key if available, otherwise try to extract from window title
       let issueKey = entry.user_assigned_issue_key;
       
-      if (!issueKey && entry.project_key) {
-        // Fallback: assign to first in-progress issue in the same project
-        issueKey = inProgressIssuesByProject[entry.project_key];
+      if (!issueKey && entry.window_title && entry.project_key) {
+        // Fallback: extract issue key from window title (e.g. "PROJ-123 - Fix login bug - Jira")
+        // Only match keys belonging to the user's current issues to avoid false positives
+        const issueKeyPattern = new RegExp(`${entry.project_key}-\\d+`, 'g');
+        const matches = entry.window_title.match(issueKeyPattern);
+        if (matches) {
+          // Prefer a match that is in the user's current issue list
+          const validMatch = matches.find(m => validIssueKeys.has(m));
+          if (validMatch) {
+            issueKey = validMatch;
+          }
+        }
       }
       
       if (!issueKey) {
-        // Still no match - skip this record (will show as unassigned work)
+        // No explicit assignment and no issue key found in window title — skip.
+        // This time will appear as unassigned and can be manually reassigned by the user.
         return;
       }
 
