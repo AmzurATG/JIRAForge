@@ -1270,19 +1270,49 @@ export async function convertUnassignedToWorklog(accountId, cloudId, sessionIds,
   const issueProjectKey = targetIssueKey.split('-')[0];
 
   // Update activity records with issue assignment
+  // Store conversion metadata in both explicit columns (if they exist) and in the metadata JSONB field
   const now = new Date().toISOString();
   const updatePayload = {
     user_assigned_issue_key: targetIssueKey,
     project_key: issueProjectKey,
-    conversion_reason: conversionReason || null,
-    converted_at: now
+    metadata: {
+      conversion_reason: conversionReason || null,
+      converted_at: now,
+      conversion_type: 'unassigned_manual'
+    }
   };
 
-  await supabaseRequest(
-    supabaseConfig,
-    `activity_records?id=in.(${sessionIdsParam})&user_id=eq.${userId}`,
-    { method: 'PATCH', body: updatePayload }
-  );
+  // Try to also update the dedicated columns if they exist
+  // (they'll be added in migration 20260417_add_unassigned_conversion_columns.sql)
+  if (conversionReason || now) {
+    updatePayload.conversion_reason = conversionReason || null;
+    updatePayload.converted_at = now;
+  }
+
+  try {
+    await supabaseRequest(
+      supabaseConfig,
+      `activity_records?id=in.(${sessionIdsParam})&user_id=eq.${userId}`,
+      { method: 'PATCH', body: updatePayload }
+    );
+  } catch (updateErr) {
+    // If columns don't exist yet, try without them (fallback to metadata-only)
+    if (updateErr.message && updateErr.message.includes('conversion_reason')) {
+      console.log(`[convertUnassigned] Columns not yet available, using metadata fallback`);
+      const fallbackPayload = {
+        user_assigned_issue_key: targetIssueKey,
+        project_key: issueProjectKey,
+        metadata: updatePayload.metadata
+      };
+      await supabaseRequest(
+        supabaseConfig,
+        `activity_records?id=in.(${sessionIdsParam})&user_id=eq.${userId}`,
+        { method: 'PATCH', body: fallbackPayload }
+      );
+    } else {
+      throw updateErr;
+    }
+  }
 
   console.log(`[convertUnassigned] Updated ${records.length} activity records to ${targetIssueKey}`);
 
