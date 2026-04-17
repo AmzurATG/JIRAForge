@@ -331,12 +331,18 @@ export function registerAnalyticsResolvers(resolver) {
           const { createWorklogIfNeeded, isAutoSyncEnabled } = await import('../services/workAssignmentService.js');
           const autoSyncEnabled = await isAutoSyncEnabled(accountId, cloudId);
 
+          // Build worklog comment with reason if provided
+          let customComment = `Time tracked from ${data.sessionCount} unassigned work session(s), manually assigned.`;
+          if (data.conversionReason) {
+            customComment += ` Reason: ${data.conversionReason}`;
+          }
+
           const worklogResult = await createWorklogIfNeeded({
             issueKey,
             timeToLog: data.totalSeconds,
             sessionCount: data.sessionCount,
             autoSyncEnabled,
-            customComment: `Time tracked from ${data.sessionCount} unassigned work session(s), manually assigned.`
+            customComment
           });
 
           console.log(`[UnassignedConvert] Worklog: ${worklogResult.worklogSkipped ? 'SKIPPED (' + worklogResult.worklogSkippedReason + ')' : 'CREATED'}`);
