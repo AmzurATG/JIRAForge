@@ -17,9 +17,10 @@
   display: flex;
   align-items: center;
   gap: var(--ds-space-150);
-  padding: 0;
+  padding: 6px;
   border-bottom: 1px solid var(--ds-border);
   min-height: 48px;
+  justify-content: end;
 }
 
 .sidebar-toggle {
