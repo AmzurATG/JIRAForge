@@ -7699,7 +7699,7 @@ class TimeTracker:
 
                 # Defense-in-depth: if a lock screen app somehow made it into
                 # SQLite sessions, mark it as idle so it won't inflate totals.
-                app_name_lower = s.get('application_name', '').lower()
+                app_name_lower = (s.get('application_name') or '').lower()
                 is_lock_screen = app_name_lower in LOCK_SCREEN_APPS
                 if is_lock_screen:
                     classification = 'idle'

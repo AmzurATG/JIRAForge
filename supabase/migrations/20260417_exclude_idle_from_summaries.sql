@@ -10,8 +10,8 @@
 --
 -- Fix: Add two filters to the activity_records subquery in each view:
 --   1. COALESCE(act.is_idle, false) = false  — exclude explicit idle records
---   2. act.application_name NOT IN ('LockApp.exe', 'LogonUI.exe')
---      — defense-in-depth for records that slipped through without is_idle
+--   2. LOWER(COALESCE(act.application_name, '')) NOT IN ('lockapp.exe', 'logonui.exe')
+--      — case-insensitive defense-in-depth for records that slipped through without is_idle
 --
 -- The legacy screenshots subquery is unchanged (it never had this issue).
 -- ============================================================================
@@ -80,7 +80,7 @@ FROM (
     WHERE act.status IN ('pending', 'processing', 'analyzed')
       AND act.work_date IS NOT NULL
       AND COALESCE(act.is_idle, false) = false
-      AND act.application_name NOT IN ('LockApp.exe', 'LogonUI.exe')
+      AND LOWER(COALESCE(act.application_name, '')) NOT IN ('lockapp.exe', 'logonui.exe')
 ) combined
 GROUP BY combined.user_id, combined.organization_id, combined.user_display_name,
          combined.work_date, combined.project_key, combined.task_key, combined.work_type
@@ -143,7 +143,7 @@ FROM (
     WHERE act.status IN ('pending', 'processing', 'analyzed')
       AND act.work_date IS NOT NULL
       AND COALESCE(act.is_idle, false) = false
-      AND act.application_name NOT IN ('LockApp.exe', 'LogonUI.exe')
+      AND LOWER(COALESCE(act.application_name, '')) NOT IN ('lockapp.exe', 'logonui.exe')
 ) combined
 GROUP BY combined.user_id, combined.organization_id, combined.user_display_name,
          DATE_TRUNC('week', combined.work_date::timestamp),
@@ -207,7 +207,7 @@ FROM (
     WHERE act.status IN ('pending', 'processing', 'analyzed')
       AND act.work_date IS NOT NULL
       AND COALESCE(act.is_idle, false) = false
-      AND act.application_name NOT IN ('LockApp.exe', 'LogonUI.exe')
+      AND LOWER(COALESCE(act.application_name, '')) NOT IN ('lockapp.exe', 'logonui.exe')
 ) combined
 GROUP BY combined.user_id, combined.organization_id, combined.user_display_name,
          DATE_TRUNC('month', combined.work_date::timestamp),
