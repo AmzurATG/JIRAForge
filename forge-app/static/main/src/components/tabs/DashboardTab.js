@@ -178,7 +178,7 @@ function DashboardTab({ onOpenReassignModal }) {
                     </tr>
                   </thead>
                   <tbody>
-                    {filteredIssues.map((issue, idx) => (
+                    {paginatedIssues.map((issue, idx) => (
                       <React.Fragment key={idx}>
                         <tr className={issue.sessions?.length > 0 ? 'expandable-row' : ''}>
                           <td className="issue-key">
@@ -371,6 +371,57 @@ function DashboardTab({ onOpenReassignModal }) {
                     ))}
                   </tbody>
                 </table>
+
+                {/* Pagination Controls */}
+                {totalPages > 1 && (
+                  <div className="pagination">
+                    <button
+                      className="pagination-btn"
+                      onClick={() => handlePageChange(currentPage - 1)}
+                      disabled={currentPage === 1}
+                      title="Previous page"
+                    >
+                      ‹
+                    </button>
+
+                    <div className="pagination-pages">
+                      {Array.from({ length: totalPages }, (_, i) => i + 1).map(page => {
+                        // Show first page, last page, current page, and pages around current
+                        if (
+                          page === 1 ||
+                          page === totalPages ||
+                          (page >= currentPage - 1 && page <= currentPage + 1)
+                        ) {
+                          return (
+                            <button
+                              key={page}
+                              className={`pagination-page ${page === currentPage ? 'active' : ''}`}
+                              onClick={() => handlePageChange(page)}
+                            >
+                              {page}
+                            </button>
+                          );
+                        } else if (page === currentPage - 2 || page === currentPage + 2) {
+                          return <span key={page} className="pagination-ellipsis">...</span>;
+                        }
+                        return null;
+                      })}
+                    </div>
+
+                    <button
+                      className="pagination-btn"
+                      onClick={() => handlePageChange(currentPage + 1)}
+                      disabled={currentPage === totalPages}
+                      title="Next page"
+                    >
+                      ›
+                    </button>
+
+                    <span className="pagination-info">
+                      {startIndex + 1}-{Math.min(endIndex, filteredIssues.length)} of {filteredIssues.length}
+                    </span>
+                  </div>
+                )}
               </div>
             ) : (
               <p className="empty-state">

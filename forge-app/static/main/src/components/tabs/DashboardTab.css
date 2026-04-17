@@ -324,13 +324,14 @@
 }
 
 
+
 .issues-table tbody tr:last-child {
   border-bottom: none;
 }
 
 .issues-table td {
   padding: var(--ds-space-150) var(--ds-space-200);
-  font-size: 14px;
+  font-size: 15px;
   color: var(--ds-text);
   line-height: 1.0;
 }
@@ -365,7 +366,7 @@
 
 .issue-key a:hover {
   color: var(--ds-background-brand-bold-hover);
-  text-decoration: underline;
+  text-decoration: none;
 }
 
 /* Issue Type Icons */
@@ -420,8 +421,8 @@
 /* Status Badge */
 .status-badge {
   display: inline-block;
-  padding: 4px 10px;
-  border-radius: 50px;
+  padding: 4px 15px;
+  border-radius: 6px;
   font-size: 12px;
   font-weight: 600;
   text-transform: capitalize;
@@ -449,7 +450,7 @@
 .priority-badge {
   display: inline-block;
   padding: 4px 10px;
-  border-radius: 50px;
+  border-radius: 6px;
   font-size: 11px;
   font-weight: 600;
   text-transform: uppercase;
@@ -512,9 +513,9 @@
   margin: 0;
 }
 
-.expand-button:hover {
+/* .expand-button:hover {
   background: #f4f5f7;
-}
+} */
 
 .expand-button.expanded {
   transform: rotate(90deg);
@@ -818,7 +819,7 @@
 .status-dropdown-container {
   position: relative;
   display: inline-block;
-  background: #ffe4e4;
+  /* background: #ffe4e4; */
     border-radius: 50px;
 }
 
@@ -841,8 +842,8 @@
 }
 
 .dropdown-arrow {
-  position: absolute;
-  right: 6px;
+  
+  right: 0px;
   top: 50%;
   transform: translateY(-50%);
   font-size: 10px;

@@ -301,7 +301,7 @@
 }
 
 .issue-key:hover {
-  text-decoration: underline;
+  text-decoration: none;
 }
 
 .issue-summary {
