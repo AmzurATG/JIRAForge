@@ -21,6 +21,17 @@ import base64
 from datetime import datetime, timezone, timedelta
 from io import BytesIO
 
+# Fix broken TLS CA-bundle env vars before any HTTPS library is imported.
+# The PostgreSQL Windows installer (v14-17) sets CURL_CA_BUNDLE to a path
+# that doesn't exist, which makes every Python requests HTTPS call fail.
+import certifi as _certifi_startup
+_certifi_bundle = _certifi_startup.where()
+for _var in ('REQUESTS_CA_BUNDLE', 'CURL_CA_BUNDLE', 'SSL_CERT_FILE'):
+    _existing = os.environ.get(_var)
+    if not _existing or not os.path.isfile(_existing):
+        os.environ[_var] = _certifi_bundle
+del _certifi_startup, _certifi_bundle, _var, _existing
+
 # Core dependencies
 from PIL import Image, ImageGrab, ImageDraw
 import psutil
@@ -321,7 +332,7 @@ load_dotenv()
 
 # Application version - IMPORTANT: Update this when releasing new versions
 # This is used for update checking and notifications
-APP_VERSION = "1.3.5"
+APP_VERSION = "1.3.7"
 
 # Hard-disable screenshot monitoring/storage in desktop app.
 # OCR text extraction for activity records still runs via event-based flow.
@@ -330,10 +341,10 @@ SCREENSHOT_MONITORING_HARD_DISABLED = True
 # Embedded credentials (for production builds - no .env file needed)
 # SECURITY: All sensitive keys moved to AI Server - fetched at runtime after authentication
 EMBEDDED_CONFIG = {
-    'ATLASSIAN_CLIENT_ID': 'Q8HT4Jn205AuTiAarj088oWNDrOqwvM5',
+    'ATLASSIAN_CLIENT_ID': 'k2Xwzy8c1g3Wk6Xpbeev0x70CXEp9lJH',
     # REMOVED: ATLASSIAN_CLIENT_SECRET - now on AI Server only (security fix)
     # REMOVED: SUPABASE_URL, SUPABASE_ANON_KEY, SUPABASE_SERVICE_ROLE_KEY - fetched from AI Server
-    'AI_SERVER_URL': 'https://forgesync.amzur.com',  # AI Server for secure token exchange & config
+    'AI_SERVER_URL': 'https://timetracker-forge.amzur.com',  # AI Server for secure token exchange & config
     'CAPTURE_INTERVAL': '300',
     'WEB_PORT': '51777',
 }
@@ -1419,7 +1430,7 @@ class AtlassianAuthManager:
         self.redirect_uri = f'http://localhost:{web_port}/auth/callback'
         self.authorization_url = 'https://auth.atlassian.com/authorize'
         # Token exchange now goes through AI Server
-        self.ai_server_url = get_env_var('AI_SERVER_URL', 'https://forgesync.amzur.com')
+        self.ai_server_url = get_env_var('AI_SERVER_URL', 'https://timetracker-forge.amzur.com')
         self.store_path = store_path or os.path.join(get_app_data_dir(), 'time_tracker_auth.json')
         self.metadata_path = os.path.join(get_app_data_dir(), 'auth_metadata.json')  # For non-sensitive data
 
@@ -2047,7 +2058,7 @@ class AtlassianAuthManager:
             print("[ERROR] No valid Atlassian token - cannot fetch OCR config")
             return False
 
-        ai_server_url = get_env_var('AI_SERVER_URL', 'https://forgesync.amzur.com')
+        ai_server_url = get_env_var('AI_SERVER_URL', 'https://timetracker-forge.amzur.com')
         
         try:
             print("[INFO] Fetching OCR config from AI Server...")
@@ -4944,6 +4955,12 @@ class TimeTracker:
                     error_category = 'access_denied'
                 elif 'not found' in error_lower:
                     error_category = 'not_found'
+                elif ('ca certificate' in error_lower
+                      or 'certificate bundle' in error_lower
+                      or 'ca-bundle' in error_lower
+                      or 'ca_bundle' in error_lower
+                      or 'ssl: certificate_verify_failed' in error_lower):
+                    error_category = 'tls_config'
                 
                 # Send login failure diagnostics
                 try:
@@ -4973,6 +4990,14 @@ class TimeTracker:
                     retry_hint = "Token exchange failed. This may be a temporary server issue."
                 elif error_category == 'state_mismatch':
                     retry_hint = "Security check failed. Please try logging in again."
+                elif error_category == 'tls_config':
+                    retry_hint = (
+                        "Your system's TLS certificate configuration is broken. "
+                        "Another program (often PostgreSQL) set the CURL_CA_BUNDLE or "
+                        "REQUESTS_CA_BUNDLE environment variable to a file that doesn't exist. "
+                        "Open Windows System Properties > Environment Variables, delete "
+                        "the CURL_CA_BUNDLE and REQUESTS_CA_BUNDLE entries, then restart the app."
+                    )
                 else:
                     retry_hint = "Please try again. If the problem persists, contact support."
                 
@@ -10425,6 +10450,7 @@ class TimeTracker:
                                         self._clear_cached_user_info()
                                     else:
                                         print(f"[OK] User {self.current_user_id} verified in database")
+                                        self._update_desktop_status(logged_in=True)
                                 except Exception as ve:
                                     print(f"[WARN] Could not verify user in DB: {ve}")
                             # Sync app classifications from Supabase (all projects)
