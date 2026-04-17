@@ -9,9 +9,9 @@
 }
 
 .dashboard h2 {
-  font-size: 20px;
+  font-size: 18px;
   font-weight: 700;
-  color: #172b4d;
+  color: #262728;
   margin: 0;
   letter-spacing: -0.2px;
   margin-top: 6px;
@@ -52,6 +52,18 @@
   margin-top: 0;
 }
 
+/* Focus Header (Tabs + Search) */
+.focus-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 18px;
+  gap: 16px;
+  background: #f4f5f7;
+  padding: 8px;
+  border-radius: 6px;
+}
+
 /* Focus Tabs */
 .focus-filters {
   display: flex;
@@ -68,30 +80,216 @@
   margin-bottom: 0;
   border-bottom: none;
   padding-bottom: 0;
+  padding-bottom: 0;
+  flex: 1;
+  gap: 8px;
 }
 
 .focus-tabs button {
   border: none;
-    border-top-left-radius: 6px;
-    border-top-right-radius: 6px;
-    cursor: pointer;
-    font-size: 14px;
-    font-weight: 600;
-    padding: 10px 16px;
-    transition: none;
-    color: #333;
-    background: transparent;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 500;
+  padding: 8px 16px;
+  transition: all 0.2s ease;
+  color: #5E6C84;
+  background: transparent;
 }
 
 .focus-tabs button:hover {
-  background: var(--ds-background-neutral);
+  background: #e4e5e7;
   color: var(--ds-text);
 }
 
 .focus-tabs button.active {
   background: #6656fc;
-    box-shadow: none;
-    color: var(--ds-text-inverse);
+  color: #FFFFFF;
+  font-weight: 600;
+}
+
+/* Focus Actions Container */
+.focus-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* Focus Search */
+.focus-search {
+  display: flex;
+  align-items: center;
+  position: relative;
+  min-width: 200px;
+}
+
+.search-icon {
+  position: absolute;
+  left: 12px;
+  color: var(--ds-text-subtle);
+  pointer-events: none;
+  z-index: 1;
+}
+
+.search-input {
+  width: 100%;
+  padding: 8px 36px 8px 36px;
+  border: 1px solid #DFE1E6;
+  border-radius: 4px;
+  font-size: 14px;
+  font-family: var(--ds-font-family);
+  color: var(--ds-text);
+  background: #FFFFFF;
+  transition: all 0.2s ease;
+}
+
+.search-input::placeholder {
+  color: #8993A4;
+}
+
+.search-input:focus {
+  outline: none;
+  border-color: var(--ds-border-focused);
+  box-shadow: 0 0 0 2px rgba(76, 154, 255, 0.2);
+}
+
+.clear-search {
+  position: absolute;
+  right: 8px;
+  background: transparent;
+  border: none;
+  font-size: 20px;
+  color: var(--ds-text-subtle);
+  cursor: pointer;
+  padding: 4px;
+  width: 24px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 3px;
+  transition: all 0.2s ease;
+}
+
+.clear-search:hover {
+  background: var(--ds-background-neutral);
+  color: var(--ds-text);
+}
+
+/* Filter Button */
+.filter-button {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 16px;
+  background: #DFE1E6;
+  border: none;
+  border-radius: 4px;
+  font-size: 14px;
+  font-weight: 500;
+  color: #42526E;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  white-space: nowrap;
+}
+
+.filter-button:hover {
+  background: #C1C7D0;
+}
+
+.filter-button svg {
+  flex-shrink: 0;
+}
+
+/* Pagination Styles */
+.pagination {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  margin-top: 20px;
+  padding: 16px;
+  background: var(--ds-background-default);
+  border-radius: 6px;
+  flex-wrap: wrap;
+}
+
+.pagination-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  background: #FFFFFF;
+  border: 1px solid #DFE1E6;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  color: #5E6C84;
+}
+
+.pagination-btn:hover:not(:disabled) {
+  background: #F4F5F7;
+  border-color: #C1C7D0;
+  color: var(--ds-text);
+}
+
+.pagination-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.pagination-pages {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.pagination-page {
+  min-width: 32px;
+  height: 32px;
+  padding: 0 8px;
+  background: #FFFFFF;
+  border: 1px solid #DFE1E6;
+  border-radius: 4px;
+  font-size: 14px;
+  font-weight: 500;
+  color: #5E6C84;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.pagination-page:hover {
+  background: #F4F5F7;
+  border-color: #C1C7D0;
+  color: var(--ds-text);
+}
+
+.pagination-page.active {
+  background: #6656fc;
+  border-color: #6656fc;
+  color: #FFFFFF;
+  font-weight: 600;
+}
+
+.pagination-ellipsis {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  color: #8993A4;
+  font-weight: 600;
+  user-select: none;
+}
+
+.pagination-info {
+  margin-left: 12px;
+  font-size: 13px;
+  color: #5E6C84;
+  font-weight: 500;
+  white-space: nowrap;
 }
 
 .focus-time-filter {
@@ -162,6 +360,7 @@
 
 .issues-table th:nth-child(5) {
   text-align: right;
+  padding-right: var(--ds-space-200);
 }
 
 .issues-table tbody tr {
@@ -179,6 +378,11 @@
   font-size: 14px;
   color: var(--ds-text);
   line-height: 1.0;
+}
+
+.issues-table td:nth-child(5) {
+  text-align: right;
+  padding-right: var(--ds-space-200);
 }
 
 .issue-key {
@@ -251,10 +455,11 @@
 }
 
 .issue-time {
-  text-align: right;
+  text-align: right !important;
   font-weight: 600;
   color: var(--ds-text-subtle);
   min-width: 80px;
+  padding-right: var(--ds-space-200) !important;
 }
 
 .issue-time.no-time {
