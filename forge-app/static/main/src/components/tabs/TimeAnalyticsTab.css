@@ -676,6 +676,16 @@
   background: #ABF5D1;
 }
 
+.legend-swatch.unassigned {
+  background: repeating-linear-gradient(
+    90deg,
+    #0052CC,
+    #0052CC 2px,
+    transparent 2px,
+    transparent 4px
+  );
+}
+
 .idle-guide-text {
   font-size: 12px;
   line-height: 1.5;

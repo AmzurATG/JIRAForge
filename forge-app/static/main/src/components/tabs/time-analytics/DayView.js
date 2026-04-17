@@ -882,18 +882,20 @@ function DayView({ loading, timeData, onTodayTotalReconciled, onOpenWorklogReass
                   </div>
                 )}
 
-                {/* Idle time guide banner — open by default */}
+                {/* Idle time & unassigned work guide banner — open by default */}
                 {hasTimelineData() && showIdleHelp && (
                   <div className="idle-guide-banner">
                     <div className="idle-guide-content">
                       <div className="idle-guide-legend">
                         <span className="legend-item"><span className="legend-swatch active"></span>Active work</span>
                         <span className="legend-item"><span className="legend-swatch idle"></span>Idle (untracked)</span>
-                        <span className="legend-item"><span className="legend-swatch converted"></span>Converted idle</span>
+                        <span className="legend-item"><span className="legend-swatch unassigned"></span>Unassigned work</span>
+                        <span className="legend-item"><span className="legend-swatch converted"></span>Converted</span>
                       </div>
                       <div className="idle-guide-text">
                         <strong>Orange striped blocks</strong> are idle periods where no activity was detected.
-                        Hover over them and click the <strong>+</strong> button to convert idle time into a worklog — assign it to an existing issue or create a new one.
+                        <strong>Blue striped blocks</strong> are work sessions not yet assigned to a Jira issue.
+                        Hover over either type and click the <strong>+</strong> button to convert into a worklog — assign it to an existing issue or create a new one.
                         <span className="idle-guide-hint">To see this again, click the <strong>Guide</strong> button next to NAME.</span>
                       </div>
                     </div>

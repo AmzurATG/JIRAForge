@@ -304,3 +304,57 @@ Suggested locations:
 4. Time analytics reflects reduced unassigned time after conversion.
 5. No regression in idle conversion, unassigned page assignment, and bulk time edit.
 6. Tests added and passing for critical paths.
+
+## 13. Implementation Status Update
+
+Updated on April 17, 2026 to reflect the work completed in this branch.
+
+## 13.1 Completed Work
+
+1. Timeline unassigned conversion UI was added in [forge-app/static/main/src/components/tabs/time-analytics/DayView.js](../forge-app/static/main/src/components/tabs/time-analytics/DayView.js).
+2. Unassigned timeline blocks now preserve `sessionIds` so merged blocks can be converted safely.
+3. Thin unassigned blocks were made clickable via wider hit targets and thin-block button handling in [forge-app/static/main/src/components/tabs/TimeAnalyticsTab.css](../forge-app/static/main/src/components/tabs/TimeAnalyticsTab.css).
+4. The timeline modal now supports both idle conversion and unassigned conversion in the same flow.
+5. A dedicated resolver `convertUnassignedToWorklog` was added in [forge-app/src/resolvers/analyticsResolvers.js](../forge-app/src/resolvers/analyticsResolvers.js).
+6. Backend service support for timeline conversion was added in [forge-app/src/services/analytics/teamAnalyticsService.js](../forge-app/src/services/analytics/teamAnalyticsService.js).
+7. Recommendation prefill support for timeline conversion was added through `getUnassignedConversionRecommendation` in [forge-app/src/resolvers/analyticsResolvers.js](../forge-app/src/resolvers/analyticsResolvers.js) and [forge-app/src/services/analytics/teamAnalyticsService.js](../forge-app/src/services/analytics/teamAnalyticsService.js).
+8. Shared worklog policy was extracted to [forge-app/src/services/workAssignmentService.js](../forge-app/src/services/workAssignmentService.js) and reused by the timeline conversion flow.
+9. Jira new-issue creation for timeline conversion was fixed to send description in Atlassian Document Format via [forge-app/src/utils/jira.js](../forge-app/src/utils/jira.js).
+10. Assignment of unassigned sessions now updates `activity_records.user_assigned_issue_key` and `project_key`, removes group membership rows for converted sessions, and recalculates group aggregates in [forge-app/src/services/analytics/teamAnalyticsService.js](../forge-app/src/services/analytics/teamAnalyticsService.js).
+
+## 13.2 Bugs Fixed During Implementation
+
+1. Thin timeline blocks were too small to click reliably.
+2. The conversion modal initially opened only for idle blocks because the render condition did not include unassigned conversion state.
+3. Assignment to an existing issue failed because a non-existent `manual_assignment_reason` column was being patched.
+4. Timeline conversion return data referenced `now` before declaration.
+5. Jira issue creation failed because Jira REST API v3 requires ADF for the `description` field.
+
+## 13.3 Validation Artifacts Added
+
+1. SQL setup and verification scripts were added under [supabase/TEST_UNASSIGNED_WORK_INTEGRATION.sql](../supabase/TEST_UNASSIGNED_WORK_INTEGRATION.sql) and related test files.
+2. Additional testing guidance was added in [docs/TEST_AND_VALIDATION_GUIDE.md](../docs/TEST_AND_VALIDATION_GUIDE.md).
+3. Flow verification notes were added in [docs/UNASSIGNED_WORK_FLOW_VERIFICATION.md](../docs/UNASSIGNED_WORK_FLOW_VERIFICATION.md).
+
+## 13.4 Deviations From Original Plan
+
+1. The implementation reused the existing timeline modal structure in `DayView.js` instead of extracting a separate shared `ConvertWorkModal.js`.
+2. New issue creation for timeline conversion is handled directly in `analyticsResolvers.js`, while shared worklog behavior is handled in `workAssignmentService.js`.
+3. The timeline conversion path currently focuses on `activity_records` as planned for v1; legacy-only timeline conversion was not expanded beyond existing support boundaries.
+4. The plan originally described recommendation work as a future phase, but the recommendation resolver/helper path was implemented during this work.
+
+## 13.5 Remaining Open Items
+
+1. No feature flag named `timelineUnassignedConversionEnabled` was added.
+2. The plan item about matching all create-new controls from the unassigned page exactly, including issue type and status controls, is not fully implemented in the timeline flow.
+3. Automated tests for the critical path were not fully added; current validation is mainly through manual testing, SQL scripts, and supporting verification docs.
+4. Rollout and monitoring items in Section 10 remain operational follow-up work rather than code completed in this branch.
+
+## 13.6 Current Status Against Definition of Done
+
+1. Item 1 is complete.
+2. Item 2 is complete after the resolver, service, and Jira payload fixes.
+3. Item 3 is substantially complete for the implemented recommendation prefill path.
+4. Item 4 is complete for the day timeline flow backed by `activity_records` updates.
+5. Item 5 was manually validated during implementation, but not closed by broad automated regression coverage.
+6. Item 6 is not fully complete because critical automated tests were not added end-to-end.
