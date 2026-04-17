@@ -12,7 +12,7 @@ The time-tracking desktop agent records `LockApp.exe` (Windows lock screen) as a
 
 ### Fix 1: Prevent LockApp sessions from starting (Primary — Desktop App)
 
-**File:** `JIRAForge/python-desktop-app/desktop_app.py`
+**File:** `python-desktop-app/desktop_app.py`
 
 #### 1a. Add a lock-screen app constant (~line 3496, near BROWSER_PROCESSES)
 
@@ -86,7 +86,7 @@ if app_name.lower() in LOCK_SCREEN_APPS:
 
 ### Fix 2: Mark lock-screen records as idle in upload path (Defense — Desktop App)
 
-**File:** `JIRAForge/python-desktop-app/desktop_app.py`
+**File:** `python-desktop-app/desktop_app.py`
 
 #### 2a. Add `is_idle` to the record dict (line 7725)
 
@@ -115,7 +115,7 @@ if is_lock_screen:
 
 ### Fix 3: Exclude idle records from summary views (Defense — SQL)
 
-**File:** New migration `JIRAForge/supabase/migrations/20260417_exclude_idle_from_summaries.sql`
+**File:** New migration `supabase/migrations/20260417_exclude_idle_from_summaries.sql`
 
 Recreate the `daily_time_summary`, `weekly_time_summary`, and `monthly_time_summary` views with an additional filter on the activity_records subquery:
 
