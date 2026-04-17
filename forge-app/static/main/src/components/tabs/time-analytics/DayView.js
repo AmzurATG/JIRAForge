@@ -14,8 +14,10 @@ function DayView({ loading, timeData, onTodayTotalReconciled, onOpenWorklogReass
   const [timelineData, setTimelineData] = useState(null);
   const [myTimelineData, setMyTimelineData] = useState(null);
   const [convertingIdle, setConvertingIdle] = useState(null); // { id, startTime, endTime, durationSeconds }
+  const [convertingUnassigned, setConvertingUnassigned] = useState(null); // { sessionIds: [], startTime, endTime, durationSeconds }
   const [convertForm, setConvertForm] = useState({ issueKey: '', reason: '', mode: 'existing', projectKey: '' }); // mode: 'existing' | 'new'
   const [convertLoading, setConvertLoading] = useState(false);
+  const [convertStatus, setConvertStatus] = useState(null); // { type: 'success'|'error'|'warning', text: string }
   const [userProjects, setUserProjects] = useState([]); // Projects for "Create New" dropdown
   const [userIssues, setUserIssues] = useState([]); // Issues for "Existing Issue" dropdown
   const [issueSearch, setIssueSearch] = useState(''); // Filter text for issue dropdown
@@ -132,6 +134,13 @@ function DayView({ loading, timeData, onTodayTotalReconciled, onOpenWorklogReass
             durationSeconds: b.durationSeconds
           })));
         }
+        // Include unassigned blocks in range calculation
+        if (user.unassignedBlocks) {
+          allSessions = allSessions.concat(user.unassignedBlocks.map(b => ({
+            endTime: b.endTime,
+            durationSeconds: b.durationSeconds
+          })));
+        }
       });
     } else if (myTimelineData) {
       if (myTimelineData.sessions) {
@@ -139,6 +148,12 @@ function DayView({ loading, timeData, onTodayTotalReconciled, onOpenWorklogReass
       }
       if (myTimelineData.idleBlocks) {
         allSessions = allSessions.concat(myTimelineData.idleBlocks.map(b => ({
+          endTime: b.endTime,
+          durationSeconds: b.durationSeconds
+        })));
+      }
+      if (myTimelineData.unassignedBlocks) {
+        allSessions = allSessions.concat(myTimelineData.unassignedBlocks.map(b => ({
           endTime: b.endTime,
           durationSeconds: b.durationSeconds
         })));
@@ -384,12 +399,160 @@ function DayView({ loading, timeData, onTodayTotalReconciled, onOpenWorklogReass
     }).filter(block => block && block.left < 100 && (block.left + block.width) > 0);
   };
 
+  // Get unassigned work blocks for a user's timeline (coalesced into merged blocks)
+  const getUnassignedBlocks = (userId) => {
+    let unassignedBlocks = [];
+
+    if (timeData?.canViewAllUsers && timelineData) {
+      const userTimeline = timelineData.usersWithActivity?.find(u => u.userId === userId);
+      unassignedBlocks = userTimeline?.unassignedBlocks || [];
+    } else if (myTimelineData?.unassignedBlocks) {
+      unassignedBlocks = myTimelineData.unassignedBlocks;
+    }
+
+    if (!unassignedBlocks || unassignedBlocks.length === 0) return [];
+
+    // Build raw blocks with precise timing
+    const rawBlocks = unassignedBlocks.map(block => {
+      const startTime = parseUTC(block.startTime);
+      const endTime = parseUTC(block.endTime);
+      if (!startTime || !endTime) return null;
+
+      return {
+        id: block.id,
+        startTime,
+        endTime,
+        durationSeconds: block.durationSeconds || 0,
+        projectKey: block.projectKey || null
+      };
+    }).filter(Boolean).sort((a, b) => a.startTime - b.startTime);
+
+    if (rawBlocks.length === 0) return [];
+
+    // Coalesce adjacent/overlapping blocks within 10-minute gap
+    const GAP_THRESHOLD_MS = 10 * 60 * 1000;
+    const merged = [];
+    const sessionIdsByMergedBlock = {}; // Map merged block index to sessionIds
+    
+    for (let i = 0; i < rawBlocks.length; i++) {
+      const block = rawBlocks[i];
+      const prev = merged[merged.length - 1];
+      
+      if (prev && (block.startTime - prev.endTime) <= GAP_THRESHOLD_MS) {
+        // Extend previous merged block
+        const mergedIndex = merged.length - 1;
+        prev.endTime = new Date(Math.max(prev.endTime.getTime(), block.endTime.getTime()));
+        prev.durationSeconds += block.durationSeconds;
+        if (!sessionIdsByMergedBlock[mergedIndex]) {
+          sessionIdsByMergedBlock[mergedIndex] = [];
+        }
+        sessionIdsByMergedBlock[mergedIndex].push(block.id);
+      } else {
+        // Start new merged block
+        const mergedIndex = merged.length;
+        merged.push({ ...block, endTime: new Date(block.endTime) });
+        sessionIdsByMergedBlock[mergedIndex] = [block.id];
+      }
+    }
+
+    // Convert to percentage positions
+    return merged.map((block, index) => {
+      const leftPercent = timeToPercent(block.startTime);
+      const rightPercent = timeToPercent(block.endTime);
+      const widthPercent = Math.max(0.3, rightPercent - leftPercent);
+
+      return {
+        sessionIds: sessionIdsByMergedBlock[index] || [],
+        left: leftPercent,
+        width: widthPercent,
+        startTime: block.startTime,
+        endTime: block.endTime,
+        durationSeconds: block.durationSeconds || 0
+      };
+    }).filter(block => block.left < 100 && (block.left + block.width) > 0);
+  };
+
+  // Handle unassigned work conversion
+  const handleConvertUnassigned = async () => {
+    if (!convertingUnassigned || !convertingUnassigned.sessionIds?.length) return;
+    if (convertForm.mode === 'existing' && !convertForm.issueKey) return;
+    if (convertForm.mode === 'new' && !convertForm.projectKey) return;
+    
+    setConvertLoading(true);
+    setConvertStatus(null);
+    try {
+      const payload = {
+        sessionIds: convertingUnassigned.sessionIds,
+        conversionReason: convertForm.reason.trim() || 'Manually converted from unassigned timeline block'
+      };
+      
+      if (convertForm.mode === 'existing') {
+        payload.issueKey = convertForm.issueKey.trim();
+      } else {
+        payload.createNewIssue = true;
+        payload.newIssueSummary = convertForm.reason.trim() || 'Unassigned work - auto-created';
+        payload.projectKey = convertForm.projectKey;
+      }
+      
+      const result = await invoke('convertUnassignedToWorklog', payload);
+      if (result.success) {
+        const resolvedIssueKey = result?.data?.issueKey || result?.data?.createdIssueKey || payload.issueKey || null;
+        if (resolvedIssueKey) {
+          setConvertStatus({
+            type: 'success',
+            text: result?.data?.createdNewIssue
+              ? `Assigned successfully. Created issue ${resolvedIssueKey}.`
+              : `Assigned successfully to issue ${resolvedIssueKey}.`
+          });
+        } else {
+          setConvertStatus({ type: 'success', text: 'Unassigned work assigned successfully.' });
+        }
+
+        // Refresh timeline data
+        setConvertingUnassigned(null);
+        setConvertForm({ issueKey: '', reason: '', mode: 'existing', projectKey: '' });
+        
+        // Re-fetch timeline to show updated state (sessions removed from both timeline and Unassigned Work)
+        if (timeData?.canViewAllUsers) {
+          const refreshResult = await invoke('getTeamDayTimeline', { projectKey: null, date: todayStr });
+          if (refreshResult.success) setTimelineData(refreshResult.data);
+        } else {
+          const refreshResult = await invoke('getMyDayTimeline', { date: todayStr });
+          if (refreshResult.success) setMyTimelineData(refreshResult.data);
+        }
+        
+        // Refresh My Focus dashboard so newly created/linked issue appears immediately
+        try {
+          await loadActiveIssues();
+        } catch (e) {
+          console.warn('[DayView] Failed to refresh active issues after unassigned conversion:', e);
+        }
+      } else {
+        console.error('Failed to convert unassigned work:', result.error);
+        if (result?.createdIssueKey) {
+          setConvertStatus({
+            type: 'warning',
+            text: `Issue ${result.createdIssueKey} was created, but assignment failed: ${result.error || 'Unknown error'}. Please retry using this issue.`
+          });
+        } else {
+          setConvertStatus({ type: 'error', text: `Assignment failed: ${result?.error || 'Unknown error'}` });
+        }
+      }
+    } catch (err) {
+      console.error('Error converting unassigned work:', err);
+      setConvertStatus({ type: 'error', text: `Assignment failed: ${err?.message || 'Unexpected error'}` });
+    } finally {
+      setConvertLoading(false);
+    }
+  };
+
   // Handle idle block conversion
   const handleConvertIdle = async () => {
     if (!convertingIdle || !convertForm.reason) return;
     if (convertForm.mode === 'existing' && !convertForm.issueKey) return;
     if (convertForm.mode === 'new' && !convertForm.projectKey) return;
     setConvertLoading(true);
+    setConvertStatus(null);
     try {
       const payload = {
         idleRecordId: convertingIdle.id,
@@ -405,6 +568,13 @@ function DayView({ loading, timeData, onTodayTotalReconciled, onOpenWorklogReass
       }
       const result = await invoke('convertIdleToWorklog', payload);
       if (result.success) {
+        const targetIssue = convertForm.issueKey || result?.data?.issueKey;
+        if (targetIssue) {
+          setConvertStatus({ type: 'success', text: `Idle time converted successfully to issue ${targetIssue}.` });
+        } else {
+          setConvertStatus({ type: 'success', text: 'Idle time converted successfully.' });
+        }
+
         // Refresh timeline data
         setConvertingIdle(null);
         setConvertForm({ issueKey: '', reason: '', mode: 'existing', projectKey: '' });
@@ -424,9 +594,11 @@ function DayView({ loading, timeData, onTodayTotalReconciled, onOpenWorklogReass
         }
       } else {
         console.error('Failed to convert idle block:', result.error);
+        setConvertStatus({ type: 'error', text: `Idle conversion failed: ${result?.error || 'Unknown error'}` });
       }
     } catch (err) {
       console.error('Error converting idle block:', err);
+      setConvertStatus({ type: 'error', text: `Idle conversion failed: ${err?.message || 'Unexpected error'}` });
     } finally {
       setConvertLoading(false);
     }
@@ -434,21 +606,22 @@ function DayView({ loading, timeData, onTodayTotalReconciled, onOpenWorklogReass
 
   // Close popover on outside click
   useEffect(() => {
-    if (!convertingIdle) return;
+    if (!convertingIdle && !convertingUnassigned) return;
     const handleClickOutside = (e) => {
       if (popoverRef.current && !popoverRef.current.contains(e.target)) {
         setConvertingIdle(null);
+        setConvertingUnassigned(null);
         setConvertForm({ issueKey: '', reason: '', mode: 'existing', projectKey: '' });
         setIssueSearch('');
       }
     };
     document.addEventListener('mousedown', handleClickOutside);
     return () => document.removeEventListener('mousedown', handleClickOutside);
-  }, [convertingIdle]);
+  }, [convertingIdle, convertingUnassigned]);
 
   // Load user projects and issues when convert popover opens
   useEffect(() => {
-    if (!convertingIdle) return;
+    if (!convertingIdle && !convertingUnassigned) return;
     let cancelled = false;
     setDropdownsLoading(true);
     Promise.all([
@@ -458,13 +631,51 @@ function DayView({ loading, timeData, onTodayTotalReconciled, onOpenWorklogReass
       if (cancelled) return;
       if (projResult?.success) setUserProjects(projResult.projects || []);
       if (issResult?.success) setUserIssues(issResult.issues || []);
+        // Also fetch recommendation if converting unassigned work
+        const fetchRecommendationPromise = convertingUnassigned?.sessionIds?.length > 0
+          ? invoke('getUnassignedConversionRecommendation', { sessionIds: convertingUnassigned.sessionIds })
+          : Promise.resolve({ success: true, data: null });
+
+        return Promise.all([
+          invoke('getUserProjects'),
+          invoke('getAllUserAssignedIssues'),
+          fetchRecommendationPromise
+        ]);
+      }).then(([projResult, issResult, recResult]) => {
+          if (cancelled) return;
+          if (projResult?.success) setUserProjects(projResult.projects || []);
+          if (issResult?.success) setUserIssues(issResult.issues || []);
+
+          // Apply recommendation prefill if available
+          if (recResult?.success && recResult.data) {
+            const rec = recResult.data;
+            if (rec.action === 'assign_to_existing' && rec.suggestedIssueKey) {
+              setConvertForm(prev => ({
+                ...prev,
+                mode: 'existing',
+                issueKey: rec.suggestedIssueKey,
+                reason: rec.summary || prev.reason
+              }));
+            } else if (rec.action === 'create_new_issue') {
+              // Find first available project for new issue creation
+              if (projResult?.success && projResult.projects?.length > 0) {
+                setConvertForm(prev => ({
+                  ...prev,
+                  mode: 'new',
+                  projectKey: projResult.projects[0].key,
+                  reason: rec.summary || prev.reason
+                }));
+              }
+            }
+          }
     }).catch(err => {
-      console.warn('[DayView] Failed to load projects/issues for idle convert:', err);
+      const conversionType = convertingIdle ? 'idle' : 'unassigned';
+      console.warn(`[DayView] Failed to load projects/issues for ${conversionType} convert:`, err);
     }).finally(() => {
       if (!cancelled) setDropdownsLoading(false);
     });
     return () => { cancelled = true; };
-  }, [convertingIdle]);
+  }, [convertingIdle, convertingUnassigned]);
 
   // Get last activity info for a user
   const getUserLastActivity = (userId) => {
@@ -627,6 +838,19 @@ function DayView({ loading, timeData, onTodayTotalReconciled, onOpenWorklogReass
         </h3>
       </div>
 
+      {convertStatus && (
+        <div className={`conversion-status-banner ${convertStatus.type}`}>
+          <span>{convertStatus.text}</span>
+          <button
+            className="conversion-status-close"
+            onClick={() => setConvertStatus(null)}
+            aria-label="Dismiss conversion status"
+          >
+            ✕
+          </button>
+        </div>
+      )}
+
       {loading ? (
         <p>Loading...</p>
       ) : (
@@ -682,6 +906,7 @@ function DayView({ loading, timeData, onTodayTotalReconciled, onOpenWorklogReass
                 {users.map((user, idx) => {
                   const timeBlocks = getUserTimeBlocks(user.userId);
                   const idleBlocks = getIdleTimeBlocks(user.userId);
+                  const unassignedBlocks = getUnassignedBlocks(user.userId);
                   const lastActivity = getUserLastActivity(user.userId);
                   const timeAgo = lastActivity ? getTimeAgo(lastActivity) : null;
                   const hasActivity = user.totalSeconds > 0;
@@ -770,11 +995,52 @@ function DayView({ loading, timeData, onTodayTotalReconciled, onOpenWorklogReass
                                         className="idle-convert-btn"
                                         onClick={(e) => {
                                           e.stopPropagation();
+                                          setConvertStatus(null);
                                           setConvertingIdle(block);
                                           setConvertForm({ issueKey: '', reason: '', mode: 'existing', projectKey: '' });
                                           setIssueSearch('');
                                         }}
                                         title="Convert to worklog"
+                                      >+</button>
+                                    )}
+                                  </div>
+                                ))}
+                                {/* Unassigned work blocks with dotted pattern */}
+                                {unassignedBlocks.map((block, blockIdx) => (
+                                  <div
+                                    key={`unassigned-${blockIdx}`}
+                                    className={`timeline-block unassigned${block.width < 1 ? ' thin' : ''}`}
+                                    style={{
+                                      left: `${block.left}%`,
+                                      width: `${block.width}%`
+                                    }}
+                                    onClick={() => {
+                                      if (!isOwnUser) return;
+                                      setConvertStatus(null);
+                                      setConvertingUnassigned(block);
+                                      setConvertForm({ issueKey: '', reason: '', mode: 'existing', projectKey: '' });
+                                      setIssueSearch('');
+                                    }}
+                                    onMouseEnter={() => {
+                                      const mins = Math.round(block.durationSeconds / 60);
+                                      const time = block.startTime.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true });
+                                      const end = block.endTime.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true });
+                                      setHoveredBlock({ text: `Unassigned · ${time} – ${end} (${mins}m)`, type: 'unassigned' });
+                                    }}
+                                    onMouseLeave={() => setHoveredBlock(null)}
+                                  >
+                                    {/* Show + button on hover for own unassigned blocks */}
+                                    {isOwnUser && (
+                                      <button
+                                        className="unassigned-convert-btn"
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          setConvertStatus(null);
+                                          setConvertingUnassigned(block);
+                                          setConvertForm({ issueKey: '', reason: '', mode: 'existing', projectKey: '' });
+                                          setIssueSearch('');
+                                        }}
+                                        title="Assign or create issue for unassigned work"
                                       >+</button>
                                     )}
                                   </div>
@@ -861,13 +1127,15 @@ function DayView({ loading, timeData, onTodayTotalReconciled, onOpenWorklogReass
         />
       )}
 
-      {/* Convert idle popover — fixed overlay outside the timeline */}
-      {convertingIdle && (
-        <div className="idle-convert-overlay" onClick={() => { setConvertingIdle(null); setConvertForm({ issueKey: '', reason: '', mode: 'existing', projectKey: '' }); setIssueSearch(''); }}>
+      {/* Convert popover — fixed overlay outside the timeline */}
+      {(convertingIdle || convertingUnassigned) && (
+        <div className="idle-convert-overlay" onClick={() => { setConvertingIdle(null); setConvertingUnassigned(null); setConvertForm({ issueKey: '', reason: '', mode: 'existing', projectKey: '' }); setIssueSearch(''); }}>
           <div className="idle-convert-modal" ref={popoverRef} onClick={(e) => e.stopPropagation()}>
             <div className="popover-header">
-              <span className="popover-title">Convert idle to worklog</span>
-              <span className="popover-duration">{Math.round(convertingIdle.durationSeconds / 60)}m idle</span>
+              <span className="popover-title">{convertingUnassigned ? 'Assign unassigned work' : 'Convert idle to worklog'}</span>
+              <span className="popover-duration">
+                {Math.round(((convertingUnassigned || convertingIdle)?.durationSeconds || 0) / 60)}m {convertingUnassigned ? 'unassigned' : 'idle'}
+              </span>
             </div>
 
             {/* Step 1: Reason */}
@@ -959,13 +1227,13 @@ function DayView({ loading, timeData, onTodayTotalReconciled, onOpenWorklogReass
             <div className="popover-actions">
               <button
                 className="popover-btn cancel"
-                onClick={() => { setConvertingIdle(null); setConvertForm({ issueKey: '', reason: '', mode: 'existing', projectKey: '' }); setIssueSearch(''); }}
+                onClick={() => { setConvertingIdle(null); setConvertingUnassigned(null); setConvertForm({ issueKey: '', reason: '', mode: 'existing', projectKey: '' }); setIssueSearch(''); }}
               >Cancel</button>
               <button
                 className="popover-btn confirm"
                 disabled={!convertForm.reason.trim() || (convertForm.mode === 'existing' && !convertForm.issueKey.trim()) || (convertForm.mode === 'new' && !convertForm.projectKey) || convertLoading}
-                onClick={handleConvertIdle}
-              >{convertLoading ? 'Saving...' : 'Convert'}</button>
+                onClick={convertingUnassigned ? handleConvertUnassigned : handleConvertIdle}
+              >{convertLoading ? 'Saving...' : (convertingUnassigned ? 'Assign' : 'Convert')}</button>
             </div>
           </div>
         </div>

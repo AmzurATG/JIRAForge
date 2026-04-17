@@ -29,6 +29,34 @@ function buildWorklogComment(displayName) {
   };
 }
 
+  /**
+   * Convert plain text to Atlassian Document Format (ADF)
+   * Required for Jira API v3 description field
+   * @param {string} plainText - Plain text to convert
+   * @returns {Object} ADF formatted document
+   */
+  export function textToADF(plainText) {
+    if (!plainText) {
+      return {
+        type: 'doc',
+        version: 1,
+        content: []
+      };
+    }
+
+    // Split text into paragraphs by newlines
+    const paragraphs = plainText.split('\n').filter(line => line.trim());
+
+    return {
+      type: 'doc',
+      version: 1,
+      content: paragraphs.map(para => ({
+        type: 'paragraph',
+        content: [{ type: 'text', text: para }]
+      }))
+    };
+  }
+
 /**
  * Get user's assigned issues from Jira
  * @param {Array<string>} statuses - Issue statuses to filter (default: In Progress)
@@ -156,6 +184,12 @@ export async function createJiraIssue(projectKey, issueData) {
       })
     }
   );
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    console.error(`[CreateIssue] Failed to create issue in project ${projectKey}: HTTP ${response.status} - ${errorText}`);
+    throw new Error(`Failed to create Jira issue: HTTP ${response.status} - ${errorText.substring(0, 200)}`);
+  }
 
   return response.json();
 }
