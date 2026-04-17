@@ -3491,6 +3491,11 @@ class PausePopupWindow:
 # APPLICATION CLASSIFICATION MANAGER
 # ============================================================================
 
+# Lock screen / logon screen process names — these should NEVER be tracked
+# as active work sessions. When the foreground window belongs to one of these,
+# the user's screen is locked and any elapsed time is idle.
+LOCK_SCREEN_APPS = {'lockapp.exe', 'logonui.exe'}
+
 # Browser process names — when one of these is the active process,
 # we check the window title against URL-based entries instead of process-based.
 BROWSER_PROCESSES = {
@@ -7692,8 +7697,15 @@ class TimeTracker:
             for s in sessions:
                 classification = s.get('classification', 'unknown')
 
+                # Defense-in-depth: if a lock screen app somehow made it into
+                # SQLite sessions, mark it as idle so it won't inflate totals.
+                app_name_lower = s.get('application_name', '').lower()
+                is_lock_screen = app_name_lower in LOCK_SCREEN_APPS
+                if is_lock_screen:
+                    classification = 'idle'
+
                 # Determine status based on classification
-                if classification in ('non_productive', 'private'):
+                if classification in ('non_productive', 'private', 'idle'):
                     status = 'analyzed'  # No AI needed
                 else:
                     status = 'pending'  # AI server will analyze
@@ -7728,6 +7740,7 @@ class TimeTracker:
                     'window_title': s.get('window_title', ''),
                     'application_name': s.get('application_name', ''),
                     'classification': classification,
+                    'is_idle': is_lock_screen,
                     'ocr_text': ocr_text,
                     'ocr_method': ocr_method,
                     'ocr_confidence': ocr_confidence,
@@ -8035,6 +8048,11 @@ class TimeTracker:
         """
         app_name = window_info.get('app', '')
         window_title = window_info.get('title', '')
+
+        # Never track lock screen apps as active sessions
+        if app_name.lower() in LOCK_SCREEN_APPS:
+            print(f"[SKIP] Lock screen app detected: {app_name}")
+            return
 
         # Classify the application
         classification, match_type = self.classification_manager.classify(app_name, window_title)
@@ -8377,6 +8395,19 @@ class TimeTracker:
             print(f"[ERROR] Screenshot capture failed: {e}")
             return None
     
+    def _is_screen_locked(self):
+        """Check if the screen is currently locked by inspecting the foreground window.
+        Returns True when the foreground process is a Windows lock/logon screen."""
+        if not WIN32_AVAILABLE:
+            return False
+        try:
+            hwnd = win32gui.GetForegroundWindow()
+            _, pid = win32process.GetWindowThreadProcessId(hwnd)
+            process = psutil.Process(pid)
+            return process.name().lower() in LOCK_SCREEN_APPS
+        except Exception:
+            return False
+
     def get_active_window(self):
         """Get active window information and detect window switches for event-based tracking"""
         if not WIN32_AVAILABLE:
@@ -9301,6 +9332,21 @@ class TimeTracker:
                         self.upload_activity_batch()
                     except Exception as e:
                         print(f"[WARN] Suspension batch upload failed: {e} — data remains in SQLite for next cycle")
+                    # Check if screen is still locked before resuming tracking.
+                    # When a PC briefly wakes from sleep (Windows Update, network, etc.)
+                    # but the screen is still locked, we must stay in idle mode to avoid
+                    # tracking LockApp.exe as active work time.
+                    if self._is_screen_locked():
+                        print(f"[INFO] Screen still locked after suspension — staying in idle mode")
+                        self.is_idle = True
+                        self.idle_start_time = datetime.fromtimestamp(self.last_activity_time, tz=timezone.utc)
+                        self.idle_project_key = self.current_project_key
+                        self.needs_idle_resume = False
+                        self.current_window_key = None
+                        last_loop_time = current_loop_time
+                        self.add_admin_log('INFO', f'System suspension detected ({int(time_since_last_loop)}s gap) — screen locked, staying idle')
+                        continue
+
                     # Reset ALL tracking state — new session starts fresh
                     self.is_idle = False
                     self.needs_idle_resume = False
@@ -9473,6 +9519,21 @@ class TimeTracker:
                     self.previous_window_start_time = None
                     self.previous_window_db_start_time = None
                     self.current_window_key = None  # Also reset current window so it's detected as "new"
+
+                # Guard: if screen is locked (e.g., PC woke briefly from sleep but user
+                # hasn't unlocked), re-enter idle mode instead of tracking LockApp.exe.
+                if self._is_screen_locked():
+                    if not self.is_idle:
+                        print(f"[INFO] Screen locked — entering idle mode instead of tracking")
+                        self._finalize_active_session("screen still locked")
+                        self.session_manager.stop_current_timer()
+                        self.idle_start_time = datetime.fromtimestamp(self.last_activity_time, tz=timezone.utc)
+                        self.idle_project_key = self.current_project_key
+                        self.is_idle = True
+                        self.update_tray_icon()
+                        self.add_admin_log('INFO', 'Screen locked detected in main loop — entered idle')
+                    time.sleep(5)
+                    continue
 
                 # Check for window switches more frequently (every 2 seconds)
                 # This allows us to capture screenshots immediately on window switch
