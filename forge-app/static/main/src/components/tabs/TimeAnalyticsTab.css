@@ -15,6 +15,47 @@
   margin-bottom: 16px;
 }
 
+/* Conversion feedback banner shown after assign/convert actions */
+.conversion-status-banner {
+  margin-bottom: 12px;
+  border-radius: 6px;
+  padding: 10px 12px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 13px;
+  border: 1px solid transparent;
+}
+
+.conversion-status-banner.success {
+  background: #E3FCEF;
+  border-color: #57D9A3;
+  color: #006644;
+}
+
+.conversion-status-banner.warning {
+  background: #FFFAE6;
+  border-color: #FFC400;
+  color: #7A5D00;
+}
+
+.conversion-status-banner.error {
+  background: #FFEBE6;
+  border-color: #FF8F73;
+  color: #BF2600;
+}
+
+.conversion-status-close {
+  border: none;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  padding: 2px 4px;
+}
+
 /* Error Banner */
 .analytics-error-banner {
   background: #FFEBE6;
@@ -635,6 +676,16 @@
   background: #ABF5D1;
 }
 
+.legend-swatch.unassigned {
+  background: repeating-linear-gradient(
+    90deg,
+    #0052CC,
+    #0052CC 2px,
+    transparent 2px,
+    transparent 4px
+  );
+}
+
 .idle-guide-text {
   font-size: 12px;
   line-height: 1.5;
@@ -893,6 +944,10 @@
   background: #ABF5D1;
 }
 
+.hover-strip-dot.unassigned {
+  background: #0052CC;
+}
+
 .hover-strip-text {
   font-weight: 500;
   color: #505F79;
@@ -975,6 +1030,81 @@
 }
 
 .idle-convert-btn:hover {
+  background: #0065FF;
+}
+
+/* Unassigned work blocks - dotted pattern */
+.timeline-block.unassigned {
+  background: repeating-linear-gradient(
+    90deg,
+    #0052CC,
+    #0052CC 2px,
+    transparent 2px,
+    transparent 4px
+  );
+  cursor: default;
+  overflow: visible;
+  z-index: 1;
+  opacity: 0.7;
+  min-width: 8px;
+}
+
+/* Expand hit target so short sessions are still easy to click */
+.timeline-block.unassigned::before {
+  content: '';
+  position: absolute;
+  top: -6px;
+  bottom: -6px;
+  left: -4px;
+  right: -4px;
+}
+
+.timeline-block.unassigned:hover {
+  opacity: 0.9;
+  background: repeating-linear-gradient(
+    90deg,
+    #0065FF,
+    #0065FF 2px,
+    transparent 2px,
+    transparent 4px
+  );
+}
+
+/* ➕ button on unassigned blocks - visible only on hover */
+.unassigned-convert-btn {
+  display: none;
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 16px;
+  height: 16px;
+  border: none;
+  border-radius: 50%;
+  background: #0052CC;
+  color: white;
+  font-size: 12px;
+  line-height: 16px;
+  text-align: center;
+  padding: 0;
+  cursor: pointer;
+  z-index: 2;
+  pointer-events: auto;
+}
+
+.timeline-block.unassigned:hover .unassigned-convert-btn {
+  display: block;
+}
+
+/* For very thin blocks, keep the action visible and reachable */
+.timeline-block.unassigned.thin .unassigned-convert-btn {
+  display: block;
+  left: auto;
+  right: -8px;
+  transform: translateY(-50%);
+}
+
+.unassigned-convert-btn:hover {
   background: #0065FF;
 }
 

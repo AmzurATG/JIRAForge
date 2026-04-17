@@ -4,7 +4,7 @@
  */
 
 import { fetchTimeAnalytics, fetchTimeAnalyticsBatch, fetchAllAnalytics, fetchProjectAnalytics, fetchProjectTeamAnalytics, fetchTeamDayTimeline, fetchMyDayTimeline, fetchMyDayIssueBreakdown, convertIdleToWorklog, fetchMemberDayDetails, fetchMemberWeekDetails, fetchMemberMonthDetails, generateTeamExportData, generateTeamExportDataStructured } from '../services/analyticsService.js';
-import { isJiraAdmin, checkUserPermissions, createJiraIssue, getIssueTransitions, transitionIssue, createJiraWorklog } from '../utils/jira.js';
+import { isJiraAdmin, checkUserPermissions, createJiraIssue, getIssueTransitions, transitionIssue, createJiraWorklog, textToADF } from '../utils/jira.js';
 
 // Feature flag for using batch API (set to true for production)
 const USE_BATCH_API = true;
@@ -265,10 +265,133 @@ export function registerAnalyticsResolvers(resolver) {
   });
 
   /**
+   * Resolver for converting unassigned work sessions to a Jira issue
+   * Supports both "assign to existing issue" and "create new issue" modes
+   * Handles group membership cleanup and worklog creation
+   */
+  resolver.define('convertUnassignedToWorklog', async (req) => {
+    const { payload, context } = req;
+    const { sessionIds, issueKey: existingIssueKey, createNewIssue, newIssueSummary, newIssueDescription, projectKey: frontendProjectKey, conversionReason } = payload;
+    const accountId = context.accountId;
+    const cloudId = context.cloudId;
+    let createdIssueKey = null;
+
+    try {
+      let issueKey = existingIssueKey;
+
+      // If creating a new issue, do it here (Forge API context required)
+      if (createNewIssue && !issueKey) {
+        if (!frontendProjectKey) {
+          throw new Error('Project key is required for creating a new issue');
+        }
+
+        const newIssue = await createJiraIssue(frontendProjectKey, {
+          summary: newIssueSummary || 'Unassigned work - Auto-created',
+            description: textToADF(newIssueDescription || 'Work sessions converted from unassigned time'),
+          issuetype: { name: 'Task' },
+          assignee: { accountId },
+          labels: ['unassigned-work-converted']
+        });
+
+        if (!newIssue || !newIssue.key) {
+          throw new Error('Failed to create Jira issue');
+        }
+        issueKey = newIssue.key;
+        createdIssueKey = issueKey;
+
+        // Transition the new issue to "In Progress"
+        try {
+          const transitions = await getIssueTransitions(issueKey);
+          const inProgressTransition = transitions.find(t =>
+            t.to?.name?.toLowerCase() === 'in progress'
+          );
+          if (inProgressTransition) {
+            await transitionIssue(issueKey, inProgressTransition.id);
+            console.log(`[UnassignedConvert] Transitioned ${issueKey} to In Progress`);
+          }
+        } catch (transErr) {
+          console.warn(`[UnassignedConvert] Could not transition ${issueKey} to In Progress:`, transErr.message);
+        }
+      }
+
+      if (!issueKey) {
+        throw new Error('Issue key is required');
+      }
+
+      // Service layer handles: activity record updates, group cleanup, aggregate recalculation
+      const { convertUnassignedToWorklog } = await import('../services/analyticsService.js');
+      const data = await convertUnassignedToWorklog(accountId, cloudId, sessionIds, {
+        existingIssueKey: issueKey,
+        conversionReason
+      });
+
+      // Handle worklog creation
+      try {
+        if (data.totalSeconds && data.totalSeconds > 0) {
+          const { createWorklogIfNeeded, isAutoSyncEnabled } = await import('../services/workAssignmentService.js');
+          const autoSyncEnabled = await isAutoSyncEnabled(accountId, cloudId);
+
+          const worklogResult = await createWorklogIfNeeded({
+            issueKey,
+            timeToLog: data.totalSeconds,
+            sessionCount: data.sessionCount,
+            autoSyncEnabled,
+            customComment: `Time tracked from ${data.sessionCount} unassigned work session(s), manually assigned.`
+          });
+
+          console.log(`[UnassignedConvert] Worklog: ${worklogResult.worklogSkipped ? 'SKIPPED (' + worklogResult.worklogSkippedReason + ')' : 'CREATED'}`);
+          data.worklogInfo = worklogResult;
+        }
+      } catch (wlErr) {
+        console.warn(`[UnassignedConvert] Worklog creation failed for ${issueKey}:`, wlErr.message);
+        // Don't fail the whole conversion if worklog fails
+      }
+
+      return {
+        success: true,
+        data: {
+          ...data,
+          issueKey,
+          createdIssueKey,
+          createdNewIssue: !!createdIssueKey
+        }
+      };
+    } catch (error) {
+      console.error('Error converting unassigned to worklog:', error);
+      return {
+        success: false,
+        error: error.message,
+        createdIssueKey
+      };
+    }
+  });
+
+  /**
    * Resolver for fetching member day details
    * Shows issues worked on a specific day by a team member
    */
   resolver.define('getMemberDayDetails', async (req) => {
+
+      /**
+       * Resolver for fetching conversion recommendation for unassigned sessions
+       * Returns group suggestion if all sessions belong to a single group
+       */
+      resolver.define('getUnassignedConversionRecommendation', async (req) => {
+        const { payload, context } = req;
+        const { sessionIds } = payload;
+        const accountId = context.accountId;
+        const cloudId = context.cloudId;
+
+        try {
+          const { getUnassignedConversionRecommendation } = await import('../services/analyticsService.js');
+          const recommendation = await getUnassignedConversionRecommendation(accountId, cloudId, sessionIds);
+          return { success: true, data: recommendation };
+        } catch (error) {
+          console.error('Error fetching unassigned conversion recommendation:', error);
+          return { success: true, data: null }; // Return null recommendation instead of error
+        }
+      });
+
     const { payload, context } = req;
     const { projectKey, userId, date } = payload;
     const accountId = context.accountId;

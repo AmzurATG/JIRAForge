@@ -758,7 +758,8 @@ export async function fetchTeamDayTimeline(accountId, cloudId, projectKey, date,
         lastHeartbeat: userInfo?.desktop_last_heartbeat,
         effectiveLastActive: getEffectiveLastActive(userId, userInfo?.desktop_last_heartbeat),
         sessions: [],
-        idleBlocks: []
+        idleBlocks: [],
+        unassignedBlocks: []
       };
     }
 
@@ -776,6 +777,15 @@ export async function fetchTeamDayTimeline(accountId, cloudId, projectKey, date,
         userTimezone: record.user_timezone || null,
         projectKey: record.project_key || null
       });
+    } else if (!record.user_assigned_issue_key) {
+      // Unassigned work session
+      userTimelineMap[userId].unassignedBlocks.push({
+        id: record.id,
+        startTime: record.start_time,
+        endTime: record.end_time,
+        durationSeconds: record.duration_seconds || 0,
+        projectKey: record.project_key || null
+      });
     } else {
       // Add session with start_time, end_time for accurate timeline rendering
       // duration_seconds = accumulated real work time (not simply end_time - start_time)
@@ -783,7 +793,8 @@ export async function fetchTeamDayTimeline(accountId, cloudId, projectKey, date,
         startTime: record.start_time,
         endTime: record.end_time,
         durationSeconds: record.duration_seconds || 0,
-        issueKey: record.user_assigned_issue_key || null
+        issueKey: record.user_assigned_issue_key || null,
+        id: record.id
       });
     }
   });
@@ -828,7 +839,8 @@ export async function fetchTeamDayTimeline(accountId, cloudId, projectKey, date,
         lastHeartbeat: userInfo?.desktop_last_heartbeat,
         effectiveLastActive: getEffectiveLastActive(userId, userInfo?.desktop_last_heartbeat),
         sessions: [],
-        idleBlocks: []
+        idleBlocks: [],
+        unassignedBlocks: []
       };
     }
 
@@ -993,6 +1005,7 @@ export async function fetchMyDayTimeline(accountId, cloudId, date) {
   // Build sessions and idle blocks from activity records
   const sessions = [];
   const idleBlocks = [];
+  const unassignedBlocks = [];
  
   (activityRecords || []).forEach(record => {
     if (record.is_idle) {
@@ -1008,12 +1021,22 @@ export async function fetchMyDayTimeline(accountId, cloudId, date) {
         userTimezone: record.user_timezone || null,
         projectKey: record.project_key || null
       });
+    } else if (!record.user_assigned_issue_key) {
+      // Unassigned work session (not idle, but not assigned to issue)
+      unassignedBlocks.push({
+        id: record.id,
+        startTime: record.start_time,
+        endTime: record.end_time,
+        durationSeconds: record.duration_seconds || 0,
+        projectKey: record.project_key || null
+      });
     } else {
       sessions.push({
         startTime: record.start_time,
         endTime: record.end_time,
         durationSeconds: record.duration_seconds || 0,
-        issueKey: record.user_assigned_issue_key || null
+        issueKey: record.user_assigned_issue_key || null,
+        id: record.id
       });
     }
   });
@@ -1048,7 +1071,7 @@ export async function fetchMyDayTimeline(accountId, cloudId, date) {
   // Sort sessions by start time
   sortSessionsByStartTime(sessions);
 
-  if (sessions.length === 0 && idleBlocks.length === 0) {
+  if (sessions.length === 0 && idleBlocks.length === 0 && unassignedBlocks.length === 0) {
     const workHoursConfig = await fetchWorkHoursConfig(supabaseConfig, organization.id);
     return {
       date,
@@ -1056,6 +1079,7 @@ export async function fetchMyDayTimeline(accountId, cloudId, date) {
       displayName,
       sessions: [],
       idleBlocks: [],
+      unassignedBlocks: [],
       workHours: workHoursConfig,
       totalHours: 0,
       totalSessions: 0,
@@ -1077,11 +1101,12 @@ export async function fetchMyDayTimeline(accountId, cloudId, date) {
     displayName,
     sessions,
     idleBlocks: filteredIdleBlocks,
+    unassignedBlocks,
     workHours: workHoursConfig,
     totalHours,
     totalSessions: sessions.length,
-    firstActivity: sessions[0]?.startTime || null,
-    lastActivity: sessions[sessions.length - 1]?.endTime || null
+    firstActivity: sessions[0]?.startTime || idleBlocks[0]?.startTime || unassignedBlocks[0]?.startTime || null,
+    lastActivity: sessions[sessions.length - 1]?.endTime || idleBlocks[idleBlocks.length - 1]?.endTime || unassignedBlocks[unassignedBlocks.length - 1]?.endTime || null
   };
 }
 
@@ -1169,8 +1194,267 @@ export async function getIdleRecordProjectKey(accountId, cloudId, idleRecordId) 
   return records?.[0]?.project_key || null;
 }
 
+/**
+ * Convert unassigned work sessions into a Jira issue
+ * Handles both "assign to existing issue" and "create new issue" flows
+ * @param {string} accountId - Atlassian account ID
+ * @param {string} cloudId - Jira Cloud ID
+ * @param {string[]} sessionIds - Activity record IDs to convert
+ * @param {Object} options - Conversion options
+ * @param {string} [options.existingIssueKey] - Existing issue to assign to
+ * @param {string} [options.createNewIssue] - If true, create a new issue
+ * @param {string} [options.newIssueSummary] - Summary for new issue
+ * @param {string} [options.newIssueDescription] - Description for new issue
+ * @param {string} [options.projectKey] - Project key for new issue
+ * @param {string} [options.conversionReason] - User's reason for conversion
+ * @returns {Promise<Object>} Conversion result with issue key and metadata
+ */
+export async function convertUnassignedToWorklog(accountId, cloudId, sessionIds, options = {}) {
+  const { existingIssueKey, createNewIssue, newIssueSummary, newIssueDescription, projectKey: frontendProjectKey, conversionReason } = options;
+
+  if (!sessionIds || sessionIds.length === 0) {
+    throw new Error('No sessions provided for conversion');
+  }
+
+  const { supabaseConfig, organization } = await initializeContext(accountId, cloudId);
+
+  // Get current user
+  const currentUser = await supabaseRequest(
+    supabaseConfig,
+    `users?organization_id=eq.${organization.id}&atlassian_account_id=eq.${accountId}&select=id&limit=1`
+  );
+  if (!currentUser || currentUser.length === 0) {
+    throw new Error('User not found');
+  }
+  const userId = currentUser[0].id;
+
+  // Verify all sessions belong to this user and are unassigned
+  const sessionIdsParam = sessionIds.join(',');
+  const records = await supabaseRequest(
+    supabaseConfig,
+    `activity_records?id=in.(${sessionIdsParam})&select=id,user_id,user_assigned_issue_key,duration_seconds`
+  );
+
+  if (!records || records.length === 0) {
+    throw new Error('No matching activity records found');
+  }
+
+  // SECURITY: Verify all records belong to current user
+  const unOwnedRecords = records.filter(r => r.user_id !== userId);
+  if (unOwnedRecords.length > 0) {
+    throw new Error('Access denied: some records do not belong to you');
+  }
+
+  // Verify all records are unassigned
+  const alreadyAssigned = records.filter(r => r.user_assigned_issue_key);
+  if (alreadyAssigned.length > 0) {
+    throw new Error(`${alreadyAssigned.length} of ${records.length} sessions are already assigned. Skipping conversion.`);
+  }
+
+  // Calculate total time
+  const totalSeconds = records.reduce((sum, r) => sum + (r.duration_seconds || 0), 0);
+
+  // Determine target issue key (create new if requested, otherwise use existing)
+  let targetIssueKey = existingIssueKey;
+  if (createNewIssue && !targetIssueKey) {
+    // Note: Issue creation and transition happen in the RESOLVER (Forge API context required)
+    // This function returns the data needed; resolver handles Jira API calls
+    throw new Error('New issue creation must be handled in resolver context. Use resolver-side flow.');
+  }
+
+  if (!targetIssueKey) {
+    throw new Error('Either existingIssueKey or createNewIssue must be provided');
+  }
+
+  // Extract project key from issue (e.g., "PROJ-123" -> "PROJ")
+  const issueProjectKey = targetIssueKey.split('-')[0];
+
+  // Update activity records with issue assignment
+  // Note: Only update existing columns (manual_assignment_reason may not exist in all schemas)
+  const updatePayload = {
+    user_assigned_issue_key: targetIssueKey,
+    project_key: issueProjectKey
+  };
+
+  await supabaseRequest(
+    supabaseConfig,
+    `activity_records?id=in.(${sessionIdsParam})&user_id=eq.${userId}`,
+    { method: 'PATCH', body: updatePayload }
+  );
+
+  console.log(`[convertUnassigned] Updated ${records.length} activity records to ${targetIssueKey}`);
+
+  // Remove these sessions from unassigned groups and recalculate aggregates
+  const groupMembers = await supabaseRequest(
+    supabaseConfig,
+    `unassigned_group_members?activity_record_id=in.(${sessionIdsParam})&select=id,group_id`
+  );
+
+  const membersArray = Array.isArray(groupMembers) ? groupMembers : [];
+  if (membersArray.length > 0) {
+    // Collect affected groups
+    const affectedGroupIds = new Set(membersArray.map(m => m.group_id).filter(Boolean));
+    const memberIds = membersArray.map(m => m.id).filter(Boolean);
+
+    // Delete group memberships
+    if (memberIds.length > 0) {
+      const memberIdsParam = memberIds.join(',');
+      await supabaseRequest(
+        supabaseConfig,
+        `unassigned_group_members?id=in.(${memberIdsParam})`,
+        { method: 'DELETE' }
+      );
+      console.log(`[convertUnassigned] Removed ${membersArray.length} sessions from unassigned groups`);
+    }
+
+    // Recalculate group aggregates
+    for (const groupId of affectedGroupIds) {
+      try {
+        const remainingMembers = await supabaseRequest(
+          supabaseConfig,
+          `unassigned_group_members?group_id=eq.${groupId}&select=id`
+        );
+
+        const remainingCount = Array.isArray(remainingMembers) ? remainingMembers.length : 0;
+
+        if (remainingCount === 0) {
+          // Group is now empty
+          await supabaseRequest(
+            supabaseConfig,
+            `unassigned_work_groups?id=eq.${groupId}`,
+            {
+              method: 'PATCH',
+              body: {
+                is_assigned: true,
+                session_count: 0,
+                total_seconds: 0
+              }
+            }
+          );
+        } else {
+          // Recalculate totals from remaining members
+          const remainingData = await supabaseRequest(
+            supabaseConfig,
+            `unassigned_group_members?group_id=eq.${groupId}&select=activity_record_id`
+          );
+
+          const arIds = (Array.isArray(remainingData) ? remainingData : [])
+            .map(m => m.activity_record_id)
+            .filter(Boolean);
+
+          if (arIds.length > 0) {
+            const arIdsParam = arIds.join(',');
+            const recalcRecords = await supabaseRequest(
+              supabaseConfig,
+              `activity_records?id=in.(${arIdsParam})&select=duration_seconds`
+            );
+
+            const recalcTotalSeconds = (Array.isArray(recalcRecords) ? recalcRecords : [])
+              .reduce((sum, r) => sum + (r.duration_seconds || 0), 0);
+
+            await supabaseRequest(
+              supabaseConfig,
+              `unassigned_work_groups?id=eq.${groupId}`,
+              {
+                method: 'PATCH',
+                body: {
+                  session_count: remainingCount,
+                  total_seconds: recalcTotalSeconds
+                }
+              }
+            );
+          }
+        }
+      } catch (err) {
+        console.error(`[convertUnassigned] Error updating group ${groupId}:`, err);
+        // Continue despite errors
+      }
+    }
+  }
+
+  const now = new Date().toISOString();
+
+  return {
+    sessionIds,
+    issueKey: targetIssueKey,
+    projectKey: issueProjectKey,
+    totalSeconds,
+    sessionCount: records.length,
+    convertedAt: now
+  };
+}
+
 // ============================================================================
 // TEAM ANALYTICS DETAIL FUNCTIONS (Enhanced Drill-Down)
+
+/**
+ * Fetch recommendation for converting unassigned work sessions
+ * Returns suggestion from group if all sessions belong to a single group
+ * @param {string} accountId - Atlassian account ID
+ * @param {string} cloudId - Jira Cloud ID
+ * @param {string[]} sessionIds - Activity record IDs to get recommendation for
+ * @returns {Promise<Object>} Recommendation data or null if not available
+ */
+export async function getUnassignedConversionRecommendation(accountId, cloudId, sessionIds) {
+  if (!sessionIds || sessionIds.length === 0) {
+    return null;
+  }
+
+  const { supabaseConfig, organization } = await initializeContext(accountId, cloudId);
+
+  // Get current user
+  const currentUser = await supabaseRequest(
+    supabaseConfig,
+    `users?organization_id=eq.${organization.id}&atlassian_account_id=eq.${accountId}&select=id&limit=1`
+  );
+  if (!currentUser || currentUser.length === 0) {
+    return null;
+  }
+
+  try {
+    const sessionIdsParam = sessionIds.join(',');
+
+    // Find which groups contain these sessions
+    const groupMembers = await supabaseRequest(
+      supabaseConfig,
+      `unassigned_group_members?activity_record_id=in.(${sessionIdsParam})&select=group_id`
+    );
+
+    if (!Array.isArray(groupMembers) || groupMembers.length === 0) {
+      return null;
+    }
+
+    // Get unique group IDs
+    const groupIds = [...new Set(groupMembers.map(m => m.group_id).filter(Boolean))];
+
+    // If all sessions belong to a single group, return its recommendation
+    if (groupIds.length === 1) {
+      const groupId = groupIds[0];
+      const groups = await supabaseRequest(
+        supabaseConfig,
+        `unassigned_work_groups?id=eq.${groupId}&select=group_label,group_description,recommended_action,suggested_issue_key,recommendation_reason,confidence_level&limit=1`
+      );
+
+      if (Array.isArray(groups) && groups.length > 0) {
+        const group = groups[0];
+        return {
+          action: group.recommended_action || 'create_new_issue',
+          summary: group.group_label || 'Unassigned work',
+          description: group.group_description || null,
+          suggestedIssueKey: group.suggested_issue_key || null,
+          reason: group.recommendation_reason || null,
+          confidence: group.confidence_level || 'low'
+        };
+      }
+    }
+
+    // Multiple groups or no recommendation available
+    return null;
+  } catch (error) {
+    console.error('[getUnassignedConversionRecommendation] Error:', error);
+    return null;
+  }
+}
 // ============================================================================
 
 /**

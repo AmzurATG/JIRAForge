@@ -153,8 +153,10 @@ async function updateSessionsAndAnalysis({ validSessionIds, issueKey, userId, or
 
   if (analysisResultIds.length > 0) {
     const analysisIdsParam = sanitizeUUIDArray(analysisResultIds).join(',');
+    const projectKey = issueKey.split('-')[0]; // Extract project key from issue key
     const updateBody = {
       active_task_key: issueKey,
+      active_project_key: projectKey,  // FIX: Set project key to prevent orphaned records
       manually_assigned: true
     };
 
@@ -705,6 +707,7 @@ export async function bulkReassignByTimeInterval(req) {
           method: 'PATCH',
           body: {
             active_task_key: targetIssueKey,
+            active_project_key: targetProjectKey,  // FIX: Set project key to prevent orphaned records
             manually_assigned: true,
             assignment_group_id: null // Clear any previous group assignment
           }
@@ -729,6 +732,7 @@ export async function bulkReassignByTimeInterval(req) {
             body: {
               manually_assigned: true,
               assigned_task_key: targetIssueKey,
+              assigned_project_key: targetProjectKey,  // FIX: Set project key for consistency
               assigned_by: userId,
               assigned_at: new Date().toISOString()
             }

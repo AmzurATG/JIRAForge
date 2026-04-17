@@ -16,11 +16,13 @@ export {
   fetchTeamDayTimeline, 
   fetchMyDayTimeline, 
   fetchMyDayIssueBreakdown,
-  convertIdleToWorklog, 
+  convertIdleToWorklog,
+  convertUnassignedToWorklog,
   getIdleRecordProjectKey,
   fetchMemberDayDetails,
   fetchMemberWeekDetails,
   fetchMemberMonthDetails,
   generateTeamExportData,
-  generateTeamExportDataStructured
+  generateTeamExportDataStructured,
+  getUnassignedConversionRecommendation
 } from './analytics/teamAnalyticsService.js';
