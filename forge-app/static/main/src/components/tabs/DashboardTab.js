@@ -16,17 +16,50 @@ function DashboardTab({ onOpenReassignModal }) {
   } = useApp();
 
   const [issueFilter, setIssueFilter] = useState('all');
+  const [searchQuery, setSearchQuery] = useState('');
+  const [currentPage, setCurrentPage] = useState(1);
+  const itemsPerPage = 10;
 
   useEffect(() => {
     loadActiveIssues();
   }, [loadActiveIssues]);
 
+  // Reset to page 1 when filters change
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [issueFilter, searchQuery]);
+
   const filteredIssues = activeIssues.filter(issue => {
-    if (issueFilter === 'all') return true;
-    if (issueFilter === 'in-progress') return issue.statusCategory === 'indeterminate';
-    if (issueFilter === 'done') return issue.statusCategory === 'done';
-    return true;
+    // Filter by status category
+    let statusMatch = true;
+    if (issueFilter === 'in-progress') statusMatch = issue.statusCategory === 'indeterminate';
+    if (issueFilter === 'done') statusMatch = issue.statusCategory === 'done';
+
+    // Filter by search query
+    let searchMatch = true;
+    if (searchQuery.trim()) {
+      const query = searchQuery.toLowerCase();
+      searchMatch = 
+        issue.key.toLowerCase().includes(query) ||
+        issue.summary.toLowerCase().includes(query) ||
+        issue.status.toLowerCase().includes(query) ||
+        issue.priority.toLowerCase().includes(query);
+    }
+
+    return statusMatch && searchMatch;
   });
+
+  // Pagination calculations
+  const totalPages = Math.ceil(filteredIssues.length / itemsPerPage);
+  const startIndex = (currentPage - 1) * itemsPerPage;
+  const endIndex = startIndex + itemsPerPage;
+  const paginatedIssues = filteredIssues.slice(startIndex, endIndex);
+
+  const handlePageChange = (page) => {
+    if (page >= 1 && page <= totalPages) {
+      setCurrentPage(page);
+    }
+  };
 
   const handleExpandClick = (e) => {
     e.preventDefault();
@@ -66,25 +99,66 @@ function DashboardTab({ onOpenReassignModal }) {
         {/* <h2>My Focus</h2>
         <p className="widget-subtitle">Your personalized development workflow hub</p> */}
 
-        <div className="focus-tabs">
-          <button
-            className={issueFilter === 'all' ? 'active' : ''}
-            onClick={() => setIssueFilter('all')}
-          >
-            All Issues
-          </button>
-          <button
-            className={issueFilter === 'in-progress' ? 'active' : ''}
-            onClick={() => setIssueFilter('in-progress')}
-          >
-            In Progress
-          </button>
-          <button
-            className={issueFilter === 'done' ? 'active' : ''}
-            onClick={() => setIssueFilter('done')}
-          >
-            Done
-          </button>
+        <div className="focus-header">
+          <div className="focus-tabs">
+            <button
+              className={issueFilter === 'all' ? 'active' : ''}
+              onClick={() => setIssueFilter('all')}
+            >
+              All Issues
+            </button>
+            <button
+              className={issueFilter === 'in-progress' ? 'active' : ''}
+              onClick={() => setIssueFilter('in-progress')}
+            >
+              In Progress
+            </button>
+            <button
+              className={issueFilter === 'done' ? 'active' : ''}
+              onClick={() => setIssueFilter('done')}
+            >
+              Done
+            </button>
+          </div>
+
+          <div className="focus-actions">
+            <div className="focus-search">
+              <svg className="search-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <circle cx="11" cy="11" r="8"></circle>
+                <path d="m21 21-4.35-4.35"></path>
+              </svg>
+              <input
+                type="text"
+                className="search-input"
+                placeholder="Search tasks..."
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+              />
+              {searchQuery && (
+                <button
+                  className="clear-search"
+                  onClick={() => setSearchQuery('')}
+                  title="Clear search"
+                >
+                  ×
+                </button>
+              )}
+            </div>
+            <button className="filter-button" title="Filter options">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <line x1="4" y1="21" x2="4" y2="14"></line>
+                <line x1="4" y1="10" x2="4" y2="3"></line>
+                <line x1="12" y1="21" x2="12" y2="12"></line>
+                <line x1="12" y1="8" x2="12" y2="3"></line>
+                <line x1="20" y1="21" x2="20" y2="16"></line>
+                <line x1="20" y1="12" x2="20" y2="3"></line>
+                <line x1="1" y1="14" x2="7" y2="14"></line>
+                <line x1="9" y1="8" x2="15" y2="8"></line>
+                <line x1="17" y1="16" x2="23" y2="16"></line>
+              </svg>
+              <span>Filter</span>
+            </button>
+          </div>
         </div>
 
         {issuesLoading ? (
