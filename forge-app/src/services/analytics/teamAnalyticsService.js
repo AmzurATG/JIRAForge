@@ -1270,10 +1270,12 @@ export async function convertUnassignedToWorklog(accountId, cloudId, sessionIds,
   const issueProjectKey = targetIssueKey.split('-')[0];
 
   // Update activity records with issue assignment
-  // Note: Only update existing columns (manual_assignment_reason may not exist in all schemas)
+  const now = new Date().toISOString();
   const updatePayload = {
     user_assigned_issue_key: targetIssueKey,
-    project_key: issueProjectKey
+    project_key: issueProjectKey,
+    conversion_reason: conversionReason || null,
+    converted_at: now
   };
 
   await supabaseRequest(
@@ -1372,15 +1374,14 @@ export async function convertUnassignedToWorklog(accountId, cloudId, sessionIds,
     }
   }
 
-  const now = new Date().toISOString();
-
   return {
     sessionIds,
     issueKey: targetIssueKey,
     projectKey: issueProjectKey,
     totalSeconds,
     sessionCount: records.length,
-    convertedAt: now
+    convertedAt: now,
+    conversionReason
   };
 }
 
