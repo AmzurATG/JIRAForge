@@ -9344,7 +9344,6 @@ class TimeTracker:
                         self.needs_idle_resume = False
                         self.current_window_key = None
                         self.update_tray_icon()
-                        self.update_tray_icon()
                         last_loop_time = current_loop_time
                         self.add_admin_log('INFO', f'System suspension detected ({int(time_since_last_loop)}s gap) — screen locked, staying idle')
                         continue
