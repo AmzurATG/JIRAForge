@@ -16,17 +16,50 @@ function DashboardTab({ onOpenReassignModal }) {
   } = useApp();
 
   const [issueFilter, setIssueFilter] = useState('all');
+  const [timeFilter, setTimeFilter] = useState('all');
 
   useEffect(() => {
     loadActiveIssues();
   }, [loadActiveIssues]);
 
-  const filteredIssues = activeIssues.filter(issue => {
+  const matchesStatusFilter = (issue) => {
     if (issueFilter === 'all') return true;
     if (issueFilter === 'in-progress') return issue.statusCategory === 'indeterminate';
     if (issueFilter === 'done') return issue.statusCategory === 'done';
     return true;
-  });
+  };
+
+  const matchesTimeFilter = (issue) => {
+    const trackedSeconds = Number(issue.timeTracked) || 0;
+    if (timeFilter === 'all') return true;
+    if (timeFilter === 'with-time') return trackedSeconds > 0;
+    if (timeFilter === 'without-time') return trackedSeconds <= 0;
+    return true;
+  };
+
+  const filteredIssues = activeIssues.filter(issue => (
+    matchesStatusFilter(issue) && matchesTimeFilter(issue)
+  ));
+
+  const getFilterDescription = () => {
+    const parts = [];
+
+    if (issueFilter !== 'all') {
+      parts.push(issueFilter.replace('-', ' '));
+    }
+    if (timeFilter === 'with-time') {
+      parts.push('with time tracked');
+    }
+    if (timeFilter === 'without-time') {
+      parts.push('without time logged');
+    }
+
+    if (parts.length === 0) {
+      return 'your current filters';
+    }
+
+    return parts.join(' and ');
+  };
 
   const handleExpandClick = (e) => {
     e.preventDefault();
@@ -66,25 +99,41 @@ function DashboardTab({ onOpenReassignModal }) {
         {/* <h2>My Focus</h2>
         <p className="widget-subtitle">Your personalized development workflow hub</p> */}
 
-        <div className="focus-tabs">
-          <button
-            className={issueFilter === 'all' ? 'active' : ''}
-            onClick={() => setIssueFilter('all')}
-          >
-            All Issues
-          </button>
-          <button
-            className={issueFilter === 'in-progress' ? 'active' : ''}
-            onClick={() => setIssueFilter('in-progress')}
-          >
-            In Progress
-          </button>
-          <button
-            className={issueFilter === 'done' ? 'active' : ''}
-            onClick={() => setIssueFilter('done')}
-          >
-            Done
-          </button>
+        <div className="focus-filters">
+          <div className="focus-tabs">
+            <button
+              className={issueFilter === 'all' ? 'active' : ''}
+              onClick={() => setIssueFilter('all')}
+            >
+              All Issues
+            </button>
+            <button
+              className={issueFilter === 'in-progress' ? 'active' : ''}
+              onClick={() => setIssueFilter('in-progress')}
+            >
+              In Progress
+            </button>
+            <button
+              className={issueFilter === 'done' ? 'active' : ''}
+              onClick={() => setIssueFilter('done')}
+            >
+              Done
+            </button>
+          </div>
+
+          <div className="focus-time-filter" aria-label="Filter issues by time status">
+            <label className="focus-time-filter-label" htmlFor="my-focus-time-filter">Time:</label>
+            <select
+              id="my-focus-time-filter"
+              className="focus-time-filter-select"
+              value={timeFilter}
+              onChange={(e) => setTimeFilter(e.target.value)}
+            >
+              <option value="all">All</option>
+              <option value="with-time">With Time</option>
+              <option value="without-time">No Time</option>
+            </select>
+          </div>
         </div>
 
         {issuesLoading ? (
@@ -104,7 +153,11 @@ function DashboardTab({ onOpenReassignModal }) {
                     </tr>
                   </thead>
                   <tbody>
-                    {filteredIssues.map((issue, idx) => (
+                    {filteredIssues.map((issue, idx) => {
+                      const trackedSeconds = Number(issue.timeTracked) || 0;
+                      const hasTrackedTime = trackedSeconds > 0;
+
+                      return (
                       <React.Fragment key={idx}>
                         <tr className={issue.sessions?.length > 0 ? 'expandable-row' : ''}>
                           <td className="issue-key">
@@ -144,8 +197,12 @@ function DashboardTab({ onOpenReassignModal }) {
                               {issue.priority}
                             </span>
                           </td>
-                          <td className="issue-time">
-                            {issue.timeTracked > 0 ? formatTime(issue.timeTracked) : '-'}
+                          <td className={`issue-time ${hasTrackedTime ? 'has-time' : 'no-time'}`}>
+                            {hasTrackedTime ? (
+                              <span className="issue-time-value">{formatTime(trackedSeconds)}</span>
+                            ) : (
+                              <span className="no-time-indicator">No time logged</span>
+                            )}
                           </td>
                         </tr>
                         {issue.sessions?.length > 0 && (
@@ -294,13 +351,14 @@ function DashboardTab({ onOpenReassignModal }) {
                           </tr>
                         )}
                       </React.Fragment>
-                    ))}
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>
             ) : (
               <p className="empty-state">
-                No {issueFilter !== 'all' ? issueFilter.replace('-', ' ') : ''} issues found.
+                No issues match {getFilterDescription()}.
                 Start working on issues to see them here!
               </p>
             )}
