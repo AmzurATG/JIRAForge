@@ -110,18 +110,19 @@ Add a second filtering dimension for time state:
 - Show only issues with time tracked
 - Show only issues without time tracked
 
-This can be introduced either as:
+Implementation approach:
 
-- A compact secondary segmented control near the existing status tabs
-- A dropdown filter near the table header
+- Use a compact **dropdown select** control next to the existing status tabs
+- Label: "Time:" with options: All / With Time / No Time
+- Positioned to the right of status tabs to avoid clutter
 
 Recommended default UX:
 
 - Preserve the current status tabs as the primary filter
-- Add a secondary time filter control beside or below them
+- Add a secondary time filter control beside them
 - Apply both filters together
 
-This preserves current user mental models while adding the requested visibility.
+This preserves current user mental models while adding the requested visibility. The dropdown approach keeps the UI clean and prevents horizontal overflow on narrower viewports.
 
 ## Recommended UX Design
 
@@ -233,15 +234,17 @@ Target file:
 
 Expected styling additions:
 
-- Time filter control styles
-- Missing-time badge styles
-- Optional positive-state styling if desired for consistency
-- Responsive handling if an extra control is added beside the existing tabs
+- Time filter dropdown styles (label + select element)
+- Missing-time badge styles (yellow/warning tone)
+- Responsive handling for narrower widths
+- Focus and hover states for accessibility
 
-Important constraint:
+Implementation details:
 
-- Do not disrupt the current layout of the status tabs on narrower widths
-- If needed, allow the filter bar to wrap into two rows rather than compressing controls too tightly
+- Dropdown width: 140px (expands to 100% on narrow screens)
+- Padding: 7px 28px 7px 10px (right padding for native dropdown arrow)
+- Border: 1px solid with focus blue highlight (#4c9aff)
+- No layout disruption to status tabs
 
 ### 5. Backend impact
 
@@ -287,14 +290,17 @@ In `DashboardTab.css`:
 
 In `DashboardTab.js`:
 
-- Add new local `timeFilter` state
-- Add filter controls to the My Focus header area
+- Add new local `timeFilter` state (values: 'all', 'with-time', 'without-time')
+- Add dropdown select to focus-filters container
 - Update `filteredIssues` logic to combine status and time filtering
+- Update `getFilterDescription()` to include time filter in empty-state messaging
 
 In `DashboardTab.css`:
 
-- Add layout and selected-state styles for the new control
-- Verify desktop and narrower app iframe widths
+- Add `.focus-time-filter` flexbox container styles
+- Add `.focus-time-filter-label` label styles
+- Add `.focus-time-filter-select` dropdown styles with focus states
+- Add responsive media query for narrow widths
 
 ### Phase 4: Empty-state handling
 
@@ -455,13 +461,26 @@ If the first release is successful, consider:
 
 Frontend only:
 
-- `forge-app/static/main/src/components/tabs/DashboardTab.js`
-- `forge-app/static/main/src/components/tabs/DashboardTab.css`
+- `forge-app/static/main/src/components/tabs/DashboardTab.js` — Added time filter state, filtering logic, and dropdown UI
+- `forge-app/static/main/src/components/tabs/DashboardTab.css` — Added dropdown styles and "No time logged" badge styles
+- `plan/MY_FOCUS_TIME_VISIBILITY_IMPLEMENTATION_PLAN.md` — This documentation file
 
 Potential test coverage additions if desired:
 
 - Existing frontend test location for DashboardTab, if present
 - If no component tests exist yet, manual QA may be used initially
+
+## Implementation Status
+
+✅ **COMPLETE** — Changes pushed to branch `feature/my-focus-time-visibility-filter`
+
+### What was implemented:
+
+1. **Visual Indicator** — Issues without time now display "No time logged" badge (yellow pill with warning tone) instead of dash
+2. **Time Filter Dropdown** — Compact dropdown control (Time: All / With Time / No Time) positioned right of status tabs
+3. **Combined Filtering** — Time filter works together with existing status tabs (All Issues / In Progress / Done)
+4. **Empty State Messaging** — Updated to reflect active filter combinations
+5. **Responsive UI** — Dropdown expands full-width on narrow viewports
 
 ## Final Recommendation
 
