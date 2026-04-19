@@ -789,9 +789,14 @@ function DayView({ loading, timeData, onTodayTotalReconciled, onOpenWorklogReass
     // so using these totals prevents visual mismatches between blocks and numbers.
     if (timeData?.canViewAllUsers && timelineData) {
       timelineData.usersWithActivity?.forEach(userTimeline => {
-        const timelineTotal = (userTimeline.sessions || []).reduce(
+        const assignedTotal = (userTimeline.sessions || []).reduce(
           (sum, s) => sum + (s.durationSeconds || 0), 0
         );
+        const unassignedTotal = (userTimeline.unassignedBlocks || []).reduce(
+          (sum, b) => sum + (b.durationSeconds || 0),
+          0
+        );
+        const timelineTotal = assignedTotal + unassignedTotal;
         if (tasksByUser[userTimeline.userId]) {
           // Use the higher value: dailySummary may lag behind real-time activity_records
           tasksByUser[userTimeline.userId].totalSeconds = Math.max(
@@ -800,10 +805,15 @@ function DayView({ loading, timeData, onTodayTotalReconciled, onOpenWorklogReass
           );
         }
       });
-    } else if (myTimelineData && myTimelineData.sessions) {
-      const timelineTotal = myTimelineData.sessions.reduce(
+    } else if (myTimelineData) {
+      const assignedTotal = (myTimelineData.sessions || []).reduce(
         (sum, s) => sum + (s.durationSeconds || 0), 0
       );
+      const unassignedTotal = (myTimelineData.unassignedBlocks || []).reduce(
+        (sum, b) => sum + (b.durationSeconds || 0),
+        0
+      );
+      const timelineTotal = assignedTotal + unassignedTotal;
       // For non-admin view, reconcile the single user's total
       Object.values(tasksByUser).forEach(user => {
         user.totalSeconds = Math.max(user.totalSeconds, timelineTotal);
@@ -1058,9 +1068,10 @@ function DayView({ loading, timeData, onTodayTotalReconciled, onOpenWorklogReass
                         <div className="member-total-section">
                           <span className="member-total">{formatTime(user.totalSeconds)}</span>
                           {(() => {
-                            const unassignedSecs = timeBlocks
-                              .filter(b => !b.hasIssue)
-                              .reduce((sum, b) => sum + (b.durationSeconds || 0), 0);
+                            const unassignedSecs = unassignedBlocks.reduce(
+                              (sum, b) => sum + (b.durationSeconds || 0),
+                              0
+                            );
                             if (unassignedSecs >= 60) {
                               return (
                                 <span className="member-unassigned-hint" title="Time tracked without an issue selected">
