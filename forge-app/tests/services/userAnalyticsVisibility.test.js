@@ -82,8 +82,13 @@ describe('fetchTimeAnalyticsBatch — user visibility permissions', () => {
     );
   });
 
-  it('sets canViewAllUsers=true for a Jira admin', async () => {
-    mockIsJiraAdmin.mockResolvedValue(true);
+  it('keeps canViewAllUsers=false for a Jira admin on Time Analytics page', async () => {
+    mockCheckUserPermissions.mockResolvedValue({
+      permissions: {
+        ADMINISTER: { havePermission: true },
+        ADMINISTER_PROJECTS: { havePermission: false }
+      }
+    });
 
     const serverResponse = {
       canViewAllUsers: true,
@@ -94,15 +99,18 @@ describe('fetchTimeAnalyticsBatch — user visibility permissions', () => {
 
     const result = await fetchTimeAnalyticsBatch('account-1', 'cloud-1');
 
-    expect(result.canViewAllUsers).toBe(true);
+    expect(result.canViewAllUsers).toBe(false);
     expect(mockFetchDashboardData).toHaveBeenCalledWith(
-      expect.objectContaining({ canViewAllUsers: true, isJiraAdmin: true })
+      expect.objectContaining({ canViewAllUsers: false, isJiraAdmin: true })
     );
   });
 
-  it('sets canViewAllUsers=true for a project admin with valid project keys', async () => {
+  it('keeps canViewAllUsers=false for a project admin with valid project keys', async () => {
     mockCheckUserPermissions.mockResolvedValue({
-      permissions: { ADMINISTER_PROJECTS: { havePermission: true } }
+      permissions: {
+        ADMINISTER: { havePermission: false },
+        ADMINISTER_PROJECTS: { havePermission: true }
+      }
     });
     mockGetProjectsUserAdmins.mockResolvedValue(['PROJ-A', 'PROJ-B']);
 
@@ -115,10 +123,10 @@ describe('fetchTimeAnalyticsBatch — user visibility permissions', () => {
 
     const result = await fetchTimeAnalyticsBatch('account-1', 'cloud-1');
 
-    expect(result.canViewAllUsers).toBe(true);
+    expect(result.canViewAllUsers).toBe(false);
     expect(mockFetchDashboardData).toHaveBeenCalledWith(
       expect.objectContaining({
-        canViewAllUsers: true,
+        canViewAllUsers: false,
         projectKeys: ['PROJ-A', 'PROJ-B'],
       })
     );
@@ -185,8 +193,13 @@ describe('fetchTimeAnalytics (legacy) — user visibility permissions', () => {
     expect(dailyQueryCall[1]).toContain('user_id=eq.user-1');
   });
 
-  it('Jira admin sees all users regardless of membership flag', async () => {
-    mockIsJiraAdmin.mockResolvedValue(true);
+  it('Jira admin still gets user-scoped analytics on Time Analytics page', async () => {
+    mockCheckUserPermissions.mockResolvedValue({
+      permissions: {
+        ADMINISTER: { havePermission: true },
+        ADMINISTER_PROJECTS: { havePermission: false }
+      }
+    });
     mockGetUserOrganizationMembership.mockResolvedValue({
       can_view_team_analytics: false,
       role: 'member',
@@ -194,17 +207,20 @@ describe('fetchTimeAnalytics (legacy) — user visibility permissions', () => {
 
     const result = await fetchTimeAnalytics('account-1', 'cloud-1');
 
-    expect(result.canViewAllUsers).toBe(true);
-    // Daily summary query should NOT have user_id filter
+    expect(result.canViewAllUsers).toBe(false);
+    // Daily summary query should keep user_id filter in Time Analytics.
     const dailyQueryCall = mockSupabaseRequest.mock.calls.find(
       call => call[1] && call[1].includes('daily_time_summary')
     );
-    expect(dailyQueryCall[1]).not.toContain('user_id=eq.');
+    expect(dailyQueryCall[1]).toContain('user_id=eq.user-1');
   });
 
-  it('project admin sees all users', async () => {
+  it('project admin still gets user-scoped analytics on Time Analytics page', async () => {
     mockCheckUserPermissions.mockResolvedValue({
-      permissions: { ADMINISTER_PROJECTS: { havePermission: true } }
+      permissions: {
+        ADMINISTER: { havePermission: false },
+        ADMINISTER_PROJECTS: { havePermission: true }
+      }
     });
     mockGetUserOrganizationMembership.mockResolvedValue({
       can_view_team_analytics: false,
@@ -213,6 +229,6 @@ describe('fetchTimeAnalytics (legacy) — user visibility permissions', () => {
 
     const result = await fetchTimeAnalytics('account-1', 'cloud-1');
 
-    expect(result.canViewAllUsers).toBe(true);
+    expect(result.canViewAllUsers).toBe(false);
   });
 });

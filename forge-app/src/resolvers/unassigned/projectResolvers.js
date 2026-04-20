@@ -10,6 +10,7 @@ import { getAllUserAssignedIssues as getAllUserAssignedIssuesUtil, formatIssuesD
  * Get user's projects (for create issue dropdown)
  */
 export async function getUserProjects(req) {
+  const t0 = Date.now();
   try {
     const response = await api.asUser().requestJira(
       route`/rest/api/3/project`,
@@ -22,7 +23,7 @@ export async function getUserProjects(req) {
 
     const projects = await response.json();
 
-    return {
+    const result = {
       success: true,
       projects: projects.map(p => ({
         key: p.key,
@@ -30,6 +31,8 @@ export async function getUserProjects(req) {
         id: p.id
       }))
     };
+    console.log(`[UnassignedResolver] getUserProjects took ${Date.now() - t0}ms`);
+    return result;
 
   } catch (error) {
     console.error('Error getting user projects:', error);
@@ -42,10 +45,11 @@ export async function getUserProjects(req) {
  * Returns all issues regardless of status
  */
 export async function getAllUserAssignedIssues(req) {
+  const t0 = Date.now();
   try {
     const jiraData = await getAllUserAssignedIssuesUtil(50); // Max 50 issues for dropdown
 
-    return {
+    const result = {
       success: true,
       issues: formatIssuesData(jiraData.issues || []).map(issue => ({
         key: issue.key,
@@ -53,6 +57,8 @@ export async function getAllUserAssignedIssues(req) {
         status: issue.status
       }))
     };
+    console.log(`[UnassignedResolver] getAllUserAssignedIssues took ${Date.now() - t0}ms`);
+    return result;
 
   } catch (error) {
     console.error('Error getting all user assigned issues:', error);
@@ -68,6 +74,7 @@ export async function getAllUserAssignedIssues(req) {
  * Get available statuses for a project (for create issue dropdown)
  */
 export async function getProjectStatuses(req) {
+  const t0 = Date.now();
   try {
     const { projectKey } = req.payload;
 
@@ -108,10 +115,12 @@ export async function getProjectStatuses(req) {
       });
     });
 
-    return {
+    const result = {
       success: true,
       statuses: Array.from(statusMap.values())
     };
+    console.log(`[UnassignedResolver] getProjectStatuses took ${Date.now() - t0}ms`);
+    return result;
 
   } catch (error) {
     console.error('Error getting project statuses:', error);

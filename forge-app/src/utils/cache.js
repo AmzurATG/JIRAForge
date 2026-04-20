@@ -1,9 +1,10 @@
 /**
  * In-Memory Cache Utility
  * Reduces Supabase requests by caching frequently accessed data
- * 
- * IMPORTANT: Forge apps run in isolated containers, so this cache is per-request-context.
- * For true cross-request caching, use Forge Storage or Redis.
+ *
+ * TENANT SAFETY: Forge Lambda containers are reused across tenants (warm starts).
+ * All cache keys MUST include a tenant identifier (cloudId or orgId) to prevent
+ * cross-tenant data leaks. See https://developer.atlassian.com/platform/forge/tenant-data-isolation/
  */
 
 // Cache storage with TTL
@@ -16,6 +17,7 @@ const TTL = {
   CONFIG: 15 * 60 * 1000,       // 15 minutes - Supabase config
   MEMBERSHIP: 5 * 60 * 1000,    // 5 minutes - membership/permissions
   GROUPS: 30 * 1000,            // 30 seconds - unassigned groups (more dynamic)
+  ANALYTICS: 5 * 60 * 1000,     // 5 minutes - team analytics summaries
 };
 
 /**
@@ -90,11 +92,15 @@ export function getCacheStats() {
 // Export TTL constants for use in other modules
 export { TTL };
 
-// Cache key generators for consistency
+// Cache key generators for consistency.
+// TENANT SAFETY: Every key that stores per-user data scopes by cloudId (or orgId which is
+// already tenant-unique) to prevent cross-tenant cache leaks in warm Lambda containers.
 export const CacheKeys = {
-  userId: (accountId) => `user:${accountId}`,
+  // cloudId scoped: prevents leaking Supabase userId across different Jira instances
+  userId: (cloudId, accountId) => `user:${cloudId}:${accountId}`,
   organization: (cloudId) => `org:${cloudId}`,
   supabaseConfig: (accountId) => `config:${accountId}`,
+  // orgId is already a globally unique UUID — no additional cloudId prefix needed
   membership: (userId, orgId) => `membership:${userId}:${orgId}`,
   unassignedGroups: (userId, orgId) => `groups:${userId}:${orgId}`,
 };

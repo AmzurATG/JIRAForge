@@ -12,6 +12,7 @@ import { getUserSettings } from '../../services/settingsService.js';
  * Calls the AI server to group unassigned activities
  */
 export async function triggerClustering(req) {
+  const t0 = Date.now();
   try {
     const { accountId, cloudId } = req.context;
 
@@ -79,6 +80,8 @@ export async function triggerClustering(req) {
   } catch (error) {
     console.error('Error triggering clustering:', error);
     return { success: false, error: error.message };
+  } finally {
+    console.log(`[UnassignedResolver] triggerClustering took ${Date.now() - t0}ms`);
   }
 }
 
@@ -86,6 +89,7 @@ export async function triggerClustering(req) {
  * Get user's role and permissions for the current organization
  */
 export async function getUserRole(req) {
+  const t0 = Date.now();
   console.log('[getUserRole] Starting...');
   try {
     const { accountId, cloudId } = req.context;
@@ -130,6 +134,8 @@ export async function getUserRole(req) {
   } catch (error) {
     console.error('Error getting user role:', error);
     return { success: false, error: error.message };
+  } finally {
+    console.log(`[UnassignedResolver] getUserRole took ${Date.now() - t0}ms`);
   }
 }
 

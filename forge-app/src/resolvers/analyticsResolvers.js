@@ -105,7 +105,11 @@ export function registerAnalyticsResolvers(resolver) {
       if (!adminCheck && !isProjectAdmin) {
         return { success: false, error: 'Access denied: Project Admin or Jira Administrator required' };
       }
-      const data = await fetchProjectTeamAnalytics(accountId, cloudId, projectKey, clientToday);
+      // Pass resolved permissions into the service so it doesn't repeat the Jira API call.
+      const data = await fetchProjectTeamAnalytics(accountId, cloudId, projectKey, clientToday, {
+        isAdmin: adminCheck,
+        hasPermission: isProjectAdmin
+      });
       return { success: true, data };
     } catch (error) {
       console.error('Error fetching team analytics:', error);

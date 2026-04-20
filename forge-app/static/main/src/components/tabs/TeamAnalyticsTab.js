@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { invoke } from '@forge/bridge';
 import { useApp } from '../../context';
 import { navigateToIssue, formatTime } from '../../utils';
@@ -20,6 +20,7 @@ function TeamAnalyticsTab() {
   const [selectedMember, setSelectedMember] = useState(null);
   const [activityViewType, setActivityViewType] = useState('today');
   const [exportModalOpen, setExportModalOpen] = useState(false);
+  const latestRequestIdRef = useRef(0);
 
   const getInitials = (name) => {
     if (!name) return '?';
@@ -51,23 +52,38 @@ function TeamAnalyticsTab() {
 
   const loadTeamAnalytics = async () => {
     if (!selectedProjectKey) return;
+    const requestId = latestRequestIdRef.current + 1;
+    latestRequestIdRef.current = requestId;
+
     setLoading(true);
     setError(null);
     setSelectedTrendDay(null); // Reset selected day when loading new data
+
     try {
       const result = await invoke('getProjectTeamAnalytics', {
         projectKey: selectedProjectKey,
         clientToday: new Date().toLocaleDateString('sv-SE') // YYYY-MM-DD in local timezone
       });
+
+      // Ignore stale responses when user switches projects quickly.
+      if (requestId !== latestRequestIdRef.current) {
+        return;
+      }
+
       if (result.success) {
         setTeamAnalytics(result.data);
       } else {
         setError(result.error);
       }
     } catch (err) {
+      if (requestId !== latestRequestIdRef.current) {
+        return;
+      }
       setError('Failed to load team analytics: ' + err.message);
     } finally {
-      setLoading(false);
+      if (requestId === latestRequestIdRef.current) {
+        setLoading(false);
+      }
     }
   };
 

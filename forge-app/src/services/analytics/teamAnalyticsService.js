@@ -5,10 +5,11 @@
 
 import { getSupabaseConfig, getOrCreateOrganization, getOrCreateUser, supabaseRequest } from '../../utils/supabase.js';
 import { checkUserPermissions, getProjectsUserAdmins } from '../../utils/jira.js';
-import { MAX_DAILY_SUMMARY_DAYS, MAX_ISSUES_IN_ANALYTICS, DEFAULT_TRACKING_SETTINGS } from '../../config/constants.js';
+import { MAX_DAILY_SUMMARY_DAYS, MAX_ISSUES_IN_ANALYTICS, DEFAULT_TRACKING_SETTINGS, TEAM_ANALYTICS_CACHE_TTL_MS, MAX_PAGINATED_PAGES } from '../../config/constants.js';
 import { isValidProjectKey } from '../../utils/validators.js';
+import { kvs } from '@forge/kvs';
 
-// Supabase PostgREST max_rows is 1000 — queries returning more must paginate
+// Supabase PostgREST max_rows is 1000 - queries returning more must paginate
 const SUPABASE_PAGE_SIZE = 1000;
 
 /**
@@ -20,7 +21,7 @@ const SUPABASE_PAGE_SIZE = 1000;
  * @param {number} [maxRecords=20000] - Safety cap to prevent runaway fetches
  * @returns {Promise<Array>} All matching records
  */
-async function supabaseRequestPaginated(supabaseConfig, baseEndpoint, maxRecords = 20000) {
+async function supabaseRequestPaginated(supabaseConfig, baseEndpoint, maxRecords = MAX_PAGINATED_PAGES * 1000) {
   const allRecords = [];
   let offset = 0;
 
@@ -31,7 +32,7 @@ async function supabaseRequestPaginated(supabaseConfig, baseEndpoint, maxRecords
     );
     if (!page || page.length === 0) break;
     allRecords.push(...page);
-    if (page.length < SUPABASE_PAGE_SIZE) break; // Last page — fewer records than requested
+    if (page.length < SUPABASE_PAGE_SIZE) break; // Last page - fewer records than requested
     offset += SUPABASE_PAGE_SIZE;
   }
 
@@ -269,49 +270,81 @@ export async function fetchProjectAnalytics(accountId, cloudId, projectKey) {
  * @param {string} cloudId - Jira Cloud ID for organization filtering
  * @param {string} projectKey - Jira Project Key
  * @param {string} [clientToday] - Client's local date as YYYY-MM-DD (avoids UTC mismatch with work_date)
+ * @param {Object} [permissionsOverride] - Pre-resolved permissions from resolver to avoid duplicate Jira calls
  * @returns {Promise<Object>} Team analytics data for the project
  */
-export async function fetchProjectTeamAnalytics(accountId, cloudId, projectKey, clientToday) {
-  // Validate project key format
+export async function fetchProjectTeamAnalytics(accountId, cloudId, projectKey, clientToday, permissionsOverride) {
+  const t0 = Date.now();
+
   if (!isValidProjectKey(projectKey)) {
     throw new Error('Invalid project key format');
   }
 
-  // 1. Check Project Admin Permission or Jira Admin
-  const { isAdmin, hasPermission } = await checkProjectAdminAccess(projectKey);
+  let isAdmin;
+  let hasPermission;
+  if (permissionsOverride) {
+    isAdmin = permissionsOverride.isAdmin;
+    hasPermission = permissionsOverride.hasPermission;
+  } else {
+    const resolved = await checkProjectAdminAccess(projectKey);
+    isAdmin = resolved.isAdmin;
+    hasPermission = resolved.hasPermission;
+  }
 
   if (!isAdmin && !hasPermission) {
     throw new Error(`Access denied: You are not an administrator for project ${projectKey}`);
   }
 
+  const now = new Date();
+  const formatDateUTC = (d) => {
+    const y = d.getUTCFullYear();
+    const m = String(d.getUTCMonth() + 1).padStart(2, '0');
+    const day = String(d.getUTCDate()).padStart(2, '0');
+    return `${y}-${m}-${day}`;
+  };
+
+  const todayStr = (clientToday && /^\d{4}-\d{2}-\d{2}$/.test(clientToday))
+    ? clientToday
+    : formatDateUTC(now);
+
+  const cacheKey = `teamAnalytics:${cloudId}:${projectKey}:${todayStr}`;
+  try {
+    const cached = await kvs.get(cacheKey);
+    if (cached && Date.now() < cached.expiresAt) {
+      return cached.value;
+    }
+  } catch {
+    // Cache miss/failure; continue with live fetch.
+  }
+
   const { supabaseConfig, organization } = await initializeContext(accountId, cloudId);
 
-  // 2. Fetch Team Data - filter by organization_id
-  const teamDailySummary = await supabaseRequest(
-    supabaseConfig,
-    `daily_time_summary?organization_id=eq.${organization.id}&project_key=eq.${projectKey}&order=work_date.desc&limit=${MAX_DAILY_SUMMARY_DAYS}`
-  );
+  const [teamDailySummary, allUsers, allProjectUsers, timeByIssueData] = await Promise.all([
+    supabaseRequest(
+      supabaseConfig,
+      `daily_time_summary?organization_id=eq.${organization.id}&project_key=eq.${projectKey}&order=work_date.desc&limit=${MAX_DAILY_SUMMARY_DAYS}`
+    ),
+    supabaseRequest(
+      supabaseConfig,
+      `users?organization_id=eq.${organization.id}&select=id,display_name,email,is_active`
+    ),
+    supabaseRequest(
+      supabaseConfig,
+      `daily_time_summary?organization_id=eq.${organization.id}&project_key=eq.${projectKey}&select=user_id&order=work_date.desc&limit=1000`
+    ),
+    supabaseRequest(
+      supabaseConfig,
+      `daily_time_summary?organization_id=eq.${organization.id}&project_key=eq.${projectKey}&task_key=not.is.null&select=task_key,user_id,total_seconds&order=work_date.desc&limit=2000`
+    )
+  ]);
 
-  const allUsers = await supabaseRequest(
-    supabaseConfig,
-    `users?organization_id=eq.${organization.id}&select=id,display_name,email,is_active`
-  );
+  const userById = {};
+  for (const user of (allUsers || [])) {
+    if (user?.id) userById[user.id] = user;
+  }
 
-  // Get all unique users who have ever worked on this project (not just last 30 days)
-  const allProjectUsers = await supabaseRequest(
-    supabaseConfig,
-    `daily_time_summary?organization_id=eq.${organization.id}&project_key=eq.${projectKey}&select=user_id&order=work_date.desc&limit=1000`
-  );
-
-  // Get time by issue from daily_time_summary (properly aggregated)
-  const timeByIssueData = await supabaseRequest(
-    supabaseConfig,
-    `daily_time_summary?organization_id=eq.${organization.id}&project_key=eq.${projectKey}&task_key=not.is.null&select=task_key,user_id,total_seconds&order=work_date.desc&limit=2000`
-  );
-
-  // Aggregate time by issue (across all team members)
   const issueAggregation = {};
-  (timeByIssueData || []).forEach(result => {
+  for (const result of (timeByIssueData || [])) {
     const key = result.task_key;
     if (!issueAggregation[key]) {
       issueAggregation[key] = {
@@ -324,19 +357,18 @@ export async function fetchProjectTeamAnalytics(accountId, cloudId, projectKey, 
     if (result.user_id) {
       issueAggregation[key].userIds.add(result.user_id);
     }
-  });
+  }
 
   const teamTimeByIssue = Object.values(issueAggregation)
     .map(item => {
-      // Map user IDs to display names
       const contributorDetails = Array.from(item.userIds).map(userId => {
-        const userInfo = (allUsers || []).find(u => u.id === userId);
+        const userInfo = userById[userId];
         return {
           userId,
           displayName: userInfo?.display_name || userInfo?.email || 'Unknown User'
         };
       });
-     
+
       return {
         issueKey: item.issueKey,
         totalSeconds: item.totalSeconds,
@@ -347,47 +379,21 @@ export async function fetchProjectTeamAnalytics(accountId, cloudId, projectKey, 
     .sort((a, b) => b.totalSeconds - a.totalSeconds)
     .slice(0, MAX_ISSUES_IN_ANALYTICS);
 
-  // === Calculate Team Summary KPIs from activity_records ===
-  // Use the same data source (activity_records) as the Team Member Activity table
-  // to ensure the KPI card totals match the sum of member totals exactly.
-  const now = new Date();
-  const formatDateUTC = (d) => {
-    const y = d.getUTCFullYear();
-    const m = String(d.getUTCMonth() + 1).padStart(2, '0');
-    const day = String(d.getUTCDate()).padStart(2, '0');
-    return `${y}-${m}-${day}`;
-  };
-
-  // Prefer client-supplied date; fall back to UTC for backwards compatibility
-  const todayStr = (clientToday && /^\d{4}-\d{2}-\d{2}$/.test(clientToday))
-    ? clientToday
-    : formatDateUTC(now);
   const todayDate = new Date(todayStr + 'T00:00:00');
-  const currentMonthStr = todayStr.substring(0, 7); // YYYY-MM
+  const currentMonthStr = todayStr.substring(0, 7);
+  const monthStartStr = `${currentMonthStr}-01`;
 
-  // Calculate week start (Monday) from todayStr
   const dayOfWeek = todayDate.getDay();
   const daysToMonday = dayOfWeek === 0 ? 6 : dayOfWeek - 1;
   const weekStart = new Date(todayDate);
   weekStart.setDate(todayDate.getDate() - daysToMonday);
   const weekStartStr = `${weekStart.getFullYear()}-${String(weekStart.getMonth() + 1).padStart(2, '0')}-${String(weekStart.getDate()).padStart(2, '0')}`;
 
-  // === Calculate Team Member Activity (Today/Week/Month) ===
-  // Use daily_time_summary as the source of truth — same data source as the
-  // individual Time Analytics page — so that team totals match individual totals.
-  const monthStartStr = `${currentMonthStr}-01`;
- 
-  // Trend chart needs last 14 days which may go into the previous month
   const trendStartDate = new Date(todayDate);
   trendStartDate.setDate(todayDate.getDate() - 13);
   const trendStartStr = `${trendStartDate.getFullYear()}-${String(trendStartDate.getMonth() + 1).padStart(2, '0')}-${String(trendStartDate.getDate()).padStart(2, '0')}`;
-  // Use the earlier of monthStart and trendStart as query start
   const queryStartStr = trendStartStr < monthStartStr ? trendStartStr : monthStartStr;
 
-  // Fetch daily_time_summary for the full date range needed (trend + month)
-  // This includes ALL time (legacy screenshot data + activity_records, all classifications)
-  // matching exactly what the individual user Time Analytics page shows.
-  // Two queries: one for the selected project, one for unassigned (NULL project_key).
   const [teamDailySummaryFull, unassignedDailySummary] = await Promise.all([
     supabaseRequestPaginated(
       supabaseConfig,
@@ -399,60 +405,58 @@ export async function fetchProjectTeamAnalytics(accountId, cloudId, projectKey, 
     )
   ]);
 
-  // Use all project users, not just those in the last 30 days.
-  // NOTE: Don't include users from unassignedDailySummary — that query is org-wide,
-  // so adding them would surface unrelated users in this project's Team Analytics.
-  // Unassigned time is only shown for users who are already part of this project.
+  const summaryByUser = new Map();
+  for (const item of (teamDailySummaryFull || [])) {
+    const userId = item.user_id;
+    if (!summaryByUser.has(userId)) summaryByUser.set(userId, []);
+    summaryByUser.get(userId).push(item);
+  }
+
+  const unassignedByUser = new Map();
+  for (const item of (unassignedDailySummary || [])) {
+    const userId = item.user_id;
+    if (!unassignedByUser.has(userId)) unassignedByUser.set(userId, []);
+    unassignedByUser.get(userId).push(item);
+  }
+
+  const summaryByDate = new Map();
+  for (const item of (teamDailySummaryFull || [])) {
+    const workDate = typeof item.work_date === 'string' ? item.work_date.split('T')[0] : String(item.work_date);
+    if (!summaryByDate.has(workDate)) summaryByDate.set(workDate, []);
+    summaryByDate.get(workDate).push(item);
+  }
+
   const projectUserIds = new Set([
     ...(teamDailySummary || []).map(d => d.user_id),
     ...(allProjectUsers || []).map(d => d.user_id),
     ...(teamDailySummaryFull || []).map(d => d.user_id)
   ]);
 
+  const sumByDateRange = (records, startStr, endStr) => records.reduce((sum, d) => {
+    const workDate = typeof d.work_date === 'string' ? d.work_date.split('T')[0] : String(d.work_date);
+    return workDate >= startStr && workDate <= endStr ? sum + (d.total_seconds || 0) : sum;
+  }, 0);
+
   const teamMemberActivity = Array.from(projectUserIds).map(userId => {
-    const userInfo = (allUsers || []).find(u => u.id === userId);
+    const userInfo = userById[userId];
     const displayName = userInfo?.display_name || userInfo?.email || 'Unknown User';
 
-    // Filter daily_time_summary records for this user
-    const userDailySummaries = (teamDailySummaryFull || []).filter(d => d.user_id === userId);
-    // Unassigned records (NULL project_key) — time not matched to any project
-    const userUnassignedSummaries = (unassignedDailySummary || []).filter(d => d.user_id === userId);
+    const userDailySummaries = summaryByUser.get(userId) || [];
+    const userUnassignedSummaries = unassignedByUser.get(userId) || [];
 
-    // Helper to filter by date range
-    const filterByDate = (records, startStr, endStr) =>
-      records.filter(d => {
-        const wd = typeof d.work_date === 'string' ? d.work_date.split('T')[0] : String(d.work_date);
-        return wd >= startStr && wd <= endStr;
-      });
-
-    // Today
-    const todayRecords = filterByDate(userDailySummaries, todayStr, todayStr);
-    const todaySeconds = todayRecords.reduce((sum, d) => sum + (d.total_seconds || 0), 0);
-    const todayUnassignedSeconds = filterByDate(userUnassignedSummaries, todayStr, todayStr)
-      .reduce((sum, d) => sum + (d.total_seconds || 0), 0);
-
-    // This week
-    const weekRecords = filterByDate(userDailySummaries, weekStartStr, todayStr);
-    const weekSeconds = weekRecords.reduce((sum, d) => sum + (d.total_seconds || 0), 0);
-    const weekUnassignedSeconds = filterByDate(userUnassignedSummaries, weekStartStr, todayStr)
-      .reduce((sum, d) => sum + (d.total_seconds || 0), 0);
-
-    // This month
-    const monthRecords = filterByDate(userDailySummaries, monthStartStr, todayStr);
-    const monthSeconds = monthRecords.reduce((sum, d) => sum + (d.total_seconds || 0), 0);
-    const monthUnassignedSeconds = filterByDate(userUnassignedSummaries, monthStartStr, todayStr)
-      .reduce((sum, d) => sum + (d.total_seconds || 0), 0);
-
-    const todayHours = Math.round(todaySeconds / 3600 * 100) / 100;
-    const weekHours = Math.round(weekSeconds / 3600 * 100) / 100;
-    const monthHours = Math.round(monthSeconds / 3600 * 100) / 100;
+    const todaySeconds = sumByDateRange(userDailySummaries, todayStr, todayStr);
+    const todayUnassignedSeconds = sumByDateRange(userUnassignedSummaries, todayStr, todayStr);
+    const weekSeconds = sumByDateRange(userDailySummaries, weekStartStr, todayStr);
+    const weekUnassignedSeconds = sumByDateRange(userUnassignedSummaries, weekStartStr, todayStr);
+    const monthSeconds = sumByDateRange(userDailySummaries, monthStartStr, todayStr);
+    const monthUnassignedSeconds = sumByDateRange(userUnassignedSummaries, monthStartStr, todayStr);
 
     return {
       userId,
       displayName,
-      todayHours,
-      weekHours,
-      monthHours,
+      todayHours: Math.round(todaySeconds / 3600 * 100) / 100,
+      weekHours: Math.round(weekSeconds / 3600 * 100) / 100,
+      monthHours: Math.round(monthSeconds / 3600 * 100) / 100,
       todaySeconds,
       weekSeconds,
       monthSeconds,
@@ -465,55 +469,46 @@ export async function fetchProjectTeamAnalytics(accountId, cloudId, projectKey, 
     };
   }).sort((a, b) => b.monthSeconds - a.monthSeconds);
 
-  // === Calculate Team Summary KPIs from daily_time_summary (same source as table) ===
   const totalSecondsThisMonth = teamMemberActivity.reduce((sum, m) => sum + m.monthSeconds, 0);
   const totalHoursThisMonth = Math.round(totalSecondsThisMonth / 3600 * 10) / 10;
   const activeMembers = teamMemberActivity.filter(m => m.monthSeconds > 0).length;
-  const issuesWorked = new Set(
-    (teamDailySummaryFull || [])
-      .filter(d => {
-        const wd = typeof d.work_date === 'string' ? d.work_date.split('T')[0] : String(d.work_date);
-        return wd >= monthStartStr && wd <= todayStr && d.task_key;
-      })
-      .map(d => d.task_key)
-  ).size;
-  const avgHoursPerMember = activeMembers > 0
-    ? Math.round(totalHoursThisMonth / activeMembers * 10) / 10
-    : 0;
+
+  const issuesWorkedSet = new Set();
+  for (const [workDate, records] of summaryByDate.entries()) {
+    if (workDate < monthStartStr || workDate > todayStr) continue;
+    for (const record of records) {
+      if (record.task_key) issuesWorkedSet.add(record.task_key);
+    }
+  }
 
   const teamSummary = {
     totalHoursThisMonth,
     totalSecondsThisMonth,
     activeMembers,
-    issuesWorked,
-    avgHoursPerMember
+    issuesWorked: issuesWorkedSet.size,
+    avgHoursPerMember: activeMembers > 0
+      ? Math.round(totalHoursThisMonth / activeMembers * 10) / 10
+      : 0
   };
 
-  // === Calculate Daily Trend (Last 14 days) from daily_time_summary ===
-  const trendDays = 14;
   const dayNames = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
   const trendData = [];
-  for (let i = trendDays - 1; i >= 0; i--) {
+  for (let i = 13; i >= 0; i--) {
     const date = new Date(todayDate);
     date.setDate(todayDate.getDate() - i);
     const dateStr = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
-
-    const dayRecords = (teamDailySummaryFull || []).filter(d => {
-      const wd = typeof d.work_date === 'string' ? d.work_date.split('T')[0] : String(d.work_date);
-      return wd === dateStr;
-    });
+    const dayRecords = summaryByDate.get(dateStr) || [];
     const totalSeconds = dayRecords.reduce((sum, d) => sum + (d.total_seconds || 0), 0);
-    const totalHours = Math.round(totalSeconds / 3600 * 10) / 10;
 
     trendData.push({
       date: dateStr,
       dayOfWeek: dayNames[date.getDay()],
       dayOfMonth: date.getDate(),
-      totalHours
+      totalHours: Math.round(totalSeconds / 3600 * 10) / 10
     });
   }
 
-  return {
+  const result = {
     teamSummary,
     teamMemberActivity,
     teamDailySummary: teamDailySummary || [],
@@ -523,6 +518,18 @@ export async function fetchProjectTeamAnalytics(accountId, cloudId, projectKey, 
     projectKey,
     organizationId: organization.id
   };
+
+  try {
+    const serialized = JSON.stringify(result);
+    if (serialized.length < 200 * 1024) {
+      kvs.set(cacheKey, { value: result, expiresAt: Date.now() + TEAM_ANALYTICS_CACHE_TTL_MS }).catch(() => {});
+    }
+  } catch {
+    // Ignore cache set errors.
+  }
+
+  console.log(`[TeamAnalytics] getProjectTeamAnalytics ${projectKey} took ${Date.now() - t0}ms`);
+  return result;
 }
 
 /**
@@ -559,7 +566,7 @@ async function resolveTeamPermissions(isAdmin, projectKey) {
   return { hasPermission, projectAdminProjects };
 }
 
-// Columns from the idle-time migration (20260325) — may not exist in older databases
+// Columns from the idle-time migration (20260325) - may not exist in older databases
 const IDLE_COLUMNS = ',is_idle,idle_start_time,idle_end_time,reclassified_from,reclassification_reason,converted_issue_key,user_timezone';
 const BASE_ACTIVITY_SELECT = 'id,user_id,start_time,end_time,duration_seconds,project_key,classification,user_assigned_issue_key';
 
@@ -588,7 +595,7 @@ function buildActivityQuery(orgId, date, filterByProjects, projectsToFilter, cur
 }
 
 /**
- * Build the legacy analysis_results query string with a ±1-day created_at buffer
+ * Build the legacy analysis_results query string with a +/-1-day created_at buffer
  * for timezone differences. Scopes to the current user for non-admins.
  */
 function buildLegacyQuery(orgId, date, isAdmin, currentUserId) {
@@ -608,7 +615,7 @@ function buildLegacyQuery(orgId, date, isAdmin, currentUserId) {
   return query;
 }
 
-/** Build map: user_id → latest batch_end within the threshold window */
+/** Build map: user_id -> latest batch_end within the threshold window */
 function buildLatestBatchByUserMap(recentActivity) {
   const latestBatchByUser = {};
   for (const r of (recentActivity || [])) {
@@ -619,7 +626,7 @@ function buildLatestBatchByUserMap(recentActivity) {
   return latestBatchByUser;
 }
 
-/** Build lookup map: user_id → user record, to avoid O(n²) scanning */
+/** Build lookup map: user_id -> user record, to avoid O(n^2) scanning */
 function buildUserByIdMap(allUsers) {
   const userById = {};
   for (const u of (allUsers || [])) {
@@ -701,7 +708,7 @@ export async function fetchTeamDayTimeline(accountId, cloudId, projectKey, date,
   const legacyQuery = buildLegacyQuery(organization.id, date, isAdmin, currentUserId);
 
   // Run all four queries in parallel. activity_records.batch_end is updated every 5 min
-  // during active tracking (vs desktop_last_heartbeat every 4h) — used to compute a more
+  // during active tracking (vs desktop_last_heartbeat every 4h) - used to compute a more
   // accurate effectiveLastActive signal for status dots.
   const activityThreshold = new Date(Date.now() - 270 * 60 * 1000).toISOString();
 
@@ -978,7 +985,7 @@ export async function fetchMyDayTimeline(accountId, cloudId, date) {
   }
 
   // Fetch activity records for current user on the specified date
-  // All classifications included — timeline shows all activity to indicate user presence
+  // All classifications included - timeline shows all activity to indicate user presence
   const idleSelect = `${BASE_ACTIVITY_SELECT}${IDLE_COLUMNS}`.replace('user_id,', '');
   const baseSelect = BASE_ACTIVITY_SELECT.replace('user_id,', '');
   const activityQuery = `activity_records?organization_id=eq.${organization.id}&user_id=eq.${userId}&work_date=eq.${date}&select=${idleSelect}&order=start_time.asc&limit=500`;
@@ -2023,7 +2030,7 @@ export async function fetchMemberMonthDetails(accountId, cloudId, projectKey, us
   // Fetch issue details from Jira
   const issueDetails = await fetchIssueDetailsBatch([...allIssueKeys]);
  
-  // Build weekly breakdown — only include days within the actual month (1st to last day)
+  // Build weekly breakdown - only include days within the actual month (1st to last day)
   const weeklyBreakdown = [];
   const dayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
  
@@ -2060,7 +2067,7 @@ export async function fetchMemberMonthDetails(accountId, cloudId, projectKey, us
       nonProductiveSeconds
     });
    
-    // End of week (Sunday) or last day of month — flush the week
+    // End of week (Sunday) or last day of month - flush the week
     const isLastDayOfMonth = new Date(d.getFullYear(), d.getMonth(), d.getDate() + 1) > monthEnd;
     if (d.getDay() === 0 || isLastDayOfMonth) {
       weekNum++;
