@@ -220,6 +220,7 @@ function TeamAnalyticsTab() {
                 </svg>
               </div>
               <div className="kpi-content">
+                <div className="kpi-label">Active Members</div>
                 <div className="kpi-value-row">
                   <div className="kpi-value">{teamAnalytics?.teamSummary?.activeMembers || 0}</div>
                   <div className="kpi-info-wrapper">
@@ -229,7 +230,6 @@ function TeamAnalyticsTab() {
                     </span>
                   </div>
                 </div>
-                <div className="kpi-label">Active Members</div>
               </div>
             </div>
             <div className="team-kpi-card">
@@ -241,6 +241,7 @@ function TeamAnalyticsTab() {
                 </svg>
               </div>
               <div className="kpi-content">
+                <div className="kpi-label">Total Hours This Month</div>
                 <div className="kpi-value-row">
                   <div className="kpi-value">{teamAnalytics?.teamSummary?.totalSecondsThisMonth ? formatTime(teamAnalytics.teamSummary.totalSecondsThisMonth) : '0s'}</div>
                   <div className="kpi-info-wrapper">
@@ -250,7 +251,6 @@ function TeamAnalyticsTab() {
                     </span>
                   </div>
                 </div>
-                <div className="kpi-label">Total Hours This Month</div>
               </div>
             </div>
             <div className="team-kpi-card">
@@ -264,6 +264,7 @@ function TeamAnalyticsTab() {
                 </svg>
               </div>
               <div className="kpi-content">
+                <div className="kpi-label">Issues Worked</div>
                 <div className="kpi-value-row">
                   <div className="kpi-value">{teamAnalytics?.teamSummary?.issuesWorked || 0}</div>
                   <div className="kpi-info-wrapper">
@@ -273,7 +274,6 @@ function TeamAnalyticsTab() {
                     </span>
                   </div>
                 </div>
-                <div className="kpi-label">Issues Worked</div>
               </div>
             </div>
           </div>

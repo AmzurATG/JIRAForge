@@ -97,17 +97,20 @@
   transition: transform 0.2s ease, box-shadow 0.2s ease;
 }
 
-/* Individual card color themes */
+/* Individual card color themes - matching Time Analytics cards */
 .team-kpi-card:nth-child(1) {
-  background: #fff;
+  background: #E8F5E9;
+  border: 1px solid #C8E6C9;
 }
 
 .team-kpi-card:nth-child(2) {
-  background: #fff;
+  background: #FFF3E0;
+  border: 1px solid #FFE0B2;
 }
 
 .team-kpi-card:nth-child(3) {
-  background: #fff;
+  background: #F3E5F5;
+  border: 1px solid #E1BEE7;
 }
 
 .team-kpi-card .kpi-icon {
@@ -122,17 +125,17 @@
 
 /* Icon colors for each card - matching Time Analytics consistency */
 .team-kpi-card:nth-child(1) .kpi-icon {
-  background: #667eea;
+  background: #66BB6A;
   color: #fff;
 }
 
 .team-kpi-card:nth-child(2) .kpi-icon {
-  background: #f5576c;
+  background: #FFA726;
   color: #fff;
 }
 
 .team-kpi-card:nth-child(3) .kpi-icon {
-  background: #4facfe;
+  background: #AB47BC;
   color: #fff;
 }
 
@@ -150,11 +153,10 @@
 }
 
 .team-kpi-card .kpi-value {
-  font-size: 28px;
-  font-weight: 700;
+  font-size: 1rem;
+  font-weight: 600;
   color: #172B4D;
-  line-height: 1;
-  letter-spacing: -0.5px;
+  line-height: 1.2;
 }
 
 .team-kpi-card .kpi-label {
@@ -162,7 +164,6 @@
   color: #5E6C84;
   text-transform: uppercase;
   letter-spacing: 0.8px;
-  margin-top: 4px;
   font-weight: 600;
 }
 
@@ -588,16 +589,16 @@
 .clear-selection-btn {
   display: flex;
   align-items: center;
-  gap: 4px;
-  padding: 4px 10px;
+  gap: 6px;
+  padding: 8px 16px;
   border: 1px solid #DFE1E6;
-  border-radius: 4px;
+  border-radius: 6px;
   background: #fff;
-  color: #6B778C;
-  font-size: 12px;
-  font-weight: 500;
+  color: #5E6C84;
+  font-size: 13px;
+  font-weight: 600;
   cursor: pointer;
-  transition: all 0.15s ease;
+  transition: all 0.2s ease;
   margin-left: auto;
 }
 
@@ -926,12 +927,12 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 32px;
-  height: 32px;
+  width: 34px;
+  height: 34px;
   border: 1px solid #DFE1E6;
-  border-radius: 4px;
+  border-radius: 6px;
   background: #fff;
-  color: #6B778C;
+  color: #5E6C84;
   cursor: pointer;
   transition: all 0.2s ease;
 }
@@ -943,14 +944,14 @@
 }
 
 .view-toggle-btn.active {
-  background: #0052CC;
-  border-color: #0052CC;
+  background: #6656fc;
+  border-color: #6656fc;
   color: #fff;
 }
 
 .view-toggle-btn.active:hover {
-  background: #0065FF;
-  border-color: #0065FF;
+  background: #5144d9;
+  border-color: #5144d9;
 }
 
 /* Contributors Avatars */
@@ -1166,20 +1167,19 @@
   gap: 8px;
   padding: 8px 16px;
   font-size: 14px;
-  font-weight: 500;
+  font-weight: 600;
   color: #fff;
-  background: #0052CC;
-  border: 1px solid #0052CC;
-  border-radius: 3px;
+  background: #6656fc;
+  border: 1px solid #6656fc;
+  border-radius: 6px;
   cursor: pointer;
-  transition: background-color 0.2s ease, transform 0.1s ease;
+  transition: all 0.2s ease;
   white-space: nowrap;
 }
 
 .export-btn:hover {
-  background: #0065FF;
-  border-color: #0065FF;
-  transform: translateY(-1px);
+  background: #5144d9;
+  border-color: #5144d9;
 }
 
 .export-btn:active {

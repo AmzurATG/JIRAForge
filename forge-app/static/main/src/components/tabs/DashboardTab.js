@@ -17,6 +17,9 @@ function DashboardTab({ onOpenReassignModal }) {
 
   const [issueFilter, setIssueFilter] = useState('all');
   const [timeFilter, setTimeFilter] = useState('all');
+  const [searchQuery, setSearchQuery] = useState('');
+  const [currentPage, setCurrentPage] = useState(1);
+  const itemsPerPage = 10;
 
   useEffect(() => {
     loadActiveIssues();
@@ -37,10 +40,6 @@ function DashboardTab({ onOpenReassignModal }) {
     return true;
   };
 
-  const filteredIssues = activeIssues.filter(issue => (
-    matchesStatusFilter(issue) && matchesTimeFilter(issue)
-  ));
-
   const getFilterDescription = () => {
     const parts = [];
 
@@ -59,6 +58,43 @@ function DashboardTab({ onOpenReassignModal }) {
     }
 
     return parts.join(' and ');
+  };
+
+  // Reset to page 1 when filters change
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [issueFilter, searchQuery]);
+
+  const filteredIssues = activeIssues.filter(issue => {
+    // Filter by status category
+    let statusMatch = true;
+    if (issueFilter === 'in-progress') statusMatch = issue.statusCategory === 'indeterminate';
+    if (issueFilter === 'done') statusMatch = issue.statusCategory === 'done';
+
+    // Filter by search query
+    let searchMatch = true;
+    if (searchQuery.trim()) {
+      const query = searchQuery.toLowerCase();
+      searchMatch = 
+        issue.key.toLowerCase().includes(query) ||
+        issue.summary.toLowerCase().includes(query) ||
+        issue.status.toLowerCase().includes(query) ||
+        issue.priority.toLowerCase().includes(query);
+    }
+
+    return statusMatch && searchMatch;
+  });
+
+  // Pagination calculations
+  const totalPages = Math.ceil(filteredIssues.length / itemsPerPage);
+  const startIndex = (currentPage - 1) * itemsPerPage;
+  const endIndex = startIndex + itemsPerPage;
+  const paginatedIssues = filteredIssues.slice(startIndex, endIndex);
+
+  const handlePageChange = (page) => {
+    if (page >= 1 && page <= totalPages) {
+      setCurrentPage(page);
+    }
   };
 
   const handleExpandClick = (e) => {
@@ -99,7 +135,7 @@ function DashboardTab({ onOpenReassignModal }) {
         {/* <h2>My Focus</h2>
         <p className="widget-subtitle">Your personalized development workflow hub</p> */}
 
-        <div className="focus-filters">
+        <div className="focus-header">
           <div className="focus-tabs">
             <button
               className={issueFilter === 'all' ? 'active' : ''}
@@ -121,18 +157,58 @@ function DashboardTab({ onOpenReassignModal }) {
             </button>
           </div>
 
-          <div className="focus-time-filter" aria-label="Filter issues by time status">
-            <label className="focus-time-filter-label" htmlFor="my-focus-time-filter">Time:</label>
-            <select
-              id="my-focus-time-filter"
-              className="focus-time-filter-select"
-              value={timeFilter}
-              onChange={(e) => setTimeFilter(e.target.value)}
-            >
-              <option value="all">All</option>
-              <option value="with-time">With Time</option>
-              <option value="without-time">No Time</option>
-            </select>
+          <div className="focus-controls">
+            <div className="focus-time-filter" aria-label="Filter issues by time status">
+              <label className="focus-time-filter-label" htmlFor="my-focus-time-filter">Time:</label>
+              <select
+                id="my-focus-time-filter"
+                className="focus-time-filter-select"
+                value={timeFilter}
+                onChange={(e) => setTimeFilter(e.target.value)}
+              >
+                <option value="all">All</option>
+                <option value="with-time">With Time</option>
+                <option value="without-time">No Time</option>
+              </select>
+            </div>
+            <div className="focus-actions">
+              <div className="focus-search">
+                <svg className="search-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <circle cx="11" cy="11" r="8"></circle>
+                  <path d="m21 21-4.35-4.35"></path>
+                </svg>
+                <input
+                  type="text"
+                  className="search-input"
+                  placeholder="Search tasks..."
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                />
+                {searchQuery && (
+                  <button
+                    className="clear-search"
+                    onClick={() => setSearchQuery('')}
+                    title="Clear search"
+                  >
+                    ×
+                  </button>
+                )}
+              </div>
+              <button className="filter-button" title="Filter options">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <line x1="4" y1="21" x2="4" y2="14"></line>
+                  <line x1="4" y1="10" x2="4" y2="3"></line>
+                  <line x1="12" y1="21" x2="12" y2="12"></line>
+                  <line x1="12" y1="8" x2="12" y2="3"></line>
+                  <line x1="20" y1="21" x2="20" y2="16"></line>
+                  <line x1="20" y1="12" x2="20" y2="3"></line>
+                  <line x1="1" y1="14" x2="7" y2="14"></line>
+                  <line x1="9" y1="8" x2="15" y2="8"></line>
+                  <line x1="17" y1="16" x2="23" y2="16"></line>
+                </svg>
+                <span>Filter</span>
+              </button>
+            </div>
           </div>
         </div>
 
@@ -153,10 +229,10 @@ function DashboardTab({ onOpenReassignModal }) {
                     </tr>
                   </thead>
                   <tbody>
-                    {filteredIssues.map((issue, idx) => {
+                    {paginatedIssues.map((issue, idx) => {
                       const trackedSeconds = Number(issue.timeTracked) || 0;
                       const hasTrackedTime = trackedSeconds > 0;
-
+                      
                       return (
                       <React.Fragment key={idx}>
                         <tr className={issue.sessions?.length > 0 ? 'expandable-row' : ''}>
@@ -355,6 +431,57 @@ function DashboardTab({ onOpenReassignModal }) {
                     })}
                   </tbody>
                 </table>
+
+                {/* Pagination Controls */}
+                {totalPages > 1 && (
+                  <div className="pagination">
+                    <button
+                      className="pagination-btn"
+                      onClick={() => handlePageChange(currentPage - 1)}
+                      disabled={currentPage === 1}
+                      title="Previous page"
+                    >
+                      ‹
+                    </button>
+
+                    <div className="pagination-pages">
+                      {Array.from({ length: totalPages }, (_, i) => i + 1).map(page => {
+                        // Show first page, last page, current page, and pages around current
+                        if (
+                          page === 1 ||
+                          page === totalPages ||
+                          (page >= currentPage - 1 && page <= currentPage + 1)
+                        ) {
+                          return (
+                            <button
+                              key={page}
+                              className={`pagination-page ${page === currentPage ? 'active' : ''}`}
+                              onClick={() => handlePageChange(page)}
+                            >
+                              {page}
+                            </button>
+                          );
+                        } else if (page === currentPage - 2 || page === currentPage + 2) {
+                          return <span key={page} className="pagination-ellipsis">...</span>;
+                        }
+                        return null;
+                      })}
+                    </div>
+
+                    <button
+                      className="pagination-btn"
+                      onClick={() => handlePageChange(currentPage + 1)}
+                      disabled={currentPage === totalPages}
+                      title="Next page"
+                    >
+                      ›
+                    </button>
+
+                    <span className="pagination-info">
+                      {startIndex + 1}-{Math.min(endIndex, filteredIssues.length)} of {filteredIssues.length}
+                    </span>
+                  </div>
+                )}
               </div>
             ) : (
               <p className="empty-state">

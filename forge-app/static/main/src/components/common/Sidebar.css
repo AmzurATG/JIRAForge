@@ -1,6 +1,6 @@
 /* Sidebar Styles */
 .App-sidebar {
-  width: 240px;
+  width: 188px;
   background: var(--ds-background-default);
   border-right: 1px solid var(--ds-border);
   display: flex;
@@ -17,9 +17,10 @@
   display: flex;
   align-items: center;
   gap: var(--ds-space-150);
-  padding: var(--ds-space-200) var(--ds-space-300);
+  padding: 6px;
   border-bottom: 1px solid var(--ds-border);
   min-height: 48px;
+  justify-content: end;
 }
 
 .sidebar-toggle {
@@ -94,7 +95,7 @@
   display: flex;
   align-items: center;
   gap: var(--ds-space-150);
-  padding: var(--ds-space-150) var(--ds-space-300);
+  padding: var(--ds-space-150) var(--ds-space-150);
   border: none;
     border-bottom-left-radius: 8px;
     border-top-left-radius: 8px;
