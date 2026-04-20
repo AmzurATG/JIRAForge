@@ -93,7 +93,7 @@
 /* Download Banner */
 .download-banner {
   background: #fff;
-  border: 1px solid #e1e4e8;
+  border-left: 3px solid #6758f9;
   border-radius: 8px;
   padding: 24px;
   margin-bottom: 24px;
@@ -231,25 +231,25 @@
 
 .cumulative-card.clickable:hover {
   transform: translateY(-2px);
-  box-shadow: 0 4px 12px rgba(0, 82, 204, 0.15);
+  box-shadow: 0 4px 12px rgba(76, 154, 255, 0.15);
   border-color: #B3D4FF;
 }
 
 .cumulative-card.clickable:focus {
   outline: none;
-  border-color: #0052CC;
-  box-shadow: 0 0 0 2px rgba(0, 82, 204, 0.2);
+  border-color: #4c9aff;
+  box-shadow: 0 0 0 2px rgba(76, 154, 255, 0.2);
 }
 
 /* Active card styles */
 .cumulative-card.active {
-  border-color: #0052CC;
-  box-shadow: 0 4px 12px rgba(0, 82, 204, 0.2);
+  border-color: #4c9aff;
+  /* box-shadow: 0 4px 12px rgba(0, 82, 204, 0.2); */
   background: linear-gradient(135deg, #ffffff 0%, #f8faff 100%);
 }
 
 .cumulative-card.active:hover {
-  border-color: #0052CC;
+  border-color: #4c9aff;
   transform: none;
 }
 
@@ -264,25 +264,45 @@
   flex-shrink: 0;
 }
 
+/* Icon colors matching card backgrounds */
+.cumulative-card:nth-child(1) .card-icon {
+  background: #66BB6A; /* Green for Today */
+  color: white;
+}
+
+.cumulative-card:nth-child(2) .card-icon {
+  background: #FFA726; /* Orange for Week */
+  color: white;
+}
+
+.cumulative-card:nth-child(3) .card-icon {
+  background: #AB47BC; /* Purple for Month */
+  color: white;
+}
+
 /* Card Content */
 .card-content {
   flex: 1;
   display: flex;
   flex-direction: column;
   gap: 4px;
+  align-items: flex-start;
 }
 
 /* Individual card color themes */
 .cumulative-card:nth-child(1) {
-  background: #fff;
+ background: #E8F5E9; /* Light green for Today */
+  border: 1px solid #C8E6C9;
 }
 
 .cumulative-card:nth-child(2) {
-  background: #fff;
+   background: #FFF3E0; /* Light orange for Week */
+  border: 1px solid #FFE0B2;
 }
 
 .cumulative-card:nth-child(3) {
-  background: #fff;
+   background: #F3E5F5; /* Light purple for Month */
+  border: 1px solid #E1BEE7;
 }
 
 .cumulative-card h3 {
@@ -295,7 +315,7 @@
 }
 
 .cumulative-card .stat-value {
-  font-size: 28px;
+  font-size: 36px;
   font-weight: 700;
   color: #172B4D;
   line-height: 1;
@@ -304,39 +324,43 @@
 
 .cumulative-card .stat-value--drilldown {
   border: none;
-  background: #F4F8FF;
-  border: 1px dashed #85B8FF;
+  background: transparent;
   border-radius: 8px;
-  padding: 6px 10px;
+  padding: 6px 0;
   margin: 0;
   font: inherit;
   color: #0747A6;
   cursor: pointer;
-  box-shadow: inset 0 0 0 1px rgba(9, 30, 66, 0.02);
-  transition: color 0.15s ease, background 0.15s ease, border-color 0.15s ease, transform 0.15s ease;
+  transition: color 0.15s ease, background 0.15s ease, transform 0.15s ease;
   display: inline-flex;
   align-items: center;
+  justify-content: space-between;
+  width: 100%;
   gap: 8px;
 }
 
 .cumulative-card .stat-value--drilldown::after {
   content: 'View';
-  font-size: 10px;
-  font-weight: 700;
+  font-size: 11px;
+  font-weight: 600;
   letter-spacing: 0.4px;
   text-transform: uppercase;
   color: #0052CC;
-  background: #DEEBFF;
-  border-radius: 999px;
-  padding: 2px 6px;
+  background: transparent;
+  border-radius: 4px;
+  padding: 4px 8px;
+  margin-left: auto;
 }
 
 .cumulative-card .stat-value--drilldown:hover,
 .cumulative-card .stat-value--drilldown:focus-visible {
   color: #0052CC;
-  background: #DEEBFF;
-  border-color: #4C9AFF;
-  transform: translateY(-1px);
+  background: transparent;
+}
+
+.cumulative-card .stat-value--drilldown:hover::after {
+  background: #E3F2FD;
+  color: #0747A6;
 }
 
 .cumulative-card .cumulative-stat {
