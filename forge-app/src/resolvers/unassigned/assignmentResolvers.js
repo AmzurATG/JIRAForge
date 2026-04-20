@@ -452,6 +452,7 @@ export async function createIssueAndAssignSelection(req) {
       issueType,
       totalSeconds,
       assigneeAccountId,
+      assignToSelf,
       statusName
     } = req.payload;
 
@@ -502,9 +503,15 @@ export async function createIssueAndAssignSelection(req) {
       labels: ['time-tracked', 'auto-created']
     };
 
-    issueFields.assignee = assigneeAccountId
-      ? { accountId: assigneeAccountId }
-      : { accountId };
+    // Assignee resolution:
+    //   - explicit assigneeAccountId wins
+    //   - otherwise assignToSelf=true (or undefined, for back-compat) -> current user
+    //   - assignToSelf=false -> omit assignee so Jira uses the project default
+    if (assigneeAccountId) {
+      issueFields.assignee = { accountId: assigneeAccountId };
+    } else if (assignToSelf !== false) {
+      issueFields.assignee = { accountId };
+    }
 
     const createResp = await api.asUser().requestJira(
       route`/rest/api/3/issue`,
@@ -645,7 +652,7 @@ export async function createIssueAndAssignSelection(req) {
  */
 export async function createIssueAndAssign(req) {
   try {
-    const { sessionIds, issueSummary, issueDescription, projectKey, issueType, totalSeconds, groupId, assigneeAccountId, statusName } = req.payload;
+    const { sessionIds, issueSummary, issueDescription, projectKey, issueType, totalSeconds, groupId, assigneeAccountId, assignToSelf, statusName } = req.payload;
 
     // Validate input formats
     const validSessionIds = sanitizeUUIDArray(sessionIds);
@@ -693,12 +700,14 @@ export async function createIssueAndAssign(req) {
       labels: ['time-tracked', 'auto-created']
     };
 
-    // Add assignee if provided (default to current user)
+    // Assignee resolution:
+    //   - explicit assigneeAccountId wins
+    //   - otherwise assignToSelf=true (or undefined, for back-compat) -> current user
+    //   - assignToSelf=false -> omit assignee so Jira uses the project default
     if (assigneeAccountId) {
       issueFields.assignee = { accountId: assigneeAccountId };
-    } else {
-      // Default to current user
-      issueFields.assignee = { accountId: accountId };
+    } else if (assignToSelf !== false) {
+      issueFields.assignee = { accountId };
     }
 
     // Note: Cannot set status during creation - must transition after creation
@@ -882,12 +891,21 @@ export async function previewBulkReassign(req) {
 
     console.log(`[previewBulkReassign] Window ${windowStartUtc} to ${windowEndUtc} (user picked ${startTime}-${endTime} on ${selectedDate} local)`);
 
-    // Fetch candidates by work_date; the overlap test runs client-side so records
-    // with NULL end_time (in-progress sessions) are still considered.
+    // Query by start_time range, not work_date. When the user's local window
+    // straddles a UTC date boundary (common for timezones far from UTC), the
+    // relevant records live on the adjacent UTC date and a work_date=selectedDate
+    // filter silently drops them. A 1-day lower buffer covers records that
+    // started before windowStart but still overlap it. The client-side
+    // computeAttribution does the precise overlap check.
+    const dayMs = 24 * 60 * 60 * 1000;
+    const queryLowerUtc = encodeURIComponent(new Date(windowStartMs - dayMs).toISOString());
+    const queryUpperUtc = encodeURIComponent(new Date(windowEndMs).toISOString());
+
     const records = ensureArray(await supabaseRequest(
       supabaseConfig,
       `activity_records?user_id=eq.${userId}&organization_id=eq.${organization.id}` +
-      `&work_date=eq.${selectedDate}` +
+      `&start_time=gte.${queryLowerUtc}` +
+      `&start_time=lt.${queryUpperUtc}` +
       `&status=in.(pending,processing,analyzed)` +
       `&classification=in.(productive,unknown)` +
       `&clustering_dismissed=eq.false` +
@@ -1015,10 +1033,19 @@ export async function bulkReassignByTimeInterval(req) {
 
     const targetProjectKey = targetIssueKey.split('-')[0];
 
+    // See previewBulkReassign for why start_time range replaces work_date=eq.
+    // Must use the identical filter here — preview and execute need to see the
+    // same record set, otherwise the logged worklog total wouldn't match the
+    // preview the user confirmed.
+    const dayMs = 24 * 60 * 60 * 1000;
+    const queryLowerUtc = encodeURIComponent(new Date(windowStartMs - dayMs).toISOString());
+    const queryUpperUtc = encodeURIComponent(new Date(windowEndMs).toISOString());
+
     const records = ensureArray(await supabaseRequest(
       supabaseConfig,
       `activity_records?user_id=eq.${userId}&organization_id=eq.${organization.id}` +
-      `&work_date=eq.${selectedDate}` +
+      `&start_time=gte.${queryLowerUtc}` +
+      `&start_time=lt.${queryUpperUtc}` +
       `&status=in.(pending,processing,analyzed)` +
       `&classification=in.(productive,unknown)` +
       `&clustering_dismissed=eq.false` +

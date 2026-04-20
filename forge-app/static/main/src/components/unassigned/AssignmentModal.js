@@ -161,7 +161,7 @@ function AssignmentModal({
             projectKey: selectedProject,
             issueType: issueType,
             totalSeconds: selectedGroup.total_seconds,
-            assigneeAccountId: assignToMe ? null : null,
+            assignToSelf: assignToMe,
             statusName: selectedStatus
           })
         : await invoke('createIssueAndAssign', {
@@ -172,7 +172,7 @@ function AssignmentModal({
             issueType: issueType,
             totalSeconds: selectedGroup.total_seconds,
             groupId: selectedGroup.id,
-            assigneeAccountId: assignToMe ? null : null,
+            assignToSelf: assignToMe,
             statusName: selectedStatus
           });
 

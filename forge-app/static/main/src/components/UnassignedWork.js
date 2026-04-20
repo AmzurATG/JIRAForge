@@ -187,6 +187,66 @@ function UnassignedWork() {
     setSelectedIntervalsByGroup(new Map());
   };
 
+  // Surgically remove a session from both caches and prune any selection state
+  // that still references it. Centralising this prevents the "ghost selection"
+  // bug where a fully-selected group is left in fullySelectedGroups while its
+  // cached session_ids have been wiped out — buildSelectionPayload would then
+  // silently contribute zero sessions. Called from any code path that removes
+  // a session (currently just dismiss, but new call sites must use this helper
+  // rather than touching setGroupDetails / setGroupWorkSessions directly).
+  const removeSessionFromGroupCache = (groupId, session) => {
+    const removedIds = new Set(session.activityIds || []);
+    const removedKey = intervalKey(session);
+    const removedSeconds = session.durationSeconds || 0;
+
+    setGroupDetails(prev => {
+      const existing = prev[groupId];
+      if (!existing) return prev;
+      const nextSessionIds = (existing.session_ids || []).filter(id => !removedIds.has(id));
+      const nextSeconds = Math.max(0, (existing.total_seconds || 0) - removedSeconds);
+      // session_count tracks unassigned_group_members rows. Backend deletes one
+      // row per activityId (see dismissGroupMember), so the decrement matches
+      // removedIds.size, not just 1 — a session can carry multiple activityIds.
+      return {
+        ...prev,
+        [groupId]: {
+          ...existing,
+          session_ids: nextSessionIds,
+          session_count: Math.max(0, (existing.session_count || 0) - removedIds.size),
+          total_seconds: nextSeconds,
+          total_time_formatted: formatTime(nextSeconds)
+        }
+      };
+    });
+
+    setGroupWorkSessions(prev => {
+      const dateGroups = prev[groupId];
+      if (!dateGroups) return prev;
+      const updated = dateGroups
+        .map(dg => ({
+          ...dg,
+          sessions: dg.sessions.filter(s => s !== session),
+          totalSeconds: Math.max(0, (dg.totalSeconds || 0) - removedSeconds)
+        }))
+        .filter(dg => dg.sessions.length > 0);
+      return { ...prev, [groupId]: updated };
+    });
+
+    // If this session was part of a partial selection, drop its key. Full-group
+    // selections don't need pruning — they reference the group, not the session,
+    // and the updated groupDetails above keeps session_ids in sync.
+    setSelectedIntervalsByGroup(prev => {
+      const current = prev.get(groupId);
+      if (!current || !current.has(removedKey)) return prev;
+      const updated = new Set(current);
+      updated.delete(removedKey);
+      const next = new Map(prev);
+      if (updated.size === 0) next.delete(groupId);
+      else next.set(groupId, updated);
+      return next;
+    });
+  };
+
   // Derived summary for the selection bar.
   // sessionCount counts underlying activity_records (matches the page header's "sessions" wording).
   const selectionSummary = (() => {
@@ -450,8 +510,9 @@ function UnassignedWork() {
     }
   };
 
-  const handleDismissMember = async (groupId, sessionIds) => {
+  const handleDismissMember = async (groupId, session) => {
     try {
+      const sessionIds = session.activityIds || [];
       // Sequential — each call reads then writes session_count; parallel would cause a race condition
       for (const sessionId of sessionIds) {
         await invoke('dismissGroupMember', { groupId, sessionId });
@@ -461,6 +522,7 @@ function UnassignedWork() {
           ? { ...g, session_count: Math.max(0, (g.session_count || 0) - sessionIds.length) }
           : g
       ));
+      removeSessionFromGroupCache(groupId, session);
     } catch (err) {
       console.error('[UnassignedWork] Error dismissing member:', err);
     }
@@ -574,8 +636,6 @@ function UnassignedWork() {
         loadingWorkSessions={loadingWorkSessions}
         loadGroupDetails={loadGroupDetails}
         loadGroupWorkSessions={loadGroupWorkSessions}
-        setGroupDetails={setGroupDetails}
-        setGroupWorkSessions={setGroupWorkSessions}
         isGroupFullySelected={isGroupFullySelected}
         isGroupPartiallySelected={isGroupPartiallySelected}
         isIntervalSelected={isIntervalSelected}

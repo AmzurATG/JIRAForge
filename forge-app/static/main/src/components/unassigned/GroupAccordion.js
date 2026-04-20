@@ -19,8 +19,6 @@ function GroupAccordion({
   loadingWorkSessions,
   loadGroupDetails,
   loadGroupWorkSessions,
-  setGroupDetails,
-  setGroupWorkSessions,
   // Selection (multi-select bulk assign)
   isGroupFullySelected,
   isGroupPartiallySelected,
@@ -98,26 +96,8 @@ function GroupAccordion({
     const key = `${groupId}-${(session.activityIds || []).join('-')}`;
     setDismissingMember(prev => ({ ...prev, [key]: true }));
     try {
-      await onDismissMember(groupId, session.activityIds || []);
-      // Remove the session from the work-sessions local state
-      setGroupWorkSessions(prev => {
-        const dateGroups = prev[groupId] || [];
-        const updated = dateGroups
-          .map(dg => ({
-            ...dg,
-            sessions: dg.sessions.filter(s => s !== session),
-            totalSeconds: dg.totalSeconds - (session.durationSeconds || 0)
-          }))
-          .filter(dg => dg.sessions.length > 0);
-        return { ...prev, [groupId]: updated };
-      });
-      // Clear the cached groupDetails so the session_count in the header
-      // falls back to the correctly updated group.session_count from parent state
-      setGroupDetails(prev => {
-        const next = { ...prev };
-        delete next[groupId];
-        return next;
-      });
+      // Parent owns cache + selection reconciliation (see removeSessionFromGroupCache).
+      await onDismissMember(groupId, session);
     } finally {
       setDismissingMember(prev => ({ ...prev, [key]: false }));
     }
