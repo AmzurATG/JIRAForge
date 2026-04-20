@@ -315,7 +315,43 @@
   }
 }
 
-/* Bulk Time Edit Button - Hidden by default */
+/* Bulk Time Edit Button */
+.bulk-time-edit-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px;
+  height: 36px;
+  background: #fff;
+  border: 1px solid var(--ds-border);
+  border-radius: 8px;
+  cursor: pointer;
+  color: #6656fc;
+  font-size: 13px;
+  font-weight: 500;
+  transition: all 0.2s ease;
+  box-shadow: 0 1px 3px rgba(9, 30, 66, 0.1);
+}
+
+.bulk-time-edit-btn:hover {
+  background: #f4f5f7;
+  border-color: #6656fc;
+  transform: translateY(-1px);
+  box-shadow: 0 3px 6px rgba(102, 86, 252, 0.15);
+}
+
+.bulk-time-edit-btn:active {
+  transform: translateY(0);
+  box-shadow: 0 1px 3px rgba(9, 30, 66, 0.1);
+}
+
+.bulk-time-edit-btn svg {
+  flex-shrink: 0;
+}
+
+/* Bulk Time Edit — temporarily hidden pending Phase 2 work
+   (see plan/bulk-reassign-revival-plan.md §10).
+   To re-enable, delete this single block; all original styles above remain intact. */
 .bulk-time-edit-btn {
   display: none !important;
 }

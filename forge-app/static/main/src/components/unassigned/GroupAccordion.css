@@ -748,3 +748,95 @@
   opacity: 0.4;
   pointer-events: none;
 }
+
+/* ── Multi-select checkboxes ───────────────────────────────────
+   Idle = subtle / low opacity. On row hover OR when anything is
+   selected on the page, full opacity. Checked items always full. */
+
+.group-checkbox-wrapper,
+.interval-checkbox-wrapper {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.group-checkbox-wrapper {
+  width: 20px;
+  height: 20px;
+  margin-right: 6px;
+}
+
+.interval-checkbox-wrapper {
+  width: 18px;
+  height: 18px;
+  margin-right: 10px;
+}
+
+.group-checkbox,
+.interval-checkbox {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  cursor: pointer;
+  accent-color: #6656fc;
+  opacity: 0.45;
+  transition: opacity 0.15s ease;
+}
+
+.interval-checkbox {
+  width: 14px;
+  height: 14px;
+}
+
+/* Reveal on row hover */
+.accordion-header:hover .group-checkbox,
+.session-item:hover .interval-checkbox {
+  opacity: 1;
+}
+
+/* Reveal globally when ANY item on the page is selected */
+.groups-accordion--has-selection .group-checkbox,
+.groups-accordion--has-selection .interval-checkbox {
+  opacity: 1;
+}
+
+/* Checked / indeterminate are always full opacity */
+.group-checkbox:checked,
+.group-checkbox:indeterminate,
+.interval-checkbox:checked {
+  opacity: 1;
+}
+
+.group-checkbox:disabled,
+.interval-checkbox:disabled {
+  cursor: not-allowed;
+  opacity: 0.3;
+}
+
+/* Tiny spinner shown over the group checkbox while session_ids are loading */
+.checkbox-spinner {
+  position: absolute;
+  width: 14px;
+  height: 14px;
+  border: 2px solid rgba(102, 86, 252, 0.25);
+  border-top-color: #6656fc;
+  border-radius: 50%;
+  animation: checkboxSpin 0.7s linear infinite;
+  pointer-events: none;
+}
+
+@keyframes checkboxSpin {
+  to { transform: rotate(360deg); }
+}
+
+/* Selected-row highlights */
+.accordion-item--selected {
+  box-shadow: inset 3px 0 0 #6656fc;
+}
+
+.session-item--selected {
+  background: rgba(102, 86, 252, 0.06);
+}

@@ -1,5 +1,4 @@
 import React, { useState } from 'react';
-import { invoke } from '@forge/bridge';
 import { formatTime } from '../../utils';
 import { parseUTC } from '../tabs/time-analytics/dateUtils';
 import './GroupAccordion.css';
@@ -12,14 +11,27 @@ function GroupAccordion({
   onLoadMore,
   onAssignClick,
   onDismissGroup,
-  onDismissMember
+  onDismissMember,
+  // Hoisted cache + loaders (owned by UnassignedWork)
+  groupDetails,
+  loadingDetails,
+  groupWorkSessions,
+  loadingWorkSessions,
+  loadGroupDetails,
+  loadGroupWorkSessions,
+  setGroupDetails,
+  setGroupWorkSessions,
+  // Selection (multi-select bulk assign)
+  isGroupFullySelected,
+  isGroupPartiallySelected,
+  isIntervalSelected,
+  onToggleGroupSelection,
+  onToggleIntervalSelection,
+  pendingFullSelectGroupIds,
+  hasAnySelection
 }) {
-  // Accordion states
+  // Local UI state (not shared with parent)
   const [expandedGroups, setExpandedGroups] = useState(new Set());
-  const [groupWorkSessions, setGroupWorkSessions] = useState({});
-  const [loadingWorkSessions, setLoadingWorkSessions] = useState({});
-  const [groupDetails, setGroupDetails] = useState({});
-  const [loadingDetails, setLoadingDetails] = useState({});
 
   // Dismiss states
   const [confirmingDismiss, setConfirmingDismiss] = useState({}); // { groupId: true }
@@ -115,90 +127,28 @@ function GroupAccordion({
     const newExpanded = new Set(expandedGroups);
 
     if (newExpanded.has(groupId)) {
-      // Collapse
       newExpanded.delete(groupId);
-    } else {
-      // Expand - load group details and work sessions if not already loaded
-      newExpanded.add(groupId);
-
-      // LAZY LOADING: Load group details (session_ids) if not cached
-      if (!groupDetails[groupId]) {
-        setLoadingDetails(prev => ({ ...prev, [groupId]: true }));
-        try {
-          const detailsResult = await invoke('getGroupDetails', { groupId });
-
-          if (detailsResult.success) {
-            setGroupDetails(prev => ({ ...prev, [groupId]: detailsResult }));
-
-            // Now load work sessions using the session_ids from details
-            if (detailsResult.session_ids && detailsResult.session_ids.length > 0) {
-              setLoadingWorkSessions(prev => ({ ...prev, [groupId]: true }));
-              try {
-                const sessionsResult = await invoke('getGroupWorkSessions', {
-                  sessionIds: detailsResult.session_ids
-                });
-                if (sessionsResult.success) {
-                  setGroupWorkSessions(prev => ({
-                    ...prev,
-                    [groupId]: sessionsResult.dateGroups || []
-                  }));
-                }
-              } catch (err) {
-                console.error('Error loading work sessions for group:', err);
-              } finally {
-                setLoadingWorkSessions(prev => ({ ...prev, [groupId]: false }));
-              }
-            }
-          } else {
-            console.error('[GroupAccordion] Failed to load group details:', detailsResult.error);
-          }
-        } catch (err) {
-          console.error('Error loading group details:', err);
-        } finally {
-          setLoadingDetails(prev => ({ ...prev, [groupId]: false }));
-        }
-      } else {
-        // Details already loaded, just load work sessions if needed
-        const details = groupDetails[groupId];
-        if (!groupWorkSessions[groupId] && details.session_ids && details.session_ids.length > 0) {
-          setLoadingWorkSessions(prev => ({ ...prev, [groupId]: true }));
-          try {
-            const result = await invoke('getGroupWorkSessions', { sessionIds: details.session_ids });
-            if (result.success) {
-              setGroupWorkSessions(prev => ({ ...prev, [groupId]: result.dateGroups || [] }));
-            }
-          } catch (err) {
-            console.error('Error loading work sessions for group:', err);
-          } finally {
-            setLoadingWorkSessions(prev => ({ ...prev, [groupId]: false }));
-          }
-        }
-      }
+      setExpandedGroups(newExpanded);
+      return;
     }
 
+    newExpanded.add(groupId);
     setExpandedGroups(newExpanded);
+
+    // Lazy-load via parent helpers (cache-aware)
+    const details = groupDetails[groupId] || await loadGroupDetails(groupId);
+    if (details?.session_ids?.length > 0 && !groupWorkSessions[groupId]) {
+      await loadGroupWorkSessions(groupId, details.session_ids);
+    }
   };
 
   const handleAssignClick = async (group, e) => {
     e.stopPropagation();
 
-    // Get the detailed data (with session_ids) - either from cache or fetch
-    let details = groupDetails[group.id];
-
+    const details = groupDetails[group.id] || await loadGroupDetails(group.id);
     if (!details) {
-      try {
-        const detailsResult = await invoke('getGroupDetails', { groupId: group.id });
-        if (detailsResult.success) {
-          details = detailsResult;
-          setGroupDetails(prev => ({ ...prev, [group.id]: detailsResult }));
-        } else {
-          alert('Failed to load group details: ' + detailsResult.error);
-          return;
-        }
-      } catch (err) {
-        alert('Error loading group details: ' + err.message);
-        return;
-      }
+      alert('Failed to load group details. Please try again.');
+      return;
     }
 
     // Merge group summary with detailed data for assignment
@@ -215,21 +165,42 @@ function GroupAccordion({
 
   return (
     <>
-      <div className="groups-accordion">
+      <div
+        className={`groups-accordion${hasAnySelection ? ' groups-accordion--has-selection' : ''}`}
+      >
         {groups.map((group, index) => {
           const isExpanded = expandedGroups.has(group.id);
           const dateGroups = groupWorkSessions[group.id] || [];
           const isLoadingWorkSessionsForGroup = loadingWorkSessions[group.id];
           const isLoadingGroupDetails = loadingDetails[group.id];
           const details = groupDetails[group.id];
+          const groupFullySelected = isGroupFullySelected ? isGroupFullySelected(group.id) : false;
+          const groupPartiallySelected = isGroupPartiallySelected ? isGroupPartiallySelected(group.id) : false;
+          const isPendingSelect = pendingFullSelectGroupIds?.has(group.id) || false;
+          const groupSelectedClass = groupFullySelected || groupPartiallySelected ? ' accordion-item--selected' : '';
 
           return (
-            <div key={group.id || index} className={`accordion-item confidence-${group.confidence}`}>
+            <div key={group.id || index} className={`accordion-item confidence-${group.confidence}${groupSelectedClass}`}>
               <div
                 className="accordion-header"
                 onClick={() => toggleGroup(group.id)}
               >
                 <div className="accordion-header-left">
+                  <label
+                    className="group-checkbox-wrapper"
+                    onClick={(e) => e.stopPropagation()}
+                    title={groupFullySelected ? 'Unselect group' : 'Select group'}
+                  >
+                    <input
+                      type="checkbox"
+                      className="group-checkbox"
+                      checked={groupFullySelected}
+                      ref={(el) => { if (el) el.indeterminate = groupPartiallySelected && !groupFullySelected; }}
+                      onChange={() => onToggleGroupSelection && onToggleGroupSelection(group)}
+                      disabled={isPendingSelect}
+                    />
+                    {isPendingSelect && <span className="checkbox-spinner" aria-hidden="true" />}
+                  </label>
                   <span className={`accordion-toggle ${isExpanded ? 'expanded' : ''}`}>
                     ›
                   </span>
@@ -353,8 +324,21 @@ function GroupAccordion({
                                     const sessionDuration = getSessionDuration(session);
                                     const memberKey = `${group.id}-${(session.activityIds || []).join('-')}`;
                                     const isDismissingThis = dismissingMember[memberKey];
+                                    const intervalSelected = isIntervalSelected ? isIntervalSelected(group.id, session) : false;
                                     return (
-                                      <div key={sessionIdx} className={`session-item${isDismissingThis ? ' session-item-dismissing' : ''}`}>
+                                      <div key={sessionIdx} className={`session-item${isDismissingThis ? ' session-item-dismissing' : ''}${intervalSelected ? ' session-item--selected' : ''}`}>
+                                        <label
+                                          className="interval-checkbox-wrapper"
+                                          onClick={(e) => e.stopPropagation()}
+                                          title={intervalSelected ? 'Unselect interval' : 'Select interval'}
+                                        >
+                                          <input
+                                            type="checkbox"
+                                            className="interval-checkbox"
+                                            checked={intervalSelected}
+                                            onChange={() => onToggleIntervalSelection && onToggleIntervalSelection(group, session)}
+                                          />
+                                        </label>
                                         <span className="session-time">
                                           {formatTimeOfDay(session.startTime)}
                                           {' → '}
