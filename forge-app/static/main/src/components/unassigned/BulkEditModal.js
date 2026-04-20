@@ -13,6 +13,11 @@ function BulkEditModal({ isOpen, userIssues, onClose, onSuccess }) {
   const [bulkEditLoading, setBulkEditLoading] = useState(false);
   const [bulkEditApplying, setBulkEditApplying] = useState(false);
   const [bulkEditSuccess, setBulkEditSuccess] = useState(null);
+  const [bulkEditError, setBulkEditError] = useState(null);
+
+  const timeRangeError = bulkEditStartTime && bulkEditEndTime && bulkEditStartTime >= bulkEditEndTime
+    ? 'End time must be after start time on the same day.'
+    : null;
 
   const formatTimeForDisplay = (timestamp) => {
     if (!timestamp) return '';
@@ -25,6 +30,24 @@ function BulkEditModal({ isOpen, userIssues, onClose, onSuccess }) {
     });
   };
 
+  const formatSeconds = (s) => {
+    const total = Math.max(0, Math.round(s || 0));
+    const h = Math.floor(total / 3600);
+    const m = Math.floor((total % 3600) / 60);
+    if (h > 0) return `${h}h ${m}m`;
+    if (m > 0) return `${m}m`;
+    return `${total}s`;
+  };
+
+  // Convert a user-picked local date+time into a UTC ISO string using the
+  // browser's timezone. This is the only reliable place to do the conversion —
+  // the resolver runs in UTC and has no knowledge of the user's wall-clock.
+  const localToUtcIso = (dateStr, timeStr) => {
+    const [y, m, d] = dateStr.split('-').map(Number);
+    const [h, min] = timeStr.split(':').map(Number);
+    return new Date(y, m - 1, d, h, min, 0).toISOString();
+  };
+
   const handleClose = () => {
     // Reset state on close
     setBulkEditDate(formatLocalDate(new Date()));
@@ -34,12 +57,20 @@ function BulkEditModal({ isOpen, userIssues, onClose, onSuccess }) {
     setBulkEditCreateWorklog(true);
     setBulkEditPreview(null);
     setBulkEditSuccess(null);
+    setBulkEditError(null);
     onClose();
   };
 
   const handlePreviewBulkEdit = async () => {
+    setBulkEditError(null);
+
     if (!bulkEditDate || !bulkEditStartTime || !bulkEditEndTime) {
-      alert('Please select date and time range');
+      setBulkEditError('Please select date and time range.');
+      return;
+    }
+
+    if (timeRangeError) {
+      setBulkEditError(timeRangeError);
       return;
     }
 
@@ -50,30 +81,34 @@ function BulkEditModal({ isOpen, userIssues, onClose, onSuccess }) {
       const result = await invoke('previewBulkReassign', {
         selectedDate: bulkEditDate,
         startTime: bulkEditStartTime,
-        endTime: bulkEditEndTime
+        endTime: bulkEditEndTime,
+        windowStartUtc: localToUtcIso(bulkEditDate, bulkEditStartTime),
+        windowEndUtc: localToUtcIso(bulkEditDate, bulkEditEndTime)
       });
 
       if (result.success) {
         setBulkEditPreview(result.preview);
       } else {
-        alert('Failed to preview: ' + result.error);
+        setBulkEditError('Failed to preview: ' + result.error);
       }
     } catch (err) {
       console.error('[BulkEditModal] Error previewing bulk edit:', err);
-      alert('Error previewing: ' + err.message);
+      setBulkEditError('Error previewing: ' + err.message);
     } finally {
       setBulkEditLoading(false);
     }
   };
 
   const handleApplyBulkEdit = async () => {
+    setBulkEditError(null);
+
     if (!bulkEditTargetIssue) {
-      alert('Please select a target issue');
+      setBulkEditError('Please select a target issue.');
       return;
     }
 
     if (!bulkEditPreview || bulkEditPreview.total_activities === 0) {
-      alert('No activities to reassign. Please preview first.');
+      setBulkEditError('No activities to reassign. Please preview first.');
       return;
     }
 
@@ -84,6 +119,8 @@ function BulkEditModal({ isOpen, userIssues, onClose, onSuccess }) {
         selectedDate: bulkEditDate,
         startTime: bulkEditStartTime,
         endTime: bulkEditEndTime,
+        windowStartUtc: localToUtcIso(bulkEditDate, bulkEditStartTime),
+        windowEndUtc: localToUtcIso(bulkEditDate, bulkEditEndTime),
         targetIssueKey: bulkEditTargetIssue,
         createWorklog: bulkEditCreateWorklog
       });
@@ -92,11 +129,11 @@ function BulkEditModal({ isOpen, userIssues, onClose, onSuccess }) {
         setBulkEditSuccess(result.result);
         onSuccess();
       } else {
-        alert('Failed to apply bulk edit: ' + result.error);
+        setBulkEditError('Failed to apply bulk edit: ' + result.error);
       }
     } catch (err) {
       console.error('[BulkEditModal] Error applying bulk edit:', err);
-      alert('Error applying bulk edit: ' + err.message);
+      setBulkEditError('Error applying bulk edit: ' + err.message);
     } finally {
       setBulkEditApplying(false);
     }
@@ -173,10 +210,17 @@ function BulkEditModal({ isOpen, userIssues, onClose, onSuccess }) {
                   </div>
                 </div>
 
+                {timeRangeError && (
+                  <div className="bulk-edit-inline-error">{timeRangeError}</div>
+                )}
+                {bulkEditError && (
+                  <div className="bulk-edit-inline-error">{bulkEditError}</div>
+                )}
+
                 <button
                   className="preview-btn"
                   onClick={handlePreviewBulkEdit}
-                  disabled={bulkEditLoading || !bulkEditDate || !bulkEditStartTime || !bulkEditEndTime}
+                  disabled={bulkEditLoading || !bulkEditDate || !bulkEditStartTime || !bulkEditEndTime || !!timeRangeError}
                 >
                   {bulkEditLoading ? (
                     <>
@@ -207,9 +251,12 @@ function BulkEditModal({ isOpen, userIssues, onClose, onSuccess }) {
                           <div className="preview-stat-value">{bulkEditPreview.total_activities}</div>
                           <div className="preview-stat-label">Total Activities</div>
                         </div>
-                        <div className="preview-stat total-time">
+                        <div
+                          className="preview-stat total-time"
+                          title="Time logged is pro-rated by how much of each activity falls inside the selected window."
+                        >
                           <div className="preview-stat-value">{bulkEditPreview.total_time_formatted}</div>
-                          <div className="preview-stat-label">Total Time</div>
+                          <div className="preview-stat-label">Total Time (pro-rated)</div>
                         </div>
                         <div className="preview-stat wrongly-tracked">
                           <div className="preview-stat-value">{bulkEditPreview.wrongly_tracked_count}</div>
@@ -220,6 +267,15 @@ function BulkEditModal({ isOpen, userIssues, onClose, onSuccess }) {
                           <div className="preview-stat-label">Unassigned</div>
                         </div>
                       </div>
+
+                      {bulkEditPreview.partial_count > 0 && (
+                        <div className="bulk-edit-partial-warning">
+                          <strong>{bulkEditPreview.partial_count}</strong> activit
+                          {bulkEditPreview.partial_count === 1 ? 'y' : 'ies'} partially fall outside this window.
+                          Pro-rated time will be logged to the worklog, but each activity will still be
+                          fully reassigned to the target issue.
+                        </div>
+                      )}
 
                       {bulkEditPreview.currently_assigned_issues.length > 0 && (
                         <div className="current-issues-info">
@@ -244,6 +300,15 @@ function BulkEditModal({ isOpen, userIssues, onClose, onSuccess }) {
                             </span>
                             <span className="activity-app" title={activity.window_title}>
                               {activity.application_name || 'Unknown App'}
+                            </span>
+                            <span
+                              className="activity-attributed"
+                              title={activity.partial
+                                ? `Pro-rated: ${formatSeconds(activity.attributed_seconds)} of ${formatSeconds(activity.record_seconds)}`
+                                : `Full attribution: ${formatSeconds(activity.attributed_seconds)}`}
+                            >
+                              {formatSeconds(activity.attributed_seconds)}
+                              {activity.partial && <span className="partial-badge">partial</span>}
                             </span>
                             <span className={`activity-current-issue ${activity.is_unassigned ? 'unassigned' : 'assigned'}`}>
                               {activity.is_unassigned ? 'Unassigned' : activity.current_issue_key}

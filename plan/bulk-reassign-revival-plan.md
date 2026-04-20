@@ -238,3 +238,122 @@ Then exercise:
 | User reassigns to wrong issue at scale | Med | High | Confirm dialog showing target issue + count before apply |
 | Worklog double-write if user clicks twice | Low | Med | Disable apply button while in flight (already done in modal) |
 | Old screenshot-era data not reachable from bulk | High | Low | Accepted — desktop app stopped writing screenshots; users have already moved on from old data |
+
+---
+
+## 10. Phase 2 — Create New Issue, Active Sprint, Status (planned 2026-04-20)
+
+**Status:** Planned — not yet implemented
+**Trigger:** User requests to extend bulk reassign so the target can be a *new* issue (not just an existing one), can be added to the project's **active sprint**, and can have its **status set** in the same action.
+
+### 10.1 What's already in place after Phase 1
+- Timezone bug fixed: browser computes `windowStartUtc` / `windowEndUtc` via `new Date(y,m-1,d,h,min).toISOString()`; resolvers consume those UTC ISO strings directly. No more `${date}T${time}:00Z` local-as-UTC bug.
+- `createIssueAndAssign` already implements the reusable pattern for `getIssueTransitions` → match-by-name → `transitionIssue`. The helpers exist; reuse them.
+- Manifest already has `read:jira-work` + `write:jira-work` (covers transitions). Sprint scopes are missing.
+
+### 10.2 Web-search confirmations (2026-04-20)
+- **Add existing issue to sprint:** `POST /rest/agile/1.0/sprint/{sprintId}/issue` with `{ "issues": [key] }`. Scope `write:sprint:jira-software`. 50-issue cap (we send 1).
+- **Discover active sprint:** `GET /rest/agile/1.0/board?projectKeyOrId={KEY}&type=scrum` → first board → `GET /rest/agile/1.0/board/{boardId}/sprint?state=active`. Scopes `read:board-scope:jira-software` + `read:sprint:jira-software`. Kanban projects return no board / no active sprint — UI must handle that gracefully.
+- **Set status:** No direct setter — must POST a transition. Use existing `getIssueTransitions` → match by `to.name` → `transitionIssue` pattern. Workflows differ per project, so soft-fail and surface the warning.
+
+Sources: [Sprint API](https://developer.atlassian.com/cloud/jira/software/rest/api-group-sprint/), [Board API](https://developer.atlassian.com/cloud/jira/software/rest/api-group-board/), [Issues API](https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-issues/).
+
+### 10.3 Manifest changes
+Add to `permissions.scopes` in [forge-app/manifest.yml](../forge-app/manifest.yml):
+```yaml
+read:board-scope:jira-software:
+  allowImpersonation: true
+read:sprint:jira-software:
+  allowImpersonation: true
+write:sprint:jira-software:
+  allowImpersonation: true
+```
+**Risk:** scope additions trigger re-consent on next install/upgrade.
+
+### 10.4 New backend helpers
+**File:** [forge-app/src/services/jira/sprintService.js](../forge-app/src/services/jira/sprintService.js) *(new)*
+
+- `getActiveSprintForProject(projectKey)` → `{ boardId, sprintId, sprintName } | null`. Two REST calls; no caching for v1.
+- `addIssueToSprint(sprintId, issueKey)` → POST one issue; throws on non-2xx with response body for diagnostics.
+
+**New resolver `getActiveSprint`** in [assignmentResolvers.js](../forge-app/src/resolvers/unassigned/assignmentResolvers.js): takes `projectKey`, returns the helper result. Register in [forge-app/src/index.js](../forge-app/src/index.js).
+
+### 10.5 Backend resolver changes
+
+#### 10.5.a Extend `bulkReassignByTimeInterval` (existing-issue target)
+Accept new optional payload: `addToActiveSprint: bool`, `statusName: string`. After PATCH succeeds:
+- If `statusName` → reuse `getIssueTransitions` + `transitionIssue` (same code path as `createIssueAndAssign:408-431`). Soft-fail.
+- If `addToActiveSprint` → look up project from `targetIssueKey` (split on `-`), call `getActiveSprintForProject`, then `addIssueToSprint`. Soft-fail.
+- Return `sprint_added`, `sprint_skipped_reason`, `status_changed`, `status_skipped_reason` so the UI can surface partial success.
+
+#### 10.5.b New resolver `bulkCreateIssueAndReassign`
+Composition only — no novel logic:
+1. Validate full payload (window + create-issue fields).
+2. Extract `findActivityRecordsInWindow(ctx, windowStartUtc, windowEndUtc)` from `previewBulkReassign` into a shared private helper so both resolvers use it.
+3. **Zero matches → bail before creating** (never strand an empty issue).
+4. Run create-issue flow from `createIssueAndAssign:356-404`.
+5. PATCH activity_records to point at the new key (mirror `bulkReassignByTimeInterval`).
+6. Optional transition (already handled by reusing the helper from `createIssueAndAssign`).
+7. Optional add-to-active-sprint via new helper.
+8. Optional worklog (mirror `createIssueAndAssign:451-457`).
+9. Cache + log to `created_issues_log` (mirror lines 459-498).
+10. Return rich payload including partial-success flags.
+
+**Sequencing:** create → reassign → transition → add-to-sprint. Failures after create return partial success; **do not** delete the issue (Jira automation may have already fired).
+
+### 10.6 Frontend — BulkEditModal
+**Files:** [BulkEditModal.js](../forge-app/static/main/src/components/unassigned/BulkEditModal.js), [BulkEditModal.css](../forge-app/static/main/src/components/unassigned/BulkEditModal.css)
+
+New state:
+```js
+const [targetMode, setTargetMode] = useState('existing'); // 'existing' | 'new'
+const [newIssueSummary, setNewIssueSummary] = useState('');
+const [newIssueDescription, setNewIssueDescription] = useState('');
+const [selectedProject, setSelectedProject] = useState('');
+const [issueType, setIssueType] = useState('Task');
+const [statusName, setStatusName] = useState('');             // '' = no change
+const [statusOptions, setStatusOptions] = useState([]);
+const [addToActiveSprint, setAddToActiveSprint] = useState(false);
+const [activeSprintInfo, setActiveSprintInfo] = useState(null); // {sprintName} | 'none' | null
+```
+
+UI additions (below the existing preview section):
+- **Radio:** Existing issue / Create new issue.
+- **Existing branch:** existing issue dropdown (already present). On select → fire `getIssueTransitions(issueKey)` to populate `statusOptions`; fire `getActiveSprint(projectKey from issueKey)`.
+- **New branch:** project picker (reuse `userProjects`), summary input, description textarea, type select. On project change → fire `getActiveSprint(projectKey)`. Status options for new issue default to `["To Do","In Progress","Done"]`.
+- **Set status to** dropdown — first option `Don't change` (omits `statusName` from payload).
+- **Add to active sprint** checkbox — disabled with helper text "This project's board has no active sprint" when `activeSprintInfo === 'none'`. Label includes sprint name when known.
+
+`handleApplyBulkEdit` routes to `bulkReassignByTimeInterval` (existing) or `bulkCreateIssueAndReassign` (new), passing `windowStartUtc` / `windowEndUtc` unchanged.
+
+Surface partial-success flags in the success panel: e.g. *"Created TT-42 and reassigned 12 activities. Status set to In Progress. Sprint add failed: Issue type not on board."*
+
+### 10.7 Test plan additions (Phase 2)
+- Existing-issue + status + sprint on a scrum project (happy path).
+- Existing-issue on a kanban project — sprint checkbox disabled, no API call attempted.
+- Existing-issue + status the workflow can't reach — soft warning, assignment still succeeds.
+- New-issue, **zero matches in window** → fails before create; no orphan issue.
+- New-issue + sprint + status → verify in Jira UI.
+- New-issue, sprint add fails (issue type not on board filter) → partial success surfaced, issue still created and activities still reassigned.
+- Manifest scope re-consent flow validates on `forge tunnel`.
+
+### 10.8 Out of scope (Phase 2)
+- Multi-issue / multi-sprint bulk operations (always create exactly 1 issue).
+- Custom transition fields (e.g. Resolution required for "Done") — surface Jira's error rather than build a dynamic field UI.
+- Caching board/sprint lookup — premature.
+- Letting the user pick a non-active sprint (future / closed).
+- Multi-board projects — pick first scrum board; if multiple boards become a real complaint, add a board picker later.
+
+### 10.9 Suggested commit order
+1. Manifest scopes + `sprintService.js` + `getActiveSprint` resolver. Testable on tunnel in isolation.
+2. Extend `bulkReassignByTimeInterval` + UI for the existing-issue path (status + sprint). Ship.
+3. Add `bulkCreateIssueAndReassign` + radio toggle + new-issue UI. Ship.
+
+### 10.10 Open decisions for Phase 2
+| # | Question | Default if unresolved |
+|---|---|---|
+| D4 | If a new issue's status transition fails, leave issue in default status or fail the apply? | Leave in default — soft-fail with warning (mirrors current `createIssueAndAssign` behavior) |
+| D5 | If add-to-sprint fails after create, leave issue out of sprint or fail? | Leave out — soft-fail (do **not** delete the created issue) |
+| D6 | When project has multiple scrum boards, pick first or prompt? | Pick first; revisit if users complain |
+| D7 | Default for `addToActiveSprint` checkbox? | Unchecked (opt-in) |
+| D8 | Default for `statusName` dropdown? | "Don't change" (preserves current behavior) |

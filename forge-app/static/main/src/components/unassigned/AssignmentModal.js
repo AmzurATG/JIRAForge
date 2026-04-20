@@ -80,6 +80,11 @@ function AssignmentModal({
     }
   };
 
+  // Multi-group mode: selectedGroup carries a groupIds array (set by handleAssignSelection).
+  // When present, route to the multi-group resolver instead of the single-group one.
+  const isMultiGroup = Array.isArray(selectedGroup?.groupIds)
+    && (selectedGroup.groupIds.length > 1 || !selectedGroup?.id);
+
   const handleAssignToExisting = async () => {
     if (!selectedIssueKey) {
       alert('Please select an issue');
@@ -87,23 +92,33 @@ function AssignmentModal({
     }
 
     if (!selectedGroup.session_ids || !Array.isArray(selectedGroup.session_ids) || selectedGroup.session_ids.length === 0) {
-      alert('No sessions available in this group. Please select a different group.');
+      alert('No sessions available in this selection. Please select different items.');
       return;
     }
 
     setAssigning(true);
     try {
-      const result = await invoke('assignToExistingIssue', {
-        sessionIds: selectedGroup.session_ids,
-        issueKey: selectedIssueKey,
-        groupId: selectedGroup.id,
-        totalSeconds: selectedGroup.total_seconds
-      });
+      const result = isMultiGroup
+        ? await invoke('assignSelectionToExistingIssue', {
+            sessionIds: selectedGroup.session_ids,
+            groupIds: selectedGroup.groupIds,
+            issueKey: selectedIssueKey,
+            totalSeconds: selectedGroup.total_seconds
+          })
+        : await invoke('assignToExistingIssue', {
+            sessionIds: selectedGroup.session_ids,
+            issueKey: selectedIssueKey,
+            groupId: selectedGroup.id,
+            totalSeconds: selectedGroup.total_seconds
+          });
 
       if (result.success) {
         let message = `Successfully assigned ${result.assigned_count} session(s) to ${result.issue_key}`;
         if (result.worklog_skipped) {
           message += `\n\nNote: Worklog was not created because ${result.worklog_skipped_reason}. The work session has been linked to the issue but no time was logged in Jira.`;
+        }
+        if (isMultiGroup && result.partial_groups?.length > 0) {
+          message += `\n\n${result.partial_groups.length} group(s) had only some intervals reassigned and remain in the unassigned list.`;
         }
         alert(message);
         onClose();
@@ -137,22 +152,37 @@ function AssignmentModal({
 
     setAssigning(true);
     try {
-      const result = await invoke('createIssueAndAssign', {
-        sessionIds: selectedGroup.session_ids,
-        issueSummary: newIssueSummary,
-        issueDescription: newIssueDescription,
-        projectKey: selectedProject,
-        issueType: issueType,
-        totalSeconds: selectedGroup.total_seconds,
-        groupId: selectedGroup.id,
-        assigneeAccountId: assignToMe ? null : null,
-        statusName: selectedStatus
-      });
+      const result = isMultiGroup
+        ? await invoke('createIssueAndAssignSelection', {
+            sessionIds: selectedGroup.session_ids,
+            groupIds: selectedGroup.groupIds,
+            issueSummary: newIssueSummary,
+            issueDescription: newIssueDescription,
+            projectKey: selectedProject,
+            issueType: issueType,
+            totalSeconds: selectedGroup.total_seconds,
+            assignToSelf: assignToMe,
+            statusName: selectedStatus
+          })
+        : await invoke('createIssueAndAssign', {
+            sessionIds: selectedGroup.session_ids,
+            issueSummary: newIssueSummary,
+            issueDescription: newIssueDescription,
+            projectKey: selectedProject,
+            issueType: issueType,
+            totalSeconds: selectedGroup.total_seconds,
+            groupId: selectedGroup.id,
+            assignToSelf: assignToMe,
+            statusName: selectedStatus
+          });
 
       if (result.success) {
         let message = `Successfully created issue ${result.issue_key} and assigned ${result.assigned_count} session(s)`;
         if (result.worklog_skipped) {
           message += `\n\nNote: Worklog was not created because ${result.worklog_skipped_reason}. The issue was created but no time was logged.`;
+        }
+        if (isMultiGroup && result.partial_groups?.length > 0) {
+          message += `\n\n${result.partial_groups.length} group(s) had only some intervals reassigned and remain in the unassigned list.`;
         }
         alert(message);
         onClose();

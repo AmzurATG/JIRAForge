@@ -376,6 +376,53 @@
   color: #172b4d;
 }
 
+/* Inline Error */
+.bulk-edit-inline-error {
+  margin-top: 12px;
+  padding: 10px 12px;
+  background: #ffebe6;
+  border-left: 3px solid #de350b;
+  border-radius: 4px;
+  font-size: 13px;
+  color: #bf2600;
+}
+
+/* Partial Records Warning */
+.bulk-edit-partial-warning {
+  margin-bottom: 12px;
+  padding: 10px 12px;
+  background: #fff8e6;
+  border-left: 3px solid #ffab00;
+  border-radius: 4px;
+  font-size: 13px;
+  color: #5e4101;
+  line-height: 1.5;
+}
+
+/* Per-activity Attributed Time */
+.activity-attributed {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 500;
+  color: #36b37e;
+  min-width: 70px;
+  justify-content: flex-end;
+}
+
+.partial-badge {
+  display: inline-block;
+  padding: 1px 6px;
+  background: #fff0b3;
+  color: #5e4101;
+  border-radius: 3px;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+}
+
 /* No Results State */
 .no-preview-results {
   padding: 24px;

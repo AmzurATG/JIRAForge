@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { invoke } from '@forge/bridge';
-import { AssignmentModal, BulkEditModal, GroupAccordion } from './unassigned';
+import { AssignmentModal, BulkEditModal, GroupAccordion, SelectionBar } from './unassigned';
 import { AiDisclaimer } from './common/AiDisclaimer';
 import { formatTime } from '../utils';
 import './UnassignedWork.css';
@@ -28,6 +28,291 @@ function UnassignedWork() {
   // Notification settings state
   const [notificationsEnabled, setNotificationsEnabled] = useState(true);
   const [savingNotificationSettings, setSavingNotificationSettings] = useState(false);
+
+  // Hoisted group-detail / work-session caches.
+  // Lifted out of GroupAccordion so the upcoming multi-select layer can read
+  // session_ids and per-interval data without expanding the accordion.
+  const [groupDetails, setGroupDetails] = useState({});
+  const [loadingDetails, setLoadingDetails] = useState({});
+  const [groupWorkSessions, setGroupWorkSessions] = useState({});
+  const [loadingWorkSessions, setLoadingWorkSessions] = useState({});
+
+  const loadGroupDetails = async (groupId) => {
+    if (groupDetails[groupId]) return groupDetails[groupId];
+    setLoadingDetails(prev => ({ ...prev, [groupId]: true }));
+    try {
+      const result = await invoke('getGroupDetails', { groupId });
+      if (result?.success) {
+        setGroupDetails(prev => ({ ...prev, [groupId]: result }));
+        return result;
+      }
+      console.error('[UnassignedWork] getGroupDetails failed:', result?.error);
+      return null;
+    } catch (err) {
+      console.error('[UnassignedWork] loadGroupDetails error:', err);
+      return null;
+    } finally {
+      setLoadingDetails(prev => ({ ...prev, [groupId]: false }));
+    }
+  };
+
+  const loadGroupWorkSessions = async (groupId, sessionIds) => {
+    if (groupWorkSessions[groupId]) return groupWorkSessions[groupId];
+    if (!sessionIds || sessionIds.length === 0) return [];
+    setLoadingWorkSessions(prev => ({ ...prev, [groupId]: true }));
+    try {
+      const result = await invoke('getGroupWorkSessions', { sessionIds });
+      if (result?.success) {
+        const dateGroups = result.dateGroups || [];
+        setGroupWorkSessions(prev => ({ ...prev, [groupId]: dateGroups }));
+        return dateGroups;
+      }
+      console.error('[UnassignedWork] getGroupWorkSessions failed:', result?.error);
+      return null;
+    } catch (err) {
+      console.error('[UnassignedWork] loadGroupWorkSessions error:', err);
+      return null;
+    } finally {
+      setLoadingWorkSessions(prev => ({ ...prev, [groupId]: false }));
+    }
+  };
+
+  // Multi-select state.
+  // - fullySelectedGroups: groups checked at the header level (all intervals)
+  // - selectedIntervalsByGroup: partial selections (subset of intervals checked)
+  // A group is in at most one of the two structures at a time.
+  const [fullySelectedGroups, setFullySelectedGroups] = useState(new Set());
+  const [selectedIntervalsByGroup, setSelectedIntervalsByGroup] = useState(new Map());
+  const [pendingFullSelectGroupIds, setPendingFullSelectGroupIds] = useState(new Set());
+
+  const intervalKey = (session) =>
+    (session.activityIds || []).slice().sort().join('|');
+
+  const isGroupFullySelected = (groupId) => fullySelectedGroups.has(groupId);
+  const isGroupPartiallySelected = (groupId) =>
+    !fullySelectedGroups.has(groupId) && (selectedIntervalsByGroup.get(groupId)?.size || 0) > 0;
+  const isIntervalSelected = (groupId, session) => {
+    if (fullySelectedGroups.has(groupId)) return true;
+    return selectedIntervalsByGroup.get(groupId)?.has(intervalKey(session)) || false;
+  };
+
+  const toggleGroupSelection = async (group) => {
+    const groupId = group.id;
+    const isAnySelected = fullySelectedGroups.has(groupId)
+      || (selectedIntervalsByGroup.get(groupId)?.size || 0) > 0;
+
+    if (isAnySelected) {
+      setFullySelectedGroups(prev => {
+        const next = new Set(prev);
+        next.delete(groupId);
+        return next;
+      });
+      setSelectedIntervalsByGroup(prev => {
+        const next = new Map(prev);
+        next.delete(groupId);
+        return next;
+      });
+      return;
+    }
+
+    // Not selected — ensure details loaded so the assign payload has session_ids
+    if (!groupDetails[groupId]) {
+      setPendingFullSelectGroupIds(prev => new Set(prev).add(groupId));
+      try {
+        const details = await loadGroupDetails(groupId);
+        if (!details) return; // load failed; leave checkbox unchecked
+      } finally {
+        setPendingFullSelectGroupIds(prev => {
+          const next = new Set(prev);
+          next.delete(groupId);
+          return next;
+        });
+      }
+    }
+    setFullySelectedGroups(prev => new Set(prev).add(groupId));
+  };
+
+  const toggleIntervalSelection = (group, session) => {
+    const groupId = group.id;
+    const key = intervalKey(session);
+    const allKeysForGroup = () => {
+      const dateGroups = groupWorkSessions[groupId] || [];
+      return dateGroups.flatMap(dg => dg.sessions.map(intervalKey));
+    };
+
+    // Demote full → partial-minus-this-one
+    if (fullySelectedGroups.has(groupId)) {
+      const remaining = new Set(allKeysForGroup().filter(k => k !== key));
+      setFullySelectedGroups(prev => {
+        const next = new Set(prev);
+        next.delete(groupId);
+        return next;
+      });
+      setSelectedIntervalsByGroup(prev => {
+        const next = new Map(prev);
+        if (remaining.size === 0) next.delete(groupId);
+        else next.set(groupId, remaining);
+        return next;
+      });
+      return;
+    }
+
+    const current = selectedIntervalsByGroup.get(groupId) || new Set();
+    const updated = new Set(current);
+    if (updated.has(key)) updated.delete(key);
+    else updated.add(key);
+
+    // Promote partial → full when set covers every interval
+    const allKeys = allKeysForGroup();
+    if (allKeys.length > 0 && updated.size === allKeys.length) {
+      setFullySelectedGroups(prev => new Set(prev).add(groupId));
+      setSelectedIntervalsByGroup(prev => {
+        const next = new Map(prev);
+        next.delete(groupId);
+        return next;
+      });
+      return;
+    }
+
+    setSelectedIntervalsByGroup(prev => {
+      const next = new Map(prev);
+      if (updated.size === 0) next.delete(groupId);
+      else next.set(groupId, updated);
+      return next;
+    });
+  };
+
+  const clearSelection = () => {
+    setFullySelectedGroups(new Set());
+    setSelectedIntervalsByGroup(new Map());
+  };
+
+  // Surgically remove a session from both caches and prune any selection state
+  // that still references it. Centralising this prevents the "ghost selection"
+  // bug where a fully-selected group is left in fullySelectedGroups while its
+  // cached session_ids have been wiped out — buildSelectionPayload would then
+  // silently contribute zero sessions. Called from any code path that removes
+  // a session (currently just dismiss, but new call sites must use this helper
+  // rather than touching setGroupDetails / setGroupWorkSessions directly).
+  const removeSessionFromGroupCache = (groupId, session) => {
+    const removedIds = new Set(session.activityIds || []);
+    const removedKey = intervalKey(session);
+    const removedSeconds = session.durationSeconds || 0;
+
+    setGroupDetails(prev => {
+      const existing = prev[groupId];
+      if (!existing) return prev;
+      const nextSessionIds = (existing.session_ids || []).filter(id => !removedIds.has(id));
+      const nextSeconds = Math.max(0, (existing.total_seconds || 0) - removedSeconds);
+      // session_count tracks unassigned_group_members rows. Backend deletes one
+      // row per activityId (see dismissGroupMember), so the decrement matches
+      // removedIds.size, not just 1 — a session can carry multiple activityIds.
+      return {
+        ...prev,
+        [groupId]: {
+          ...existing,
+          session_ids: nextSessionIds,
+          session_count: Math.max(0, (existing.session_count || 0) - removedIds.size),
+          total_seconds: nextSeconds,
+          total_time_formatted: formatTime(nextSeconds)
+        }
+      };
+    });
+
+    setGroupWorkSessions(prev => {
+      const dateGroups = prev[groupId];
+      if (!dateGroups) return prev;
+      const updated = dateGroups
+        .map(dg => ({
+          ...dg,
+          sessions: dg.sessions.filter(s => s !== session),
+          totalSeconds: Math.max(0, (dg.totalSeconds || 0) - removedSeconds)
+        }))
+        .filter(dg => dg.sessions.length > 0);
+      return { ...prev, [groupId]: updated };
+    });
+
+    // If this session was part of a partial selection, drop its key. Full-group
+    // selections don't need pruning — they reference the group, not the session,
+    // and the updated groupDetails above keeps session_ids in sync.
+    setSelectedIntervalsByGroup(prev => {
+      const current = prev.get(groupId);
+      if (!current || !current.has(removedKey)) return prev;
+      const updated = new Set(current);
+      updated.delete(removedKey);
+      const next = new Map(prev);
+      if (updated.size === 0) next.delete(groupId);
+      else next.set(groupId, updated);
+      return next;
+    });
+  };
+
+  // Derived summary for the selection bar.
+  // sessionCount counts underlying activity_records (matches the page header's "sessions" wording).
+  const selectionSummary = (() => {
+    let groupCount = 0;
+    let sessionCount = 0;
+    let totalSeconds = 0;
+
+    for (const groupId of fullySelectedGroups) {
+      const g = groups.find(grp => grp.id === groupId);
+      if (!g) continue;
+      groupCount += 1;
+      sessionCount += g.session_count || 0;
+      totalSeconds += g.total_seconds || 0;
+    }
+
+    for (const [groupId, intervalSet] of selectedIntervalsByGroup) {
+      if (intervalSet.size === 0) continue;
+      groupCount += 1;
+      const dateGroups = groupWorkSessions[groupId] || [];
+      for (const dg of dateGroups) {
+        for (const session of dg.sessions) {
+          if (intervalSet.has(intervalKey(session))) {
+            sessionCount += (session.activityIds || []).length;
+            totalSeconds += session.durationSeconds || 0;
+          }
+        }
+      }
+    }
+
+    return { groupCount, sessionCount, totalSeconds };
+  })();
+
+  // Build the payload sent to the assignment resolver from the current selection.
+  // sessionIds = combined deduped activity_record UUIDs across full + partial selections.
+  const buildSelectionPayload = () => {
+    const sessionIds = new Set();
+    const groupIds = new Set();
+
+    for (const groupId of fullySelectedGroups) {
+      const details = groupDetails[groupId];
+      if (details?.session_ids) {
+        details.session_ids.forEach(id => sessionIds.add(id));
+        groupIds.add(groupId);
+      }
+    }
+
+    for (const [groupId, intervalSet] of selectedIntervalsByGroup) {
+      if (intervalSet.size === 0) continue;
+      groupIds.add(groupId);
+      const dateGroups = groupWorkSessions[groupId] || [];
+      for (const dg of dateGroups) {
+        for (const session of dg.sessions) {
+          if (intervalSet.has(intervalKey(session))) {
+            (session.activityIds || []).forEach(id => sessionIds.add(id));
+          }
+        }
+      }
+    }
+
+    return {
+      sessionIds: [...sessionIds],
+      groupIds: [...groupIds],
+      totalSeconds: selectionSummary.totalSeconds,
+      sessionCount: selectionSummary.sessionCount
+    };
+  };
 
   useEffect(() => {
     loadUnassignedWork();
@@ -180,7 +465,34 @@ function UnassignedWork() {
 
   const handleAssignmentComplete = () => {
     setSelectedGroup(null);
+    clearSelection();
     loadUnassignedWork();
+  };
+
+  const handleAssignSelection = () => {
+    const payload = buildSelectionPayload();
+    if (payload.sessionIds.length === 0) return;
+
+    // Synthesize a group-like object so AssignmentModal can render.
+    // Always set id=null — both resolver paths (Assign-to-Existing and Create-New)
+    // have multi-group-aware variants that correctly handle full vs partial coverage
+    // via member-set comparison, so we don't need a special "full single group" route.
+    const singleGroup = payload.groupIds.length === 1
+      ? groups.find(g => g.id === payload.groupIds[0])
+      : null;
+
+    setSelectedGroup({
+      id: null,
+      groupIds: payload.groupIds,
+      session_ids: payload.sessionIds,
+      session_count: payload.sessionCount,
+      total_seconds: payload.totalSeconds,
+      total_time_formatted: formatTime(payload.totalSeconds),
+      label: singleGroup?.label || `${payload.groupIds.length} groups selected`,
+      description: singleGroup?.description || null,
+      recommendation: singleGroup?.recommendation || null
+    });
+    setShowAssignModal(true);
   };
 
   // Dismiss handlers
@@ -198,8 +510,9 @@ function UnassignedWork() {
     }
   };
 
-  const handleDismissMember = async (groupId, sessionIds) => {
+  const handleDismissMember = async (groupId, session) => {
     try {
+      const sessionIds = session.activityIds || [];
       // Sequential — each call reads then writes session_count; parallel would cause a race condition
       for (const sessionId of sessionIds) {
         await invoke('dismissGroupMember', { groupId, sessionId });
@@ -209,6 +522,7 @@ function UnassignedWork() {
           ? { ...g, session_count: Math.max(0, (g.session_count || 0) - sessionIds.length) }
           : g
       ));
+      removeSessionFromGroupCache(groupId, session);
     } catch (err) {
       console.error('[UnassignedWork] Error dismissing member:', err);
     }
@@ -316,6 +630,27 @@ function UnassignedWork() {
         onAssignClick={handleAssignClick}
         onDismissGroup={handleDismissGroup}
         onDismissMember={handleDismissMember}
+        groupDetails={groupDetails}
+        loadingDetails={loadingDetails}
+        groupWorkSessions={groupWorkSessions}
+        loadingWorkSessions={loadingWorkSessions}
+        loadGroupDetails={loadGroupDetails}
+        loadGroupWorkSessions={loadGroupWorkSessions}
+        isGroupFullySelected={isGroupFullySelected}
+        isGroupPartiallySelected={isGroupPartiallySelected}
+        isIntervalSelected={isIntervalSelected}
+        onToggleGroupSelection={toggleGroupSelection}
+        onToggleIntervalSelection={toggleIntervalSelection}
+        pendingFullSelectGroupIds={pendingFullSelectGroupIds}
+        hasAnySelection={selectionSummary.groupCount > 0}
+      />
+
+      <SelectionBar
+        groupCount={selectionSummary.groupCount}
+        sessionCount={selectionSummary.sessionCount}
+        totalSeconds={selectionSummary.totalSeconds}
+        onClear={clearSelection}
+        onAssign={handleAssignSelection}
       />
 
       {/* Assignment Modal */}
