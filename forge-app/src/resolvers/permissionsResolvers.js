@@ -4,6 +4,30 @@
  */
 
 import { isJiraAdmin, checkUserPermissions, getVerifiedAdminProjectKeys, getAllJiraProjectKeys } from '../utils/jira.js';
+import { kvs } from '@forge/kvs';
+
+const PERMISSIONS_CACHE_TTL_MS = 5 * 60 * 1000;
+
+async function getCachedUserPermissions(accountId) {
+  try {
+    const cached = await kvs.get(`resolver:userPermissions:${accountId}`);
+    if (cached && Date.now() < cached.expiresAt) {
+      return cached.value;
+    }
+  } catch {
+    // Ignore cache read failures.
+  }
+  return null;
+}
+
+function setCachedUserPermissions(accountId, permissions) {
+  kvs.set(`resolver:userPermissions:${accountId}`, {
+    value: permissions,
+    expiresAt: Date.now() + PERMISSIONS_CACHE_TTL_MS
+  }).catch(() => {
+    // Ignore cache write failures.
+  });
+}
 
 /**
  * Register permissions resolvers
@@ -17,8 +41,17 @@ export function registerPermissionsResolvers(resolver) {
   resolver.define('getUserPermissions', async (req) => {
     const { context } = req;
     const accountId = context.accountId;
+    const t0 = Date.now();
 
     try {
+      const cachedPermissions = await getCachedUserPermissions(accountId);
+      if (cachedPermissions) {
+        return {
+          success: true,
+          permissions: cachedPermissions
+        };
+      }
+
       // Check if user is Jira Administrator
       const isAdmin = await isJiraAdmin();
 
@@ -42,15 +75,20 @@ export function registerPermissionsResolvers(resolver) {
       // Check basic issue permissions (useful for future features)
       const issuePermissions = await checkUserPermissions(['CREATE_ISSUES', 'EDIT_ISSUES']);
 
+      const resolvedPermissions = {
+        isJiraAdmin: isAdmin,
+        projectAdminProjects: projectAdminProjects || [],
+        allProjectKeys: allProjectKeys || [],
+        canCreateIssues: issuePermissions.permissions?.CREATE_ISSUES?.havePermission || false,
+        canEditIssues: issuePermissions.permissions?.EDIT_ISSUES?.havePermission || false
+      };
+
+      setCachedUserPermissions(accountId, resolvedPermissions);
+      console.log(`[PermissionsResolver] getUserPermissions took ${Date.now() - t0}ms`);
+
       return {
         success: true,
-        permissions: {
-          isJiraAdmin: isAdmin,
-          projectAdminProjects: projectAdminProjects || [],
-          allProjectKeys: allProjectKeys || [],
-          canCreateIssues: issuePermissions.permissions?.CREATE_ISSUES?.havePermission || false,
-          canEditIssues: issuePermissions.permissions?.EDIT_ISSUES?.havePermission || false
-        }
+        permissions: resolvedPermissions
       };
     } catch (error) {
       console.error('Error fetching user permissions:', error);

@@ -120,7 +120,7 @@ describe('splitWorklog', () => {
       expect(mockUpdateJiraWorklog).toHaveBeenCalledWith('PROJ-2', 'jira-wl-100', 480);
 
       // Verify Jira POST called with split seconds
-      expect(mockCreateJiraWorklog).toHaveBeenCalledWith('PROJ-1', 600, '2026-03-26T09:00:00.000Z');
+      expect(mockCreateJiraWorklog).toHaveBeenCalledWith('PROJ-1', 600, '2026-03-26T09:00:00.000+0000');
 
       // DELETE should NOT be called (partial split uses PUT)
       expect(mockDeleteJiraWorklog).not.toHaveBeenCalled();
@@ -230,23 +230,31 @@ describe('splitWorklog', () => {
 
       await expect(
         splitWorklog(ACCOUNT_ID, CLOUD_ID, 'PROJ-2', 'PROJ-1', 300)
-      ).rejects.toThrow('No synced worklog found for issue PROJ-2');
+      ).rejects.toThrow('No activity records found to reassign from PROJ-2');
     });
 
-    it('throws when worklog is pending (no jira_worklog_id)', async () => {
+    it('succeeds when worklog is pending (no jira_worklog_id)', async () => {
       mockSupabaseRequest.mockImplementation((config, endpoint, options) => {
         if (endpoint.includes('issue_key=eq.PROJ-2')) {
           return Promise.resolve([buildSyncRecord({ jira_worklog_id: null })]);
         }
+        if (endpoint.includes('activity_records') && endpoint.includes('select=id') && (!options?.method || options?.method === 'GET')) {
+          return Promise.resolve([
+            { id: 'ar-1', duration_seconds: 300, total_time_seconds: 300 }
+          ]);
+        }
+        if (options?.method === 'PATCH') {
+          return Promise.resolve({});
+        }
         return Promise.resolve([]);
       });
 
-      await expect(
-        splitWorklog(ACCOUNT_ID, CLOUD_ID, 'PROJ-2', 'PROJ-1', 300)
-      ).rejects.toThrow('Worklog has not been synced to Jira yet');
+      const result = await splitWorklog(ACCOUNT_ID, CLOUD_ID, 'PROJ-2', 'PROJ-1', 300);
+      expect(result.success).toBe(true);
+      expect(result.newWorklogId).toBeNull();
     });
 
-    it('throws when target already has a worklog', async () => {
+    it('allows split when target worklog is from a different date', async () => {
       mockSupabaseRequest.mockImplementation((config, endpoint, options) => {
         if (endpoint.includes('issue_key=eq.PROJ-2') && (!options?.method || options?.method === 'GET')) {
           return Promise.resolve([buildSyncRecord()]);
@@ -254,12 +262,23 @@ describe('splitWorklog', () => {
         if (endpoint.includes('issue_key=eq.PROJ-1') && (!options?.method || options?.method === 'GET')) {
           return Promise.resolve([{ id: 'existing-sync' }]);
         }
+        if (endpoint.includes('activity_records') && endpoint.includes('select=id') && (!options?.method || options?.method === 'GET')) {
+          return Promise.resolve([
+            { id: 'ar-1', duration_seconds: 300, total_time_seconds: 300 },
+            { id: 'ar-2', duration_seconds: 300, total_time_seconds: 300 }
+          ]);
+        }
+        if (options?.method === 'PATCH' || options?.method === 'DELETE' || options?.method === 'POST') {
+          return Promise.resolve({});
+        }
         return Promise.resolve([]);
       });
 
-      await expect(
-        splitWorklog(ACCOUNT_ID, CLOUD_ID, 'PROJ-2', 'PROJ-1', 300)
-      ).rejects.toThrow('A worklog already exists for issue PROJ-1');
+      mockUpdateJiraWorklog.mockResolvedValue({ status: 200 });
+      mockCreateJiraWorklog.mockResolvedValue({ id: 'jira-wl-200' });
+
+      const result = await splitWorklog(ACCOUNT_ID, CLOUD_ID, 'PROJ-2', 'PROJ-1', 300);
+      expect(result.success).toBe(true);
     });
   });
 
@@ -361,7 +380,7 @@ describe('splitWorklog', () => {
       expect(activityPatch.endpoint).toContain('ar-2');
       // Verify the body sets the target issue
       expect(activityPatch.body.user_assigned_issue_key).toBe('PROJ-1');
-      expect(activityPatch.body.reassigned_from).toBe('PROJ-2');
+      expect(activityPatch.body.reassigned_from).toBeUndefined();
     });
   });
 });

@@ -90,6 +90,7 @@ async function fetchActivitiesBySessionIds(supabaseConfig, validSessionIds, user
  * Queries both activity_records (hybrid OCR) and analysis_results (legacy screenshots)
  */
 export async function getUnassignedWork(req) {
+  const t0 = Date.now();
   try {
     const { limit: rawLimit, offset: rawOffset, dateFrom, dateTo } = req.payload || {};
 
@@ -155,6 +156,8 @@ export async function getUnassignedWork(req) {
 
   } catch (error) {
     return handleResolverError(error, 'getting unassigned work');
+  } finally {
+    console.log(`[UnassignedResolver] getUnassignedWork took ${Date.now() - t0}ms`);
   }
 }
 
@@ -164,6 +167,7 @@ export async function getUnassignedWork(req) {
  * Full details are loaded on-demand via getGroupDetails when user expands a group
  */
 export async function getUnassignedGroups(req) {
+  const t0 = Date.now();
   try {
     const { limit: rawLimit = 10, offset: rawOffset = 0 } = req.payload || {};
 
@@ -246,6 +250,8 @@ export async function getUnassignedGroups(req) {
 
   } catch (error) {
     return handleResolverError(error, 'getting unassigned groups');
+  } finally {
+    console.log(`[UnassignedResolver] getUnassignedGroups took ${Date.now() - t0}ms`);
   }
 }
 
@@ -255,6 +261,7 @@ export async function getUnassignedGroups(req) {
  * Supports both legacy unassigned_activity members and new activity_records members.
  */
 export async function getGroupDetails(req) {
+  const t0 = Date.now();
   try {
     const { groupId } = req.payload;
 
@@ -327,6 +334,8 @@ export async function getGroupDetails(req) {
 
   } catch (error) {
     return handleResolverError(error, 'getting group details');
+  } finally {
+    console.log(`[UnassignedResolver] getGroupDetails took ${Date.now() - t0}ms`);
   }
 }
 

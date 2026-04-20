@@ -55,7 +55,7 @@ export function syncCacheFromBatchResponse(cloudId, accountId, batchData) {
 
   // Sync user ID cache
   if (userId && accountId && organizationId) {
-    const userCacheKey = CacheKeys.userId(accountId);
+    const userCacheKey = CacheKeys.userId(cloudId, accountId);
     const cachedUser = getFromCache(userCacheKey);
     if (!cachedUser || cachedUser.userId !== userId) {
       setInCache(userCacheKey, { userId, organizationId }, TTL.USER_ID);
@@ -310,7 +310,9 @@ export async function getOrCreateOrganization(cloudId, orgName = null, jiraUrl =
  * @returns {Promise<string>} User UUID
  */
 export async function getOrCreateUser(accountId, organizationId = null, email = null, displayName = null) {
-  const cacheKey = CacheKeys.userId(accountId);
+  // Use organizationId as the tenant scope — it is a unique UUID per Supabase org,
+  // equivalent to cloudId for tenant isolation purposes.
+  const cacheKey = CacheKeys.userId(organizationId || 'default', accountId);
 
   // Check in-memory cache first (fastest)
   const cached = getFromCache(cacheKey);

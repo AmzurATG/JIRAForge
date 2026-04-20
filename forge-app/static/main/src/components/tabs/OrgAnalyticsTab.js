@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { invoke } from '@forge/bridge';
 import {
   KPICards,
@@ -16,27 +16,39 @@ function OrgAnalyticsTab() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [orgAnalytics, setOrgAnalytics] = useState(null);
+  const latestRequestIdRef = useRef(0);
 
   useEffect(() => {
     loadOrgAnalytics();
   }, []);
 
   const loadOrgAnalytics = async () => {
+    const requestId = latestRequestIdRef.current + 1;
+    latestRequestIdRef.current = requestId;
+
     setLoading(true);
     setError(null);
     try {
       const result = await invoke('getAllAnalytics', {
         clientToday: new Date().toLocaleDateString('sv-SE') // YYYY-MM-DD in local timezone
       });
+      if (requestId !== latestRequestIdRef.current) {
+        return;
+      }
       if (result.success) {
         setOrgAnalytics(result.data);
       } else {
         setError(result.error);
       }
     } catch (err) {
+      if (requestId !== latestRequestIdRef.current) {
+        return;
+      }
       setError('Failed to load organization analytics: ' + err.message);
     } finally {
-      setLoading(false);
+      if (requestId === latestRequestIdRef.current) {
+        setLoading(false);
+      }
     }
   };
 

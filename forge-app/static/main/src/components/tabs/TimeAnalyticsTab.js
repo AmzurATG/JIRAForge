@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { invoke, router } from '@forge/bridge';
 import { useApp } from '../../context';
 import { SummaryCards, DayView, WeekView, MonthView } from './time-analytics';
@@ -22,6 +22,7 @@ function TimeAnalyticsTab({ onOpenWorklogReassignModal, refreshKey }) {
   const [selectedMonth, setSelectedMonth] = useState(new Date());
   const [downloadUrl, setDownloadUrl] = useState(FALLBACK_DOWNLOAD_URL);
   const [reconciledTodayTotal, setReconciledTodayTotal] = useState(null);
+  const latestRequestIdRef = useRef(0);
 
   useEffect(() => {
     loadTimeAnalytics();
@@ -36,12 +37,18 @@ function TimeAnalyticsTab({ onOpenWorklogReassignModal, refreshKey }) {
   }, [refreshKey]);
 
   const loadTimeAnalytics = async () => {
+    const requestId = latestRequestIdRef.current + 1;
+    latestRequestIdRef.current = requestId;
+
     setLoading(true);
     setError(null);
     try {
       const result = await invoke('getTimeAnalytics', {
         clientToday: new Date().toLocaleDateString('sv-SE')
       });
+      if (requestId !== latestRequestIdRef.current) {
+        return;
+      }
       console.log('[TimeAnalytics] getTimeAnalytics result:', 
         'success:', result?.success,
         'allUsers:', result?.data?.allUsers?.length,
@@ -55,10 +62,15 @@ function TimeAnalyticsTab({ onOpenWorklogReassignModal, refreshKey }) {
         setError(result.error);
       }
     } catch (err) {
+      if (requestId !== latestRequestIdRef.current) {
+        return;
+      }
       console.error('[TimeAnalytics] Failed to load:', err);
       setError(err.message);
     } finally {
-      setLoading(false);
+      if (requestId === latestRequestIdRef.current) {
+        setLoading(false);
+      }
     }
   };
 

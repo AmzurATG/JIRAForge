@@ -19,13 +19,16 @@ export function registerUserResolvers(resolver) {
   resolver.define('getCurrentUser', async (req) => {
     const { context } = req;
     const accountId = context.accountId;
+    const t0 = Date.now();
 
     try {
       const userInfo = await getCurrentUserInfo(accountId);
-      return {
+      const result = {
         success: true,
         ...userInfo
       };
+      console.log(`[UserResolver] getCurrentUser took ${Date.now() - t0}ms`);
+      return result;
     } catch (error) {
       console.error('Error fetching current user:', error);
       return {
@@ -43,6 +46,7 @@ export function registerUserResolvers(resolver) {
    */
   resolver.define('getDesktopAppStatus', async (req) => {
     const { accountId, cloudId } = req.context;
+    const t0 = Date.now();
 
     try {
       // Fetch latest app version info (cached for 5 minutes)
@@ -208,6 +212,8 @@ export function registerUserResolvers(resolver) {
         showDownload: true,
         message: 'Unable to check Desktop App status'
       };
+    } finally {
+      console.log(`[UserResolver] getDesktopAppStatus took ${Date.now() - t0}ms`);
     }
   });
 }

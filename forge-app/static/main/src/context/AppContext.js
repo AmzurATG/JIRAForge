@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
+import React, { createContext, useContext, useState, useEffect, useCallback, useRef } from 'react';
 import { invoke } from '@forge/bridge';
 
 const AppContext = createContext(null);
@@ -23,6 +23,7 @@ export function AppProvider({ children }) {
 
   // Team Analytics State
   const [selectedProjectKey, setSelectedProjectKey] = useState('');
+  const permissionsRequestInFlightRef = useRef(false);
 
   // Load user permissions on mount
   useEffect(() => {
@@ -62,6 +63,11 @@ export function AppProvider({ children }) {
   }, []);
 
   const loadUserPermissions = async () => {
+    if (permissionsRequestInFlightRef.current) {
+      return;
+    }
+    permissionsRequestInFlightRef.current = true;
+
     try {
       const result = await invoke('getUserPermissions');
       if (result.success) {
@@ -74,6 +80,8 @@ export function AppProvider({ children }) {
       }
     } catch (err) {
       console.error('Failed to load permissions:', err);
+    } finally {
+      permissionsRequestInFlightRef.current = false;
     }
   };
 

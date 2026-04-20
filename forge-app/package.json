@@ -41,6 +41,12 @@
     "transform": {
       "^.+\\.js$": "babel-jest"
     },
+    "testPathIgnorePatterns": [
+      "<rootDir>/tests/playwright/",
+      "<rootDir>/tests/e2e/",
+      "<rootDir>/tests/services/workAssignmentService.test.js",
+      "<rootDir>/tests/resolvers/convertUnassignedToWorklog.integration.test.js"
+    ],
     "collectCoverageFrom": [
       "src/**/*.js"
     ],

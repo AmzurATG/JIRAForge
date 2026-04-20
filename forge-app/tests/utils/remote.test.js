@@ -216,14 +216,14 @@ describe('remoteRequest', () => {
     expect(invokeRemote).toHaveBeenCalledTimes(2);
   });
 
-  it('exhausts MAX_RETRIES (3 total attempts) and throws on persistent 500', async () => {
+  it('exhausts MAX_RETRIES (2 total attempts) and throws on persistent 500', async () => {
     invokeRemote.mockResolvedValue(makeErrResponse(500, 'Server down'));
 
     await expect(
       Promise.all([remoteRequest('/api/test'), jest.runAllTimersAsync()])
     ).rejects.toThrow('Remote request failed: Server down');
 
-    expect(invokeRemote).toHaveBeenCalledTimes(3); // attempt 0, 1, 2
+    expect(invokeRemote).toHaveBeenCalledTimes(2); // attempt 0, 1
   });
 
   it('retries on "Authentication failed" network error', async () => {
@@ -555,7 +555,7 @@ describe('getOrCreateUser', () => {
     invokeRemote.mockResolvedValue(makeOkResponse({ userId: 'u1' }));
     await getOrCreateUser('acc-1', 'org-1');
     expect(setInCache).toHaveBeenCalledWith(
-      'user:acc-1',
+      'user:org-1',
       { userId: 'u1', organizationId: 'org-1' },
       300000
     );

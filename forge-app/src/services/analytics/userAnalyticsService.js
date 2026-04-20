@@ -114,7 +114,9 @@ export async function fetchTimeAnalyticsBatch(accountId, cloudId, clientToday) {
 
   // Sync Forge caches with the authoritative values from the batch API.
   // This prevents stale org/user IDs from causing timeline and worklog operations to fail.
-  syncCacheFromBatchResponse(cloudId, accountId, dashboardData);
+  if (typeof syncCacheFromBatchResponse === 'function') {
+    syncCacheFromBatchResponse(cloudId, accountId, dashboardData);
+  }
 
   // Enforce Forge-computed permission — never trust the AI server's canViewAllUsers
   dashboardData.canViewAllUsers = canViewAllUsers;

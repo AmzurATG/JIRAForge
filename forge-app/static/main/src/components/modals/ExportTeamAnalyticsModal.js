@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { invoke } from '@forge/bridge';
 import { generateExcelReport } from '../../utils/excelExport';
 import './ExportTeamAnalyticsModal.css';
@@ -22,9 +22,13 @@ function ExportTeamAnalyticsModal({ isOpen, onClose, projectKey, teamAnalytics, 
     [projectKey]: (teamAnalytics?.teamMemberActivity || [])
   }));
   const [loadingMembers, setLoadingMembers] = useState(false);
+  const latestMembersRequestIdRef = useRef(0);
 
   // Fetch team members for newly selected projects
   useEffect(() => {
+    const requestId = latestMembersRequestIdRef.current + 1;
+    latestMembersRequestIdRef.current = requestId;
+
     const missingProjects = selectedProjectKeys.filter(pk => !membersByProject[pk]);
     if (missingProjects.length === 0) {
       setLoadingMembers(false);
@@ -43,14 +47,14 @@ function ExportTeamAnalyticsModal({ isOpen, onClose, projectKey, teamAnalytics, 
         members: result.success ? (result.data?.teamMemberActivity || []) : []
       })).catch(() => ({ pk, members: [] }))
     )).then(results => {
-      if (cancelled) return;
+      if (cancelled || requestId !== latestMembersRequestIdRef.current) return;
       setMembersByProject(prev => {
         const updated = { ...prev };
         results.forEach(({ pk, members: m }) => { updated[pk] = m; });
         return updated;
       });
     }).finally(() => {
-      if (!cancelled) setLoadingMembers(false);
+      if (!cancelled && requestId === latestMembersRequestIdRef.current) setLoadingMembers(false);
     });
 
     return () => { cancelled = true; };

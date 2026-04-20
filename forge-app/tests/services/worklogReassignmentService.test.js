@@ -109,7 +109,7 @@ describe('worklogReassignmentService', () => {
 
       // Verify Jira calls
       expect(mockDeleteJiraWorklog).toHaveBeenCalledWith('PROJ-2', 'jira-wl-100');
-      expect(mockCreateJiraWorklog).toHaveBeenCalledWith('PROJ-1', 3600, '2026-03-26T09:00:00.000Z');
+      expect(mockCreateJiraWorklog).toHaveBeenCalledWith('PROJ-1', 3600, '2026-03-26T09:00:00.000+0000');
 
       // Verify worklog_sync PATCH
       const patchCalls = mockSupabaseRequest.mock.calls.filter(
@@ -140,7 +140,7 @@ describe('worklogReassignmentService', () => {
   });
 
   describe('reassignWorklog - no sync record', () => {
-    it('throws when no synced worklog exists for source issue', async () => {
+    it('reassigns activity records when no synced worklog exists for source issue', async () => {
       mockSupabaseRequest.mockImplementation((config, endpoint, options) => {
         if (endpoint.includes('issue_key=eq.PROJ-2') && options?.method === 'GET') {
           return Promise.resolve([]);
@@ -148,17 +148,20 @@ describe('worklogReassignmentService', () => {
         return Promise.resolve([]);
       });
 
-      await expect(
-        reassignWorklog(ACCOUNT_ID, CLOUD_ID, 'PROJ-2', 'PROJ-1')
-      ).rejects.toThrow('No synced worklog found for issue PROJ-2');
+      const result = await reassignWorklog(ACCOUNT_ID, CLOUD_ID, 'PROJ-2', 'PROJ-1');
+      expect(result.success).toBe(true);
+      expect(result.newWorklogId).toBeNull();
     });
   });
 
   describe('reassignWorklog - pending worklog', () => {
-    it('throws when worklog has no jira_worklog_id', async () => {
+    it('reassigns pending worklog mapping when jira_worklog_id is null', async () => {
       mockSupabaseRequest.mockImplementation((config, endpoint, options) => {
         if (endpoint.includes('issue_key=eq.PROJ-2') && options?.method === 'GET') {
           return Promise.resolve([buildSyncRecord({ jira_worklog_id: null })]);
+        }
+        if (options?.method === 'PATCH') {
+          return Promise.resolve({});
         }
         if (endpoint.includes('issue_key=eq.PROJ-1') && options?.method === 'GET') {
           return Promise.resolve([]);
@@ -166,14 +169,14 @@ describe('worklogReassignmentService', () => {
         return Promise.resolve([]);
       });
 
-      await expect(
-        reassignWorklog(ACCOUNT_ID, CLOUD_ID, 'PROJ-2', 'PROJ-1')
-      ).rejects.toThrow('Worklog has not been synced to Jira yet');
+      const result = await reassignWorklog(ACCOUNT_ID, CLOUD_ID, 'PROJ-2', 'PROJ-1');
+      expect(result.success).toBe(true);
+      expect(result.oldWorklogId).toBeNull();
     });
   });
 
   describe('reassignWorklog - duplicate target detection', () => {
-    it('throws when target issue already has a worklog', async () => {
+    it('allows reassignment when target worklog is from a different date', async () => {
       mockSupabaseRequest.mockImplementation((config, endpoint, options) => {
         if (endpoint.includes('issue_key=eq.PROJ-2') && options?.method === 'GET') {
           return Promise.resolve([buildSyncRecord()]);
@@ -181,12 +184,17 @@ describe('worklogReassignmentService', () => {
         if (endpoint.includes('issue_key=eq.PROJ-1') && options?.method === 'GET') {
           return Promise.resolve([{ id: 'existing-sync' }]);
         }
+        if (options?.method === 'PATCH' || options?.method === 'DELETE') {
+          return Promise.resolve({});
+        }
         return Promise.resolve([]);
       });
 
-      await expect(
-        reassignWorklog(ACCOUNT_ID, CLOUD_ID, 'PROJ-2', 'PROJ-1')
-      ).rejects.toThrow('A worklog already exists for issue PROJ-1');
+      mockDeleteJiraWorklog.mockResolvedValue({ ok: true, status: 204 });
+      mockCreateJiraWorklog.mockResolvedValue({ id: 'jira-wl-200' });
+
+      const result = await reassignWorklog(ACCOUNT_ID, CLOUD_ID, 'PROJ-2', 'PROJ-1');
+      expect(result.success).toBe(true);
     });
   });
 
@@ -216,7 +224,7 @@ describe('worklogReassignmentService', () => {
 
       // Verify rollback was attempted (create called twice: once for target, once for rollback)
       expect(mockCreateJiraWorklog).toHaveBeenCalledTimes(2);
-      expect(mockCreateJiraWorklog).toHaveBeenLastCalledWith('PROJ-2', 3600, '2026-03-26T09:00:00.000Z');
+      expect(mockCreateJiraWorklog).toHaveBeenLastCalledWith('PROJ-2', 3600, '2026-03-26T09:00:00.000+0000');
     });
   });
 

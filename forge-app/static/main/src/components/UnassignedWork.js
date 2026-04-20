@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { invoke } from '@forge/bridge';
 import { AssignmentModal, BulkEditModal, GroupAccordion, SelectionBar } from './unassigned';
 import { AiDisclaimer } from './common/AiDisclaimer';
@@ -28,6 +28,7 @@ function UnassignedWork() {
   // Notification settings state
   const [notificationsEnabled, setNotificationsEnabled] = useState(true);
   const [savingNotificationSettings, setSavingNotificationSettings] = useState(false);
+  const unassignedRequestIdRef = useRef(0);
 
   // Hoisted group-detail / work-session caches.
   // Lifted out of GroupAccordion so the upcoming multi-select layer can read
@@ -357,6 +358,8 @@ function UnassignedWork() {
   const loadUnassignedWork = async (append = false, retryCount = 0) => {
     const MAX_RETRIES = 5;
     const RETRY_DELAY_MS = 3000;
+    const requestId = unassignedRequestIdRef.current + 1;
+    unassignedRequestIdRef.current = requestId;
 
     if (!append) {
       setLoading(true);
@@ -380,6 +383,10 @@ function UnassignedWork() {
       const sessionsResult = sessionsOutcome.status === 'fulfilled'
         ? sessionsOutcome.value
         : { success: false, error: sessionsOutcome.reason?.message || 'Failed to load unassigned work' };
+
+      if (requestId !== unassignedRequestIdRef.current) {
+        return;
+      }
 
       // Process sessions (independent of groups success)
       if (!append && sessionsResult?.success) {
@@ -417,6 +424,9 @@ function UnassignedWork() {
         setLoadingMore(false);
       }
     } catch (err) {
+      if (requestId !== unassignedRequestIdRef.current) {
+        return;
+      }
       if (!append && retryCount < MAX_RETRIES) {
         console.warn(`[UnassignedWork] Attempt ${retryCount + 1} threw, retrying in ${RETRY_DELAY_MS}ms...`, err);
         setTimeout(() => loadUnassignedWork(false, retryCount + 1), RETRY_DELAY_MS);
