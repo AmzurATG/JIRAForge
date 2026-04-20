@@ -266,17 +266,17 @@
 
 /* Icon colors matching card backgrounds */
 .cumulative-card:nth-child(1) .card-icon {
-  background: #66BB6A; /* Green for Today */
+  background: #66BB6A !important; /* Green for Today */
   color: white;
 }
 
 .cumulative-card:nth-child(2) .card-icon {
-  background: #FFA726; /* Orange for Week */
+  background: #FFA726 !important; /* Orange for Week */
   color: white;
 }
 
 .cumulative-card:nth-child(3) .card-icon {
-  background: #AB47BC; /* Purple for Month */
+  background: #AB47BC !important; /* Purple for Month */
   color: white;
 }
 
@@ -315,23 +315,21 @@
 }
 
 .cumulative-card .stat-value {
-  font-size: 36px;
-  font-weight: 700;
+  font-size: 1rem;
+  font-weight: 600;
   color: #172B4D;
-  line-height: 1;
-  letter-spacing: -0.5px;
+  line-height: 1.2;
+  letter-spacing: -0.3px;
 }
 
 .cumulative-card .stat-value--drilldown {
   border: none;
   background: transparent;
-  border-radius: 8px;
-  padding: 6px 0;
+  padding: 0;
   margin: 0;
-  font: inherit;
-  color: #0747A6;
-  cursor: pointer;
-  transition: color 0.15s ease, background 0.15s ease, transform 0.15s ease;
+  font-size: 1.5rem;;
+  color: #172B4D;
+  cursor: default;
   display: inline-flex;
   align-items: center;
   justify-content: space-between;
@@ -341,30 +339,34 @@
 
 .cumulative-card .stat-value--drilldown::after {
   content: 'View';
-  font-size: 11px;
+  font-size: 13px;
   font-weight: 600;
-  letter-spacing: 0.4px;
-  text-transform: uppercase;
   color: #0052CC;
-  background: transparent;
-  border-radius: 4px;
-  padding: 4px 8px;
+  cursor: pointer;
+  text-decoration: underline;
   margin-left: auto;
+  padding: 0;
+  background: none;
+  border-radius: 0;
+  letter-spacing: 0;
+  text-transform: none;
 }
 
 .cumulative-card .stat-value--drilldown:hover,
 .cumulative-card .stat-value--drilldown:focus-visible {
-  color: #0052CC;
+  color: #172B4D;
   background: transparent;
 }
 
 .cumulative-card .stat-value--drilldown:hover::after {
-  background: #E3F2FD;
   color: #0747A6;
+  text-decoration: underline;
+  background: none;
 }
 
 .cumulative-card .cumulative-stat {
   padding: 0;
+  width: 100%;
 }
 
 /* Timesheet Tabs */
@@ -383,20 +385,19 @@
 
 .timesheet-tab {
   border: none;
-  border-top-left-radius: 6px;
-  border-top-right-radius: 6px;
+  border-radius: 6px 6px 0 0;
   cursor: pointer;
   font-size: 14px;
   font-weight: 600;
   padding: 10px 16px;
   transition: all 0.2s ease;
-  color: var(--ds-text);
+  color: #5E6C84;
   background: transparent;
 }
 
 .timesheet-tab:hover {
-  background: var(--ds-background-neutral);
-  color: var(--ds-text);
+  background: #F4F5F7;
+  color: #42526E;
 }
 
 .timesheet-tab.active {

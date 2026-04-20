@@ -135,7 +135,6 @@ function DashboardTab({ onOpenReassignModal }) {
         {/* <h2>My Focus</h2>
         <p className="widget-subtitle">Your personalized development workflow hub</p> */}
 
-        <div className="focus-filters">
         <div className="focus-header">
           <div className="focus-tabs">
             <button
@@ -158,58 +157,59 @@ function DashboardTab({ onOpenReassignModal }) {
             </button>
           </div>
 
-          <div className="focus-time-filter" aria-label="Filter issues by time status">
-            <label className="focus-time-filter-label" htmlFor="my-focus-time-filter">Time:</label>
-            <select
-              id="my-focus-time-filter"
-              className="focus-time-filter-select"
-              value={timeFilter}
-              onChange={(e) => setTimeFilter(e.target.value)}
-            >
-              <option value="all">All</option>
-              <option value="with-time">With Time</option>
-              <option value="without-time">No Time</option>
-            </select>
-          </div>
-          <div className="focus-actions">
-            <div className="focus-search">
-              <svg className="search-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <circle cx="11" cy="11" r="8"></circle>
-                <path d="m21 21-4.35-4.35"></path>
-              </svg>
-              <input
-                type="text"
-                className="search-input"
-                placeholder="Search tasks..."
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-              />
-              {searchQuery && (
-                <button
-                  className="clear-search"
-                  onClick={() => setSearchQuery('')}
-                  title="Clear search"
-                >
-                  ×
-                </button>
-              )}
+          <div className="focus-controls">
+            <div className="focus-time-filter" aria-label="Filter issues by time status">
+              <label className="focus-time-filter-label" htmlFor="my-focus-time-filter">Time:</label>
+              <select
+                id="my-focus-time-filter"
+                className="focus-time-filter-select"
+                value={timeFilter}
+                onChange={(e) => setTimeFilter(e.target.value)}
+              >
+                <option value="all">All</option>
+                <option value="with-time">With Time</option>
+                <option value="without-time">No Time</option>
+              </select>
             </div>
-            <button className="filter-button" title="Filter options">
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <line x1="4" y1="21" x2="4" y2="14"></line>
-                <line x1="4" y1="10" x2="4" y2="3"></line>
-                <line x1="12" y1="21" x2="12" y2="12"></line>
-                <line x1="12" y1="8" x2="12" y2="3"></line>
-                <line x1="20" y1="21" x2="20" y2="16"></line>
-                <line x1="20" y1="12" x2="20" y2="3"></line>
-                <line x1="1" y1="14" x2="7" y2="14"></line>
-                <line x1="9" y1="8" x2="15" y2="8"></line>
-                <line x1="17" y1="16" x2="23" y2="16"></line>
-              </svg>
-              <span>Filter</span>
-            </button>
+            <div className="focus-actions">
+              <div className="focus-search">
+                <svg className="search-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <circle cx="11" cy="11" r="8"></circle>
+                  <path d="m21 21-4.35-4.35"></path>
+                </svg>
+                <input
+                  type="text"
+                  className="search-input"
+                  placeholder="Search tasks..."
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                />
+                {searchQuery && (
+                  <button
+                    className="clear-search"
+                    onClick={() => setSearchQuery('')}
+                    title="Clear search"
+                  >
+                    ×
+                  </button>
+                )}
+              </div>
+              <button className="filter-button" title="Filter options">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <line x1="4" y1="21" x2="4" y2="14"></line>
+                  <line x1="4" y1="10" x2="4" y2="3"></line>
+                  <line x1="12" y1="21" x2="12" y2="12"></line>
+                  <line x1="12" y1="8" x2="12" y2="3"></line>
+                  <line x1="20" y1="21" x2="20" y2="16"></line>
+                  <line x1="20" y1="12" x2="20" y2="3"></line>
+                  <line x1="1" y1="14" x2="7" y2="14"></line>
+                  <line x1="9" y1="8" x2="15" y2="8"></line>
+                  <line x1="17" y1="16" x2="23" y2="16"></line>
+                </svg>
+                <span>Filter</span>
+              </button>
+            </div>
           </div>
-        </div>
         </div>
 
         {issuesLoading ? (
