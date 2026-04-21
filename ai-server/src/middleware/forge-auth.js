@@ -113,9 +113,11 @@ async function tryVerifyWithAudiences(jose, JWKS, token, audienceOptions) {
         audience: aud,
         clockTolerance: '60s'
       });
+      console.log('[FIT-DEBUG] OK with audience len =', aud.length, 'hex =', Buffer.from(aud).toString('hex'));
       logger.debug('[FIT] Token validated with audience:', aud);
       return payload;
     } catch (err) {
+      console.log('[FIT-DEBUG] FAIL audience len =', aud.length, 'hex =', Buffer.from(aud).toString('hex'), 'err =', err.message);
       lastError = err;
     }
   }
