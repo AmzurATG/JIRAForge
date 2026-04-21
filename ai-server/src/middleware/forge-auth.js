@@ -113,11 +113,9 @@ async function tryVerifyWithAudiences(jose, JWKS, token, audienceOptions) {
         audience: aud,
         clockTolerance: '60s'
       });
-      console.log('[FIT-DEBUG] OK with audience len =', aud.length, 'hex =', Buffer.from(aud).toString('hex'));
       logger.debug('[FIT] Token validated with audience:', aud);
       return payload;
     } catch (err) {
-      console.log('[FIT-DEBUG] FAIL audience len =', aud.length, 'hex =', Buffer.from(aud).toString('hex'), 'err =', err.message);
       lastError = err;
     }
   }
@@ -153,15 +151,6 @@ async function validateFIT(token) {
     }
 
     const audienceOptions = buildAudienceOptions(decodedPayload);
-    console.log('[FIT-DEBUG] audienceOptions JSON =', JSON.stringify(audienceOptions));
-    console.log('[FIT-DEBUG] FORGE_APP_IDS JSON   =', JSON.stringify(FORGE_APP_IDS));
-    if (decodedPayload?.aud) {
-      const tokAud = String(decodedPayload.aud);
-      const cfgAud = FORGE_APP_IDS[0];
-      console.log('[FIT-DEBUG] token.aud len =', tokAud.length, 'bytes =', Buffer.from(tokAud).toString('hex'));
-      console.log('[FIT-DEBUG] cfg[0]    len =', cfgAud.length, 'bytes =', Buffer.from(cfgAud).toString('hex'));
-      console.log('[FIT-DEBUG] strict equal =', tokAud === cfgAud);
-    }
     return await tryVerifyWithAudiences(jose, JWKS, token, audienceOptions);
   } catch (error) {
     logValidationFailure(token, error);
