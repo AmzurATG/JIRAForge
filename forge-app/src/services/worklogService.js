@@ -95,7 +95,10 @@ async function aggregateUserTrackedTime(supabaseConfig, organizationId, userId) 
     // eslint-disable-next-line deprecation/deprecation
     const page = await supabaseRequest(
       supabaseConfig,
-      `activity_records?organization_id=eq.${organizationId}&user_id=eq.${userId}&status=in.(pending,processing,analyzed)&classification=in.(productive,unknown)&select=user_assigned_issue_key,project_key,duration_seconds,total_time_seconds,end_time&order=created_at.desc&limit=${PAGE_SIZE}&offset=${offset}`
+      // Approval gate: hide rows still awaiting human review. `or=(approval_status.is.null,approval_status.neq.pending_approval)`
+      // preserves pre-feature rows (NULL) and future states ('approved', and eventually 'rejected')
+      // while blocking AI-assigned rows that haven't been confirmed by the user yet.
+      `activity_records?organization_id=eq.${organizationId}&user_id=eq.${userId}&status=in.(pending,processing,analyzed)&classification=in.(productive,unknown)&or=(approval_status.is.null,approval_status.neq.pending_approval)&select=user_assigned_issue_key,project_key,duration_seconds,total_time_seconds,end_time&order=created_at.desc&limit=${PAGE_SIZE}&offset=${offset}`
     );
 
     if (!page || !Array.isArray(page) || page.length === 0) break;
@@ -165,7 +168,11 @@ async function aggregateUnassignedTimeWithFallback(supabaseConfig, organizationI
     // eslint-disable-next-line deprecation/deprecation
     const page = await supabaseRequest(
       supabaseConfig,
-      `activity_records?organization_id=eq.${organizationId}&user_id=eq.${userId}&status=in.(pending,processing,analyzed)&classification=in.(productive,unknown)&user_assigned_issue_key=is.null&project_key=not.is.null&select=project_key,window_title,duration_seconds,total_time_seconds,end_time&order=created_at.desc&limit=${PAGE_SIZE}&offset=${offset}`
+      // Approval gate mirrored from aggregateUserTrackedTime. Records on this
+      // path are unassigned (user_assigned_issue_key IS NULL) so today they
+      // never carry 'pending_approval' — keeping the filter here is defensive
+      // future-proofing in case a downstream writer starts stamping these.
+      `activity_records?organization_id=eq.${organizationId}&user_id=eq.${userId}&status=in.(pending,processing,analyzed)&classification=in.(productive,unknown)&user_assigned_issue_key=is.null&project_key=not.is.null&or=(approval_status.is.null,approval_status.neq.pending_approval)&select=project_key,window_title,duration_seconds,total_time_seconds,end_time&order=created_at.desc&limit=${PAGE_SIZE}&offset=${offset}`
     );
 
     if (!page || !Array.isArray(page) || page.length === 0) break;

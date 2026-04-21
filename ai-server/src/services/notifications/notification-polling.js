@@ -33,7 +33,8 @@ class NotificationPollingService {
             inactivity_alert: 0,
             admin_inactivity_digest: 0,
             admin_download_digest: 0,
-            default_password_reminder: 0
+            default_password_reminder: 0,
+            approval_pending_digest: 0
         }
     };
 
@@ -103,7 +104,8 @@ class NotificationPollingService {
                 this.checkDownloadReminders(),
                 this.checkNewVersionNotifications(),
                 this.checkInactivityAlerts(),
-                this.checkDefaultPasswordReminders()
+                this.checkDefaultPasswordReminders(),
+                this.checkApprovalPending()
             ]);
 
             this.lastRunTime = new Date().toISOString();
@@ -979,6 +981,173 @@ class NotificationPollingService {
     }
 
     /**
+     * Check and send approval-pending digests.
+     * Groups pending_approval activity_records by user, then sends one daily
+     * digest per user that has rows older than APPROVAL_PENDING_MIN_AGE_HOURS.
+     *
+     * The notification pipeline (sendNotification) handles:
+     *   - per-user opt-out via approval_pending_digest_enabled
+     *   - 24h cooldown (_cooldownHours: 24)
+     *   - work-hours gate (via _isWithinWorkHours at the per-user level)
+     *   - daily email cap and overall MAX_EMAILS_PER_CYCLE throttle
+     */
+    async checkApprovalPending() {
+        try {
+            const supabase = getClient();
+            if (!supabase) {
+                logger.warn('[NotificationPolling] Supabase not available for approval-pending digests');
+                return;
+            }
+
+            const minAgeHours = Number.parseFloat(process.env.APPROVAL_PENDING_MIN_AGE_HOURS || '4');
+            const cutoff = new Date(Date.now() - minAgeHours * 3600 * 1000).toISOString();
+
+            const { data: pending, error } = await supabase
+                .from('activity_records')
+                .select('user_id, organization_id, duration_seconds, work_date, analyzed_at')
+                .eq('approval_status', 'pending_approval')
+                .lt('analyzed_at', cutoff)
+                .limit(10000);
+
+            if (error) {
+                throw error;
+            }
+
+            if (!pending || pending.length === 0) {
+                logger.info('[NotificationPolling] Approval-pending digests: no eligible rows');
+                return;
+            }
+
+            const byUser = this._aggregatePendingApproval(pending);
+
+            let sentCount = 0;
+            for (const [userId, summary] of byUser.entries()) {
+                if (sentCount >= MAX_EMAILS_PER_CYCLE) {
+                    logger.warn(`[NotificationPolling] Approval digests: hit per-cycle cap (${MAX_EMAILS_PER_CYCLE}), ${byUser.size - sentCount} users deferred`);
+                    break;
+                }
+
+                const isWorkHours = await this._isWithinWorkHours(userId);
+                if (!isWorkHours) {
+                    continue;
+                }
+
+                const panelUrl = await this._buildApprovalPanelUrl(summary.organizationId);
+
+                try {
+                    const result = await notificationService.sendNotification(
+                        userId,
+                        summary.organizationId,
+                        'approval_pending_digest',
+                        {
+                            pendingCount: summary.count,
+                            totalHours: this._formatDurationShort(summary.totalSeconds),
+                            oldestDate: summary.oldestDate,
+                            byDate: summary.byDate,
+                            panelUrl,
+                            _cooldownHours: 24
+                        }
+                    );
+                    if (result.success) sentCount++;
+                } catch (err) {
+                    logger.warn(`[NotificationPolling] Error sending approval digest to ${userId}:`, err.message);
+                }
+            }
+
+            this.stats.notificationsSent.approval_pending_digest += sentCount;
+            logger.info(`[NotificationPolling] Approval-pending digests: checked ${byUser.size} users, sent ${sentCount}`);
+
+        } catch (error) {
+            logger.error('[NotificationPolling] Error checking approval-pending digests: %s', error.message);
+        }
+    }
+
+    /**
+     * Aggregate raw pending_approval rows into per-user summaries.
+     * @param {Array} rows - Raw rows from activity_records
+     * @returns {Map<string, Object>} userId -> { count, totalSeconds, oldestDate, byDate, organizationId }
+     */
+    _aggregatePendingApproval(rows) {
+        const byUser = new Map();
+        for (const r of rows) {
+            let summary = byUser.get(r.user_id);
+            if (!summary) {
+                summary = {
+                    organizationId: r.organization_id,
+                    count: 0,
+                    totalSeconds: 0,
+                    oldestDate: null,
+                    _byDate: new Map()
+                };
+                byUser.set(r.user_id, summary);
+            }
+            summary.count += 1;
+            summary.totalSeconds += r.duration_seconds || 0;
+            if (r.work_date && (!summary.oldestDate || r.work_date < summary.oldestDate)) {
+                summary.oldestDate = r.work_date;
+            }
+            if (r.work_date) {
+                const entry = summary._byDate.get(r.work_date) || { count: 0, totalSeconds: 0 };
+                entry.count += 1;
+                entry.totalSeconds += r.duration_seconds || 0;
+                summary._byDate.set(r.work_date, entry);
+            }
+        }
+
+        for (const summary of byUser.values()) {
+            summary.byDate = Array.from(summary._byDate.entries())
+                .sort((a, b) => (a[0] < b[0] ? -1 : 1))
+                .map(([workDate, v]) => ({
+                    workDate,
+                    count: v.count,
+                    totalHours: this._formatDurationShort(v.totalSeconds)
+                }));
+            delete summary._byDate;
+        }
+
+        return byUser;
+    }
+
+    /**
+     * Format seconds as a short "1h 30m" style string for email copy.
+     */
+    _formatDurationShort(seconds) {
+        const s = Math.max(0, Math.round(seconds || 0));
+        const h = Math.floor(s / 3600);
+        const m = Math.floor((s % 3600) / 60);
+        if (h === 0 && m === 0) return '0m';
+        if (h === 0) return `${m}m`;
+        if (m === 0) return `${h}h`;
+        return `${h}h ${m}m`;
+    }
+
+    /**
+     * Build the deep-link URL to the Needs Review panel for an organization.
+     * Falls back to the generic Jira URL if the Jira host cannot be resolved.
+     */
+    async _buildApprovalPanelUrl(organizationId) {
+        try {
+            const supabase = getClient();
+            if (!supabase || !organizationId) {
+                return process.env.FORGE_PANEL_URL || 'https://jira.atlassian.com/';
+            }
+            const { data } = await supabase
+                .from('organizations')
+                .select('jira_host')
+                .eq('id', organizationId)
+                .single();
+            const host = data?.jira_host;
+            if (host) {
+                // Approvals live inside the My Focus dashboard (Pending Review sub-tab).
+                return `https://${host}/jira/your-work#dashboard`;
+            }
+        } catch {
+            // fall through to env fallback
+        }
+        return process.env.FORGE_PANEL_URL || 'https://jira.atlassian.com/';
+    }
+
+    /**
      * Run a single check type manually
      * @param {string} checkType - Type of check to run
      * @returns {Promise<void>}
@@ -989,7 +1158,8 @@ class NotificationPollingService {
             'download_reminder': () => this.checkDownloadReminders(),
             'new_version': () => this.checkNewVersionNotifications(),
             'inactivity_alert': () => this.checkInactivityAlerts(),
-            'default_password_reminder': () => this.checkDefaultPasswordReminders()
+            'default_password_reminder': () => this.checkDefaultPasswordReminders(),
+            'approval_pending_digest': () => this.checkApprovalPending()
         };
 
         const checkFn = checks[checkType];

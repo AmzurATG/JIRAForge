@@ -1,5 +1,6 @@
-import React, { useState } from 'react';
-import { invoke } from '@forge/bridge';
+import React, { useEffect, useState } from 'react';
+import { invoke, view } from '@forge/bridge';
+import IssuePanelApp from './components/issue-panel/IssuePanelApp';
 import './App.css';
 import './components/common/Sidebar.css';
 import './components/modals/Modals.css';
@@ -333,6 +334,28 @@ function AppContent() {
 }
 
 function App() {
+  const [surface, setSurface] = useState({ ready: false, issueKey: null });
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const ctx = await view.getContext();
+        const issueKey = ctx?.extension?.issue?.key || null;
+        if (!cancelled) setSurface({ ready: true, issueKey });
+      } catch {
+        if (!cancelled) setSurface({ ready: true, issueKey: null });
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  if (!surface.ready) return null;
+
+  if (surface.issueKey) {
+    return <IssuePanelApp issueKey={surface.issueKey} />;
+  }
+
   return (
     <AppProvider>
       <AppContent />

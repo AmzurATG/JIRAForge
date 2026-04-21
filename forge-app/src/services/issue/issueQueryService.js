@@ -3,6 +3,7 @@
  * Handles fetching and querying Jira issues
  */
 
+import api, { route } from '@forge/api';
 import { getUserAssignedIssues, getAllUserAssignedIssues, formatIssuesData } from '../../utils/jira.js';
 import { getSupabaseConfig, getOrCreateUser, getOrCreateOrganization, supabaseRequest } from '../../utils/supabase.js';
 import { JQL_ACTIVE_STATUSES } from '../../config/constants.js';
@@ -152,7 +153,7 @@ export async function getActiveIssuesWithTime(accountId, cloudId) {
     // We include pending records so time shows up before AI processing completes
     const page = await supabaseRequest(
       supabaseConfig,
-      `activity_records?${userFilter}&organization_id=eq.${organization.id}&status=in.(pending,processing,analyzed)&classification=in.(productive,unknown)&select=id,user_assigned_issue_key,total_time_seconds,duration_seconds,start_time,end_time,work_date,window_title,application_name,classification,project_key,created_at&order=created_at.desc&limit=${PAGE_SIZE}&offset=${activityOffset}`
+      `activity_records?${userFilter}&organization_id=eq.${organization.id}&status=in.(pending,processing,analyzed)&classification=in.(productive,unknown)&select=id,user_assigned_issue_key,total_time_seconds,duration_seconds,start_time,end_time,work_date,window_title,application_name,classification,project_key,approval_status,created_at&order=created_at.desc&limit=${PAGE_SIZE}&offset=${activityOffset}`
     );
 
     if (!page || !Array.isArray(page) || page.length === 0) {
@@ -178,6 +179,7 @@ export async function getActiveIssuesWithTime(accountId, cloudId) {
   const timeByIssue = {};
   const lastWorkedByIssue = {};
   const sessionsByIssue = {};
+  const pendingByIssue = {};
 
   // Process activity records
   if (allActivityRecords.length > 0) {
@@ -221,11 +223,18 @@ export async function getActiveIssuesWithTime(accountId, cloudId) {
         timeByIssue[issueKey] = 0;
         lastWorkedByIssue[issueKey] = entry.created_at;
         sessionsByIssue[issueKey] = [];
+        pendingByIssue[issueKey] = { pendingCount: 0, pendingSeconds: 0 };
       }
 
       // Add to total time (prefer total_time_seconds, fallback to duration_seconds)
       const timeSpent = entry.total_time_seconds || entry.duration_seconds || 0;
       timeByIssue[issueKey] += timeSpent;
+
+      const isPending = entry.approval_status === 'pending_approval';
+      if (isPending) {
+        pendingByIssue[issueKey].pendingCount += 1;
+        pendingByIssue[issueKey].pendingSeconds += timeSpent;
+      }
 
       // Update last worked timestamp
       if (entry.created_at > lastWorkedByIssue[issueKey]) {
@@ -244,8 +253,11 @@ export async function getActiveIssuesWithTime(accountId, cloudId) {
         const lastSession = sessions[sessions.length - 1];
         const timeSinceLastSession = startTime - new Date(lastSession.endTime);
 
-        // If within 10 minutes, extend the session
-        if (timeSinceLastSession <= 10 * 60 * 1000) {
+        // If within 10 minutes AND same approval state, extend the session.
+        // Splitting on approval-state change keeps the UI's "Approve this
+        // session" action scoped to a single contiguous pending block.
+        const sessionIsPending = lastSession.approvalStatus === 'pending_approval';
+        if (timeSinceLastSession <= 10 * 60 * 1000 && sessionIsPending === isPending) {
           lastSession.endTime = endTime.toISOString();
           lastSession.duration += timeSpent;
           if (!lastSession.activityRecordIds) {
@@ -266,7 +278,8 @@ export async function getActiveIssuesWithTime(accountId, cloudId) {
           activityRecordIds: [entry.id],
           screenshots: [],
           windowTitle: entry.window_title,
-          applicationName: entry.application_name
+          applicationName: entry.application_name,
+          approvalStatus: isPending ? 'pending_approval' : (entry.approval_status || null)
         };
         sessions.push(newSession);
       }
@@ -277,21 +290,67 @@ export async function getActiveIssuesWithTime(accountId, cloudId) {
   const issueKeysWithTime = Object.keys(timeByIssue);
   console.log(`[getActiveIssuesWithTime] Time tracked for ${issueKeysWithTime.length} issues: ${JSON.stringify(timeByIssue)}`);
 
+  // Carryover: any key with pending_approval records that isn't in the sprint
+  // JQL result (e.g. closed-sprint issues) still needs to appear in My Focus so
+  // the user can approve or reassign the time. Fetch Jira metadata for those.
+  const issueKeysAlreadyFetched = new Set(issues.map(i => i.key));
+  const pendingKeysMissing = Object.keys(pendingByIssue).filter(
+    (k) => pendingByIssue[k].pendingCount > 0 && !issueKeysAlreadyFetched.has(k)
+  );
+
+  if (pendingKeysMissing.length > 0) {
+    console.log(`[getActiveIssuesWithTime] Fetching ${pendingKeysMissing.length} carryover issues with pending approvals: ${pendingKeysMissing.join(',')}`);
+    try {
+      const carryoverJql = `issueKey in (${pendingKeysMissing.map(k => `"${k}"`).join(',')})`;
+      const carryoverResp = await api.asUser().requestJira(
+        route`/rest/api/3/search/jql`,
+        {
+          method: 'POST',
+          headers: { 'Accept': 'application/json', 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            jql: carryoverJql,
+            maxResults: pendingKeysMissing.length,
+            fields: ['summary', 'status', 'project', 'issuetype', 'priority', 'updated']
+          })
+        }
+      );
+      if (carryoverResp.ok) {
+        const carryoverData = await carryoverResp.json();
+        for (const carryIssue of (carryoverData.issues || [])) {
+          if (!issueKeysAlreadyFetched.has(carryIssue.key)) {
+            issues.push(carryIssue);
+            issueKeysAlreadyFetched.add(carryIssue.key);
+          }
+        }
+      } else {
+        console.warn(`[getActiveIssuesWithTime] Carryover fetch failed: ${carryoverResp.status}`);
+      }
+    } catch (err) {
+      console.warn(`[getActiveIssuesWithTime] Carryover fetch error:`, err.message);
+    }
+  }
+
   // Enrich issues with time tracking data and sessions
-  const enrichedIssues = issues.map(issue => ({
-    key: issue.key,
-    summary: issue.fields.summary || '',
-    status: issue.fields.status?.name || 'Unknown',
-    statusCategory: issue.fields.status?.statusCategory?.key || 'new',
-    priority: issue.fields.priority?.name || 'Medium',
-    priorityIconUrl: issue.fields.priority?.iconUrl || '',
-    issueType: issue.fields.issuetype?.name || 'Task',
-    issueTypeIconUrl: issue.fields.issuetype?.iconUrl || '',
-    projectKey: issue.fields.project?.key || '',
-    timeTracked: timeByIssue[issue.key] || 0,
-    lastWorkedOn: lastWorkedByIssue[issue.key] || null,
-    sessions: sessionsByIssue[issue.key] || []
-  }));
+  const enrichedIssues = issues.map(issue => {
+    const pending = pendingByIssue[issue.key] || { pendingCount: 0, pendingSeconds: 0 };
+    return {
+      key: issue.key,
+      summary: issue.fields.summary || '',
+      status: issue.fields.status?.name || 'Unknown',
+      statusCategory: issue.fields.status?.statusCategory?.key || 'new',
+      priority: issue.fields.priority?.name || 'Medium',
+      priorityIconUrl: issue.fields.priority?.iconUrl || '',
+      issueType: issue.fields.issuetype?.name || 'Task',
+      issueTypeIconUrl: issue.fields.issuetype?.iconUrl || '',
+      projectKey: issue.fields.project?.key || '',
+      timeTracked: timeByIssue[issue.key] || 0,
+      lastWorkedOn: lastWorkedByIssue[issue.key] || null,
+      sessions: sessionsByIssue[issue.key] || [],
+      pendingApprovalCount: pending.pendingCount,
+      pendingApprovalSeconds: pending.pendingSeconds,
+      hasPendingApproval: pending.pendingCount > 0
+    };
+  });
 
   // Sort issues: In Progress first, then other statuses, then Done
   const statusOrder = (status) => {
