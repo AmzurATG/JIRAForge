@@ -663,37 +663,13 @@ function UnassignedWork() {
           </span>
         </div>
 
-        <div className="group-type-tabs" role="tablist" aria-label="Unassigned work type tabs">
-          <button
-            type="button"
-            className={`group-type-tab${groupTypeTab === 'all' ? ' active' : ''}`}
-            onClick={() => setGroupTypeTab('all')}
-          >
-            All ({groupTypeCounts.all})
-          </button>
-          <button
-            type="button"
-            className={`group-type-tab${groupTypeTab === 'work' ? ' active' : ''}`}
-            onClick={() => setGroupTypeTab('work')}
-          >
-            Unassigned Work ({groupTypeCounts.work})
-          </button>
-          <button
-            type="button"
-            className={`group-type-tab${groupTypeTab === 'idle' ? ' active' : ''}`}
-            onClick={() => setGroupTypeTab('idle')}
-          >
-            Idle Sessions ({groupTypeCounts.idle})
-          </button>
-        </div>
-
         <div className="quick-filter-row" role="group" aria-label="Quick filters">
           <button
             type="button"
-            className={`quick-filter-btn${quickFilter === 'all' ? ' active' : ''}`}
-            onClick={() => setQuickFilter('all')}
+            className={`group-type-tab${groupTypeTab === 'all' ? ' active' : ''}`}
+            onClick={() => { setGroupTypeTab('all'); setQuickFilter('all'); }}
           >
-            All
+            All ({groupTypeCounts.all})
           </button>
           <button
             type="button"
@@ -708,6 +684,20 @@ function UnassignedWork() {
             onClick={() => setQuickFilter('review')}
           >
             Needs Review
+          </button>
+          <button
+            type="button"
+            className={`group-type-tab${groupTypeTab === 'work' ? ' active' : ''}`}
+            onClick={() => { setGroupTypeTab('work'); setQuickFilter('all'); }}
+          >
+            Unassigned Work ({groupTypeCounts.work})
+          </button>
+          <button
+            type="button"
+            className={`group-type-tab${groupTypeTab === 'idle' ? ' active' : ''}`}
+            onClick={() => { setGroupTypeTab('idle'); setQuickFilter('all'); }}
+          >
+            Idle Sessions ({groupTypeCounts.idle})
           </button>
         </div>
       </div>

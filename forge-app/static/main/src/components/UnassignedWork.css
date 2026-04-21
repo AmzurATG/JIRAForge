@@ -40,13 +40,6 @@
   font-weight: 400;
 }
 
-.group-type-tabs {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  margin-top: 14px;
-}
-
 .group-type-tab {
   border: 1px solid var(--ds-border, #dfe1e6);
   background: #fff;
@@ -120,7 +113,6 @@
 }
 
 @media (max-width: 768px) {
-  .group-type-tabs,
   .quick-filter-row {
     gap: 6px;
   }
