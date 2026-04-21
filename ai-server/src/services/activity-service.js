@@ -390,7 +390,6 @@ async function analyzeBatch(records, userAssignedIssues, userId, organizationId)
       temperature: 0.3,
       max_tokens: maxTokens,
       isVision: false,
-      reasoningEffort: 'none',
       userId,
       organizationId,
       apiCallName: 'batch-analysis'
@@ -443,7 +442,6 @@ async function classifyUnknownApp(appName, windowTitle, ocrText, userId = null, 
       temperature: 0.2,
       max_tokens: 300,
       isVision: false,
-      reasoningEffort: 'none',
       userId,
       organizationId,
       apiCallName: 'app-classification'
@@ -537,7 +535,6 @@ async function identifyAppByName(searchTerm) {
       temperature: 0.2,
       max_tokens: 150,
       isVision: false,
-      reasoningEffort: 'none',
       apiCallName: 'app-identification'
     });
 

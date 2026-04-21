@@ -51,7 +51,7 @@ function assert(condition, passMsg, failMsg) {
 // ─── Tests ───────────────────────────────────────────────────────────────────
 
 async function testEnvConfig() {
-  console.log(`\n${C.bold}[1/4] Environment Configuration${C.reset}`);
+  console.log(`\n${C.bold}[1/3] Environment Configuration${C.reset}`);
   sep();
 
   const apiKey = process.env.PORTKEY_API_KEY;
@@ -84,7 +84,7 @@ async function testEnvConfig() {
 }
 
 async function testClientInit() {
-  console.log(`\n${C.bold}[2/4] Client Initialisation${C.reset}`);
+  console.log(`\n${C.bold}[2/3] Client Initialisation${C.reset}`);
   sep();
 
   const { initializeClient, getPortkeyClient, getProviderStatus } = require('../src/services/ai/ai-client');
@@ -110,7 +110,7 @@ async function testClientInit() {
 }
 
 async function testSimpleCompletion() {
-  console.log(`\n${C.bold}[3/4] Simple Text Completion (live API call)${C.reset}`);
+  console.log(`\n${C.bold}[3/3] Simple Text Completion (live API call)${C.reset}`);
   sep();
 
   const { chatCompletionWithFallback } = require('../src/services/ai/ai-client');
@@ -161,42 +161,6 @@ async function testSimpleCompletion() {
   }
 }
 
-async function testReasoningEffortParam() {
-  console.log(`\n${C.bold}[4/4] Gemini reasoning_effort param (text request with reasoningEffort=none)${C.reset}`);
-  sep();
-
-  const { chatCompletionWithFallback } = require('../src/services/ai/ai-client');
-
-  info('Sending request with reasoningEffort="none" (disables Gemini thinking)...');
-
-  const start = Date.now();
-
-  try {
-    const { response, provider } = await chatCompletionWithFallback({
-      messages: [
-        { role: 'user', content: 'What is 2 + 2? Reply with just the number.' }
-      ],
-      temperature: 0,
-      max_tokens: 10,
-      isVision: false,
-      reasoningEffort: 'none',
-      apiCallName: 'portkey-reasoning-test'
-    });
-
-    const duration = Date.now() - start;
-    const content = response.choices?.[0]?.message?.content?.trim() || '';
-
-    assert(
-      content.includes('4'),
-      `Got correct answer: "${content}" via ${provider} in ${duration}ms`,
-      `Unexpected answer: "${content}"`
-    );
-
-  } catch (err) {
-    fail(`Request failed: ${err.message}`);
-    failed++;
-  }
-}
 
 // ─── Summary ─────────────────────────────────────────────────────────────────
 
@@ -208,7 +172,6 @@ async function run() {
   await testEnvConfig();
   await testClientInit();
   await testSimpleCompletion();
-  await testReasoningEffortParam();
 
   console.log(`\n${C.bold}${'═'.repeat(60)}${C.reset}`);
   console.log(`${C.bold}  RESULTS${C.reset}`);

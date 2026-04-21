@@ -514,10 +514,9 @@ function logRequestAttempt(requestType, config, errors) {
  * @param {number} params.temperature - Temperature setting (default: 0.3)
  * @param {number} params.max_tokens - Max tokens (default: 800)
  * @param {boolean} params.isVision - Whether this is a vision request (default: false)
- * @param {string} params.reasoningEffort - For Gemini: 'none'|'low'|'medium'|'high'; 'none' disables thinking so output tokens go to the response (optional)
  * @returns {Promise<Object>} { response, provider, model }
  */
-async function chatCompletionWithFallback({ messages, temperature = 0.3, max_tokens = 800, isVision = false, reasoningEffort = null }) {
+async function chatCompletionWithFallback({ messages, temperature = 0.3, max_tokens = 800, isVision = false }) {
   const errors = [];
   const requestType = isVision ? 'vision' : 'text';
 
