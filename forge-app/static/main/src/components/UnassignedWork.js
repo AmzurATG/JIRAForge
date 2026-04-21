@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { invoke } from '@forge/bridge';
 import { AssignmentModal, BulkEditModal, GroupAccordion, SelectionBar } from './unassigned';
 import { AiDisclaimer } from './common/AiDisclaimer';
@@ -8,6 +8,8 @@ import './UnassignedWork.css';
 function UnassignedWork() {
   const [sessions, setSessions] = useState([]);
   const [groups, setGroups] = useState([]);
+  const [groupTypeTab, setGroupTypeTab] = useState('all');
+  const [quickFilter, setQuickFilter] = useState('all');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [userIssues, setUserIssues] = useState([]);
@@ -512,29 +514,47 @@ function UnassignedWork() {
       if (result.success) {
         setGroups(prev => prev.filter(g => g.id !== groupId));
         setTotalGroups(prev => Math.max(0, prev - 1));
+        console.log(`[UnassignedWork] ✓ Group ${groupId} dismissed successfully`);
       } else {
-        console.error('[UnassignedWork] Dismiss group failed:', result.error);
+        const errorMsg = result.error || 'Unknown error';
+        console.error('[UnassignedWork] Dismiss group failed:', errorMsg);
+        alert(`Failed to delete group: ${errorMsg}`);
       }
     } catch (err) {
       console.error('[UnassignedWork] Error dismissing group:', err);
+      alert(`Error deleting group: ${err.message || String(err)}`);
     }
   };
 
   const handleDismissMember = async (groupId, session) => {
     try {
       const sessionIds = session.activityIds || [];
+      if (sessionIds.length === 0) {
+        console.warn('[UnassignedWork] No activity IDs to dismiss for session');
+        return;
+      }
+      
       // Sequential — each call reads then writes session_count; parallel would cause a race condition
       for (const sessionId of sessionIds) {
-        await invoke('dismissGroupMember', { groupId, sessionId });
+        const result = await invoke('dismissGroupMember', { groupId, sessionId });
+        if (!result.success) {
+          const errorMsg = result.error || 'Unknown error';
+          console.error(`[UnassignedWork] Failed to dismiss member ${sessionId}: ${errorMsg}`);
+          alert(`Failed to remove session: ${errorMsg}`);
+          return;
+        }
       }
+      
       setGroups(prev => prev.map(g =>
         g.id === groupId
           ? { ...g, session_count: Math.max(0, (g.session_count || 0) - sessionIds.length) }
           : g
       ));
       removeSessionFromGroupCache(groupId, session);
+      console.log(`[UnassignedWork] ✓ Removed ${sessionIds.length} session(s) from group ${groupId}`);
     } catch (err) {
       console.error('[UnassignedWork] Error dismissing member:', err);
+      alert(`Error removing session: ${err.message || String(err)}`);
     }
   };
 
@@ -543,20 +563,49 @@ function UnassignedWork() {
     loadUnassignedWork();
   };
 
+  useEffect(() => {
+    clearSelection();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [groupTypeTab, quickFilter]);
+
+  const groupTypeCounts = useMemo(() => {
+    const counts = { all: groups.length, work: 0, idle: 0 };
+    groups.forEach(group => {
+      if (group.group_type === 'idle') counts.idle += 1;
+      else counts.work += 1;
+    });
+    return counts;
+  }, [groups]);
+
+  const displayedGroups = useMemo(() => {
+    const byType = groups.filter(group => {
+      if (groupTypeTab === 'all') return true;
+      const type = group.group_type || 'work';
+      return type === groupTypeTab;
+    });
+
+    return byType.filter(group => {
+      if (quickFilter === 'all') return true;
+      if (quickFilter === 'recommended') return Boolean(group.recommendation);
+      if (quickFilter === 'review') return !group.recommendation;
+      return true;
+    });
+  }, [groups, groupTypeTab, quickFilter]);
+
   // Summary calculations
-  const getTotalTime = () => {
-    return groups.reduce((sum, g) => sum + (g.total_seconds || 0), 0);
+  const getTotalTime = (groupList = groups) => {
+    return groupList.reduce((sum, g) => sum + (g.total_seconds || 0), 0);
   };
 
-  const getTotalSessions = () => {
-    return groups.reduce((sum, g) => sum + (g.session_count || 0), 0);
+  const getTotalSessions = (groupList = groups) => {
+    return groupList.reduce((sum, g) => sum + (g.session_count || 0), 0);
   };
 
   if (loading) {
     return <div className="unassigned-work-container"><div className="loading">Loading unassigned work...</div></div>;
   }
 
-  if (error && sessions.length === 0) {
+  if (error && sessions.length === 0 && groups.length === 0) {
     return (
       <div className="unassigned-work-container">
         <h2>Unassigned Work</h2>
@@ -569,7 +618,7 @@ function UnassignedWork() {
     );
   }
 
-  if (sessions.length === 0) {
+  if (sessions.length === 0 && groups.length === 0) {
     return (
       <div className="unassigned-work-container">
         <h2>Unassigned Work</h2>
@@ -602,25 +651,70 @@ function UnassignedWork() {
         </div>
         <div className="unassigned-work-summary">
           <span className="summary-item">
-            <strong>{getTotalSessions()}</strong> sessions
+            <strong>{getTotalSessions(displayedGroups)}</strong> sessions
           </span>
           <span className="summary-divider">•</span>
           <span className="summary-item">
-            <strong>{groups.length}</strong> groups
+            <strong>{displayedGroups.length}</strong> groups
           </span>
           <span className="summary-divider">•</span>
           <span className="summary-item">
-            <strong>{formatTime(getTotalTime())}</strong> total time
+            <strong>{formatTime(getTotalTime(displayedGroups))}</strong> total time
           </span>
+        </div>
+
+        <div className="quick-filter-row" role="group" aria-label="Quick filters">
+          <button
+            type="button"
+            className={`group-type-tab${groupTypeTab === 'all' ? ' active' : ''}`}
+            onClick={() => { setGroupTypeTab('all'); setQuickFilter('all'); }}
+          >
+            All ({groupTypeCounts.all})
+          </button>
+          <button
+            type="button"
+            className={`quick-filter-btn${quickFilter === 'recommended' ? ' active' : ''}`}
+            onClick={() => setQuickFilter('recommended')}
+          >
+            AI Recommended
+          </button>
+          <button
+            type="button"
+            className={`quick-filter-btn${quickFilter === 'review' ? ' active' : ''}`}
+            onClick={() => setQuickFilter('review')}
+          >
+            Needs Review
+          </button>
+          <button
+            type="button"
+            className={`group-type-tab${groupTypeTab === 'work' ? ' active' : ''}`}
+            onClick={() => { setGroupTypeTab('work'); setQuickFilter('all'); }}
+          >
+            Unassigned Work ({groupTypeCounts.work})
+          </button>
+          <button
+            type="button"
+            className={`group-type-tab${groupTypeTab === 'idle' ? ' active' : ''}`}
+            onClick={() => { setGroupTypeTab('idle'); setQuickFilter('all'); }}
+          >
+            Idle Sessions ({groupTypeCounts.idle})
+          </button>
         </div>
       </div>
 
-      {groups.length > 0 && (
+      {displayedGroups.length > 0 && (
         <AiDisclaimer 
           notificationsEnabled={notificationsEnabled}
           onToggleNotifications={handleToggleNotifications}
           savingNotificationSettings={savingNotificationSettings}
         />
+      )}
+
+      {displayedGroups.length === 0 && groups.length > 0 && (
+        <div className="no-groups-message">
+          <p>No groups found for this filter.</p>
+          <p>Try switching tabs or quick filters to view more sessions.</p>
+        </div>
       )}
 
       {groups.length === 0 && sessions.length > 0 && (
@@ -632,7 +726,7 @@ function UnassignedWork() {
       )}
 
       <GroupAccordion
-        groups={groups}
+        groups={displayedGroups}
         hasMoreGroups={hasMoreGroups}
         totalGroups={totalGroups}
         loadingMore={loadingMore}

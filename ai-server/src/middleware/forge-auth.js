@@ -110,7 +110,8 @@ async function tryVerifyWithAudiences(jose, JWKS, token, audienceOptions) {
     try {
       const { payload } = await jose.jwtVerify(token, JWKS, {
         issuer: 'forge/invocation-token',
-        audience: aud
+        audience: aud,
+        clockTolerance: '60s'
       });
       logger.debug('[FIT] Token validated with audience:', aud);
       return payload;
