@@ -381,27 +381,6 @@ export function registerAnalyticsResolvers(resolver) {
    * Shows issues worked on a specific day by a team member
    */
   resolver.define('getMemberDayDetails', async (req) => {
-
-      /**
-       * Resolver for fetching conversion recommendation for unassigned sessions
-       * Returns group suggestion if all sessions belong to a single group
-       */
-      resolver.define('getUnassignedConversionRecommendation', async (req) => {
-        const { payload, context } = req;
-        const { sessionIds } = payload;
-        const accountId = context.accountId;
-        const cloudId = context.cloudId;
-
-        try {
-          const { getUnassignedConversionRecommendation } = await import('../services/analyticsService.js');
-          const recommendation = await getUnassignedConversionRecommendation(accountId, cloudId, sessionIds);
-          return { success: true, data: recommendation };
-        } catch (error) {
-          console.error('Error fetching unassigned conversion recommendation:', error);
-          return { success: true, data: null }; // Return null recommendation instead of error
-        }
-      });
-
     const { payload, context } = req;
     const { projectKey, userId, date } = payload;
     const accountId = context.accountId;
@@ -422,6 +401,26 @@ export function registerAnalyticsResolvers(resolver) {
     } catch (error) {
       console.error('Error fetching member day details:', error);
       return { success: false, error: error.message };
+    }
+  });
+
+  /**
+   * Resolver for fetching conversion recommendation for unassigned sessions
+   * Returns group suggestion if all sessions belong to a single group
+   */
+  resolver.define('getUnassignedConversionRecommendation', async (req) => {
+    const { payload, context } = req;
+    const { sessionIds } = payload;
+    const accountId = context.accountId;
+    const cloudId = context.cloudId;
+
+    try {
+      const { getUnassignedConversionRecommendation } = await import('../services/analyticsService.js');
+      const recommendation = await getUnassignedConversionRecommendation(accountId, cloudId, sessionIds);
+      return { success: true, data: recommendation };
+    } catch (error) {
+      console.error('Error fetching unassigned conversion recommendation:', error);
+      return { success: true, data: null }; // Return null recommendation instead of error
     }
   });
 

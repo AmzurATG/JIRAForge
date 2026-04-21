@@ -1,0 +1,221 @@
+.ip-root {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  color: var(--ds-text, #172B4D);
+  padding: 12px;
+  max-width: 720px;
+}
+
+.ip-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  background: var(--ds-background-warning, #fff7e6);
+  border: 1px solid var(--ds-border-warning, #ffd591);
+  border-radius: 6px;
+  padding: 10px 12px;
+  margin-bottom: 12px;
+}
+
+.ip-banner-title {
+  font-weight: 600;
+  font-size: 14px;
+  color: var(--ds-text, #172B4D);
+}
+
+.ip-banner-sub {
+  font-size: 12px;
+  color: var(--ds-text-subtle, #5E6C84);
+  margin-top: 2px;
+}
+
+.ip-day {
+  margin-bottom: 14px;
+}
+
+.ip-day-title {
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--ds-text-subtle, #5E6C84);
+  margin: 8px 0 6px 0;
+}
+
+.ip-card {
+  border: 1px solid var(--ds-border, #DFE1E6);
+  border-radius: 6px;
+  padding: 10px 12px;
+  margin-bottom: 8px;
+  background: var(--ds-surface, #FFFFFF);
+  transition: opacity 120ms ease;
+}
+
+.ip-card--busy {
+  opacity: 0.6;
+}
+
+.ip-card-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+.ip-time {
+  font-weight: 600;
+  font-size: 13px;
+}
+
+.ip-meta {
+  font-size: 12px;
+  color: var(--ds-text-subtle, #5E6C84);
+}
+
+.ip-context {
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 12px;
+  color: var(--ds-text-subtle, #5E6C84);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  margin-bottom: 8px;
+}
+
+.ip-card-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.ip-confidence {
+  display: inline-flex;
+  gap: 3px;
+}
+
+.ip-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--ds-background-neutral, #DFE1E6);
+  display: inline-block;
+}
+
+.ip-dot--on {
+  background: var(--ds-icon-success, #36B37E);
+}
+
+.ip-btn {
+  font: inherit;
+  border-radius: 4px;
+  padding: 6px 12px;
+  border: 1px solid transparent;
+  cursor: pointer;
+  font-size: 13px;
+  line-height: 1.2;
+  transition: background 120ms ease, border-color 120ms ease;
+}
+
+.ip-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.ip-btn--approve {
+  background: var(--ds-surface, #FFFFFF);
+  color: var(--ds-text-success, #216E4E);
+  border-color: var(--ds-border-success, #36B37E);
+}
+
+.ip-btn--approve:hover:not(:disabled) {
+  background: var(--ds-background-success-subtle, #E3FCEF);
+}
+
+.ip-btn--approve-all {
+  background: var(--ds-background-success-bold, #36B37E);
+  color: #FFFFFF;
+  border-color: var(--ds-background-success-bold, #36B37E);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.ip-btn--approve-all:hover:not(:disabled) {
+  background: var(--ds-background-success-bold-hovered, #2A8E66);
+}
+
+.ip-btn--link {
+  background: transparent;
+  color: var(--ds-link, #0052CC);
+  border: none;
+  padding: 2px 6px;
+  text-decoration: underline;
+  margin-left: 8px;
+}
+
+.ip-empty {
+  text-align: center;
+  padding: 28px 16px;
+  color: var(--ds-text-subtle, #5E6C84);
+}
+
+.ip-empty-icon {
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  background: var(--ds-background-success-subtle, #E3FCEF);
+  color: var(--ds-icon-success, #36B37E);
+  font-size: 22px;
+  line-height: 40px;
+  margin: 0 auto 10px;
+}
+
+.ip-empty-title {
+  font-weight: 600;
+  color: var(--ds-text, #172B4D);
+  font-size: 14px;
+}
+
+.ip-empty-sub {
+  font-size: 12px;
+  margin-top: 4px;
+}
+
+.ip-error {
+  padding: 10px 12px;
+  background: var(--ds-background-danger, #FFEBE6);
+  border: 1px solid var(--ds-border-danger, #FFBDAD);
+  border-radius: 6px;
+  color: var(--ds-text-danger, #BF2600);
+  font-size: 13px;
+}
+
+.ip-skeleton {
+  height: 68px;
+  border-radius: 6px;
+  background: linear-gradient(90deg,
+    var(--ds-background-neutral-subtle, #F4F5F7) 0%,
+    var(--ds-background-neutral, #EBECF0) 50%,
+    var(--ds-background-neutral-subtle, #F4F5F7) 100%);
+  background-size: 200% 100%;
+  animation: ip-shimmer 1.2s infinite linear;
+  margin-bottom: 8px;
+}
+
+@keyframes ip-shimmer {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ip-skeleton { animation: none; }
+}
+
+.ip-footer {
+  font-size: 12px;
+  color: var(--ds-text-subtle, #5E6C84);
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--ds-border, #DFE1E6);
+}

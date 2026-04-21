@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { invoke } from '@forge/bridge';
 import { useApp } from '../../context';
 import { IssueTypeIcon, StatusDropdown } from '../common';
 import { navigateToIssue, formatTime } from '../../utils';
@@ -19,7 +20,29 @@ function DashboardTab({ onOpenReassignModal }) {
   const [timeFilter, setTimeFilter] = useState('all');
   const [searchQuery, setSearchQuery] = useState('');
   const [currentPage, setCurrentPage] = useState(1);
+  const [approvingSessionId, setApprovingSessionId] = useState(null);
   const itemsPerPage = 10;
+
+  const pendingReviewCount = activeIssues.filter(i => i.hasPendingApproval).length;
+
+  const handleApproveSession = async (session) => {
+    const ids = session.activityRecordIds;
+    if (!ids || ids.length === 0 || approvingSessionId) return;
+    const sessionKey = ids.join(',');
+    setApprovingSessionId(sessionKey);
+    try {
+      const res = await invoke('approveRecords', { sessionIds: ids });
+      if (res?.success) {
+        await loadActiveIssues();
+      } else {
+        alert(`Failed to approve: ${res?.error || 'unknown error'}`);
+      }
+    } catch (err) {
+      alert(`Error approving session: ${err.message}`);
+    } finally {
+      setApprovingSessionId(null);
+    }
+  };
 
   useEffect(() => {
     loadActiveIssues();
@@ -70,6 +93,7 @@ function DashboardTab({ onOpenReassignModal }) {
     let statusMatch = true;
     if (issueFilter === 'in-progress') statusMatch = issue.statusCategory === 'indeterminate';
     if (issueFilter === 'done') statusMatch = issue.statusCategory === 'done';
+    if (issueFilter === 'pending-review') statusMatch = !!issue.hasPendingApproval;
 
     // Filter by time tracked
     let timeMatch = matchesTimeFilter(issue);
@@ -78,7 +102,7 @@ function DashboardTab({ onOpenReassignModal }) {
     let searchMatch = true;
     if (searchQuery.trim()) {
       const query = searchQuery.toLowerCase();
-      searchMatch = 
+      searchMatch =
         issue.key.toLowerCase().includes(query) ||
         issue.summary.toLowerCase().includes(query) ||
         issue.status.toLowerCase().includes(query) ||
@@ -157,6 +181,16 @@ function DashboardTab({ onOpenReassignModal }) {
               onClick={() => setIssueFilter('done')}
             >
               Done
+            </button>
+            <button
+              className={issueFilter === 'pending-review' ? 'active' : ''}
+              onClick={() => setIssueFilter('pending-review')}
+              title="AI-assigned time waiting for your approval"
+            >
+              Pending Review
+              {pendingReviewCount > 0 && (
+                <span className="focus-tab-badge">{pendingReviewCount}</span>
+              )}
             </button>
           </div>
 
@@ -351,8 +385,12 @@ function DashboardTab({ onOpenReassignModal }) {
                                                 return 'Other App';
                                               };
 
+                                              const isPendingReview = session.approvalStatus === 'pending_approval';
+                                              const sessionKey = (session.activityRecordIds || []).join(',');
+                                              const isApprovingThisSession = approvingSessionId === sessionKey;
+
                                               return (
-                                                <div key={sessionIdx} className="session-item">
+                                                <div key={sessionIdx} className={`session-item ${isPendingReview ? 'session-item--pending-review' : ''}`}>
                                                   <span className="session-time">
                                                     {start.toLocaleTimeString('en-US', {
                                                       hour: '2-digit',
@@ -366,6 +404,11 @@ function DashboardTab({ onOpenReassignModal }) {
                                                       hour12: true
                                                     })}
                                                   </span>
+                                                  {isPendingReview && (
+                                                    <span className="pending-review-chip" title="AI-assigned — won't sync to Jira until you approve">
+                                                      Pending review
+                                                    </span>
+                                                  )}
                                                   {uniqueApps.length > 0 && (
                                                     <div className="session-apps">
                                                       {visibleApps.map((app, appIdx) => (
@@ -401,6 +444,19 @@ function DashboardTab({ onOpenReassignModal }) {
                                                     </span>
                                                   </div>
                                                   <div className="session-actions">
+                                                    {isPendingReview && (
+                                                      <button
+                                                        className="approve-button"
+                                                        onClick={(e) => {
+                                                          e.stopPropagation();
+                                                          handleApproveSession(session);
+                                                        }}
+                                                        disabled={isApprovingThisSession}
+                                                        title="Approve — time will sync to Jira on the next hourly sync"
+                                                      >
+                                                        {isApprovingThisSession ? 'Approving…' : 'Approve'}
+                                                      </button>
+                                                    )}
                                                     {session.analysisResultIds?.length > 0 && (
                                                       <button
                                                         className="reassign-button"

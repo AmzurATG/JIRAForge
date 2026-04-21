@@ -1138,9 +1138,8 @@ class NotificationPollingService {
                 .single();
             const host = data?.jira_host;
             if (host) {
-                // Forge panel opens through Jira; the anchor hint is consumed by the
-                // Forge app's router so clicking the email lands directly on the tab.
-                return `https://${host}/jira/your-work#tab=needs-review`;
+                // Approvals live inside the My Focus dashboard (Pending Review sub-tab).
+                return `https://${host}/jira/your-work#dashboard`;
             }
         } catch {
             // fall through to env fallback

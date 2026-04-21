@@ -53,12 +53,9 @@ jest.mock('../../src/utils/validators.js', () => ({
 // Import resolvers after mocks
 // ---------------------------------------------------------------------------
 const {
-  getPendingApprovalGroups,
-  getPendingApprovalCount,
   approveRecords,
   reassignAndApproveRecords,
   createIssueAndApproveRecords,
-  bulkApproveByDateRange,
 } = require('../../src/resolvers/approval/approvalResolvers.js');
 
 // ---------------------------------------------------------------------------
@@ -82,111 +79,6 @@ beforeEach(() => {
   mockGetSupabaseConfig.mockResolvedValue(SUPABASE_CFG);
   mockGetOrCreateOrganization.mockResolvedValue({ id: ORG_ID });
   mockGetOrCreateUser.mockResolvedValue(USER_ID);
-});
-
-// ===========================================================================
-// getPendingApprovalGroups
-// ===========================================================================
-describe('getPendingApprovalGroups', () => {
-  it('returns groups produced by session grouping with correct shape', async () => {
-    const rows = [
-      {
-        id: 'rec-1',
-        user_assigned_issue_key: 'PROJ-1',
-        project_key: 'PROJ',
-        duration_seconds: 300,
-        start_time: '2026-04-20T10:00:00Z',
-        end_time: '2026-04-20T10:05:00Z',
-        window_title: 'Cursor',
-        application_name: 'code.exe',
-        work_date: '2026-04-20',
-        metadata: { confidenceScore: 0.8 },
-      },
-      {
-        id: 'rec-2',
-        user_assigned_issue_key: 'PROJ-1',
-        project_key: 'PROJ',
-        duration_seconds: 300,
-        start_time: '2026-04-20T10:05:30Z',
-        end_time: '2026-04-20T10:10:30Z',
-        window_title: 'Cursor',
-        application_name: 'code.exe',
-        work_date: '2026-04-20',
-        metadata: { confidenceScore: 0.8 },
-      },
-      {
-        id: 'rec-3',
-        user_assigned_issue_key: 'PROJ-2',
-        project_key: 'PROJ',
-        duration_seconds: 120,
-        start_time: '2026-04-20T11:00:00Z',
-        end_time: '2026-04-20T11:02:00Z',
-        window_title: 'Chrome',
-        application_name: 'chrome.exe',
-        work_date: '2026-04-20',
-        metadata: { confidenceScore: 0.6 },
-      },
-    ];
-
-    mockSupabaseRequest.mockImplementation((cfg, endpoint) => {
-      if (endpoint.includes('select=work_date')) {
-        return Promise.resolve([
-          { work_date: '2026-04-20' }, { work_date: '2026-04-20' }, { work_date: '2026-04-20' },
-        ]);
-      }
-      return Promise.resolve(rows);
-    });
-
-    const result = await getPendingApprovalGroups(makeReq({ limit: 100 }));
-
-    expect(result.success).toBe(true);
-    // rec-1 + rec-2 merged (same issue, within 10min gap); rec-3 is its own group
-    expect(result.groups).toHaveLength(2);
-    expect(result.groups[0].issueKey).toBe('PROJ-1');
-    expect(result.groups[0].sessionIds).toEqual(['rec-1', 'rec-2']);
-    expect(result.groups[0].recordCount).toBe(2);
-    expect(result.groups[0].totalSeconds).toBe(600);
-    expect(result.groups[1].issueKey).toBe('PROJ-2');
-    expect(result.pendingCountByDate).toEqual({ '2026-04-20': 3 });
-  });
-
-  it('filters by user_id, organization_id, approval_status, and optional workDate', async () => {
-    mockSupabaseRequest.mockResolvedValue([]);
-
-    await getPendingApprovalGroups(makeReq({ workDate: '2026-04-20' }));
-
-    const firstCall = mockSupabaseRequest.mock.calls[0][1];
-    expect(firstCall).toContain(`user_id=eq.${USER_ID}`);
-    expect(firstCall).toContain(`organization_id=eq.${ORG_ID}`);
-    expect(firstCall).toContain('approval_status=eq.pending_approval');
-    expect(firstCall).toContain('work_date=eq.2026-04-20');
-  });
-
-  it('supports fromDate/toDate range filters', async () => {
-    mockSupabaseRequest.mockResolvedValue([]);
-
-    await getPendingApprovalGroups(makeReq({ fromDate: '2026-04-01', toDate: '2026-04-20' }));
-
-    const firstCall = mockSupabaseRequest.mock.calls[0][1];
-    expect(firstCall).toContain('work_date=gte.2026-04-01');
-    expect(firstCall).toContain('work_date=lte.2026-04-20');
-  });
-});
-
-// ===========================================================================
-// getPendingApprovalCount
-// ===========================================================================
-describe('getPendingApprovalCount', () => {
-  it('returns the count of pending rows', async () => {
-    mockSupabaseRequest.mockResolvedValue([{ id: 'a' }, { id: 'b' }, { id: 'c' }]);
-
-    const result = await getPendingApprovalCount(makeReq());
-
-    expect(result).toEqual({ success: true, count: 3 });
-    const callEndpoint = mockSupabaseRequest.mock.calls[0][1];
-    expect(callEndpoint).toContain('approval_status=eq.pending_approval');
-    expect(callEndpoint).toContain(`user_id=eq.${USER_ID}`);
-  });
 });
 
 // ===========================================================================
@@ -405,35 +297,3 @@ describe('createIssueAndApproveRecords', () => {
   });
 });
 
-// ===========================================================================
-// bulkApproveByDateRange
-// ===========================================================================
-describe('bulkApproveByDateRange', () => {
-  it('validates date format and ordering', async () => {
-    expect((await bulkApproveByDateRange(makeReq({}))).success).toBe(false);
-    expect((await bulkApproveByDateRange(makeReq({ fromDate: 'bad', toDate: '2026-04-20' }))).success).toBe(false);
-    expect((await bulkApproveByDateRange(makeReq({ fromDate: '2026-04-20', toDate: '2026-04-01' }))).success).toBe(false);
-  });
-
-  it('PATCHes every pending row in the inclusive range', async () => {
-    mockSupabaseRequest.mockResolvedValue([
-      { id: 'a' }, { id: 'b' }, { id: 'c' },
-    ]);
-
-    const result = await bulkApproveByDateRange(
-      makeReq({ fromDate: '2026-04-01', toDate: '2026-04-20' })
-    );
-
-    expect(result.success).toBe(true);
-    expect(result.updated).toBe(3);
-
-    const [, endpoint, options] = mockSupabaseRequest.mock.calls[0];
-    expect(endpoint).toContain(`user_id=eq.${USER_ID}`);
-    expect(endpoint).toContain('approval_status=eq.pending_approval');
-    expect(endpoint).toContain('work_date=gte.2026-04-01');
-    expect(endpoint).toContain('work_date=lte.2026-04-20');
-    expect(options.method).toBe('PATCH');
-    expect(options.body.approval_status).toBe('approved');
-    expect(options.body.approval_notes).toMatch(/bulk/i);
-  });
-});

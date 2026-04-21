@@ -943,6 +943,69 @@
   transform: scale(1.1);
 }
 
+/* Pending-review badge on the "Pending Review" tab */
+.focus-tab-badge {
+  display: inline-block;
+  margin-left: 8px;
+  min-width: 20px;
+  padding: 0 6px;
+  height: 18px;
+  line-height: 18px;
+  border-radius: 9px;
+  background: var(--ds-background-warning-bold, #ff8b00);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+  text-align: center;
+  vertical-align: middle;
+}
+
+.focus-tabs button.active .focus-tab-badge {
+  background: #fff;
+  color: #ff8b00;
+}
+
+/* Pending-review chip inline in a session row */
+.pending-review-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  margin-left: 8px;
+  border-radius: 10px;
+  background: var(--ds-background-warning, #fff7d6);
+  color: var(--ds-text-warning, #974f0c);
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.session-item--pending-review {
+  border-left: 3px solid var(--ds-background-warning-bold, #ff8b00);
+}
+
+/* Approve-session button */
+.approve-button {
+  background: var(--ds-background-success-bold, #22a06b);
+  color: #fff;
+  border: none;
+  padding: 4px 12px;
+  border-radius: 4px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s;
+  margin-right: 6px;
+}
+
+.approve-button:hover:not(:disabled) {
+  background: var(--ds-background-success-bold-hovered, #1f845a);
+}
+
+.approve-button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
 /* View Screenshots Button */
 .view-screenshots-button {
   background: transparent;
