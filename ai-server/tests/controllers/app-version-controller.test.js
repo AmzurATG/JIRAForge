@@ -543,6 +543,7 @@ describe('checkForUpdate', () => {
     expect(res._body.data.latestVersion).toBe('2.0.0');
     expect(res._body.data.downloadUrl).toBe(release.download_url);
     expect(res._body.data.checksum).toBe('def456');
+    expect(res._body.data.fileSizeBytes).toBe(50000000);
   });
 
   it('returns updateAvailable: false when running same version', async () => {
@@ -562,6 +563,43 @@ describe('checkForUpdate', () => {
     await checkForUpdate(req, res);
     expect(res._body.data.updateAvailable).toBe(false);
     expect(res._body.data.downloadUrl).toBeNull();
+    expect(res._body.data.fileSizeBytes).toBe(0);
+  });
+
+  it('includes fileSizeBytes in update response payload', async () => {
+    const release = {
+      version: '2.2.0',
+      download_url: 'https://github.com/x/y/releases/v2.2.0/app.exe',
+      release_notes: 'Size test release',
+      is_mandatory: false,
+      min_supported_version: null,
+      file_size_bytes: 123456,
+      checksum: 'size123',
+      published_at: '2026-03-02T00:00:00Z',
+    };
+    const q = makeMockQuery({ data: release, error: null });
+    mockGetClient.mockReturnValue(q);
+    const req = { query: { platform: 'windows', current: '1.0.0' } };
+    await checkForUpdate(req, res);
+    expect(res._body.data.fileSizeBytes).toBe(123456);
+  });
+
+  it('defaults fileSizeBytes to 0 when DB value is missing', async () => {
+    const release = {
+      version: '2.3.0',
+      download_url: 'https://github.com/x/y/releases/v2.3.0/app.exe',
+      release_notes: 'No size metadata release',
+      is_mandatory: false,
+      min_supported_version: null,
+      file_size_bytes: null,
+      checksum: 'nosize123',
+      published_at: '2026-03-03T00:00:00Z',
+    };
+    const q = makeMockQuery({ data: release, error: null });
+    mockGetClient.mockReturnValue(q);
+    const req = { query: { platform: 'windows', current: '1.0.0' } };
+    await checkForUpdate(req, res);
+    expect(res._body.data.fileSizeBytes).toBe(0);
   });
 
   it('sets canUpdate based on min_supported_version check', async () => {
