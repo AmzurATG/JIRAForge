@@ -167,6 +167,47 @@
   min-height: 20px;
 }
 
+/* Needs-Review badge — shown next to the label when sidebar is expanded,
+   and collapsed to a tiny dot overlay when the sidebar is collapsed. */
+.sidebar-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 20px;
+  height: 18px;
+  padding: 0 6px;
+  font-size: 11px;
+  font-weight: 700;
+  border-radius: 9px;
+  line-height: 1;
+  margin-left: auto;
+}
+
+.sidebar-badge--warn {
+  background: var(--ds-background-warning-bold, #ff8b00);
+  color: #ffffff;
+}
+
+.sidebar-item.active .sidebar-badge--warn {
+  background: #ffffff;
+  color: #6656fc;
+}
+
+.sidebar-icon--with-badge {
+  position: relative;
+}
+
+.sidebar-badge-dot {
+  position: absolute;
+  top: -2px;
+  right: -2px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--ds-background-warning-bold, #ff8b00);
+  border: 1.5px solid var(--ds-background-default, #ffffff);
+}
+
 /* Feedback Button Styling */
 .sidebar-item.sidebar-feedback {
   border-top: 1px solid var(--ds-border);

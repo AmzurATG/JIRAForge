@@ -84,7 +84,12 @@ async function updateActivityRecordAnalysis(recordId, analysisResult) {
     project_key: projectKey,
     metadata: analysisResult.metadata || {},
     analyzed_at: new Date().toISOString(),
-    updated_at: new Date().toISOString()
+    updated_at: new Date().toISOString(),
+    // Human-in-the-loop approval gate: if the AI assigned an issue, the
+    // record must be approved by the owning user before it syncs to Jira.
+    // If no issue was assigned (low confidence), leave NULL — the record
+    // falls into the existing Unassigned Work panel (already a review surface).
+    approval_status: effectiveTaskKey ? 'pending_approval' : null
   };
 
   const { data, error } = await supabase
