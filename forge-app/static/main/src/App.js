@@ -1,9 +1,10 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { invoke } from '@forge/bridge';
 import './App.css';
 import './components/common/Sidebar.css';
 import './components/modals/Modals.css';
 import UnassignedWork from './components/UnassignedWork';
+import NeedsReview from './components/NeedsReview';
 import TimesheetSettings from './shared/components/TimesheetSettings';
 import { DashboardTab, TimeAnalyticsTab, TeamAnalyticsTab, OrgAnalyticsTab, ProjectSettingsTab, AdminUserStatusTab } from './components/tabs';
 import { SessionReassignModal, WorklogReassignModal, FeedbackModal } from './components/modals';
@@ -34,6 +35,27 @@ function AppContent() {
   const [worklogToReassign, setWorklogToReassign] = useState(null);
   const [reassigningWorklog, setReassigningWorklog] = useState(false);
   const [timeAnalyticsRefreshKey, setTimeAnalyticsRefreshKey] = useState(0);
+
+  // Needs-Review badge: polled on mount, every 60s, and after every mutation.
+  const [pendingApprovalCount, setPendingApprovalCount] = useState(0);
+
+  const refreshPendingApprovalCount = useCallback(async () => {
+    try {
+      const res = await invoke('getPendingApprovalCount');
+      if (res?.success && typeof res.count === 'number') {
+        setPendingApprovalCount(res.count);
+      }
+    } catch (err) {
+      // Silent — badge is non-critical, the full panel surfaces errors.
+      console.warn('[App] getPendingApprovalCount failed:', err?.message);
+    }
+  }, []);
+
+  useEffect(() => {
+    refreshPendingApprovalCount();
+    const interval = setInterval(refreshPendingApprovalCount, 60 * 1000);
+    return () => clearInterval(interval);
+  }, [refreshPendingApprovalCount]);
 
   // Session Reassignment Handlers
   const openReassignModal = (session, fromIssueKey) => {
@@ -179,6 +201,32 @@ function AppContent() {
               </span>
               {sidebarOpen && <span className="sidebar-label">Unassigned Work</span>}
             </button>
+            <button
+              className={`sidebar-item ${activeTab === 'needs-review' ? 'active' : ''}`}
+              onClick={() => setActiveTab('needs-review')}
+              title="Needs Review"
+              aria-label={
+                pendingApprovalCount > 0
+                  ? `Needs Review (${pendingApprovalCount} pending)`
+                  : 'Needs Review'
+              }
+            >
+              <span className="sidebar-icon sidebar-icon--with-badge">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M9 12l2 2 4-4"></path>
+                  <path d="M21 12c0 4.97-4.03 9-9 9s-9-4.03-9-9 4.03-9 9-9c2.4 0 4.58.94 6.2 2.47"></path>
+                </svg>
+                {!sidebarOpen && pendingApprovalCount > 0 && (
+                  <span className="sidebar-badge-dot" aria-hidden="true"></span>
+                )}
+              </span>
+              {sidebarOpen && <span className="sidebar-label">Needs Review</span>}
+              {sidebarOpen && pendingApprovalCount > 0 && (
+                <span className="sidebar-badge sidebar-badge--warn">
+                  {pendingApprovalCount > 99 ? '99+' : pendingApprovalCount}
+                </span>
+              )}
+            </button>
             {(userPermissions.isJiraAdmin || userPermissions.projectAdminProjects?.length > 0) && (
               <button
                 className={`sidebar-item ${activeTab === 'team-analytics' ? 'active' : ''}`}
@@ -294,6 +342,12 @@ function AppContent() {
           {activeTab === 'team-analytics' && (userPermissions.isJiraAdmin || userPermissions.projectAdminProjects?.length > 0) && <TeamAnalyticsTab />}
           {activeTab === 'org-analytics' && <OrgAnalyticsTab />}
           {activeTab === 'unassigned-work' && <UnassignedWork />}
+          {activeTab === 'needs-review' && (
+            <NeedsReview
+              activeIssues={activeIssues}
+              onCountChange={refreshPendingApprovalCount}
+            />
+          )}
           {activeTab === 'project-settings' && (userPermissions.isJiraAdmin || userPermissions.projectAdminProjects?.length > 0) && (
             <ProjectSettingsTab />
           )}

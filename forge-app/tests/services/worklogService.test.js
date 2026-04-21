@@ -466,6 +466,67 @@ describe('worklogService — syncCurrentUserWorklogs', () => {
     });
   });
 
+  describe('approval gate — pending_approval records are blocked from sync', () => {
+    it('includes the approval filter in both activity_records queries', async () => {
+      mockSupabaseRequest.mockImplementation(
+        buildSupabaseRequestMock({
+          activityRecords: [],
+          unassignedRecords: [],
+          existingMappings: [],
+        })
+      );
+
+      await syncCurrentUserWorklogs(ACCOUNT_ID, CLOUD_ID);
+
+      const activityQueries = mockSupabaseRequest.mock.calls
+        .map(([, q]) => q)
+        .filter((q) => typeof q === 'string' && q.startsWith('activity_records?'));
+
+      // Both the assigned-time query and the unassigned-fallback query must
+      // include the approval filter so pending_approval rows are excluded.
+      expect(activityQueries.length).toBeGreaterThanOrEqual(1);
+      activityQueries.forEach((q) => {
+        expect(q).toContain('or=(approval_status.is.null,approval_status.neq.pending_approval)');
+      });
+    });
+
+    it('excludes pending_approval rows from Jira sync aggregation', async () => {
+      // Simulate the DB already applying the filter: Supabase returns only
+      // rows that pass the server-side or= clause. A 'pending_approval' row
+      // simply never appears in the response, so totals shrink accordingly.
+      mockSupabaseRequest.mockImplementation(
+        buildSupabaseRequestMock({
+          activityRecords: [
+            // Only the approved record comes back from the server-side filter
+            {
+              user_assigned_issue_key: ISSUE_KEY,
+              duration_seconds: 120,
+              total_time_seconds: 120,
+              end_time: '2026-03-12T10:00:00Z',
+              approval_status: 'approved',
+            },
+            // (A 'pending_approval' row would have been filtered server-side)
+          ],
+          existingMappings: [],
+        })
+      );
+
+      mockCreateJiraWorklog.mockResolvedValue({
+        id: 'worklog-approved-only',
+        author: { accountId: ACCOUNT_ID },
+      });
+
+      const result = await syncCurrentUserWorklogs(ACCOUNT_ID, CLOUD_ID);
+
+      expect(result.success).toBe(true);
+      expect(result.synced).toBe(1);
+      // Only the approved 120s — pending_approval time is not included.
+      expect(mockCreateJiraWorklog).toHaveBeenCalledWith(
+        ISSUE_KEY, 120, expect.any(String), 'Test User'
+      );
+    });
+  });
+
   describe('when records have no user_assigned_issue_key but have project_key', () => {
     it('creates worklog via window-title fallback matching', async () => {
       mockSupabaseRequest.mockImplementation(

@@ -161,7 +161,8 @@ describe('Activity DB Service', () => {
         metadata: { confidenceScore: 0.95 },
         analyzed_at: expect.any(String),
         updated_at: expect.any(String),
-        project_key: 'ATG'
+        project_key: 'ATG',
+        approval_status: 'pending_approval'
       });
       expect(mockSupabase.eq).toHaveBeenCalledWith('id', recordId);
       expect(result).toEqual(updatedRecord);
@@ -175,7 +176,44 @@ describe('Activity DB Service', () => {
 
       expect(mockSupabase.update).toHaveBeenCalledWith(
         expect.objectContaining({
-          user_assigned_issue_key: null
+          user_assigned_issue_key: null,
+          approval_status: null
+        })
+      );
+    });
+
+    it('should stamp approval_status=pending_approval when AI confidently assigns an issue', async () => {
+      const analysisResult = {
+        taskKey: 'ATG-999',
+        metadata: { confidenceScore: 0.82 }
+      };
+      mockSupabase.select.mockResolvedValue({ data: [{ id: recordId }], error: null });
+
+      await updateActivityRecordAnalysis(recordId, analysisResult);
+
+      expect(mockSupabase.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          user_assigned_issue_key: 'ATG-999',
+          approval_status: 'pending_approval'
+        })
+      );
+    });
+
+    it('should leave approval_status NULL when confidence is below threshold', async () => {
+      // Default MIN_CONFIDENCE_THRESHOLD = 0.5 — a 0.3 score should null out the taskKey
+      const analysisResult = {
+        taskKey: 'ATG-111',
+        metadata: { confidenceScore: 0.3 }
+      };
+      mockSupabase.select.mockResolvedValue({ data: [{ id: recordId }], error: null });
+
+      await updateActivityRecordAnalysis(recordId, analysisResult);
+
+      expect(mockSupabase.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          user_assigned_issue_key: null,
+          project_key: null,
+          approval_status: null
         })
       );
     });
