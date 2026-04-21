@@ -568,11 +568,6 @@ async function chatCompletionWithFallback({ messages, temperature = 0.3, max_tok
         max_tokens
       };
 
-      // Disable Gemini thinking for text-only (e.g. OCR) so token budget goes to the JSON response
-      if (reasoningEffort && providerId === 'portkey-gemini') {
-        requestParams.reasoning_effort = reasoningEffort;
-      }
-
       const response = await config.client.chat.completions.create(requestParams);
 
       const duration = Date.now() - startTime;
