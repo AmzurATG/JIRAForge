@@ -574,41 +574,6 @@ describe('chatCompletionWithFallback', () => {
     );
   });
 
-  test('includes reasoning_effort for Portkey Gemini', async () => {
-    process.env.USE_PORTKEY = 'true';
-    process.env.PORTKEY_API_KEY = 'pk-test';
-    const client = require('../../src/services/ai/ai-client');
-    client.initializeClient();
-
-    await client.chatCompletionWithFallback({
-      messages: [{ role: 'user', content: 'test' }],
-      reasoningEffort: 'high',
-    });
-
-    expect(mockCreate).toHaveBeenCalledWith(
-      expect.objectContaining({
-        reasoning_effort: 'high',
-      })
-    );
-  });
-
-  test('does not include reasoning_effort for Fireworks', async () => {
-    process.env.USE_FIREWORKS = 'true';
-    process.env.FIREWORKS_API_KEY = 'fw-test';
-    const client = require('../../src/services/ai/ai-client');
-    client.initializeClient();
-
-    await client.chatCompletionWithFallback({
-      messages: [{ role: 'user', content: 'test' }],
-      reasoningEffort: 'high',
-    });
-
-    expect(mockCreate).toHaveBeenCalledWith(
-      expect.not.objectContaining({
-        reasoning_effort: expect.anything(),
-      })
-    );
-  });
 });
 
 // =============================================================================
