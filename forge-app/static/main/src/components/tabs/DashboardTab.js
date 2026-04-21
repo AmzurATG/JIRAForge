@@ -63,13 +63,16 @@ function DashboardTab({ onOpenReassignModal }) {
   // Reset to page 1 when filters change
   useEffect(() => {
     setCurrentPage(1);
-  }, [issueFilter, searchQuery]);
+  }, [issueFilter, searchQuery, timeFilter]);
 
   const filteredIssues = activeIssues.filter(issue => {
     // Filter by status category
     let statusMatch = true;
     if (issueFilter === 'in-progress') statusMatch = issue.statusCategory === 'indeterminate';
     if (issueFilter === 'done') statusMatch = issue.statusCategory === 'done';
+
+    // Filter by time tracked
+    let timeMatch = matchesTimeFilter(issue);
 
     // Filter by search query
     let searchMatch = true;
@@ -82,7 +85,7 @@ function DashboardTab({ onOpenReassignModal }) {
         issue.priority.toLowerCase().includes(query);
     }
 
-    return statusMatch && searchMatch;
+    return statusMatch && timeMatch && searchMatch;
   });
 
   // Pagination calculations

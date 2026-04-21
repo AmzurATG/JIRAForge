@@ -277,104 +277,106 @@ function GroupAccordion({
 
                   {/* Show details when loaded */}
                   {!isLoadingGroupDetails && details && (
-                    <>
-                      <div className="work-sessions-section">
-                        {isLoadingWorkSessionsForGroup && (
-                          <div className="loading-sessions">Loading work sessions...</div>
-                        )}
+                    <div className="work-sessions-section">
+                      {isLoadingWorkSessionsForGroup && (
+                        <div className="loading-sessions">Loading work sessions...</div>
+                      )}
 
-                        {!isLoadingWorkSessionsForGroup && dateGroups.length === 0 && (
-                          <div className="no-sessions">No work sessions available</div>
-                        )}
+                      {!isLoadingWorkSessionsForGroup && dateGroups.length === 0 && (
+                        <div className="no-sessions">No work sessions available</div>
+                      )}
 
-                        {!isLoadingWorkSessionsForGroup && dateGroups.length > 0 && (
-                          <div className="sessions-by-date">
-                            {dateGroups.map((dateGroup, dateIdx) => (
-                              <div key={dateIdx} className="date-group">
-                                <div className="date-header">
-                                  <span className="date-label">
-                                    {formatDate(dateGroup.date)}
-                                  </span>
-                                  <span className="date-total">
-                                    Total: {formatTime(dateGroup.totalSeconds)}
-                                  </span>
-                                </div>
-                                <div className="sessions-list">
-                                  {dateGroup.sessions.map((session, sessionIdx) => {
-                                    const sessionDuration = getSessionDuration(session);
-                                    const memberKey = `${group.id}-${(session.activityIds || []).join('-')}`;
-                                    const isDismissingThis = dismissingMember[memberKey];
-                                    const intervalSelected = isIntervalSelected ? isIntervalSelected(group.id, session) : false;
-                                    return (
-                                      <div key={sessionIdx} className={`session-item${isDismissingThis ? ' session-item-dismissing' : ''}${intervalSelected ? ' session-item--selected' : ''}`}>
-                                        <label
-                                          className="interval-checkbox-wrapper"
-                                          onClick={(e) => e.stopPropagation()}
-                                          title={intervalSelected ? 'Unselect interval' : 'Select interval'}
-                                        >
-                                          <input
-                                            type="checkbox"
-                                            className="interval-checkbox"
-                                            checked={intervalSelected}
-                                            onChange={() => onToggleIntervalSelection && onToggleIntervalSelection(group, session)}
-                                          />
-                                        </label>
-                                        <span className="session-time">
-                                          {formatTimeOfDay(session.startTime)}
-                                          {' → '}
-                                          {formatTimeOfDay(session.endTime)}
-                                        </span>
-                                        <span className="session-duration-icon">
-                                          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                                            <circle cx="12" cy="12" r="10"></circle>
-                                            <polyline points="12 6 12 12 16 14"></polyline>
-                                          </svg>
-                                        </span>
-                                        <span className="session-duration">
-                                          {formatTime(sessionDuration)}
-                                        </span>
-                                        <button
-                                          className="session-dismiss-btn"
-                                          onClick={(e) => handleDismissMemberClick(group.id, session, e)}
-                                          disabled={isDismissingThis}
-                                          title="Remove from cluster"
-                                        >
-                                          {isDismissingThis ? (
-                                            <span style={{ fontSize: '11px' }}>…</span>
-                                          ) : (
-                                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                                              <line x1="18" y1="6" x2="6" y2="18"></line>
-                                              <line x1="6" y1="6" x2="18" y2="18"></line>
-                                            </svg>
-                                          )}
-                                        </button>
-                                      </div>
-                                    );
-                                  })}
-                                </div>
+                      {!isLoadingWorkSessionsForGroup && dateGroups.length > 0 && (
+                        <div className="sessions-by-date">
+                          {dateGroups.map((dateGroup, dateIdx) => (
+                            <div key={dateIdx} className="date-group">
+                              <div className="date-header">
+                                <span className="date-label">
+                                  {formatDate(dateGroup.date)}
+                                </span>
+                                <span className="date-total">
+                                  Total: {formatTime(dateGroup.totalSeconds)}
+                                </span>
                               </div>
-                            ))}
-                          </div>
-                        )}
-                      </div>
+                              <div className="sessions-list">
+                                {dateGroup.sessions.map((session, sessionIdx) => {
+                                  const sessionDuration = getSessionDuration(session);
+                                  const memberKey = `${group.id}-${(session.activityIds || []).join('-')}`;
+                                  const isDismissingThis = dismissingMember[memberKey];
+                                  const intervalSelected = isIntervalSelected ? isIntervalSelected(group.id, session) : false;
+                                  return (
+                                    <div key={sessionIdx} className={`session-item${isDismissingThis ? ' session-item-dismissing' : ''}${intervalSelected ? ' session-item--selected' : ''}`}>
+                                      <label
+                                        className="interval-checkbox-wrapper"
+                                        onClick={(e) => e.stopPropagation()}
+                                        title={intervalSelected ? 'Unselect interval' : 'Select interval'}
+                                      >
+                                        <input
+                                          type="checkbox"
+                                          className="interval-checkbox"
+                                          checked={intervalSelected}
+                                          onChange={() => onToggleIntervalSelection && onToggleIntervalSelection(group, session)}
+                                        />
+                                      </label>
+                                      <span className="session-time">
+                                        {formatTimeOfDay(session.startTime)}
+                                        {' → '}
+                                        {formatTimeOfDay(session.endTime)}
+                                      </span>
+                                      <span className="session-duration-icon">
+                                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                          <circle cx="12" cy="12" r="10"></circle>
+                                          <polyline points="12 6 12 12 16 14"></polyline>
+                                        </svg>
+                                      </span>
+                                      <span className="session-duration">
+                                        {formatTime(sessionDuration)}
+                                      </span>
+                                      <button
+                                        className="session-dismiss-btn"
+                                        onClick={(e) => handleDismissMemberClick(group.id, session, e)}
+                                        disabled={isDismissingThis}
+                                        title="Remove from cluster"
+                                      >
+                                        {isDismissingThis ? (
+                                          <span style={{ fontSize: '11px' }}>…</span>
+                                        ) : (
+                                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                                            <line x1="18" y1="6" x2="6" y2="18"></line>
+                                            <line x1="6" y1="6" x2="18" y2="18"></line>
+                                          </svg>
+                                        )}
+                                      </button>
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )}
 
-                      <div className="accordion-actions">
-                        <button
-                          className="assign-button-full"
-                          onClick={(e) => handleAssignClick(group, e)}
-                        >
-                          Assign This Group
-                        </button>
-                        {/* Footer delete button confirms directly — user already read the group details */}
-                        <button
-                          className="dismiss-button-full"
-                          onClick={(e) => handleConfirmDismiss(group.id, e)}
-                          disabled={dismissingGroup[group.id]}
-                        >
-                          {dismissingGroup[group.id] ? 'Deleting…' : 'Delete Group'}
-                        </button>
-                      </div>
-                    </>
+                  {/* Action buttons — always visible once group is expanded.
+                      handleAssignClick loads group details on-demand if not yet cached,
+                      so these buttons work correctly even when details haven't loaded yet. */}
+                  {!isLoadingGroupDetails && (
+                    <div className="accordion-actions">
+                      <button
+                        className="assign-button-full"
+                        onClick={(e) => handleAssignClick(group, e)}
+                      >
+                        Assign This Group
+                      </button>
+                      <button
+                        className="dismiss-button-full"
+                        onClick={(e) => handleConfirmDismiss(group.id, e)}
+                        disabled={dismissingGroup[group.id]}
+                      >
+                        {dismissingGroup[group.id] ? 'Deleting…' : 'Delete Group'}
+                      </button>
+                    </div>
                   )}
                 </div>
               )}

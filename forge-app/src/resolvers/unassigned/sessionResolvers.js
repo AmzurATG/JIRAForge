@@ -208,6 +208,61 @@ export async function getUnassignedGroups(req) {
 
     console.log(`[getUnassignedGroups] Loaded ${groups.length} groups (offset: ${offset}, total: ${totalCount})`);
 
+    // Determine whether each group is idle-only or work. We classify a group as
+    // "idle" only when all activity_record members are idle (legacy members count
+    // as work since they don't carry an is_idle flag).
+    const groupIds = groups.map(g => g.id).filter(Boolean);
+    const groupTypeById = {};
+
+    if (groupIds.length > 0) {
+      const members = await supabaseRequest(
+        supabaseConfig,
+        `unassigned_group_members?group_id=in.(${groupIds.join(',')})&select=group_id,activity_record_id,unassigned_activity_id`
+      );
+
+      const membersArray = ensureArray(members);
+      const activityRecordIds = sanitizeUUIDArray(membersArray.map(m => m.activity_record_id));
+
+      const idleRecordIds = new Set();
+      if (activityRecordIds.length > 0) {
+        const arRows = await supabaseRequest(
+          supabaseConfig,
+          `activity_records?id=in.(${activityRecordIds.join(',')})&select=id,is_idle`
+        );
+        ensureArray(arRows).forEach(row => {
+          if (row?.is_idle) idleRecordIds.add(row.id);
+        });
+      }
+
+      const statsByGroup = {};
+      groupIds.forEach(id => {
+        statsByGroup[id] = { total: 0, idle: 0 };
+      });
+
+      membersArray.forEach(member => {
+        const gid = member?.group_id;
+        if (!gid || !statsByGroup[gid]) return;
+
+        if (member.activity_record_id) {
+          statsByGroup[gid].total += 1;
+          if (idleRecordIds.has(member.activity_record_id)) {
+            statsByGroup[gid].idle += 1;
+          }
+          return;
+        }
+
+        // Legacy members are treated as work for filtering purposes.
+        if (member.unassigned_activity_id) {
+          statsByGroup[gid].total += 1;
+        }
+      });
+
+      Object.entries(statsByGroup).forEach(([gid, stats]) => {
+        const isIdleGroup = stats.total > 0 && stats.idle === stats.total;
+        groupTypeById[gid] = isIdleGroup ? 'idle' : 'work';
+      });
+    }
+
     // Transform groups with minimal processing (no additional API calls)
     const enrichedGroups = groups.map((group) => {
       // Use DB values directly - no recalculation needed for summary view
@@ -227,6 +282,7 @@ export async function getUnassignedGroups(req) {
         session_count: group.session_count || 0,
         total_seconds: group.total_seconds || 0,
         total_time_formatted: totalTimeFormatted,
+        group_type: groupTypeById[group.id] || 'work',
         confidence: group.confidence_level || 'medium',
         recommendation: recommendation,
         created_at: group.created_at,
