@@ -72,6 +72,7 @@ exports.getLatestVersion = async (req, res) => {
             releaseNotes: null,
             isMandatory: false,
             minSupportedVersion: null,
+            fileSizeBytes: 0,
             checksum: null
           }
         });
@@ -89,7 +90,7 @@ exports.getLatestVersion = async (req, res) => {
         releaseNotes: release.release_notes,
         isMandatory: release.is_mandatory,
         minSupportedVersion: release.min_supported_version,
-        fileSizeBytes: release.file_size_bytes,
+        fileSizeBytes: Number(release.file_size_bytes || 0),
         checksum: release.checksum,  // SHA256 hash for integrity verification
         publishedAt: release.published_at
       }
@@ -161,6 +162,7 @@ exports.checkForUpdate = async (req, res) => {
           updateAvailable: false,
           currentVersion,
           latestVersion: currentVersion,
+          fileSizeBytes: 0,
           checksum: null
         }
       });
@@ -187,7 +189,7 @@ exports.checkForUpdate = async (req, res) => {
         downloadUrl: updateAvailable ? release.download_url : null,
         releaseNotes: updateAvailable ? release.release_notes : null,
         isMandatory: updateAvailable ? release.is_mandatory : false,
-        fileSizeBytes: release.file_size_bytes,
+        fileSizeBytes: Number(release.file_size_bytes || 0),
         checksum: updateAvailable ? release.checksum : null,  // SHA256 for integrity verification
         publishedAt: release.published_at
       }
