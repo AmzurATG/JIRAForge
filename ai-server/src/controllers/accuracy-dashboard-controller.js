@@ -1,23 +1,29 @@
 /**
  * AI Accuracy Dashboard Controller — REMOVABLE LAYER
  *
- * Read-only handlers powering the accuracy dashboard.  Every endpoint runs
- * behind accuracy-dashboard-auth (email allowlist).  All aggregations are
- * pushed down to Postgres via RPCs declared in migration
+ * Read-only handlers powering the accuracy dashboard surfaced inside the
+ * Jira Forge app frontend (Admin tab). Every endpoint runs behind
+ * forgeAuthMiddleware (FIT validation); per-user authorization (email
+ * allowlist via accuracy_dashboard_users table) is enforced inside the
+ * Forge resolver before it calls these endpoints.
+ *
+ * Response shape is {success: true, data: {...}} so that Forge's
+ * `remoteRequest` helper unwraps it cleanly.
+ *
+ * All aggregations are pushed down to Postgres via RPCs declared in migration
  * 20260422_ai_accuracy_aggregations.sql; this controller only shapes the
  * response.
  *
- * Removal: delete this file, the middleware, the HTML, and the route mounts
- * in src/index.js.  Drop the RPCs via a follow-up migration.
+ * Removal: delete this file, the route mounts in src/index.js, the matching
+ * Forge resolver, and the frontend tab. Drop the RPCs via a follow-up migration.
  *
- * Endpoints:
- *   GET  /accuracy-dashboard                            HTML page
- *   GET  /accuracy-dashboard/api/orgs                   List orgs (for filter dropdown)
- *   GET  /accuracy-dashboard/api/summary                Headline accuracy + counts
- *   GET  /accuracy-dashboard/api/wrong-pairs            Top reassigned (AI guess -> user pick)
- *   GET  /accuracy-dashboard/api/by-app                 Right/wrong per application
- *   GET  /accuracy-dashboard/api/calibration            Confidence buckets vs actual accuracy
- *   GET  /accuracy-dashboard/api/recent-mistakes        Last N reassigned events
+ * Endpoints (all GET, mounted under /api/forge/accuracy/* in src/index.js):
+ *   /orgs               List orgs (for filter dropdown)
+ *   /summary            Headline accuracy + counts
+ *   /wrong-pairs        Top reassigned (AI guess -> user pick)
+ *   /by-app             Right/wrong per application
+ *   /calibration        Confidence buckets vs actual accuracy
+ *   /recent-mistakes    Last N reassigned events
  *
  * Common query params:
  *   days  - integer, defaults to 7, clamped to [1, 365]
@@ -25,7 +31,6 @@
  *   limit - integer, defaults vary per endpoint
  */
 
-const path = require('node:path');
 const logger = require('../utils/logger');
 const { getClient } = require('../services/db/supabase-client');
 
@@ -57,13 +62,9 @@ function jsonError(res, status, message) {
   return res.status(status).json({ success: false, error: message });
 }
 
-// ---------------------------------------------------------------------------
-// HTML page
-// ---------------------------------------------------------------------------
-
-exports.servePage = (req, res) => {
-  res.sendFile(path.join(__dirname, '..', 'dashboard', 'accuracy-dashboard.html'));
-};
+function jsonOk(res, data) {
+  return res.json({ success: true, data });
+}
 
 // ---------------------------------------------------------------------------
 // Orgs list — for the dropdown
@@ -98,7 +99,7 @@ exports.listOrgs = async (req, res) => {
       }
     }
 
-    return res.json({ success: true, orgs });
+    return jsonOk(res, { orgs });
   } catch (err) {
     logger.error('[AccuracyDashboard] listOrgs failed:', err.message);
     return jsonError(res, 500, err.message);
@@ -160,8 +161,7 @@ exports.getSummary = async (req, res) => {
       counts.manually_assigned_with_suggestion;
     const accuracyRate = decided > 0 ? counts.approved_as_is / decided : null;
 
-    return res.json({
-      success: true,
+    return jsonOk(res, {
       days,
       counts,
       accuracy_rate: accuracyRate,
@@ -198,7 +198,7 @@ exports.getWrongPairs = async (req, res) => {
       count: Number(r.pair_count) || 0
     }));
 
-    return res.json({ success: true, days, pairs });
+    return jsonOk(res, { days, pairs });
   } catch (err) {
     logger.error('[AccuracyDashboard] getWrongPairs failed:', err.message);
     return jsonError(res, 500, err.message);
@@ -238,7 +238,7 @@ exports.getByApp = async (req, res) => {
       };
     });
 
-    return res.json({ success: true, days, apps });
+    return jsonOk(res, { days, apps });
   } catch (err) {
     logger.error('[AccuracyDashboard] getByApp failed:', err.message);
     return jsonError(res, 500, err.message);
@@ -285,7 +285,7 @@ exports.getCalibration = async (req, res) => {
       };
     });
 
-    return res.json({ success: true, days, series });
+    return jsonOk(res, { days, series });
   } catch (err) {
     logger.error('[AccuracyDashboard] getCalibration failed:', err.message);
     return jsonError(res, 500, err.message);
@@ -321,7 +321,7 @@ exports.getRecentMistakes = async (req, res) => {
     const { data, error } = await q;
     if (error) throw error;
 
-    return res.json({ success: true, mistakes: data || [] });
+    return jsonOk(res, { mistakes: data || [] });
   } catch (err) {
     logger.error('[AccuracyDashboard] getRecentMistakes failed:', err.message);
     return jsonError(res, 500, err.message);

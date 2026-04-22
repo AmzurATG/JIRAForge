@@ -22,9 +22,11 @@ const aiService = require('./services/ai');
 const activityController = require('./controllers/activity-controller');
 const adminDashboardController = require('./controllers/admin-dashboard-controller');
 const activityPollingService = require('./services/activity-polling-service');
-// REMOVABLE: AI accuracy tracking dashboard.
+// REMOVABLE: AI accuracy tracking dashboard. Surfaced inside the Forge app
+// frontend (Admin tab); these endpoints are gated by forgeAuthMiddleware (FIT)
+// and the per-user email allowlist is enforced inside the Forge resolver
+// before it calls these routes.
 const accuracyDashboardController = require('./controllers/accuracy-dashboard-controller');
-const accuracyDashboardAuth = require('./middleware/accuracy-dashboard-auth');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -182,23 +184,22 @@ app.get('/admin-dashboard/api/stats', adminDashboardController.requireSession, a
 
 // =============================================================================
 // AI ACCURACY DASHBOARD — REMOVABLE LAYER
-// Internal measurement tool, gated by accuracy_dashboard_users email allowlist.
-// Delete this whole block plus the controller/middleware/HTML/migration to
+// Surfaced inside the Forge app frontend (Admin tab). Gated by FIT
+// (forgeAuthMiddleware); per-user email allowlist enforced inside the Forge
+// resolver before it calls these routes. Delete this whole block plus the
+// controller, the resolver in forge-app/src/resolvers/accuracyDashboardResolvers.js,
+// the AdminAccuracyDashboardTab in static/main, and the migrations to
 // remove the layer entirely. See plan/AI_ACCURACY_TRACKING_IMPLEMENTATION_PLAN.md.
 // =============================================================================
 
-// Page is public (the page itself contains no data — auth happens on the API calls)
-app.get('/accuracy-dashboard', accuracyDashboardLimiter, accuracyDashboardController.servePage);
-
-// JSON endpoints — gated by Atlassian token + accuracy_dashboard_users allowlist.
-// Uses a dedicated limiter (200/min) because publicLimiter (30/min) is too
-// tight for a dashboard that fires ~6 parallel requests per refresh.
-app.get('/accuracy-dashboard/api/orgs',             accuracyDashboardLimiter, accuracyDashboardAuth, accuracyDashboardController.listOrgs);
-app.get('/accuracy-dashboard/api/summary',          accuracyDashboardLimiter, accuracyDashboardAuth, accuracyDashboardController.getSummary);
-app.get('/accuracy-dashboard/api/wrong-pairs',      accuracyDashboardLimiter, accuracyDashboardAuth, accuracyDashboardController.getWrongPairs);
-app.get('/accuracy-dashboard/api/by-app',           accuracyDashboardLimiter, accuracyDashboardAuth, accuracyDashboardController.getByApp);
-app.get('/accuracy-dashboard/api/calibration',      accuracyDashboardLimiter, accuracyDashboardAuth, accuracyDashboardController.getCalibration);
-app.get('/accuracy-dashboard/api/recent-mistakes',  accuracyDashboardLimiter, accuracyDashboardAuth, accuracyDashboardController.getRecentMistakes);
+// Dedicated limiter (200/min) — each dashboard refresh fires ~6 parallel
+// requests (orgs + 5 panels), and changing a filter retriggers all of them.
+app.get('/api/forge/accuracy/orgs',             accuracyDashboardLimiter, forgeAuthMiddleware, accuracyDashboardController.listOrgs);
+app.get('/api/forge/accuracy/summary',          accuracyDashboardLimiter, forgeAuthMiddleware, accuracyDashboardController.getSummary);
+app.get('/api/forge/accuracy/wrong-pairs',      accuracyDashboardLimiter, forgeAuthMiddleware, accuracyDashboardController.getWrongPairs);
+app.get('/api/forge/accuracy/by-app',           accuracyDashboardLimiter, forgeAuthMiddleware, accuracyDashboardController.getByApp);
+app.get('/api/forge/accuracy/calibration',      accuracyDashboardLimiter, forgeAuthMiddleware, accuracyDashboardController.getCalibration);
+app.get('/api/forge/accuracy/recent-mistakes',  accuracyDashboardLimiter, forgeAuthMiddleware, accuracyDashboardController.getRecentMistakes);
 
 // =============================================================================
 // LEGAL PAGES (Public - served as HTML from layout + content templates)
