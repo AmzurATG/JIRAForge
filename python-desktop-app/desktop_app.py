@@ -11,6 +11,7 @@ import json
 import queue
 import atexit
 import threading
+import subprocess
 import webbrowser
 import tempfile
 import traceback
@@ -332,7 +333,7 @@ load_dotenv()
 
 # Application version - IMPORTANT: Update this when releasing new versions
 # This is used for update checking and notifications
-APP_VERSION = "1.3.7"
+APP_VERSION = "1.4.5"
 
 # Hard-disable screenshot monitoring/storage in desktop app.
 # OCR text extraction for activity records still runs via event-based flow.
@@ -341,10 +342,10 @@ SCREENSHOT_MONITORING_HARD_DISABLED = True
 # Embedded credentials (for production builds - no .env file needed)
 # SECURITY: All sensitive keys moved to AI Server - fetched at runtime after authentication
 EMBEDDED_CONFIG = {
-    'ATLASSIAN_CLIENT_ID': 'k2Xwzy8c1g3Wk6Xpbeev0x70CXEp9lJH',
+    'ATLASSIAN_CLIENT_ID': 'Q8HT4Jn205AuTiAarj088oWNDrOqwvM5',
     # REMOVED: ATLASSIAN_CLIENT_SECRET - now on AI Server only (security fix)
     # REMOVED: SUPABASE_URL, SUPABASE_ANON_KEY, SUPABASE_SERVICE_ROLE_KEY - fetched from AI Server
-    'AI_SERVER_URL': 'https://timetracker-forge.amzur.com',  # AI Server for secure token exchange & config
+    'AI_SERVER_URL': 'https://forgesync.amzur.com',  # AI Server for secure token exchange & config
     'CAPTURE_INTERVAL': '300',
     'WEB_PORT': '51777',
 }
@@ -641,7 +642,7 @@ def verify_download_checksum(file_path, expected_checksum):
         print(f"  Actual:   {actual_checksum}")
         return False
 
-def show_update_notification(update_info, callback=None):
+def show_update_notification(update_info, callback=None, state='available'):
     """
     Show a Windows toast notification about available update.
     
@@ -655,14 +656,25 @@ def show_update_notification(update_info, callback=None):
     
     try:
         latest_version = update_info.get('latest_version', 'unknown')
-        release_notes = update_info.get('release_notes', 'A new version is available.')
+        release_notes = update_info.get('release_notes', 'A new version is available.') or 'A new version is available.'
         is_mandatory = update_info.get('is_mandatory', False)
-        
-        # Truncate release notes if too long
-        if len(release_notes) > 200:
-            release_notes = release_notes[:197] + "..."
-        
-        title = "Update Required" if is_mandatory else "Update Available"
+
+        if state == 'downloading':
+            title = "Update Available"
+            release_notes = f"Update v{latest_version} available - downloading in background..."
+        elif state == 'ready':
+            title = "Update Ready"
+            release_notes = f"Update v{latest_version} is ready to install. Open tray menu to install now."
+        elif state == 'mandatory_ready':
+            title = "Update Required"
+            release_notes = f"Required update v{latest_version} is ready. Tracking paused until updated."
+        elif state == 'failed':
+            title = "Update Failed"
+            release_notes = "Update download failed. The app will retry later."
+        else:
+            if len(release_notes) > 200:
+                release_notes = release_notes[:197] + "..."
+            title = "Update Required" if is_mandatory else "Update Available"
         
         notification = Notification(
             app_id="Time Tracker",
@@ -671,11 +683,7 @@ def show_update_notification(update_info, callback=None):
             duration="long" if is_mandatory else "short"
         )
         
-        # Add download URL as launch action
-        download_url = update_info.get('download_url')
-        if download_url:
-            notification.set_audio(audio.Default, loop=False)
-            notification.add_actions(label="Download Update", launch=download_url)
+        notification.set_audio(audio.Default, loop=False)
         
         notification.show()
         
@@ -1086,6 +1094,345 @@ def install_application():
         traceback.print_exc()
         return True
 
+
+def create_update_script(app_data_dir, current_pid, staged_exe, installed_exe):
+    """Create a detached batch script that atomically applies a staged update."""
+    updates_dir = os.path.join(app_data_dir, 'updates')
+    os.makedirs(updates_dir, exist_ok=True)
+
+    updater_script = os.path.join(updates_dir, 'apply_update.bat')
+    backup_exe = installed_exe + '.bak'
+    install_dir = os.path.dirname(installed_exe)
+    update_log = os.path.join(updates_dir, 'update_install.log')
+
+    script_lines = [
+        '@echo off',
+        'setlocal enableextensions enabledelayedexpansion',
+        f'set "LOG_FILE={update_log}"',
+        'echo ===============================================>>"%LOG_FILE%"',
+        'echo [%DATE% %TIME%] Update apply script started>>"%LOG_FILE%"',
+        f'echo Staged: {staged_exe}>>"%LOG_FILE%"',
+        f'echo Target: {installed_exe}>>"%LOG_FILE%"',
+        '',
+        'REM === Phase 1: Wait briefly for old process, then force-kill ===',
+        f'echo [INFO] Waiting up to 5s for PID {current_pid} to exit...>>"%LOG_FILE%"',
+        'set /a WAIT_COUNT=0',
+        ':wait_loop',
+        f'tasklist /FI "PID eq {current_pid}" /FI "IMAGENAME eq TimeTracker.exe" 2>nul | find /I "TimeTracker.exe" >nul 2>&1',
+        'if errorlevel 1 goto :pid_gone',
+        'set /a WAIT_COUNT+=1',
+        'if !WAIT_COUNT! GEQ 5 goto :force_kill',
+        'timeout /t 1 /nobreak >nul',
+        'goto :wait_loop',
+        '',
+        ':force_kill',
+        f'echo [WARN] PID {current_pid} still alive after 5s — force killing.>>"%LOG_FILE%"',
+        f'taskkill /F /PID {current_pid} >nul 2>&1',
+        'REM Also kill by name in case PID-based kill missed child processes',
+        'taskkill /F /IM TimeTracker.exe >nul 2>&1',
+        'timeout /t 2 /nobreak >nul',
+        '',
+        ':pid_gone',
+        'echo [INFO] Old process terminated.>>"%LOG_FILE%"',
+        '',
+        'REM === Phase 2: Verify staged file exists ===',
+        f'if not exist "{staged_exe}" (',
+        '    echo [ERROR] Staged update file is missing.>>"%LOG_FILE%"',
+        '    goto :cleanup',
+        ')',
+        '',
+        'REM === Phase 3: Replace executable (retry up to 15 times) ===',
+        'for /L %%i in (1,1,15) do (',
+        '    echo [INFO] Replace attempt %%i...>>"%LOG_FILE%"',
+        f'    if exist "{backup_exe}" del /F /Q "{backup_exe}" >nul 2>&1',
+        f'    if exist "{installed_exe}" move /Y "{installed_exe}" "{backup_exe}" >nul 2>&1',
+        f'    copy /Y "{staged_exe}" "{installed_exe}" >nul 2>&1',
+        f'    if exist "{installed_exe}" goto :launch_new',
+        '    echo [WARN] Replace attempt %%i failed — retrying...>>"%LOG_FILE%"',
+        '    timeout /t 1 /nobreak >nul',
+        ')',
+        'echo [ERROR] Could not replace executable after 15 retries.>>"%LOG_FILE%"',
+        'REM Rollback: restore old exe from backup so user is not left with nothing',
+        f'if exist "{backup_exe}" move /Y "{backup_exe}" "{installed_exe}" >nul 2>&1',
+        f'if exist "{installed_exe}" (',
+        f'    echo [INFO] Rolled back to previous version.>>"%LOG_FILE%"',
+        f'    start "" /D "{install_dir}" "{installed_exe}"',
+        ')',
+        'goto :cleanup',
+        '',
+        'REM === Phase 4: Launch updated executable ===',
+        ':launch_new',
+        'echo [OK] Executable replaced successfully.>>"%LOG_FILE%"',
+        'echo [INFO] Launching updated executable...>>"%LOG_FILE%"',
+        f'start "" /D "{install_dir}" "{installed_exe}"',
+        '',
+        ':cleanup',
+        f'if exist "{staged_exe}" del /F /Q "{staged_exe}" >nul 2>&1',
+        f'if exist "{backup_exe}" del /F /Q "{backup_exe}" >nul 2>&1',
+        'echo [INFO] Update apply script finished.>>"%LOG_FILE%"',
+        'del "%~f0"',
+        'endlocal',
+    ]
+
+    with open(updater_script, 'w', encoding='utf-8') as f:
+        f.write('\n'.join(script_lines) + '\n')
+
+    return updater_script
+
+
+class UpdateManager:
+    """Manages background download and installation of desktop app updates."""
+
+    def __init__(self, app_data_dir, current_version, on_status_change=None, on_apply_update=None):
+        self.app_data_dir = app_data_dir
+        self.current_version = current_version
+        self.state = 'idle'
+        self.download_progress = 0.0
+        self.downloaded_bytes = 0
+        self.total_bytes = 0
+        self.update_info = None
+        self.download_path = None
+        self.last_error = None
+        self._download_thread = None
+        self._cancel_event = threading.Event()
+        self._lock = threading.Lock()
+        self._on_status_change = on_status_change
+        self._on_apply_update = on_apply_update
+
+    def _set_state(self, new_state, error=None):
+        self.state = new_state
+        self.last_error = error
+        if callable(self._on_status_change):
+            try:
+                self._on_status_change(self.get_status())
+            except Exception as e:
+                print(f"[WARN] UpdateManager status callback failed: {e}")
+
+    def get_status(self):
+        return {
+            'state': self.state,
+            'progress': self.download_progress,
+            'downloaded_bytes': self.downloaded_bytes,
+            'total_bytes': self.total_bytes,
+            'update_info': self.update_info,
+            'download_path': self.download_path,
+            'error': self.last_error
+        }
+
+    def load_staged_update_if_exists(self):
+        """Restore staged update state after app restart."""
+        updates_dir = os.path.join(self.app_data_dir, 'updates')
+        if not os.path.exists(updates_dir):
+            return False
+
+        candidates = []
+        for name in os.listdir(updates_dir):
+            if not (name.startswith('TimeTracker_v') and name.endswith('.exe')):
+                continue
+            full_path = os.path.join(updates_dir, name)
+            if os.path.isfile(full_path):
+                candidates.append(full_path)
+
+        if not candidates:
+            return False
+
+        staged_path = max(candidates, key=os.path.getmtime)
+        staged_name = os.path.basename(staged_path)
+        version = staged_name.replace('TimeTracker_v', '').replace('.exe', '')
+
+        self.download_path = staged_path
+        self.update_info = {
+            'latest_version': version,
+            'download_url': None,
+            'checksum': None,
+            'is_mandatory': False,
+            'release_notes': 'A previously downloaded update is ready to install.'
+        }
+        self.download_progress = 1.0
+        self.downloaded_bytes = 0
+        self.total_bytes = 0
+        self._set_state('ready')
+        return True
+
+    def check_and_download(self, update_info):
+        """Start background download for a newer version."""
+        if not update_info or not update_info.get('update_available'):
+            return False
+
+        latest_version = update_info.get('latest_version')
+        download_url = update_info.get('download_url')
+        if not latest_version or not download_url:
+            return False
+
+        with self._lock:
+            if self.state == 'downloading':
+                existing = (self.update_info or {}).get('latest_version')
+                if existing == latest_version:
+                    return False
+
+            if self.state in ('ready', 'mandatory_ready'):
+                existing = (self.update_info or {}).get('latest_version')
+                if existing == latest_version and self.download_path and os.path.exists(self.download_path):
+                    return False
+
+            self._cancel_event.clear()
+            self.update_info = update_info
+            self.download_path = None
+            self.download_progress = 0.0
+            self.downloaded_bytes = 0
+            self.total_bytes = int(update_info.get('file_size_bytes') or 0)
+
+            self._set_state('checking')
+            self._set_state('downloading')
+            self._download_thread = threading.Thread(target=self._download_worker, daemon=True)
+            self._download_thread.start()
+            return True
+
+    def _download_worker(self):
+        version = self.update_info.get('latest_version', 'unknown')
+        download_url = self.update_info.get('download_url')
+        expected_checksum = self.update_info.get('checksum', '')
+        expected_size = int(self.update_info.get('file_size_bytes') or 0)
+
+        updates_dir = os.path.join(self.app_data_dir, 'updates')
+        os.makedirs(updates_dir, exist_ok=True)
+        temp_path = os.path.join(updates_dir, f"TimeTracker_v{version}.exe.tmp")
+        final_path = os.path.join(updates_dir, f"TimeTracker_v{version}.exe")
+
+        for stale in (temp_path, final_path):
+            if os.path.exists(stale):
+                try:
+                    os.remove(stale)
+                except Exception:
+                    pass
+
+        try:
+            response = requests.get(download_url, stream=True, timeout=(10, 30))
+            response.raise_for_status()
+            content_len = response.headers.get('Content-Length')
+            if content_len and content_len.isdigit() and int(content_len) > 0:
+                self.total_bytes = int(content_len)
+            elif expected_size > 0:
+                self.total_bytes = expected_size
+
+            self.downloaded_bytes = 0
+            with open(temp_path, 'wb') as f:
+                for chunk in response.iter_content(chunk_size=8192):
+                    if self._cancel_event.is_set():
+                        self._set_state('idle')
+                        return
+                    if not chunk:
+                        continue
+                    f.write(chunk)
+                    self.downloaded_bytes += len(chunk)
+                    if self.total_bytes > 0:
+                        self.download_progress = min(1.0, self.downloaded_bytes / self.total_bytes)
+
+            if self._cancel_event.is_set():
+                self._set_state('idle')
+                return
+
+            if expected_size > 0 and self.downloaded_bytes != expected_size:
+                raise ValueError(f"Downloaded size mismatch: expected={expected_size}, actual={self.downloaded_bytes}")
+
+            if not verify_download_checksum(temp_path, expected_checksum):
+                raise ValueError('Checksum verification failed')
+
+            os.replace(temp_path, final_path)
+            self.download_path = final_path
+            self.download_progress = 1.0
+
+            if self.update_info.get('is_mandatory', False):
+                self._set_state('mandatory_ready')
+            else:
+                self._set_state('ready')
+
+        except Exception as e:
+            self._set_state('failed', error=str(e))
+            print(f"[WARN] Update download failed: {e}")
+        finally:
+            if os.path.exists(temp_path):
+                try:
+                    os.remove(temp_path)
+                except Exception:
+                    pass
+
+    def defer_update(self):
+        if self.state in ('ready', 'mandatory_ready'):
+            if self.state == 'mandatory_ready':
+                return False
+            self._set_state('deferred')
+            return True
+        return False
+
+    def cancel_download(self):
+        if self.state != 'downloading':
+            return False
+        self._cancel_event.set()
+        return True
+
+    def apply_update(self):
+        """Apply a previously staged update and request app shutdown."""
+        if self.state not in ('ready', 'mandatory_ready', 'deferred'):
+            return False
+        if not self.download_path or not os.path.exists(self.download_path):
+            self._set_state('failed', error='Staged update missing')
+            return False
+
+        expected_checksum = (self.update_info or {}).get('checksum')
+        if expected_checksum and not verify_download_checksum(self.download_path, expected_checksum):
+            self._set_state('failed', error='Staged update checksum mismatch')
+            return False
+
+        try:
+            installed_exe = get_installed_exe_path()
+            updater_script = create_update_script(
+                self.app_data_dir,
+                os.getpid(),
+                self.download_path,
+                installed_exe
+            )
+
+            # Launcher diagnostics help verify the detached updater was invoked.
+            try:
+                updates_dir = os.path.join(self.app_data_dir, 'updates')
+                os.makedirs(updates_dir, exist_ok=True)
+                launcher_log = os.path.join(updates_dir, 'update_launcher.log')
+                with open(launcher_log, 'a', encoding='utf-8') as f:
+                    f.write(f"[{datetime.now().isoformat()}] apply_update called\n")
+                    f.write("updater_build_marker=apply_update_r4\n")
+                    f.write(f"app_version={APP_VERSION}\n")
+                    f.write(f"pid={os.getpid()}\n")
+                    f.write(f"script={updater_script}\n")
+                    f.write(f"staged={self.download_path}\n")
+                    f.write(f"installed={installed_exe}\n")
+            except Exception as log_err:
+                print(f"[WARN] Could not write update launcher log: {log_err}")
+
+            # CREATE_NEW_PROCESS_GROUP detaches from parent; CREATE_NO_WINDOW
+            # prevents cmd.exe from opening a visible console window.
+            # Do NOT combine with DETACHED_PROCESS — on some Windows builds
+            # that combination still shows a window.
+            subprocess.Popen(
+                ['cmd.exe', '/d', '/c', updater_script],
+                creationflags=subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW,
+                cwd=os.path.dirname(updater_script),
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            # Request shutdown immediately after spawning updater to avoid any
+            # potential UI callback deadlocks keeping this PID alive.
+            if callable(self._on_apply_update):
+                self._on_apply_update()
+            self._set_state('installing')
+            return True
+
+        except Exception as e:
+            self._set_state('failed', error=str(e))
+            print(f"[ERROR] Failed to apply update: {e}")
+            return False
+
 def _generate_uninstaller_at_path(uninstall_path, install_dir):
     """Generate uninstall.bat at the specified path"""
 
@@ -1430,7 +1777,7 @@ class AtlassianAuthManager:
         self.redirect_uri = f'http://localhost:{web_port}/auth/callback'
         self.authorization_url = 'https://auth.atlassian.com/authorize'
         # Token exchange now goes through AI Server
-        self.ai_server_url = get_env_var('AI_SERVER_URL', 'https://timetracker-forge.amzur.com')
+        self.ai_server_url = get_env_var('AI_SERVER_URL', 'https://forgesync.amzur.com')
         self.store_path = store_path or os.path.join(get_app_data_dir(), 'time_tracker_auth.json')
         self.metadata_path = os.path.join(get_app_data_dir(), 'auth_metadata.json')  # For non-sensitive data
 
@@ -2058,7 +2405,7 @@ class AtlassianAuthManager:
             print("[ERROR] No valid Atlassian token - cannot fetch OCR config")
             return False
 
-        ai_server_url = get_env_var('AI_SERVER_URL', 'https://timetracker-forge.amzur.com')
+        ai_server_url = get_env_var('AI_SERVER_URL', 'https://forgesync.amzur.com')
         
         try:
             print("[INFO] Fetching OCR config from AI Server...")
@@ -4601,6 +4948,16 @@ class TimeTracker:
         self.version_check_interval = 4 * 60 * 60  # Check every 4 hours (in seconds)
         self.update_available = False  # Flag for UI to show update badge
         self.update_notification_shown = False  # Track if we've shown notification for this version
+        self.update_required = False
+        self._mandatory_update_enforced = False
+        self._last_update_notification_state = None
+        self._last_notified_update_version = None
+        self.update_manager = UpdateManager(
+            get_app_data_dir(),
+            self.app_version,
+            on_status_change=self._on_update_manager_state_changed,
+            on_apply_update=self._shutdown_for_update
+        )
 
         # Setup routes
         self.setup_routes()
@@ -4635,6 +4992,65 @@ class TimeTracker:
         except Exception as e:
             print(f"[WARN] OCR setup encountered an error: {e}")
             self.add_admin_log('WARNING', f'OCR setup error: {str(e)}')
+
+    def _shutdown_for_update(self):
+        """Exit process after scheduling updater script."""
+        # Keep update shutdown immediate. Any cleanup here can block and leave
+        # updater script stuck waiting for this PID to exit.
+        try:
+            self.running = False
+            self.tracking_active = False
+        except Exception:
+            pass
+        print("[UPDATE] Exiting immediately for updater handoff...")
+        os._exit(0)
+
+    def _on_update_manager_state_changed(self, status):
+        """Sync UpdateManager state into tray UI and app control flags."""
+        state = status.get('state', 'idle')
+        update_info = status.get('update_info') or {}
+        latest_version = update_info.get('latest_version')
+
+        if update_info:
+            self.latest_version_info = update_info
+
+        self.update_available = state in ('downloading', 'ready', 'mandatory_ready', 'deferred')
+        self.update_required = state == 'mandatory_ready'
+
+        if state != 'mandatory_ready':
+            self._mandatory_update_enforced = False
+
+        should_notify = state in ('downloading', 'ready', 'mandatory_ready', 'failed')
+        if should_notify:
+            version_changed = latest_version and self._last_notified_update_version != latest_version
+            state_changed = self._last_update_notification_state != state
+            if version_changed or state_changed:
+                show_update_notification(update_info, state=state)
+                self._last_update_notification_state = state
+                self._last_notified_update_version = latest_version
+
+        self.update_tray_menu()
+        self.update_tray_icon()
+
+    def _enforce_mandatory_update_pause(self):
+        """Pause tracking when a mandatory update is ready to install."""
+        if not self.update_required or self._mandatory_update_enforced:
+            return
+        if not self.tracking_active:
+            return
+
+        try:
+            self._finalize_active_session("mandatory update")
+            self.session_manager.stop_current_timer()
+            self.upload_activity_batch()
+        except Exception as e:
+            print(f"[WARN] Mandatory update pre-pause flush failed: {e}")
+
+        self.tracking_active = False
+        self._mandatory_update_enforced = True
+        self.add_admin_log('WARNING', 'Tracking paused until required update is installed')
+        self.update_tray_icon()
+        self.update_tray_menu()
 
     def check_for_app_updates(self, show_notification=True, force=False):
         """
@@ -4683,15 +5099,16 @@ class TimeTracker:
                 else:
                     print(f"[INFO] Update available: v{latest_version}")
                     self.add_admin_log('INFO', f'Update available: v{latest_version}')
-                    
-                    # Show notification if enabled and not already shown for this version
-                    if show_notification and not self.update_notification_shown:
-                        show_update_notification(update_info)
-                        self.update_notification_shown = True
-                        
-                        # If mandatory, log a warning
-                        if update_info.get('is_mandatory', False):
-                            self.add_admin_log('WARNING', f'Mandatory update required: v{latest_version}')
+
+                    if self._last_notified_update_version != latest_version:
+                        self.update_notification_shown = False
+
+                    self.update_manager.check_and_download(update_info)
+                    self.update_notification_shown = True
+
+                    # If mandatory, log a warning
+                    if update_info.get('is_mandatory', False):
+                        self.add_admin_log('WARNING', f'Mandatory update required: v{latest_version}')
             else:
                 print(f"[INFO] App is up to date (v{self.app_version})")
             
@@ -9376,6 +9793,8 @@ class TimeTracker:
                     self.quit_app()
                     break
 
+                self._enforce_mandatory_update_pause()
+
                 if not self.tracking_active:
                     # Check for auto-resume (timed pause expired)
                     if self.pause_end_time and time.time() >= self.pause_end_time:
@@ -10205,19 +10624,12 @@ class TimeTracker:
         # Add separator and update-related menu items
         menu_items.append(pystray.Menu.SEPARATOR)
 
-        # Check for Updates / Download Update menu item
         def check_updates_action():
-            """Check for updates and open download URL if available"""
+            """Check for updates and start background download when available."""
             update_info = self.check_for_app_updates(show_notification=True, force=True)
-            if update_info and update_info.get('update_available'):
-                download_url = update_info.get('download_url')
-                if download_url:
-                    webbrowser.open(download_url)
-            else:
-                # Show a notification that app is up to date
+            if not update_info or not update_info.get('update_available'):
                 if WINOTIFY_AVAILABLE:
                     try:
-                        from winotify import Notification
                         notification = Notification(
                             app_id="Time Tracker",
                             title="No Updates Available",
@@ -10227,18 +10639,32 @@ class TimeTracker:
                         notification.show()
                     except Exception:
                         pass
-        
-        # Dynamic label based on update status
-        def get_update_label():
-            if getattr(self, 'update_available', False):
-                latest = self.latest_version_info.get('latest_version', '') if self.latest_version_info else ''
-                # Don't show update prompt for the same version we're running
-                if latest and not is_version_newer(latest, APP_VERSION):
-                    return f"Check for Updates (v{self.app_version})"
-                return f"\u2B07 Download Update (v{latest})" if latest else "\u2B07 Download Update"
-            return f"Check for Updates (v{self.app_version})"
-        
-        menu_items.append(item(lambda text: get_update_label(), check_updates_action))
+
+        def install_update_action():
+            self.update_manager.apply_update()
+
+        def cancel_download_action():
+            self.update_manager.cancel_download()
+
+        def defer_update_action():
+            self.update_manager.defer_update()
+
+        status = self.update_manager.get_status() if self.update_manager else {'state': 'idle'}
+        state = status.get('state', 'idle')
+        info = status.get('update_info') or {}
+        latest = info.get('latest_version', '')
+        progress = int((status.get('progress', 0) or 0) * 100)
+
+        if state == 'downloading':
+            menu_items.append(item(lambda text: f"Downloading v{latest} ({progress}%) - Current: v{self.app_version}", lambda: None, enabled=False))
+            menu_items.append(item('Cancel Download', cancel_download_action))
+        elif state == 'mandatory_ready':
+            menu_items.append(item(lambda text: f"Current: v{self.app_version} → Update Available: v{latest} (Required)", install_update_action))
+        elif state in ('ready', 'deferred'):
+            menu_items.append(item(lambda text: f"Current: v{self.app_version} → Update Available: v{latest}", install_update_action))
+            menu_items.append(item('Later', defer_update_action))
+        else:
+            menu_items.append(item(lambda text: f"Up to Date (v{self.app_version})", check_updates_action))
 
         return pystray.Menu(*menu_items)
 
@@ -10573,6 +10999,9 @@ class TimeTracker:
         web_thread = threading.Thread(target=self.run_web_server, daemon=True)
         web_thread.start()
         time.sleep(2)
+
+        if self.update_manager and self.update_manager.load_staged_update_if_exists():
+            print("[INFO] Found staged update from previous session")
         
         # Check for updates on startup (only if online)
         if is_online:
