@@ -333,7 +333,7 @@ load_dotenv()
 
 # Application version - IMPORTANT: Update this when releasing new versions
 # This is used for update checking and notifications
-APP_VERSION = "1.3.7"
+APP_VERSION = "1.4.2"
 
 # Hard-disable screenshot monitoring/storage in desktop app.
 # OCR text extraction for activity records still runs via event-based flow.
@@ -342,10 +342,10 @@ SCREENSHOT_MONITORING_HARD_DISABLED = True
 # Embedded credentials (for production builds - no .env file needed)
 # SECURITY: All sensitive keys moved to AI Server - fetched at runtime after authentication
 EMBEDDED_CONFIG = {
-    'ATLASSIAN_CLIENT_ID': 'k2Xwzy8c1g3Wk6Xpbeev0x70CXEp9lJH',
+    'ATLASSIAN_CLIENT_ID': 'Q8HT4Jn205AuTiAarj088oWNDrOqwvM5',
     # REMOVED: ATLASSIAN_CLIENT_SECRET - now on AI Server only (security fix)
     # REMOVED: SUPABASE_URL, SUPABASE_ANON_KEY, SUPABASE_SERVICE_ROLE_KEY - fetched from AI Server
-    'AI_SERVER_URL': 'https://timetracker-forge.amzur.com',  # AI Server for secure token exchange & config
+    'AI_SERVER_URL': 'https://forgesync.amzur.com',  # AI Server for secure token exchange & config
     'CAPTURE_INTERVAL': '300',
     'WEB_PORT': '51777',
 }
@@ -1102,28 +1102,76 @@ def create_update_script(app_data_dir, current_pid, staged_exe, installed_exe):
 
     updater_script = os.path.join(updates_dir, 'apply_update.bat')
     backup_exe = installed_exe + '.bak'
+    install_dir = os.path.dirname(installed_exe)
+    update_log = os.path.join(updates_dir, 'update_install.log')
 
     script_lines = [
         '@echo off',
-        'setlocal',
+        'setlocal enableextensions enabledelayedexpansion',
+        f'set "LOG_FILE={update_log}"',
+        'echo ===============================================>>"%LOG_FILE%"',
+        'echo [%DATE% %TIME%] Update apply script started>>"%LOG_FILE%"',
+        f'echo Staged: {staged_exe}>>"%LOG_FILE%"',
+        f'echo Target: {installed_exe}>>"%LOG_FILE%"',
+        '',
+        'REM === Phase 1: Wait briefly for old process, then force-kill ===',
+        f'echo [INFO] Waiting up to 5s for PID {current_pid} to exit...>>"%LOG_FILE%"',
+        'set /a WAIT_COUNT=0',
         ':wait_loop',
-        f'tasklist /FI "PID eq {current_pid}" | find "{current_pid}" >nul',
-        'if not errorlevel 1 (',
+        f'tasklist /FI "PID eq {current_pid}" /FI "IMAGENAME eq TimeTracker.exe" 2>nul | find /I "TimeTracker.exe" >nul 2>&1',
+        'if errorlevel 1 goto :pid_gone',
+        'set /a WAIT_COUNT+=1',
+        'if !WAIT_COUNT! GEQ 5 goto :force_kill',
+        'timeout /t 1 /nobreak >nul',
+        'goto :wait_loop',
+        '',
+        ':force_kill',
+        f'echo [WARN] PID {current_pid} still alive after 5s — force killing.>>"%LOG_FILE%"',
+        f'taskkill /F /PID {current_pid} >nul 2>&1',
+        'REM Also kill by name in case PID-based kill missed child processes',
+        'taskkill /F /IM TimeTracker.exe >nul 2>&1',
+        'timeout /t 2 /nobreak >nul',
+        '',
+        ':pid_gone',
+        'echo [INFO] Old process terminated.>>"%LOG_FILE%"',
+        '',
+        'REM === Phase 2: Verify staged file exists ===',
+        f'if not exist "{staged_exe}" (',
+        '    echo [ERROR] Staged update file is missing.>>"%LOG_FILE%"',
+        '    goto :cleanup',
+        ')',
+        '',
+        'REM === Phase 3: Replace executable (retry up to 15 times) ===',
+        'for /L %%i in (1,1,15) do (',
+        '    echo [INFO] Replace attempt %%i...>>"%LOG_FILE%"',
+        f'    if exist "{backup_exe}" del /F /Q "{backup_exe}" >nul 2>&1',
+        f'    if exist "{installed_exe}" move /Y "{installed_exe}" "{backup_exe}" >nul 2>&1',
+        f'    copy /Y "{staged_exe}" "{installed_exe}" >nul 2>&1',
+        f'    if exist "{installed_exe}" goto :launch_new',
+        '    echo [WARN] Replace attempt %%i failed — retrying...>>"%LOG_FILE%"',
         '    timeout /t 1 /nobreak >nul',
-        '    goto wait_loop',
         ')',
-        f'if exist "{backup_exe}" del /F /Q "{backup_exe}" >nul 2>&1',
-        f'if exist "{installed_exe}" ren "{installed_exe}" "{os.path.basename(backup_exe)}"',
-        f'copy /Y "{staged_exe}" "{installed_exe}" >nul',
-        f'start "" "{installed_exe}"',
-        'if errorlevel 1 (',
-        f'    if exist "{backup_exe}" ren "{backup_exe}" "{os.path.basename(installed_exe)}"',
-        f'    start "" "{installed_exe}"',
+        'echo [ERROR] Could not replace executable after 15 retries.>>"%LOG_FILE%"',
+        'REM Rollback: restore old exe from backup so user is not left with nothing',
+        f'if exist "{backup_exe}" move /Y "{backup_exe}" "{installed_exe}" >nul 2>&1',
+        f'if exist "{installed_exe}" (',
+        f'    echo [INFO] Rolled back to previous version.>>"%LOG_FILE%"',
+        f'    start "" /D "{install_dir}" "{installed_exe}"',
         ')',
+        'goto :cleanup',
+        '',
+        'REM === Phase 4: Launch updated executable ===',
+        ':launch_new',
+        'echo [OK] Executable replaced successfully.>>"%LOG_FILE%"',
+        'echo [INFO] Launching updated executable...>>"%LOG_FILE%"',
+        f'start "" /D "{install_dir}" "{installed_exe}"',
+        '',
+        ':cleanup',
         f'if exist "{staged_exe}" del /F /Q "{staged_exe}" >nul 2>&1',
         f'if exist "{backup_exe}" del /F /Q "{backup_exe}" >nul 2>&1',
+        'echo [INFO] Update apply script finished.>>"%LOG_FILE%"',
         'del "%~f0"',
-        'endlocal'
+        'endlocal',
     ]
 
     with open(updater_script, 'w', encoding='utf-8') as f:
@@ -1345,14 +1393,39 @@ class UpdateManager:
                 installed_exe
             )
 
-            subprocess.Popen(
-                ['cmd', '/c', updater_script],
-                creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NO_WINDOW
-            )
-            self._set_state('installing')
+            # Launcher diagnostics help verify the detached updater was invoked.
+            try:
+                updates_dir = os.path.join(self.app_data_dir, 'updates')
+                os.makedirs(updates_dir, exist_ok=True)
+                launcher_log = os.path.join(updates_dir, 'update_launcher.log')
+                with open(launcher_log, 'a', encoding='utf-8') as f:
+                    f.write(f"[{datetime.now().isoformat()}] apply_update called\n")
+                    f.write("updater_build_marker=apply_update_r4\n")
+                    f.write(f"app_version={APP_VERSION}\n")
+                    f.write(f"pid={os.getpid()}\n")
+                    f.write(f"script={updater_script}\n")
+                    f.write(f"staged={self.download_path}\n")
+                    f.write(f"installed={installed_exe}\n")
+            except Exception as log_err:
+                print(f"[WARN] Could not write update launcher log: {log_err}")
 
+            # CREATE_NEW_PROCESS_GROUP detaches from parent; CREATE_NO_WINDOW
+            # prevents cmd.exe from opening a visible console window.
+            # Do NOT combine with DETACHED_PROCESS — on some Windows builds
+            # that combination still shows a window.
+            subprocess.Popen(
+                ['cmd.exe', '/d', '/c', updater_script],
+                creationflags=subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW,
+                cwd=os.path.dirname(updater_script),
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            # Request shutdown immediately after spawning updater to avoid any
+            # potential UI callback deadlocks keeping this PID alive.
             if callable(self._on_apply_update):
                 self._on_apply_update()
+            self._set_state('installing')
             return True
 
         except Exception as e:
@@ -1704,7 +1777,7 @@ class AtlassianAuthManager:
         self.redirect_uri = f'http://localhost:{web_port}/auth/callback'
         self.authorization_url = 'https://auth.atlassian.com/authorize'
         # Token exchange now goes through AI Server
-        self.ai_server_url = get_env_var('AI_SERVER_URL', 'https://timetracker-forge.amzur.com')
+        self.ai_server_url = get_env_var('AI_SERVER_URL', 'https://forgesync.amzur.com')
         self.store_path = store_path or os.path.join(get_app_data_dir(), 'time_tracker_auth.json')
         self.metadata_path = os.path.join(get_app_data_dir(), 'auth_metadata.json')  # For non-sensitive data
 
@@ -2332,7 +2405,7 @@ class AtlassianAuthManager:
             print("[ERROR] No valid Atlassian token - cannot fetch OCR config")
             return False
 
-        ai_server_url = get_env_var('AI_SERVER_URL', 'https://timetracker-forge.amzur.com')
+        ai_server_url = get_env_var('AI_SERVER_URL', 'https://forgesync.amzur.com')
         
         try:
             print("[INFO] Fetching OCR config from AI Server...")
@@ -4922,17 +4995,15 @@ class TimeTracker:
 
     def _shutdown_for_update(self):
         """Exit process after scheduling updater script."""
-        try:
-            self._shutdown_cleanup()
-        except Exception as e:
-            print(f"[WARN] Update shutdown cleanup failed: {e}")
+        # Keep update shutdown immediate. Any cleanup here can block and leave
+        # updater script stuck waiting for this PID to exit.
         try:
             self.running = False
             self.tracking_active = False
-            if self.tray:
-                self.tray.stop()
-        finally:
-            os._exit(0)
+        except Exception:
+            pass
+        print("[UPDATE] Exiting immediately for updater handoff...")
+        os._exit(0)
 
     def _on_update_manager_state_changed(self, status):
         """Sync UpdateManager state into tray UI and app control flags."""
