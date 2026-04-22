@@ -24,6 +24,8 @@ import {
   sanitizeUUIDArray
 } from '../../utils/validators.js';
 import { initializeRequestContext, handleResolverError, ensureArray } from '../unassigned/helpers.js';
+// REMOVABLE: AI accuracy tracking layer.
+import { recordAccuracyEvents, isAccuracyTrackingEnabled } from '../../services/accuracy/accuracyTracking.js';
 
 // ============================================================================
 // Resolvers
@@ -46,7 +48,28 @@ export async function approveRecords(req) {
 
     const ctx = await initializeRequestContext(req);
     if (!ctx.success) return ctx;
-    const { config: supabaseConfig, userId } = ctx;
+    const { config: supabaseConfig, organization, userId } = ctx;
+
+    // REMOVABLE: pre-fetch context for AI accuracy events.  Skipped entirely
+    // when the layer is disabled so production cost is zero.  Wrapped in
+    // try/catch — accuracy tracking must never block approvals.
+    let priorRows = [];
+    if (isAccuracyTrackingEnabled()) {
+      try {
+        priorRows = ensureArray(await supabaseRequest(
+          supabaseConfig,
+          `activity_records?id=in.(${ids.join(',')})&user_id=eq.${userId}` +
+          `&approval_status=eq.pending_approval` +
+          `&select=id,user_assigned_issue_key,duration_seconds,total_time_seconds,window_title,application_name,classification,metadata`
+        ));
+      } catch (trackingPrefetchError) {
+        console.warn('[approveRecords] accuracy-tracking prefetch failed; continuing without tracking', {
+          error: trackingPrefetchError?.message || trackingPrefetchError,
+          sessionIds: ids
+        });
+        priorRows = [];
+      }
+    }
 
     const now = new Date().toISOString();
     const updated = ensureArray(await supabaseRequest(
@@ -64,6 +87,28 @@ export async function approveRecords(req) {
         }
       }
     ));
+
+    // REMOVABLE: emit one accuracy event per approved record.  AI was right
+    // here — same key in/out.
+    if (priorRows.length > 0 && updated.length > 0) {
+      const updatedIds = new Set(updated.map(r => r.id));
+      const events = priorRows
+        .filter(r => updatedIds.has(r.id) && r.user_assigned_issue_key)
+        .map(r => ({
+          organizationId: organization.id,
+          userId,
+          eventType: 'approved_as_is',
+          activityRecordId: r.id,
+          aiSuggestedIssueKey: r.user_assigned_issue_key,
+          aiConfidenceScore: r.metadata?.confidenceScore ?? null,
+          finalIssueKey: r.user_assigned_issue_key,
+          durationSeconds: r.duration_seconds || r.total_time_seconds || 0,
+          windowTitle: r.window_title,
+          applicationName: r.application_name,
+          classification: r.classification
+        }));
+      await recordAccuracyEvents(supabaseConfig, events);
+    }
 
     return { success: true, updated: updated.length, approved_at: now };
   } catch (error) {
@@ -93,7 +138,7 @@ export async function reassignAndApproveRecords(req) {
 
     const ctx = await initializeRequestContext(req);
     if (!ctx.success) return ctx;
-    const { config: supabaseConfig, userId } = ctx;
+    const { config: supabaseConfig, organization, userId } = ctx;
 
     const newProjectKey = newIssueKey.split('-')[0];
     if (!isValidProjectKey(newProjectKey)) {
@@ -101,10 +146,15 @@ export async function reassignAndApproveRecords(req) {
     }
 
     // Snapshot current keys so we can populate reassigned_from accurately.
+    // Extra columns (window_title, application_name, classification, metadata,
+    // duration) are pulled in only when accuracy tracking is enabled, but
+    // querying them unconditionally keeps the SQL simple — the cost is one
+    // extra column per row, which is negligible.
     const existing = ensureArray(await supabaseRequest(
       supabaseConfig,
       `activity_records?id=in.(${ids.join(',')})&user_id=eq.${userId}` +
-      `&approval_status=eq.pending_approval&select=id,user_assigned_issue_key`
+      `&approval_status=eq.pending_approval` +
+      `&select=id,user_assigned_issue_key,duration_seconds,total_time_seconds,window_title,application_name,classification,metadata`
     ));
 
     if (existing.length === 0) {
@@ -124,6 +174,7 @@ export async function reassignAndApproveRecords(req) {
 
     const now = new Date().toISOString();
     let totalUpdated = 0;
+    const successfullyUpdatedIds = new Set();
 
     for (const [originalKey, originalIds] of byOrigin.entries()) {
       const updated = ensureArray(await supabaseRequest(
@@ -147,6 +198,29 @@ export async function reassignAndApproveRecords(req) {
         }
       ));
       totalUpdated += updated.length;
+      for (const row of updated) successfullyUpdatedIds.add(row.id);
+    }
+
+    // REMOVABLE: emit one accuracy event per reassigned record.  AI was wrong
+    // here — capture both keys so the dashboard can surface the wrong→right pairs.
+    if (successfullyUpdatedIds.size > 0) {
+      const events = existing
+        .filter(r => successfullyUpdatedIds.has(r.id))
+        .map(r => ({
+          organizationId: organization.id,
+          userId,
+          eventType: 'reassigned',
+          activityRecordId: r.id,
+          aiSuggestedIssueKey: r.user_assigned_issue_key || null,
+          aiConfidenceScore: r.metadata?.confidenceScore ?? null,
+          finalIssueKey: newIssueKey,
+          durationSeconds: r.duration_seconds || r.total_time_seconds || 0,
+          windowTitle: r.window_title,
+          applicationName: r.application_name,
+          classification: r.classification,
+          metadata: reason ? { reason } : null
+        }));
+      await recordAccuracyEvents(supabaseConfig, events);
     }
 
     return {
@@ -179,7 +253,8 @@ export async function createIssueAndApproveRecords(req) {
       issueType,
       assigneeAccountId,
       assignToSelf,
-      statusName
+      statusName,
+      reason
     } = req.payload || {};
 
     const ids = sanitizeUUIDArray(sessionIds);
@@ -199,10 +274,14 @@ export async function createIssueAndApproveRecords(req) {
 
     // Pre-fetch the row totals so the auto-generated description is accurate
     // and the created_issues_log entry reflects real time.
+    // Extra columns (window_title, application_name, classification, metadata,
+    // user_assigned_issue_key) feed the AI accuracy event log; query is a
+    // simple SELECT either way, so we always pull them.
     const rows = ensureArray(await supabaseRequest(
       supabaseConfig,
       `activity_records?id=in.(${ids.join(',')})&user_id=eq.${userId}` +
-      `&approval_status=eq.pending_approval&select=id,duration_seconds,total_time_seconds`
+      `&approval_status=eq.pending_approval` +
+      `&select=id,user_assigned_issue_key,duration_seconds,total_time_seconds,window_title,application_name,classification,metadata`
     ));
 
     if (rows.length === 0) {
@@ -294,6 +373,7 @@ export async function createIssueAndApproveRecords(req) {
           approval_status: 'approved',
           approved_at: now,
           approved_by: userId,
+          approval_notes: reason || null,
           updated_at: now
         }
       }
@@ -333,6 +413,33 @@ export async function createIssueAndApproveRecords(req) {
         }
       }
     );
+
+    // REMOVABLE: emit one accuracy event per record.  Treat creating a brand-
+    // new issue as a "reassigned" event — the AI's suggestion was wrong enough
+    // that the user spawned a new issue rather than picking an existing one.
+    if (updated.length > 0) {
+      const updatedIds = new Set(updated.map(r => r.id));
+      const events = rows
+        .filter(r => updatedIds.has(r.id))
+        .map(r => ({
+          organizationId: organization.id,
+          userId,
+          eventType: 'reassigned',
+          activityRecordId: r.id,
+          aiSuggestedIssueKey: r.user_assigned_issue_key || null,
+          aiConfidenceScore: r.metadata?.confidenceScore ?? null,
+          finalIssueKey: newIssueKey,
+          durationSeconds: r.duration_seconds || r.total_time_seconds || 0,
+          windowTitle: r.window_title,
+          applicationName: r.application_name,
+          classification: r.classification,
+          metadata: {
+            reassign_reason: 'created_new_issue',
+            ...(reason ? { user_reason: reason } : {})
+          }
+        }));
+      await recordAccuracyEvents(supabaseConfig, events);
+    }
 
     return {
       success: true,

@@ -22,6 +22,11 @@ const aiService = require('./services/ai');
 const activityController = require('./controllers/activity-controller');
 const adminDashboardController = require('./controllers/admin-dashboard-controller');
 const activityPollingService = require('./services/activity-polling-service');
+// REMOVABLE: AI accuracy tracking dashboard. Surfaced inside the Forge app
+// frontend (Admin tab); these endpoints are gated by forgeAuthMiddleware (FIT)
+// and the per-user email allowlist is enforced inside the Forge resolver
+// before it calls these routes.
+const accuracyDashboardController = require('./controllers/accuracy-dashboard-controller');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -120,6 +125,22 @@ const authLimiter = rateLimit({
   }
 });
 
+// REMOVABLE: dedicated limiter for the AI accuracy dashboard. publicLimiter
+// (30/min) is too tight here: each dashboard refresh fires ~6 parallel
+// requests (orgs + 5 panels), and changing a filter retriggers all of them.
+// 200/min comfortably covers a person actively iterating on prompt-tuning
+// while still rate-limiting brute-force token guessing.
+const accuracyDashboardLimiter = rateLimit({
+  windowMs: 1 * 60 * 1000,
+  max: 200,
+  message: 'Too many requests, please slow down.',
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => {
+    return req.ip || req.headers['x-forwarded-for'] || req.connection.remoteAddress || 'unknown';
+  }
+});
+
 // Root endpoint
 app.get('/', publicLimiter, (req, res) => {
   res.json({
@@ -160,6 +181,25 @@ app.post('/admin-dashboard/api/login', authLimiter, adminDashboardController.log
 
 // Dashboard API — protected by session token
 app.get('/admin-dashboard/api/stats', adminDashboardController.requireSession, adminDashboardController.getStats);
+
+// =============================================================================
+// AI ACCURACY DASHBOARD — REMOVABLE LAYER
+// Surfaced inside the Forge app frontend (Admin tab). Gated by FIT
+// (forgeAuthMiddleware); per-user email allowlist enforced inside the Forge
+// resolver before it calls these routes. Delete this whole block plus the
+// controller, the resolver in forge-app/src/resolvers/accuracyDashboardResolvers.js,
+// the AdminAccuracyDashboardTab in static/main, and the migrations to
+// remove the layer entirely. See plan/AI_ACCURACY_TRACKING_IMPLEMENTATION_PLAN.md.
+// =============================================================================
+
+// Dedicated limiter (200/min) — each dashboard refresh fires ~6 parallel
+// requests (orgs + 5 panels), and changing a filter retriggers all of them.
+app.get('/api/forge/accuracy/orgs',             accuracyDashboardLimiter, forgeAuthMiddleware, accuracyDashboardController.listOrgs);
+app.get('/api/forge/accuracy/summary',          accuracyDashboardLimiter, forgeAuthMiddleware, accuracyDashboardController.getSummary);
+app.get('/api/forge/accuracy/wrong-pairs',      accuracyDashboardLimiter, forgeAuthMiddleware, accuracyDashboardController.getWrongPairs);
+app.get('/api/forge/accuracy/by-app',           accuracyDashboardLimiter, forgeAuthMiddleware, accuracyDashboardController.getByApp);
+app.get('/api/forge/accuracy/calibration',      accuracyDashboardLimiter, forgeAuthMiddleware, accuracyDashboardController.getCalibration);
+app.get('/api/forge/accuracy/recent-mistakes',  accuracyDashboardLimiter, forgeAuthMiddleware, accuracyDashboardController.getRecentMistakes);
 
 // =============================================================================
 // LEGAL PAGES (Public - served as HTML from layout + content templates)

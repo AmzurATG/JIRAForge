@@ -983,6 +983,172 @@
   border-left: 3px solid var(--ds-background-warning-bold, #ff8b00);
 }
 
+/* Subtle "Refreshing…" indicator shown during background refetches so the
+   table doesn't unmount/remount and lose expanded rows or scroll position. */
+.refresh-indicator {
+  display: inline-block;
+  margin: 0 0 8px 0;
+  padding: 4px 10px;
+  font-size: 11px;
+  font-weight: 600;
+  color: #5e6c84;
+  background: rgba(102, 86, 252, 0.08);
+  border: 1px solid rgba(102, 86, 252, 0.15);
+  border-radius: 12px;
+  letter-spacing: 0.2px;
+  animation: refreshPulse 1.2s ease-in-out infinite;
+}
+
+@keyframes refreshPulse {
+  0%, 100% { opacity: 0.7; }
+  50%      { opacity: 1; }
+}
+
+/* Pending Review row: pending-only time + bulk Approve action */
+.issue-time.pending-cell {
+  text-align: right !important;
+  padding-right: 16px !important;
+}
+
+.pending-approval-cell {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  justify-content: flex-end;
+}
+
+.pending-approval-meta {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  line-height: 1.2;
+}
+
+.pending-approval-amount {
+  color: #974f0c;
+  font-weight: 700;
+  font-size: 15px;
+  font-variant-numeric: tabular-nums;
+}
+
+.pending-approval-label {
+  color: #8993A4;
+  font-size: 11px;
+  font-weight: 500;
+  text-transform: none;
+  letter-spacing: 0;
+  margin-top: 2px;
+}
+
+.pending-approval-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: nowrap;
+}
+
+.approve-all-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 14px;
+  background: linear-gradient(135deg, #22a06b 0%, #1f845a 100%);
+  color: #ffffff;
+  border: none;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  white-space: nowrap;
+  box-shadow: 0 1px 3px rgba(34, 160, 107, 0.25);
+  transition: all 0.15s ease;
+}
+
+.approve-all-button:hover:not(:disabled) {
+  background: linear-gradient(135deg, #1f845a 0%, #1a6b48 100%);
+  transform: translateY(-1px);
+  box-shadow: 0 2px 6px rgba(34, 160, 107, 0.35);
+}
+
+.approve-all-button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+  transform: none;
+}
+
+.approve-all-button svg {
+  flex-shrink: 0;
+}
+
+/* Secondary action: bulk-reassign all pending sessions for an issue */
+.reassign-all-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 12px;
+  background: #ffffff;
+  color: #42526E;
+  border: 1px solid rgba(0, 0, 0, 0.1);
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+  transition: all 0.15s ease;
+}
+
+.reassign-all-button:hover:not(:disabled) {
+  background: #f4f5f7;
+  border-color: rgba(0, 0, 0, 0.16);
+  color: #172b4d;
+  transform: translateY(-1px);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.08);
+}
+
+.reassign-all-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  transform: none;
+}
+
+.reassign-all-button svg {
+  flex-shrink: 0;
+  color: #5e6c84;
+}
+
+/* Labeled per-session reassign button (pending-review only) */
+.reassign-text-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 10px;
+  background: transparent;
+  color: #5e6c84;
+  border: 1px solid #DFE1E6;
+  border-radius: 4px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all 0.15s ease;
+}
+
+.reassign-text-button:hover:not(:disabled) {
+  background: #F4F5F7;
+  color: #172b4d;
+  border-color: #c1c7d0;
+}
+
+.reassign-text-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.reassign-text-button svg {
+  flex-shrink: 0;
+}
+
 /* Approve-session button */
 .approve-button {
   background: var(--ds-background-success-bold, #22a06b);

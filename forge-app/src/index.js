@@ -16,6 +16,7 @@ import { registerFeedbackResolvers } from './resolvers/feedbackResolvers.js';
 import { registerClassificationResolvers } from './resolvers/classificationResolvers.js';
 import { registerAdminUserStatusResolvers } from './resolvers/adminUserStatusResolvers.js';
 import { registerApprovalResolvers } from './resolvers/approval/approvalResolvers.js';
+import { registerAccuracyDashboardResolvers } from './resolvers/accuracyDashboardResolvers.js';
 import { runScheduledWorklogSync } from './services/scheduledWorklogSync.js';
 import { handleIssueUpdateEvent } from './services/issueCacheService.js';
 import { handleAppInstalled, handleAppUninstalled } from './services/lifecycleService.js';
@@ -37,6 +38,7 @@ registerFeedbackResolvers(resolver);
 registerClassificationResolvers(resolver);
 registerAdminUserStatusResolvers(resolver);
 registerApprovalResolvers(resolver);
+registerAccuracyDashboardResolvers(resolver);
 
 // Export handler for Forge
 export const handler = resolver.getDefinitions();
