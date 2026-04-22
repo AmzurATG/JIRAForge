@@ -18,12 +18,53 @@
  */
 
 import api, { route } from '@forge/api';
+import { kvs } from '@forge/kvs';
 import { remoteRequest } from '../utils/remote.js';
 import { supabaseQuery } from '../utils/remote.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+// Allowlist cache TTL. A dashboard refresh fires 6 parallel resolver calls;
+// without caching, each one re-hits Jira /myself + Supabase. 60s is short
+// enough that revoking access takes effect within a minute, long enough that
+// the typical refresh cadence (≤5s) only triggers a single round trip.
+const ALLOWLIST_TTL_MS = 60 * 1000;
+
+// In-memory cache keyed by accountId. Survives across resolver calls within
+// the same Forge invocation container (warm starts). Stores both the
+// resolved email and the allowlist verdict so a single dashboard refresh
+// (6 parallel resolver calls) does at most one /myself + one Supabase hit.
+const _memoryCache = new Map(); // accountId -> { email, allowed, expiresAt }
+
+function kvsCacheKey(accountId) {
+  return `accuracy-dashboard:allow:${accountId}`;
+}
+
+async function getCachedAccess(accountId) {
+  if (!accountId) return null;
+  const mem = _memoryCache.get(accountId);
+  if (mem && mem.expiresAt > Date.now()) return mem;
+  try {
+    const entry = await kvs.get(kvsCacheKey(accountId));
+    if (entry && entry.expiresAt > Date.now()) {
+      _memoryCache.set(accountId, entry);
+      return entry;
+    }
+  } catch {
+    // KVS unavailable — fall through to live lookup.
+  }
+  return null;
+}
+
+function setCachedAccess(accountId, email, allowed) {
+  if (!accountId) return;
+  const entry = { email, allowed, expiresAt: Date.now() + ALLOWLIST_TTL_MS };
+  _memoryCache.set(accountId, entry);
+  // Fire-and-forget — cache misses are cheap, don't block the request.
+  kvs.set(kvsCacheKey(accountId), entry).catch(() => {});
+}
 
 /**
  * Get the current Jira user's email. Uses /rest/api/3/myself which returns
@@ -57,11 +98,22 @@ async function getCurrentUserEmail() {
  * AI server's Supabase proxy (service-role on the server). Storing the
  * allowlist server-side keeps the membership list out of any client bundle.
  */
-async function checkAllowlist() {
+async function checkAllowlist(accountId) {
+  // Fast path: cached verdict for this accountId (avoids both /myself AND Supabase).
+  const cached = await getCachedAccess(accountId);
+  if (cached) {
+    return {
+      allowed: cached.allowed,
+      email: cached.email,
+      reason: cached.allowed ? undefined : 'Not on the accuracy dashboard allowlist'
+    };
+  }
+
   const email = await getCurrentUserEmail();
   if (!email) {
     return { allowed: false, email: null, reason: 'Cannot determine your email' };
   }
+
   try {
     // Migration 20260422_ai_accuracy_tracking_harden.sql enforces lowercase
     // emails in this table, so a case-sensitive eq on the lowercased caller
@@ -72,6 +124,7 @@ async function checkAllowlist() {
       select: 'email'
     });
     const allowed = Array.isArray(rows) && rows.length > 0;
+    setCachedAccess(accountId, email, allowed);
     return { allowed, email, reason: allowed ? undefined : 'Not on the accuracy dashboard allowlist' };
   } catch (err) {
     console.error('[AccuracyDashboard] Allowlist lookup failed:', err.message);
@@ -96,8 +149,9 @@ function buildQueryString(params) {
  * Common wrapper: re-check allowlist on every call (cheap, ~1 DB hit) then
  * GET the corresponding AI server endpoint via FIT.
  */
-async function callAiServer(endpoint, params) {
-  const access = await checkAllowlist();
+async function callAiServer(req, endpoint, params) {
+  const accountId = req?.context?.accountId;
+  const access = await checkAllowlist(accountId);
   if (!access.allowed) {
     return { success: false, error: access.reason || 'Access denied' };
   }
@@ -119,8 +173,8 @@ async function callAiServer(endpoint, params) {
 export function registerAccuracyDashboardResolvers(resolver) {
   // Lightweight visibility check used by the frontend on mount to decide
   // whether to render the sidebar entry. No data, just a yes/no.
-  resolver.define('checkAccuracyDashboardAccess', async () => {
-    const access = await checkAllowlist();
+  resolver.define('checkAccuracyDashboardAccess', async (req) => {
+    const access = await checkAllowlist(req?.context?.accountId);
     return {
       success: true,
       allowed: access.allowed,
@@ -129,44 +183,44 @@ export function registerAccuracyDashboardResolvers(resolver) {
     };
   });
 
-  resolver.define('getAccuracyOrgs', async () =>
-    callAiServer('/api/forge/accuracy/orgs', {})
+  resolver.define('getAccuracyOrgs', async (req) =>
+    callAiServer(req, '/api/forge/accuracy/orgs', {})
   );
 
-  resolver.define('getAccuracySummary', async ({ payload = {} }) =>
-    callAiServer('/api/forge/accuracy/summary', {
-      days: payload.days,
-      org: payload.org
+  resolver.define('getAccuracySummary', async (req) =>
+    callAiServer(req, '/api/forge/accuracy/summary', {
+      days: req.payload?.days,
+      org: req.payload?.org
     })
   );
 
-  resolver.define('getAccuracyWrongPairs', async ({ payload = {} }) =>
-    callAiServer('/api/forge/accuracy/wrong-pairs', {
-      days: payload.days,
-      org: payload.org,
-      limit: payload.limit
+  resolver.define('getAccuracyWrongPairs', async (req) =>
+    callAiServer(req, '/api/forge/accuracy/wrong-pairs', {
+      days: req.payload?.days,
+      org: req.payload?.org,
+      limit: req.payload?.limit
     })
   );
 
-  resolver.define('getAccuracyByApp', async ({ payload = {} }) =>
-    callAiServer('/api/forge/accuracy/by-app', {
-      days: payload.days,
-      org: payload.org,
-      limit: payload.limit
+  resolver.define('getAccuracyByApp', async (req) =>
+    callAiServer(req, '/api/forge/accuracy/by-app', {
+      days: req.payload?.days,
+      org: req.payload?.org,
+      limit: req.payload?.limit
     })
   );
 
-  resolver.define('getAccuracyCalibration', async ({ payload = {} }) =>
-    callAiServer('/api/forge/accuracy/calibration', {
-      days: payload.days,
-      org: payload.org
+  resolver.define('getAccuracyCalibration', async (req) =>
+    callAiServer(req, '/api/forge/accuracy/calibration', {
+      days: req.payload?.days,
+      org: req.payload?.org
     })
   );
 
-  resolver.define('getAccuracyRecentMistakes', async ({ payload = {} }) =>
-    callAiServer('/api/forge/accuracy/recent-mistakes', {
-      org: payload.org,
-      limit: payload.limit
+  resolver.define('getAccuracyRecentMistakes', async (req) =>
+    callAiServer(req, '/api/forge/accuracy/recent-mistakes', {
+      org: req.payload?.org,
+      limit: req.payload?.limit
     })
   );
 }

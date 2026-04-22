@@ -51,15 +51,24 @@ export async function approveRecords(req) {
     const { config: supabaseConfig, organization, userId } = ctx;
 
     // REMOVABLE: pre-fetch context for AI accuracy events.  Skipped entirely
-    // when the layer is disabled so production cost is zero.
+    // when the layer is disabled so production cost is zero.  Wrapped in
+    // try/catch — accuracy tracking must never block approvals.
     let priorRows = [];
     if (isAccuracyTrackingEnabled()) {
-      priorRows = ensureArray(await supabaseRequest(
-        supabaseConfig,
-        `activity_records?id=in.(${ids.join(',')})&user_id=eq.${userId}` +
-        `&approval_status=eq.pending_approval` +
-        `&select=id,user_assigned_issue_key,duration_seconds,total_time_seconds,window_title,application_name,classification,metadata`
-      ));
+      try {
+        priorRows = ensureArray(await supabaseRequest(
+          supabaseConfig,
+          `activity_records?id=in.(${ids.join(',')})&user_id=eq.${userId}` +
+          `&approval_status=eq.pending_approval` +
+          `&select=id,user_assigned_issue_key,duration_seconds,total_time_seconds,window_title,application_name,classification,metadata`
+        ));
+      } catch (trackingPrefetchError) {
+        console.warn('[approveRecords] accuracy-tracking prefetch failed; continuing without tracking', {
+          error: trackingPrefetchError?.message || trackingPrefetchError,
+          sessionIds: ids
+        });
+        priorRows = [];
+      }
     }
 
     const now = new Date().toISOString();
@@ -244,7 +253,8 @@ export async function createIssueAndApproveRecords(req) {
       issueType,
       assigneeAccountId,
       assignToSelf,
-      statusName
+      statusName,
+      reason
     } = req.payload || {};
 
     const ids = sanitizeUUIDArray(sessionIds);
@@ -363,6 +373,7 @@ export async function createIssueAndApproveRecords(req) {
           approval_status: 'approved',
           approved_at: now,
           approved_by: userId,
+          approval_notes: reason || null,
           updated_at: now
         }
       }
@@ -422,7 +433,10 @@ export async function createIssueAndApproveRecords(req) {
           windowTitle: r.window_title,
           applicationName: r.application_name,
           classification: r.classification,
-          metadata: { reassign_reason: 'created_new_issue' }
+          metadata: {
+            reassign_reason: 'created_new_issue',
+            ...(reason ? { user_reason: reason } : {})
+          }
         }));
       await recordAccuracyEvents(supabaseConfig, events);
     }

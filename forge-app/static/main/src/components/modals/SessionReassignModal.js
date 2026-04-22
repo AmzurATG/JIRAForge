@@ -13,9 +13,11 @@ import { formatTime } from '../../utils';
  * only the Existing Issue tab is shown — there is no equivalent
  * "create-new + reassign" resolver for the legacy path.
  *
- * The optional comment field maps to the resolver's `reason` parameter; the
- * legacy reassignSession resolver ignores it, the pending-approval one stores
- * it as approval_notes for audit + accuracy event metadata.
+ * The optional comment field maps to the resolver's `reason` parameter.
+ * The legacy reassignSession resolver ignores it. Both pending-approval
+ * paths (reassignAndApproveRecords and createIssueAndApproveRecords) persist
+ * it as approval_notes on activity_records and forward it into the
+ * accuracy-event metadata (when the accuracy tracking layer is enabled).
  */
 function SessionReassignModal({
   isOpen,

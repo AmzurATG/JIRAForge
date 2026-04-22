@@ -126,7 +126,8 @@ function AppContent() {
         projectKey: formData.projectKey,
         issueType: formData.issueType,
         statusName: formData.statusName,
-        assignToSelf: formData.assignToSelf
+        assignToSelf: formData.assignToSelf,
+        reason: formData.reason
       });
 
       if (result?.success) {

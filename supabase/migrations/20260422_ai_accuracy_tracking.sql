@@ -98,11 +98,16 @@ COMMENT ON TABLE public.accuracy_dashboard_users IS
   'Email allowlist for the AI accuracy dashboard. REMOVABLE.';
 
 -- ----------------------------------------------------------------------------
--- RLS posture: intentionally OFF on both tables.
+-- RLS posture (initial state — see follow-up below):
 --   - Inserts come from the Forge backend via the Supabase service-role key.
 --   - Reads come from the AI server via the Supabase service-role key, gated
 --     in application code by accuracy_dashboard_users.email matching.
--- The dashboard's permission boundary is the application allowlist, NOT RLS.
+-- The dashboard's permission boundary is the application allowlist, not RLS.
+--
+-- NOTE: this initial DISABLE is superseded by 20260422_ai_accuracy_tracking_harden.sql,
+-- which ENABLEs RLS on both tables (defence-in-depth — service-role still
+-- bypasses RLS so production behaviour is unchanged, but no policy = anon/auth
+-- roles can never read/write even if a key were ever leaked).
 -- ----------------------------------------------------------------------------
 
 ALTER TABLE public.ai_accuracy_events       DISABLE ROW LEVEL SECURITY;
