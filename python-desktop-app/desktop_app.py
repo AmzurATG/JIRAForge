@@ -333,7 +333,7 @@ load_dotenv()
 
 # Application version - IMPORTANT: Update this when releasing new versions
 # This is used for update checking and notifications
-APP_VERSION = "1.4.2"
+APP_VERSION = "1.4.5"
 
 # Hard-disable screenshot monitoring/storage in desktop app.
 # OCR text extraction for activity records still runs via event-based flow.
@@ -10649,24 +10649,6 @@ class TimeTracker:
         def defer_update_action():
             self.update_manager.defer_update()
 
-        def show_release_notes_action():
-            info = self.update_manager.get_status().get('update_info') or {}
-            latest_version = info.get('latest_version', 'unknown')
-            notes = info.get('release_notes') or 'No release notes available.'
-            if len(notes) > 200:
-                notes = notes[:197] + '...'
-            if WINOTIFY_AVAILABLE:
-                try:
-                    notification = Notification(
-                        app_id="Time Tracker",
-                        title=f"Release Notes v{latest_version}",
-                        msg=notes,
-                        duration="short"
-                    )
-                    notification.show()
-                except Exception:
-                    pass
-
         status = self.update_manager.get_status() if self.update_manager else {'state': 'idle'}
         state = status.get('state', 'idle')
         info = status.get('update_info') or {}
@@ -10674,17 +10656,15 @@ class TimeTracker:
         progress = int((status.get('progress', 0) or 0) * 100)
 
         if state == 'downloading':
-            menu_items.append(item(lambda text: f"Downloading Update ({progress}%)...", lambda: None, enabled=False))
+            menu_items.append(item(lambda text: f"Downloading v{latest} ({progress}%) - Current: v{self.app_version}", lambda: None, enabled=False))
             menu_items.append(item('Cancel Download', cancel_download_action))
         elif state == 'mandatory_ready':
-            menu_items.append(item(lambda text: f"Required Update - Install v{latest}", install_update_action))
-            menu_items.append(item('View Release Notes', show_release_notes_action))
+            menu_items.append(item(lambda text: f"Current: v{self.app_version} → Update Available: v{latest} (Required)", install_update_action))
         elif state in ('ready', 'deferred'):
-            menu_items.append(item(lambda text: f"Update Ready - Install v{latest}", install_update_action))
+            menu_items.append(item(lambda text: f"Current: v{self.app_version} → Update Available: v{latest}", install_update_action))
             menu_items.append(item('Later', defer_update_action))
-            menu_items.append(item('View Release Notes', show_release_notes_action))
         else:
-            menu_items.append(item(lambda text: f"Check for Updates (v{self.app_version})", check_updates_action))
+            menu_items.append(item(lambda text: f"Up to Date (v{self.app_version})", check_updates_action))
 
         return pystray.Menu(*menu_items)
 
