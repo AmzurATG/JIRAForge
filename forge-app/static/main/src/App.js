@@ -47,7 +47,7 @@ function AppContent() {
     setSessionToReassign(null);
   };
 
-  const handleReassignSession = async (toIssueKey) => {
+  const handleReassignSession = async (toIssueKey, reason) => {
     if (!sessionToReassign || reassigning) return;
 
     const { session, fromIssueKey } = sessionToReassign;
@@ -64,7 +64,8 @@ function AppContent() {
       const result = isPendingApproval
         ? await invoke('reassignAndApproveRecords', {
             sessionIds: session.activityRecordIds,
-            newIssueKey: toIssueKey
+            newIssueKey: toIssueKey,
+            reason: reason || undefined
           })
         : await invoke('reassignSession', {
             analysisResultIds: session.analysisResultIds,
@@ -82,6 +83,48 @@ function AppContent() {
     } catch (err) {
       console.error('Error reassigning session:', err);
       alert(`Error reassigning session: ${err.message}`);
+    } finally {
+      setReassigning(false);
+    }
+  };
+
+  // Create-new path for the Reassign modal — only available for pending-approval
+  // sessions (the only ones routed through createIssueAndApproveRecords).
+  const handleCreateAndReassignSession = async (formData) => {
+    if (!sessionToReassign || reassigning) return;
+
+    const { session } = sessionToReassign;
+    const isPendingApproval =
+      session?.approvalStatus === 'pending_approval' &&
+      Array.isArray(session?.activityRecordIds) &&
+      session.activityRecordIds.length > 0;
+
+    if (!isPendingApproval) {
+      alert('Create-new is only available for pending-approval sessions.');
+      return;
+    }
+
+    setReassigning(true);
+    try {
+      const result = await invoke('createIssueAndApproveRecords', {
+        sessionIds: session.activityRecordIds,
+        issueSummary: formData.issueSummary,
+        issueDescription: formData.issueDescription,
+        projectKey: formData.projectKey,
+        issueType: formData.issueType,
+        statusName: formData.statusName,
+        assignToSelf: formData.assignToSelf
+      });
+
+      if (result?.success) {
+        await loadActiveIssues();
+        closeReassignModal();
+      } else {
+        alert(`Failed to create issue: ${result?.error || 'unknown error'}`);
+      }
+    } catch (err) {
+      console.error('Error creating issue and reassigning:', err);
+      alert(`Error creating issue: ${err.message}`);
     } finally {
       setReassigning(false);
     }
@@ -328,6 +371,7 @@ function AppContent() {
         reassigning={reassigning}
         onClose={closeReassignModal}
         onReassign={handleReassignSession}
+        onCreateAndReassign={handleCreateAndReassignSession}
       />
 
       <WorklogReassignModal

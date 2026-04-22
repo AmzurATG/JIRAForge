@@ -217,9 +217,17 @@
   </div>
 
   <script>
-    // Token is stored in localStorage so users don't have to re-paste on every
-    // refresh.  Plain localStorage is fine for an internal dashboard but if
-    // you broaden access this should move to a proper session cookie.
+    // SECURITY NOTE — token is in localStorage so users don't re-paste on
+    // every refresh. Acceptable risk only for the current 3-user internal
+    // tool. The ai-server's helmet config sets `script-src 'unsafe-inline'`
+    // (see ai-server/src/index.js), so any reflected/stored XSS on this page
+    // would exfiltrate the Atlassian Bearer token and grant full Atlassian
+    // API access (NOT just dashboard access). Before broadening the
+    // allowlist beyond a small trusted group, replace this with:
+    //   - server-side issued, dashboard-scoped session cookie (HttpOnly,
+    //     Secure, SameSite=Strict), and/or
+    //   - a tightened CSP on the /accuracy-dashboard path that drops
+    //     'unsafe-inline'.
     const TOKEN_KEY = 'accuracy_dashboard_token';
     const tokenInput = document.getElementById('token');
     const daysSelect = document.getElementById('days');

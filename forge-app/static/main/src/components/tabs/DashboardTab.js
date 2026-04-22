@@ -325,6 +325,13 @@ function DashboardTab({ onOpenReassignModal }) {
                     {paginatedIssues.map((issue, idx) => {
                       const trackedSeconds = Number(issue.timeTracked) || 0;
                       const pendingSeconds = Number(issue.pendingApprovalSeconds) || 0;
+                      // pendingApprovalCount is record-count from the backend
+                      // (one per activity_record row).  pendingSessionCount is
+                      // the count of UI-aggregated sessions (multiple records
+                      // collapse into one session within a 10-min gap).  They
+                      // measure different things and are NOT interchangeable —
+                      // we display the session count because that matches what
+                      // the user sees when expanding the row.
                       const pendingCount = Number(issue.pendingApprovalCount) || 0;
                       const pendingSessionCount = (issue.sessions || []).filter(
                         (s) => s.approvalStatus === 'pending_approval'

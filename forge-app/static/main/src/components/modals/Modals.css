@@ -120,6 +120,171 @@
   color: #8993A4;
 }
 
+/* Optional comment / reason field shown above the tabs (pending only) */
+.reassign-reason-label {
+  display: block;
+  font-size: 12px;
+  font-weight: 600;
+  color: #5e6c84;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  margin-bottom: 12px;
+}
+
+.reassign-reason-label .optional-hint {
+  font-weight: 500;
+  color: #8993A4;
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+.reassign-reason-label .reassign-search {
+  margin-top: 4px;
+  margin-bottom: 0;
+}
+
+/* Tab toggle: Existing Issue | Create New */
+.reassign-tabs {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  background: #f4f5f7;
+  border: 1px solid #DFE1E6;
+  border-radius: 6px;
+  padding: 3px;
+  margin-bottom: 16px;
+}
+
+.reassign-tab {
+  background: transparent;
+  border: none;
+  padding: 8px 12px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #5e6c84;
+  cursor: pointer;
+  border-radius: 4px;
+  transition: background 0.15s, color 0.15s;
+}
+
+.reassign-tab:hover:not(:disabled):not(.active) {
+  color: #172b4d;
+}
+
+.reassign-tab.active {
+  background: #ffffff;
+  color: #172b4d;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
+}
+
+.reassign-tab:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* Create-new form */
+.new-issue-form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.new-issue-form label {
+  display: block;
+  font-size: 12px;
+  font-weight: 600;
+  color: #5e6c84;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+}
+
+.new-issue-form .required {
+  color: #cf222e;
+  margin-left: 2px;
+}
+
+.new-issue-form .optional-hint {
+  font-weight: 500;
+  color: #8993A4;
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+.new-issue-form input[type="text"],
+.new-issue-form textarea,
+.new-issue-form select {
+  display: block;
+  width: 100%;
+  margin-top: 4px;
+  padding: 8px 10px;
+  font-size: 13px;
+  font-family: inherit;
+  font-weight: 400;
+  text-transform: none;
+  letter-spacing: 0;
+  color: var(--ds-text);
+  background: #ffffff;
+  border: 1px solid var(--ds-border, #DFE1E6);
+  border-radius: 6px;
+  box-sizing: border-box;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+
+.new-issue-form input[type="text"]:focus,
+.new-issue-form textarea:focus,
+.new-issue-form select:focus {
+  outline: none;
+  border-color: #6656fc;
+  box-shadow: 0 0 0 2px rgba(102, 86, 252, 0.15);
+}
+
+.new-issue-form .form-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+.new-issue-form .checkbox-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--ds-text);
+  text-transform: none;
+  letter-spacing: 0;
+  cursor: pointer;
+}
+
+.new-issue-form .checkbox-label input[type="checkbox"] {
+  margin: 0;
+  width: auto;
+}
+
+.new-issue-form .submit-button {
+  margin-top: 4px;
+  padding: 10px 16px;
+  background: linear-gradient(135deg, #22a06b 0%, #1f845a 100%);
+  color: #ffffff;
+  border: none;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: background 0.15s, transform 0.15s, box-shadow 0.15s;
+}
+
+.new-issue-form .submit-button:hover:not(:disabled) {
+  background: linear-gradient(135deg, #1f845a 0%, #1a6b48 100%);
+  transform: translateY(-1px);
+  box-shadow: 0 2px 6px rgba(34, 160, 107, 0.25);
+}
+
+.new-issue-form .submit-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  transform: none;
+}
+
 .issue-list-modal {
   display: flex;
   flex-direction: column;

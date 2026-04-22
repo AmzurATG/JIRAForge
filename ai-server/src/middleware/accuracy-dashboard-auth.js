@@ -21,6 +21,19 @@ const { getClient } = require('../services/db/supabase-client');
 
 const ATLASSIAN_ME_URL = 'https://api.atlassian.com/me';
 
+// Env-based allowlist (comma-separated emails). Parsed once at module load —
+// changing the env requires a server restart, same as every other env var
+// in this project. Useful for bootstrap or when the DB allowlist is empty.
+function parseEnvAllowlist() {
+  const raw = process.env.ACCURACY_DASHBOARD_ALLOWED_EMAILS || '';
+  return new Set(
+    raw.split(',')
+       .map(e => e.trim().toLowerCase())
+       .filter(Boolean)
+  );
+}
+const ENV_ALLOWLIST = parseEnvAllowlist();
+
 const accuracyDashboardAuth = async (req, res, next) => {
   try {
     // 1. Extract Bearer token
@@ -63,21 +76,27 @@ const accuracyDashboardAuth = async (req, res, next) => {
       });
     }
 
-    // 3. Allowlist lookup
-    const supabase = getClient();
-    if (!supabase) {
-      return res.status(500).json({ success: false, error: 'Database not configured' });
-    }
+    // 3. Allowlist lookup — env list is checked first (cheap, in-memory),
+    // DB table second.  Either match grants access.
+    let allowed = ENV_ALLOWLIST.has(userEmail);
 
-    const { data: allowed, error: lookupError } = await supabase
-      .from('accuracy_dashboard_users')
-      .select('email')
-      .ilike('email', userEmail)
-      .maybeSingle();
+    if (!allowed) {
+      const supabase = getClient();
+      if (!supabase) {
+        return res.status(500).json({ success: false, error: 'Database not configured' });
+      }
 
-    if (lookupError) {
-      logger.error('[AccuracyDashboardAuth] Allowlist lookup failed:', lookupError.message);
-      return res.status(500).json({ success: false, error: 'Authorization check failed' });
+      const { data: dbAllowed, error: lookupError } = await supabase
+        .from('accuracy_dashboard_users')
+        .select('email')
+        .ilike('email', userEmail)
+        .maybeSingle();
+
+      if (lookupError) {
+        logger.error('[AccuracyDashboardAuth] Allowlist lookup failed:', lookupError.message);
+        return res.status(500).json({ success: false, error: 'Authorization check failed' });
+      }
+      allowed = !!dbAllowed;
     }
 
     if (!allowed) {

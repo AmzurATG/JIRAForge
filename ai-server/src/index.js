@@ -123,6 +123,22 @@ const authLimiter = rateLimit({
   }
 });
 
+// REMOVABLE: dedicated limiter for the AI accuracy dashboard. publicLimiter
+// (30/min) is too tight here: each dashboard refresh fires ~6 parallel
+// requests (orgs + 5 panels), and changing a filter retriggers all of them.
+// 200/min comfortably covers a person actively iterating on prompt-tuning
+// while still rate-limiting brute-force token guessing.
+const accuracyDashboardLimiter = rateLimit({
+  windowMs: 1 * 60 * 1000,
+  max: 200,
+  message: 'Too many requests, please slow down.',
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => {
+    return req.ip || req.headers['x-forwarded-for'] || req.connection.remoteAddress || 'unknown';
+  }
+});
+
 // Root endpoint
 app.get('/', publicLimiter, (req, res) => {
   res.json({
@@ -172,16 +188,17 @@ app.get('/admin-dashboard/api/stats', adminDashboardController.requireSession, a
 // =============================================================================
 
 // Page is public (the page itself contains no data — auth happens on the API calls)
-app.get('/accuracy-dashboard', publicLimiter, accuracyDashboardController.servePage);
+app.get('/accuracy-dashboard', accuracyDashboardLimiter, accuracyDashboardController.servePage);
 
 // JSON endpoints — gated by Atlassian token + accuracy_dashboard_users allowlist.
-// Use the general /api/ rate limiter (already applied above), not the auth one.
-app.get('/accuracy-dashboard/api/orgs',             accuracyDashboardAuth, accuracyDashboardController.listOrgs);
-app.get('/accuracy-dashboard/api/summary',          accuracyDashboardAuth, accuracyDashboardController.getSummary);
-app.get('/accuracy-dashboard/api/wrong-pairs',      accuracyDashboardAuth, accuracyDashboardController.getWrongPairs);
-app.get('/accuracy-dashboard/api/by-app',           accuracyDashboardAuth, accuracyDashboardController.getByApp);
-app.get('/accuracy-dashboard/api/calibration',      accuracyDashboardAuth, accuracyDashboardController.getCalibration);
-app.get('/accuracy-dashboard/api/recent-mistakes',  accuracyDashboardAuth, accuracyDashboardController.getRecentMistakes);
+// Uses a dedicated limiter (200/min) because publicLimiter (30/min) is too
+// tight for a dashboard that fires ~6 parallel requests per refresh.
+app.get('/accuracy-dashboard/api/orgs',             accuracyDashboardLimiter, accuracyDashboardAuth, accuracyDashboardController.listOrgs);
+app.get('/accuracy-dashboard/api/summary',          accuracyDashboardLimiter, accuracyDashboardAuth, accuracyDashboardController.getSummary);
+app.get('/accuracy-dashboard/api/wrong-pairs',      accuracyDashboardLimiter, accuracyDashboardAuth, accuracyDashboardController.getWrongPairs);
+app.get('/accuracy-dashboard/api/by-app',           accuracyDashboardLimiter, accuracyDashboardAuth, accuracyDashboardController.getByApp);
+app.get('/accuracy-dashboard/api/calibration',      accuracyDashboardLimiter, accuracyDashboardAuth, accuracyDashboardController.getCalibration);
+app.get('/accuracy-dashboard/api/recent-mistakes',  accuracyDashboardLimiter, accuracyDashboardAuth, accuracyDashboardController.getRecentMistakes);
 
 // =============================================================================
 // LEGAL PAGES (Public - served as HTML from layout + content templates)

@@ -2,12 +2,13 @@
  * AI Accuracy Dashboard Controller — REMOVABLE LAYER
  *
  * Read-only handlers powering the accuracy dashboard.  Every endpoint runs
- * behind accuracy-dashboard-auth (email allowlist).  All queries hit
- * public.ai_accuracy_events directly via the service-role Supabase client; no
- * production tables are touched.
+ * behind accuracy-dashboard-auth (email allowlist).  All aggregations are
+ * pushed down to Postgres via RPCs declared in migration
+ * 20260422_ai_accuracy_aggregations.sql; this controller only shapes the
+ * response.
  *
  * Removal: delete this file, the middleware, the HTML, and the route mounts
- * in src/index.js.
+ * in src/index.js.  Drop the RPCs via a follow-up migration.
  *
  * Endpoints:
  *   GET  /accuracy-dashboard                            HTML page
@@ -32,6 +33,8 @@ const { getClient } = require('../services/db/supabase-client');
 // Helpers
 // ---------------------------------------------------------------------------
 
+const UUID_RE = /^[0-9a-f-]{36}$/i;
+
 function clampInt(value, min, max, fallback) {
   const n = Number.parseInt(value, 10);
   if (!Number.isFinite(n)) return fallback;
@@ -44,11 +47,10 @@ function sinceTimestamp(daysParam) {
   return { days, sinceISO: since.toISOString() };
 }
 
-function applyOrgFilter(builder, orgId) {
-  if (orgId && /^[0-9a-f-]{36}$/i.test(orgId)) {
-    return builder.eq('organization_id', orgId);
-  }
-  return builder;
+// Convert the org query param to either a valid UUID string or null (so the
+// RPC's `p_org IS NULL OR organization_id = p_org` matches all orgs).
+function orgParam(orgId) {
+  return orgId && UUID_RE.test(orgId) ? orgId : null;
 }
 
 function jsonError(res, status, message) {
@@ -72,27 +74,23 @@ exports.listOrgs = async (req, res) => {
     const supabase = getClient();
     if (!supabase) return jsonError(res, 500, 'Database not configured');
 
-    // Pull distinct organizations that have at least one accuracy event.
-    // No date window — the dropdown should reflect all orgs that have ever
-    // produced events, so the user can drill into historical data.
-    const { data, error } = await supabase
-      .from('ai_accuracy_events')
-      .select('organization_id')
-      .limit(10000);
-
+    // RPC returns DISTINCT organization_id values — bounded by the number of
+    // distinct orgs that have produced events, not by total event count.
+    const { data: orgRows, error } = await supabase.rpc('get_accuracy_event_orgs');
     if (error) throw error;
 
-    const orgIds = [...new Set((data || []).map(r => r.organization_id).filter(Boolean))];
+    const orgIds = (orgRows || []).map(r => r.organization_id).filter(Boolean);
 
-    // Resolve display names from organizations table (best-effort).
+    // Resolve display names from organizations table (best-effort).  Falls
+    // back to the org UUID if the name lookup fails or is missing.
     let orgs = orgIds.map(id => ({ id, name: id }));
     if (orgIds.length > 0) {
-      const { data: orgRows } = await supabase
+      const { data: orgNames } = await supabase
         .from('organizations')
         .select('id, name, jira_cloud_id')
         .in('id', orgIds);
-      if (orgRows) {
-        const byId = new Map(orgRows.map(o => [o.id, o]));
+      if (orgNames) {
+        const byId = new Map(orgNames.map(o => [o.id, o]));
         orgs = orgIds.map(id => ({
           id,
           name: byId.get(id)?.name || byId.get(id)?.jira_cloud_id || id
@@ -117,48 +115,39 @@ exports.getSummary = async (req, res) => {
     if (!supabase) return jsonError(res, 500, 'Database not configured');
 
     const { days, sinceISO } = sinceTimestamp(req.query.days);
-    const orgId = req.query.org;
 
-    let q = supabase
-      .from('ai_accuracy_events')
-      .select('event_type, ai_suggested_issue_key, duration_seconds')
-      .gte('created_at', sinceISO);
-    q = applyOrgFilter(q, orgId);
-
-    const { data, error } = await q.limit(100000);
+    const { data, error } = await supabase.rpc('get_accuracy_summary', {
+      p_org: orgParam(req.query.org),
+      p_since: sinceISO
+    });
     if (error) throw error;
 
-    const rows = data || [];
+    // RPC returns one row per (event_type, has_suggestion) bucket.  Collapse
+    // into the shape the dashboard expects.
     const counts = {
       approved_as_is: 0,
       reassigned: 0,
       manually_assigned_with_suggestion: 0,
       manually_assigned_no_suggestion: 0
     };
-    let approvedSeconds = 0;
-    let reassignedSeconds = 0;
-    let manuallyAssignedSeconds = 0;
+    const durations = { approved: 0, reassigned: 0, manually_assigned: 0 };
+    let totalEvents = 0;
 
-    for (const r of rows) {
-      switch (r.event_type) {
-        case 'approved_as_is':
-          counts.approved_as_is += 1;
-          approvedSeconds += r.duration_seconds || 0;
-          break;
-        case 'reassigned':
-          counts.reassigned += 1;
-          reassignedSeconds += r.duration_seconds || 0;
-          break;
-        case 'manually_assigned':
-          if (r.ai_suggested_issue_key) {
-            counts.manually_assigned_with_suggestion += 1;
-          } else {
-            counts.manually_assigned_no_suggestion += 1;
-          }
-          manuallyAssignedSeconds += r.duration_seconds || 0;
-          break;
-        default:
-          break;
+    for (const row of (data || [])) {
+      const c = Number(row.event_count) || 0;
+      const s = Number(row.total_seconds) || 0;
+      totalEvents += c;
+
+      if (row.event_type === 'approved_as_is') {
+        counts.approved_as_is += c;
+        durations.approved += s;
+      } else if (row.event_type === 'reassigned') {
+        counts.reassigned += c;
+        durations.reassigned += s;
+      } else if (row.event_type === 'manually_assigned') {
+        if (row.has_suggestion) counts.manually_assigned_with_suggestion += c;
+        else                    counts.manually_assigned_no_suggestion += c;
+        durations.manually_assigned += s;
       }
     }
 
@@ -169,21 +158,15 @@ exports.getSummary = async (req, res) => {
       counts.approved_as_is +
       counts.reassigned +
       counts.manually_assigned_with_suggestion;
-    const accuracyRate = decided > 0
-      ? counts.approved_as_is / decided
-      : null;
+    const accuracyRate = decided > 0 ? counts.approved_as_is / decided : null;
 
     return res.json({
       success: true,
       days,
       counts,
       accuracy_rate: accuracyRate,
-      duration_seconds: {
-        approved: approvedSeconds,
-        reassigned: reassignedSeconds,
-        manually_assigned: manuallyAssignedSeconds
-      },
-      total_events: rows.length
+      duration_seconds: durations,
+      total_events: totalEvents
     });
   } catch (err) {
     logger.error('[AccuracyDashboard] getSummary failed:', err.message);
@@ -201,33 +184,19 @@ exports.getWrongPairs = async (req, res) => {
     if (!supabase) return jsonError(res, 500, 'Database not configured');
 
     const { days, sinceISO } = sinceTimestamp(req.query.days);
-    const orgId = req.query.org;
-    const limit = clampInt(req.query.limit, 1, 200, 25);
 
-    let q = supabase
-      .from('ai_accuracy_events')
-      .select('ai_suggested_issue_key, final_issue_key')
-      .eq('event_type', 'reassigned')
-      .gte('created_at', sinceISO);
-    q = applyOrgFilter(q, orgId);
-
-    const { data, error } = await q.limit(50000);
+    const { data, error } = await supabase.rpc('get_accuracy_wrong_pairs', {
+      p_org: orgParam(req.query.org),
+      p_since: sinceISO,
+      p_limit: clampInt(req.query.limit, 1, 200, 25)
+    });
     if (error) throw error;
 
-    const counts = new Map();
-    for (const r of (data || [])) {
-      if (!r.ai_suggested_issue_key) continue;  // no AI guess to learn from
-      const key = `${r.ai_suggested_issue_key}|${r.final_issue_key}`;
-      counts.set(key, (counts.get(key) || 0) + 1);
-    }
-
-    const pairs = [...counts.entries()]
-      .map(([key, count]) => {
-        const [from, to] = key.split('|');
-        return { from, to, count };
-      })
-      .sort((a, b) => b.count - a.count)
-      .slice(0, limit);
+    const pairs = (data || []).map(r => ({
+      from: r.ai_suggested_issue_key,
+      to: r.final_issue_key,
+      count: Number(r.pair_count) || 0
+    }));
 
     return res.json({ success: true, days, pairs });
   } catch (err) {
@@ -246,39 +215,28 @@ exports.getByApp = async (req, res) => {
     if (!supabase) return jsonError(res, 500, 'Database not configured');
 
     const { days, sinceISO } = sinceTimestamp(req.query.days);
-    const orgId = req.query.org;
-    const limit = clampInt(req.query.limit, 1, 200, 25);
 
-    let q = supabase
-      .from('ai_accuracy_events')
-      .select('event_type, application_name')
-      .gte('created_at', sinceISO);
-    q = applyOrgFilter(q, orgId);
-
-    const { data, error } = await q.limit(100000);
+    const { data, error } = await supabase.rpc('get_accuracy_by_app', {
+      p_org: orgParam(req.query.org),
+      p_since: sinceISO,
+      p_limit: clampInt(req.query.limit, 1, 200, 25)
+    });
     if (error) throw error;
 
-    const byApp = new Map();
-    for (const r of (data || [])) {
-      const app = (r.application_name || '(unknown)').toLowerCase();
-      const cur = byApp.get(app) || { app, right: 0, wrong: 0, manually_assigned: 0 };
-      if (r.event_type === 'approved_as_is') cur.right += 1;
-      else if (r.event_type === 'reassigned') cur.wrong += 1;
-      else if (r.event_type === 'manually_assigned') cur.manually_assigned += 1;
-      byApp.set(app, cur);
-    }
-
-    const apps = [...byApp.values()]
-      .map(a => {
-        const decided = a.right + a.wrong;
-        return {
-          ...a,
-          accuracy_rate: decided > 0 ? a.right / decided : null,
-          total: decided + a.manually_assigned
-        };
-      })
-      .sort((a, b) => b.wrong - a.wrong)
-      .slice(0, limit);
+    const apps = (data || []).map(r => {
+      const right = Number(r.right_count) || 0;
+      const wrong = Number(r.wrong_count) || 0;
+      const manuallyAssigned = Number(r.manually_assigned_count) || 0;
+      const decided = right + wrong;
+      return {
+        app: r.application_name,
+        right,
+        wrong,
+        manually_assigned: manuallyAssigned,
+        accuracy_rate: decided > 0 ? right / decided : null,
+        total: decided + manuallyAssigned
+      };
+    });
 
     return res.json({ success: true, days, apps });
   } catch (err) {
@@ -289,6 +247,12 @@ exports.getByApp = async (req, res) => {
 
 // ---------------------------------------------------------------------------
 // Calibration — does AI confidence predict actual accuracy?
+//
+// Includes manually_assigned events that had a non-null AI suggestion (the
+// AI tried but the user picked something different in the unassigned-work
+// flow — that's also a confidence-vs-outcome signal).  RPC returns one row
+// per non-empty bucket; we re-pad to the full 10 buckets so the dashboard
+// renders an even axis.
 // ---------------------------------------------------------------------------
 
 exports.getCalibration = async (req, res) => {
@@ -297,42 +261,27 @@ exports.getCalibration = async (req, res) => {
     if (!supabase) return jsonError(res, 500, 'Database not configured');
 
     const { days, sinceISO } = sinceTimestamp(req.query.days);
-    const orgId = req.query.org;
 
-    let q = supabase
-      .from('ai_accuracy_events')
-      .select('event_type, ai_confidence_score')
-      .in('event_type', ['approved_as_is', 'reassigned'])
-      .not('ai_confidence_score', 'is', null)
-      .gte('created_at', sinceISO);
-    q = applyOrgFilter(q, orgId);
-
-    const { data, error } = await q.limit(100000);
+    const { data, error } = await supabase.rpc('get_accuracy_calibration', {
+      p_org: orgParam(req.query.org),
+      p_since: sinceISO
+    });
     if (error) throw error;
 
-    // Ten 0.1-wide buckets covering [0.0, 1.0].  Confidences > 1 land in the
-    // top bucket; < 0 land in the bottom.
-    const buckets = Array.from({ length: 10 }, (_, i) => ({
-      bucket_min: i / 10,
-      bucket_max: (i + 1) / 10,
-      right: 0,
-      wrong: 0
-    }));
-
+    const byBucket = new Map();
     for (const r of (data || [])) {
-      const c = Math.max(0, Math.min(0.999999, Number(r.ai_confidence_score)));
-      const idx = Math.floor(c * 10);
-      const bucket = buckets[idx];
-      if (r.event_type === 'approved_as_is') bucket.right += 1;
-      else if (r.event_type === 'reassigned') bucket.wrong += 1;
+      byBucket.set(Number(r.bucket), {
+        sample_count: Number(r.sample_count) || 0,
+        right_count: Number(r.right_count) || 0
+      });
     }
 
-    const series = buckets.map(b => {
-      const total = b.right + b.wrong;
+    const series = Array.from({ length: 10 }, (_, i) => {
+      const b = byBucket.get(i) || { sample_count: 0, right_count: 0 };
       return {
-        bucket_label: `${(b.bucket_min * 100).toFixed(0)}-${(b.bucket_max * 100).toFixed(0)}%`,
-        sample_count: total,
-        actual_accuracy: total > 0 ? b.right / total : null
+        bucket_label: `${i * 10}-${(i + 1) * 10}%`,
+        sample_count: b.sample_count,
+        actual_accuracy: b.sample_count > 0 ? b.right_count / b.sample_count : null
       };
     });
 
@@ -344,7 +293,12 @@ exports.getCalibration = async (req, res) => {
 };
 
 // ---------------------------------------------------------------------------
-// Recent mistakes — last N reassigned events for prompt-tuning context
+// Recent mistakes — last N AI-was-wrong events for prompt-tuning context
+//
+// Includes both 'reassigned' and 'manually_assigned' events that had an AI
+// suggestion (the manually_assigned-with-suggestion case is also "AI got it
+// wrong" — the user disagreed with the AI's pick when assigning unassigned
+// work).
 // ---------------------------------------------------------------------------
 
 exports.getRecentMistakes = async (req, res) => {
@@ -352,16 +306,17 @@ exports.getRecentMistakes = async (req, res) => {
     const supabase = getClient();
     if (!supabase) return jsonError(res, 500, 'Database not configured');
 
-    const orgId = req.query.org;
     const limit = clampInt(req.query.limit, 1, 200, 50);
+    const orgId = orgParam(req.query.org);
 
     let q = supabase
       .from('ai_accuracy_events')
-      .select('id, created_at, ai_suggested_issue_key, final_issue_key, ai_confidence_score, application_name, window_title, classification, duration_seconds, metadata')
-      .eq('event_type', 'reassigned')
+      .select('id, created_at, event_type, ai_suggested_issue_key, final_issue_key, ai_confidence_score, application_name, window_title, classification, duration_seconds, metadata')
+      .in('event_type', ['reassigned', 'manually_assigned'])
+      .not('ai_suggested_issue_key', 'is', null)
       .order('created_at', { ascending: false })
       .limit(limit);
-    q = applyOrgFilter(q, orgId);
+    if (orgId) q = q.eq('organization_id', orgId);
 
     const { data, error } = await q;
     if (error) throw error;

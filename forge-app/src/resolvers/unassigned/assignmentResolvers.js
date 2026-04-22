@@ -132,11 +132,20 @@ async function createWorklogIfNeeded({ issueKey, timeToLog, sessionCount, autoSy
 async function updateSessionsAndAnalysis({ validSessionIds, issueKey, userId, organizationId, supabaseConfig, groupId }) {
   const sessionIdsParam = validSessionIds.join(',');
 
-  // REMOVABLE: pre-fetch activity_records context for AI accuracy events.
-  // Fetched BEFORE the PATCH so we can capture the AI's prior suggestion
-  // (user_assigned_issue_key) before it's overwritten.  Skipped entirely when
-  // tracking is disabled so production cost is zero.
+  // REMOVABLE: pre-fetch context for AI accuracy events.
+  // validSessionIds may contain IDs from EITHER table:
+  //   - activity_records  (new pipeline, hybrid OCR/event-based)
+  //   - unassigned_activity (legacy screenshot pipeline)
+  // We query both and union — UUIDs are unique across tables so no collision.
+  // Skipped entirely when tracking is disabled so production cost is zero.
+  //
+  // The two SELECTs run independently (separate try/catch each) so a failure
+  // in one doesn't drop the other's events. Filters mirror the actual PATCH
+  // filters below so we only emit events for rows the PATCHes will actually
+  // touch (org filter on unassigned_activity, no org filter on activity_records
+  // to match the existing helper's worklog-sync pattern).
   let priorActivityRows = [];
+  let priorUnassignedRows = [];
   if (isAccuracyTrackingEnabled()) {
     try {
       priorActivityRows = ensureArray(await supabaseRequest(
@@ -145,9 +154,22 @@ async function updateSessionsAndAnalysis({ validSessionIds, issueKey, userId, or
         `&select=id,user_assigned_issue_key,duration_seconds,total_time_seconds,window_title,application_name,classification,metadata`
       ));
     } catch (err) {
-      // Pre-fetch failure must not block the assignment.  Just skip events.
-      console.warn('[updateSessions] accuracy pre-fetch failed (non-fatal):', err.message);
-      priorActivityRows = [];
+      console.warn('[updateSessions] accuracy pre-fetch (activity_records) failed (non-fatal):', err.message);
+    }
+    try {
+      // Legacy path — confidence_score on unassigned_activity is OCR/detection
+      // confidence (not issue-classification confidence) so we deliberately
+      // do NOT map it to ai_confidence_score.  ai_suggested_issue_key is left
+      // NULL because the legacy schema doesn't carry a single AI-picked key
+      // on this table.
+      priorUnassignedRows = ensureArray(await supabaseRequest(
+        supabaseConfig,
+        `unassigned_activity?id=in.(${sessionIdsParam})&user_id=eq.${userId}` +
+        `&organization_id=eq.${organizationId}` +
+        `&select=id,window_title,application_name,time_spent_seconds`
+      ));
+    } catch (err) {
+      console.warn('[updateSessions] accuracy pre-fetch (unassigned_activity) failed (non-fatal):', err.message);
     }
   }
 
@@ -214,13 +236,17 @@ async function updateSessionsAndAnalysis({ validSessionIds, issueKey, userId, or
     console.error(`[updateSessions] Error updating activity_records:`, error);
   }
 
-  // REMOVABLE: emit one accuracy event per activity record that the user just
-  // assigned to an issue.  ai_suggested_issue_key may be NULL (AI never
-  // classified this work) or non-null (AI suggested but user picked something
-  // different in the unassigned-work flow). The dashboard distinguishes these
-  // two cases when computing "AI never classified" vs "AI classified wrong".
-  if (priorActivityRows.length > 0) {
-    const events = priorActivityRows.map(r => ({
+  // REMOVABLE: emit one accuracy event per record that the user just assigned.
+  //
+  // For activity_records rows: ai_suggested_issue_key may be set (AI suggested
+  // but user picked something different) or NULL (AI never classified).
+  //
+  // For unassigned_activity rows: ai_suggested_issue_key is always NULL
+  // because the legacy pipeline doesn't carry a single AI-picked key on the
+  // row itself.  These events still feed "AI never classified" totals on the
+  // dashboard, which is the right semantic for the legacy path.
+  const events = [
+    ...priorActivityRows.map(r => ({
       organizationId,
       userId,
       eventType: 'manually_assigned',
@@ -232,8 +258,24 @@ async function updateSessionsAndAnalysis({ validSessionIds, issueKey, userId, or
       windowTitle: r.window_title,
       applicationName: r.application_name,
       classification: r.classification,
-      metadata: groupId ? { group_id: groupId } : null
-    }));
+      metadata: groupId ? { group_id: groupId, source: 'activity_records' } : { source: 'activity_records' }
+    })),
+    ...priorUnassignedRows.map(r => ({
+      organizationId,
+      userId,
+      eventType: 'manually_assigned',
+      activityRecordId: r.id,
+      aiSuggestedIssueKey: null,
+      aiConfidenceScore: null,
+      finalIssueKey: issueKey,
+      durationSeconds: r.time_spent_seconds || 0,
+      windowTitle: r.window_title,
+      applicationName: r.application_name,
+      classification: null,
+      metadata: groupId ? { group_id: groupId, source: 'unassigned_activity' } : { source: 'unassigned_activity' }
+    }))
+  ];
+  if (events.length > 0) {
     await recordAccuracyEvents(supabaseConfig, events);
   }
 
@@ -1085,6 +1127,9 @@ export async function bulkReassignByTimeInterval(req) {
     const queryLowerUtc = encodeURIComponent(new Date(windowStartMs - dayMs).toISOString());
     const queryUpperUtc = encodeURIComponent(new Date(windowEndMs).toISOString());
 
+    // The accuracy-tracking layer needs window_title / application_name /
+    // classification / metadata to populate events.  Pulling them in the same
+    // SELECT keeps this to a single round trip; the extra columns are tiny.
     const records = ensureArray(await supabaseRequest(
       supabaseConfig,
       `activity_records?user_id=eq.${userId}&organization_id=eq.${organization.id}` +
@@ -1093,11 +1138,13 @@ export async function bulkReassignByTimeInterval(req) {
       `&status=in.(pending,processing,analyzed)` +
       `&classification=in.(productive,unknown)` +
       `&clustering_dismissed=eq.false` +
-      `&select=id,user_assigned_issue_key,start_time,end_time,total_time_seconds,duration_seconds` +
+      `&select=id,user_assigned_issue_key,start_time,end_time,total_time_seconds,duration_seconds,window_title,application_name,classification,metadata` +
       `&order=start_time.asc&limit=1000`
     ));
 
     const matchedIds = [];
+    const matchedRecords = [];   // REMOVABLE: accuracy events
+    const matchedAttribution = []; // REMOVABLE: per-record pro-rated seconds
     let totalAttributed = 0;
     let previouslyAssignedCount = 0;
 
@@ -1108,6 +1155,8 @@ export async function bulkReassignByTimeInterval(req) {
       totalAttributed += attribution.attributed;
       if (r.user_assigned_issue_key !== null) previouslyAssignedCount++;
       matchedIds.push(r.id);
+      matchedRecords.push(r);
+      matchedAttribution.push(attribution.attributed);
     }
 
     if (matchedIds.length === 0) {
@@ -1131,6 +1180,42 @@ export async function bulkReassignByTimeInterval(req) {
       }
     );
     console.log(`[bulkReassignByTimeInterval] Updated ${matchedIds.length} activity_records`);
+
+    // REMOVABLE: emit one accuracy event per matched record.  Records that
+    // were previously assigned to a different issue map to 'reassigned' (AI
+    // got it wrong); previously-unassigned records map to 'manually_assigned'
+    // (AI never classified).  We use the pro-rated `attributed` seconds — not
+    // the full record duration — so the dashboard's time totals reconcile
+    // with what was actually logged.
+    //
+    // Caveat on 'reassigned' semantics here: user_assigned_issue_key !== null
+    // doesn't strictly prove the AI suggested that key — a previous manual
+    // assignment also sets it.  We treat all such cases as 'reassigned'
+    // because (a) bulk-reassign-by-interval is overwhelmingly used to FIX
+    // mis-tracked AI classifications, and (b) the "wrong pairs" panel is
+    // meant to surface tracking errors regardless of source.  If you ever
+    // need clean AI-only attribution, gate on `metadata?.confidenceScore`
+    // being present.
+    if (isAccuracyTrackingEnabled() && matchedRecords.length > 0) {
+      const events = matchedRecords.map((r, i) => {
+        const wasAssigned = r.user_assigned_issue_key !== null;
+        return {
+          organizationId: organization.id,
+          userId,
+          eventType: wasAssigned ? 'reassigned' : 'manually_assigned',
+          activityRecordId: r.id,
+          aiSuggestedIssueKey: wasAssigned ? r.user_assigned_issue_key : null,
+          aiConfidenceScore: r.metadata?.confidenceScore ?? null,
+          finalIssueKey: targetIssueKey,
+          durationSeconds: matchedAttribution[i] || 0,
+          windowTitle: r.window_title,
+          applicationName: r.application_name,
+          classification: r.classification,
+          metadata: { source: 'bulk_time_interval' }
+        };
+      });
+      await recordAccuracyEvents(supabaseConfig, events);
+    }
 
     // Worklog uses the pro-rated total so logged time matches what the preview showed.
     const autoSyncEnabled = await isAutoSyncEnabled(accountId, cloudId);
