@@ -22,6 +22,9 @@ const aiService = require('./services/ai');
 const activityController = require('./controllers/activity-controller');
 const adminDashboardController = require('./controllers/admin-dashboard-controller');
 const activityPollingService = require('./services/activity-polling-service');
+// REMOVABLE: AI accuracy tracking dashboard.
+const accuracyDashboardController = require('./controllers/accuracy-dashboard-controller');
+const accuracyDashboardAuth = require('./middleware/accuracy-dashboard-auth');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -160,6 +163,25 @@ app.post('/admin-dashboard/api/login', authLimiter, adminDashboardController.log
 
 // Dashboard API — protected by session token
 app.get('/admin-dashboard/api/stats', adminDashboardController.requireSession, adminDashboardController.getStats);
+
+// =============================================================================
+// AI ACCURACY DASHBOARD — REMOVABLE LAYER
+// Internal measurement tool, gated by accuracy_dashboard_users email allowlist.
+// Delete this whole block plus the controller/middleware/HTML/migration to
+// remove the layer entirely. See plan/AI_ACCURACY_TRACKING_IMPLEMENTATION_PLAN.md.
+// =============================================================================
+
+// Page is public (the page itself contains no data — auth happens on the API calls)
+app.get('/accuracy-dashboard', publicLimiter, accuracyDashboardController.servePage);
+
+// JSON endpoints — gated by Atlassian token + accuracy_dashboard_users allowlist.
+// Use the general /api/ rate limiter (already applied above), not the auth one.
+app.get('/accuracy-dashboard/api/orgs',             accuracyDashboardAuth, accuracyDashboardController.listOrgs);
+app.get('/accuracy-dashboard/api/summary',          accuracyDashboardAuth, accuracyDashboardController.getSummary);
+app.get('/accuracy-dashboard/api/wrong-pairs',      accuracyDashboardAuth, accuracyDashboardController.getWrongPairs);
+app.get('/accuracy-dashboard/api/by-app',           accuracyDashboardAuth, accuracyDashboardController.getByApp);
+app.get('/accuracy-dashboard/api/calibration',      accuracyDashboardAuth, accuracyDashboardController.getCalibration);
+app.get('/accuracy-dashboard/api/recent-mistakes',  accuracyDashboardAuth, accuracyDashboardController.getRecentMistakes);
 
 // =============================================================================
 // LEGAL PAGES (Public - served as HTML from layout + content templates)

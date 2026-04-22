@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useMemo, useState } from 'react';
 import { formatTime } from '../../utils';
 
 /**
@@ -13,13 +13,38 @@ function SessionReassignModal({
   onClose,
   onReassign
 }) {
-  if (!isOpen || !sessionToReassign) return null;
+  const [searchQuery, setSearchQuery] = useState('');
 
-  // Filter to show only "In Progress" issues (excluding the current issue)
-  const filteredIssues = activeIssues.filter(
-    issue => issue.key !== sessionToReassign.fromIssueKey &&
-             issue.status?.toLowerCase() === 'in progress'
-  );
+  // Show every active issue except the source — sorted with In Progress first
+  // so the most likely targets stay at the top, then To Do, then everything
+  // else (Done at the bottom). Searchable so the list is usable even when
+  // the user has hundreds of active issues.
+  const sortedIssues = useMemo(() => {
+    if (!sessionToReassign) return [];
+    const statusRank = (status) => {
+      const s = (status || '').toLowerCase();
+      if (s === 'in progress') return 0;
+      if (s === 'to do' || s === 'open' || s === 'backlog') return 1;
+      if (s === 'done' || s === 'closed' || s === 'resolved') return 3;
+      return 2;
+    };
+    return activeIssues
+      .filter(issue => issue.key !== sessionToReassign.fromIssueKey)
+      .slice()
+      .sort((a, b) => statusRank(a.status) - statusRank(b.status));
+  }, [activeIssues, sessionToReassign]);
+
+  const filteredIssues = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase();
+    if (!q) return sortedIssues;
+    return sortedIssues.filter(issue =>
+      issue.key.toLowerCase().includes(q) ||
+      (issue.summary || '').toLowerCase().includes(q) ||
+      (issue.status || '').toLowerCase().includes(q)
+    );
+  }, [sortedIssues, searchQuery]);
+
+  if (!isOpen || !sessionToReassign) return null;
 
   return (
     <div className="modal-overlay" onClick={onClose}>
@@ -34,6 +59,14 @@ function SessionReassignModal({
             <strong>{sessionToReassign.fromIssueKey}</strong>
           </p>
           <p className="reassign-prompt">Select the issue to reassign this time to:</p>
+          <input
+            type="text"
+            className="reassign-search"
+            placeholder="Search by key, title, or status…"
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            autoFocus
+          />
           <div className="issue-list-modal">
             {filteredIssues.map(issue => (
               <button
@@ -50,7 +83,11 @@ function SessionReassignModal({
               </button>
             ))}
             {filteredIssues.length === 0 && (
-              <p className="empty-state">No other issues available for reassignment.</p>
+              <p className="empty-state">
+                {searchQuery
+                  ? `No issues match "${searchQuery}".`
+                  : 'No other issues available for reassignment.'}
+              </p>
             )}
           </div>
         </div>

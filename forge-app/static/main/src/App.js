@@ -50,14 +50,28 @@ function AppContent() {
   const handleReassignSession = async (toIssueKey) => {
     if (!sessionToReassign || reassigning) return;
 
+    const { session, fromIssueKey } = sessionToReassign;
+    const isPendingApproval =
+      session?.approvalStatus === 'pending_approval' &&
+      Array.isArray(session?.activityRecordIds) &&
+      session.activityRecordIds.length > 0;
+
     setReassigning(true);
     try {
-      const result = await invoke('reassignSession', {
-        analysisResultIds: sessionToReassign.session.analysisResultIds,
-        fromIssueKey: sessionToReassign.fromIssueKey,
-        toIssueKey: toIssueKey,
-        totalSeconds: sessionToReassign.session.duration
-      });
+      // Pending-approval rows live in activity_records and reassign+approve in
+      // a single PATCH via reassignAndApproveRecords. Legacy screenshot-based
+      // sessions (analysis_results) keep the original reassignSession path.
+      const result = isPendingApproval
+        ? await invoke('reassignAndApproveRecords', {
+            sessionIds: session.activityRecordIds,
+            newIssueKey: toIssueKey
+          })
+        : await invoke('reassignSession', {
+            analysisResultIds: session.analysisResultIds,
+            fromIssueKey: fromIssueKey,
+            toIssueKey: toIssueKey,
+            totalSeconds: session.duration
+          });
 
       if (result.success) {
         await loadActiveIssues();

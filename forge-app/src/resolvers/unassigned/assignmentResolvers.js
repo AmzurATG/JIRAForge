@@ -10,6 +10,8 @@ import { formatDuration, formatJiraDate } from '../../utils/formatters.js';
 import { isValidUUID, isValidIssueKey, isValidProjectKey, isValidDate, sanitizeUUIDArray } from '../../utils/validators.js';
 import { getTrackingSettings } from '../../services/settingsService.js';
 import { initializeRequestContext, handleResolverError, ensureArray } from './helpers.js';
+// REMOVABLE: AI accuracy tracking layer.
+import { recordAccuracyEvents, isAccuracyTrackingEnabled } from '../../services/accuracy/accuracyTracking.js';
 
 // Module-level constants
 const JIRA_MIN_WORKLOG_SECONDS = 60;
@@ -129,7 +131,26 @@ async function createWorklogIfNeeded({ issueKey, timeToLog, sessionCount, autoSy
  */
 async function updateSessionsAndAnalysis({ validSessionIds, issueKey, userId, organizationId, supabaseConfig, groupId }) {
   const sessionIdsParam = validSessionIds.join(',');
-  
+
+  // REMOVABLE: pre-fetch activity_records context for AI accuracy events.
+  // Fetched BEFORE the PATCH so we can capture the AI's prior suggestion
+  // (user_assigned_issue_key) before it's overwritten.  Skipped entirely when
+  // tracking is disabled so production cost is zero.
+  let priorActivityRows = [];
+  if (isAccuracyTrackingEnabled()) {
+    try {
+      priorActivityRows = ensureArray(await supabaseRequest(
+        supabaseConfig,
+        `activity_records?id=in.(${sessionIdsParam})&user_id=eq.${userId}` +
+        `&select=id,user_assigned_issue_key,duration_seconds,total_time_seconds,window_title,application_name,classification,metadata`
+      ));
+    } catch (err) {
+      // Pre-fetch failure must not block the assignment.  Just skip events.
+      console.warn('[updateSessions] accuracy pre-fetch failed (non-fatal):', err.message);
+      priorActivityRows = [];
+    }
+  }
+
   // SECURITY: Verify sessions belong to current user and organization before updating
   const updatedActivities = await supabaseRequest(
     supabaseConfig,
@@ -192,7 +213,30 @@ async function updateSessionsAndAnalysis({ validSessionIds, issueKey, userId, or
   } catch (error) {
     console.error(`[updateSessions] Error updating activity_records:`, error);
   }
-  
+
+  // REMOVABLE: emit one accuracy event per activity record that the user just
+  // assigned to an issue.  ai_suggested_issue_key may be NULL (AI never
+  // classified this work) or non-null (AI suggested but user picked something
+  // different in the unassigned-work flow). The dashboard distinguishes these
+  // two cases when computing "AI never classified" vs "AI classified wrong".
+  if (priorActivityRows.length > 0) {
+    const events = priorActivityRows.map(r => ({
+      organizationId,
+      userId,
+      eventType: 'manually_assigned',
+      activityRecordId: r.id,
+      aiSuggestedIssueKey: r.user_assigned_issue_key || null,
+      aiConfidenceScore: r.metadata?.confidenceScore ?? null,
+      finalIssueKey: issueKey,
+      durationSeconds: r.duration_seconds || r.total_time_seconds || 0,
+      windowTitle: r.window_title,
+      applicationName: r.application_name,
+      classification: r.classification,
+      metadata: groupId ? { group_id: groupId } : null
+    }));
+    await recordAccuracyEvents(supabaseConfig, events);
+  }
+
   return analysisResultIds.length;
 }
 

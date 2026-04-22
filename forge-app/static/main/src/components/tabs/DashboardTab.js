@@ -21,9 +21,23 @@ function DashboardTab({ onOpenReassignModal }) {
   const [searchQuery, setSearchQuery] = useState('');
   const [currentPage, setCurrentPage] = useState(1);
   const [approvingSessionId, setApprovingSessionId] = useState(null);
+  const [approvingIssueKey, setApprovingIssueKey] = useState(null);
   const itemsPerPage = 10;
 
   const pendingReviewCount = activeIssues.filter(i => i.hasPendingApproval).length;
+  const isPendingReviewView = issueFilter === 'pending-review';
+
+  const collectPendingSessionIds = (issue) => {
+    if (!issue?.sessions?.length) return [];
+    const ids = [];
+    for (const session of issue.sessions) {
+      if (session.approvalStatus !== 'pending_approval') continue;
+      for (const id of (session.activityRecordIds || [])) {
+        if (id) ids.push(id);
+      }
+    }
+    return ids;
+  };
 
   const handleApproveSession = async (session) => {
     const ids = session.activityRecordIds;
@@ -42,6 +56,39 @@ function DashboardTab({ onOpenReassignModal }) {
     } finally {
       setApprovingSessionId(null);
     }
+  };
+
+  const handleApproveAllForIssue = async (issue) => {
+    if (approvingIssueKey) return;
+    const ids = collectPendingSessionIds(issue);
+    if (ids.length === 0) return;
+    setApprovingIssueKey(issue.key);
+    try {
+      const res = await invoke('approveRecords', { sessionIds: ids });
+      if (res?.success) {
+        await loadActiveIssues();
+      } else {
+        alert(`Failed to approve: ${res?.error || 'unknown error'}`);
+      }
+    } catch (err) {
+      alert(`Error approving issue time: ${err.message}`);
+    } finally {
+      setApprovingIssueKey(null);
+    }
+  };
+
+  // Open the reassign modal for *every* pending session of an issue at once.
+  // We synthesise a session whose activityRecordIds contain all pending IDs;
+  // App.js's handleReassignSession routes it through reassignAndApproveRecords.
+  const handleReassignAllForIssue = (issue) => {
+    const ids = collectPendingSessionIds(issue);
+    if (ids.length === 0) return;
+    const bundledSession = {
+      activityRecordIds: ids,
+      duration: Number(issue.pendingApprovalSeconds) || 0,
+      approvalStatus: 'pending_approval'
+    };
+    onOpenReassignModal(bundledSession, issue.key);
   };
 
   useEffect(() => {
@@ -249,10 +296,19 @@ function DashboardTab({ onOpenReassignModal }) {
           </div>
         </div>
 
-        {issuesLoading ? (
+        {issuesLoading && activeIssues.length === 0 ? (
+          // Only show the full-page loader on the FIRST load. Subsequent
+          // refetches (after Approve all, Reassign, status change, etc.) keep
+          // the table visible so the user doesn't lose expanded rows or
+          // scroll position. A subtle inline indicator covers in-flight state.
           <p className="loading-text">Loading issues...</p>
         ) : (
           <>
+            {issuesLoading && (
+              <div className="refresh-indicator" aria-live="polite">
+                Refreshing…
+              </div>
+            )}
             {filteredIssues.length > 0 ? (
               <div className="issues-table-container">
                 <table className="issues-table">
@@ -268,8 +324,15 @@ function DashboardTab({ onOpenReassignModal }) {
                   <tbody>
                     {paginatedIssues.map((issue, idx) => {
                       const trackedSeconds = Number(issue.timeTracked) || 0;
+                      const pendingSeconds = Number(issue.pendingApprovalSeconds) || 0;
+                      const pendingCount = Number(issue.pendingApprovalCount) || 0;
+                      const pendingSessionCount = (issue.sessions || []).filter(
+                        (s) => s.approvalStatus === 'pending_approval'
+                      ).length;
                       const hasTrackedTime = trackedSeconds > 0;
-                      
+                      const showPendingCell = isPendingReviewView && pendingCount > 0;
+                      const isApprovingThisIssue = approvingIssueKey === issue.key;
+
                       return (
                       <React.Fragment key={idx}>
                         <tr className={issue.sessions?.length > 0 ? 'expandable-row' : ''}>
@@ -310,8 +373,56 @@ function DashboardTab({ onOpenReassignModal }) {
                               {issue.priority}
                             </span>
                           </td>
-                          <td className={`issue-time ${hasTrackedTime ? 'has-time' : 'no-time'}`}>
-                            {hasTrackedTime ? (
+                          <td className={`issue-time ${showPendingCell ? 'pending-cell' : (hasTrackedTime ? 'has-time' : 'no-time')}`}>
+                            {showPendingCell ? (
+                              <div className="pending-approval-cell">
+                                <div className="pending-approval-meta">
+                                  <span className="pending-approval-amount">{formatTime(pendingSeconds)}</span>
+                                  <span className="pending-approval-label">
+                                    awaiting approval · {pendingSessionCount} {pendingSessionCount === 1 ? 'session' : 'sessions'}
+                                  </span>
+                                </div>
+                                <div className="pending-approval-actions">
+                                  <button
+                                    className="approve-all-button"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      handleApproveAllForIssue(issue);
+                                    }}
+                                    disabled={isApprovingThisIssue || !!approvingIssueKey}
+                                    title={`Approve all ${pendingSessionCount} pending ${pendingSessionCount === 1 ? 'session' : 'sessions'} for ${issue.key}`}
+                                  >
+                                    {isApprovingThisIssue ? (
+                                      'Approving…'
+                                    ) : (
+                                      <>
+                                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                                          <polyline points="20 6 9 17 4 12"></polyline>
+                                        </svg>
+                                        <span>Approve all</span>
+                                      </>
+                                    )}
+                                  </button>
+                                  <button
+                                    className="reassign-all-button"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      handleReassignAllForIssue(issue);
+                                    }}
+                                    disabled={isApprovingThisIssue || !!approvingIssueKey}
+                                    title={`Move all pending time on ${issue.key} to a different issue`}
+                                  >
+                                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                      <polyline points="17 1 21 5 17 9"></polyline>
+                                      <path d="M3 11V9a4 4 0 0 1 4-4h14"></path>
+                                      <polyline points="7 23 3 19 7 15"></polyline>
+                                      <path d="M21 13v2a4 4 0 0 1-4 4H3"></path>
+                                    </svg>
+                                    <span>Reassign all</span>
+                                  </button>
+                                </div>
+                              </div>
+                            ) : hasTrackedTime ? (
                               <span className="issue-time-value">{formatTime(trackedSeconds)}</span>
                             ) : (
                               <span className="no-time-indicator">No time logged</span>
@@ -445,19 +556,38 @@ function DashboardTab({ onOpenReassignModal }) {
                                                   </div>
                                                   <div className="session-actions">
                                                     {isPendingReview && (
-                                                      <button
-                                                        className="approve-button"
-                                                        onClick={(e) => {
-                                                          e.stopPropagation();
-                                                          handleApproveSession(session);
-                                                        }}
-                                                        disabled={isApprovingThisSession}
-                                                        title="Approve — time will sync to Jira on the next hourly sync"
-                                                      >
-                                                        {isApprovingThisSession ? 'Approving…' : 'Approve'}
-                                                      </button>
+                                                      <>
+                                                        <button
+                                                          className="approve-button"
+                                                          onClick={(e) => {
+                                                            e.stopPropagation();
+                                                            handleApproveSession(session);
+                                                          }}
+                                                          disabled={isApprovingThisSession}
+                                                          title="Approve — time will sync to Jira on the next hourly sync"
+                                                        >
+                                                          {isApprovingThisSession ? 'Approving…' : 'Approve'}
+                                                        </button>
+                                                        <button
+                                                          className="reassign-text-button"
+                                                          onClick={(e) => {
+                                                            e.stopPropagation();
+                                                            onOpenReassignModal(session, issue.key);
+                                                          }}
+                                                          disabled={isApprovingThisSession}
+                                                          title="Wrong issue? Move this session's time to a different issue"
+                                                        >
+                                                          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                                            <polyline points="17 1 21 5 17 9"></polyline>
+                                                            <path d="M3 11V9a4 4 0 0 1 4-4h14"></path>
+                                                            <polyline points="7 23 3 19 7 15"></polyline>
+                                                            <path d="M21 13v2a4 4 0 0 1-4 4H3"></path>
+                                                          </svg>
+                                                          <span>Reassign</span>
+                                                        </button>
+                                                      </>
                                                     )}
-                                                    {session.analysisResultIds?.length > 0 && (
+                                                    {!isPendingReview && session.analysisResultIds?.length > 0 && (
                                                       <button
                                                         className="reassign-button"
                                                         onClick={(e) => {
