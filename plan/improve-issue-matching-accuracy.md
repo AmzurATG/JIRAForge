@@ -290,13 +290,114 @@ AI_MATCH_MIN_CONFIDENCE=0.3
 
 ---
 
-### Fix 11: Reclassify Short Idle as "Reading"
+### Fix 11: Reclassify Idle on Reading/Documentation Windows as Productive
 
-**Priority:** Medium  
-**Effort:** ~20 lines  
-**File:** `python-desktop-app/desktop_app.py` — idle detection (~line 4841)
+**Priority:** High  
+**Effort:** ~30 lines  
+**File:** `python-desktop-app/desktop_app.py` — `_create_idle_record()` at line 9377
 
-If idle duration < 120 seconds and the last active window was a Jira/documentation page, tag as "reading" instead of idle. Include the last active window title as context in the next active record.
+**Problem:** When a user reads documentation, reviews a PR, or reads a Jira ticket for 30–60 minutes without touching the mouse/keyboard, the current logic classifies it as idle time. The 5-minute idle timeout (`self.idle_timeout = 300` at line 4841) cannot distinguish "user reading" from "user left for coffee." This causes significant productive time loss — a 1-hour documentation reading session produces a 55-minute idle record that never goes to the LLM.
+
+**Affected activities:** Reading Confluence docs, reviewing GitHub PRs, reading Jira tickets, reading Google Docs/Notion, reviewing emails, watching training videos.
+
+**Current behavior:**
+```
+10:00 — User opens Confluence in Chrome (active record starts)
+10:05 — 5 min idle threshold hit → idle starts, active record ends (~5 min)
+11:00 — User moves mouse → 55-min idle record created (classification: 'idle', status: 'analyzed')
+         → Never sent to LLM, pure dead time
+```
+
+**Fix:** In `_create_idle_record()`, check `self.current_window_key` (format: `"app_name|||window_title"`, set at line 8914) to detect if the user went idle on a reading/documentation window. If so, create a productive record instead of idle:
+
+```python
+READING_URLS = {
+    'jira', 'atlassian.net', 'confluence', 'notion.so', 'docs.google.com',
+    'github.com/pull', 'github.com/issues', 'gitlab.com/merge_requests',
+    'stackoverflow.com', 'developer.mozilla.org', 'learn.microsoft.com',
+    'readme.md', 'wiki'
+}
+
+# Max idle duration to reclassify as reading (30 minutes).
+# Beyond this, it's more likely the user actually left.
+MAX_READING_IDLE_SECONDS = 1800
+
+def _create_idle_record(self, reason="idle timeout"):
+    # ... existing validation (idle_start_time check, duration < 60 skip, work hours check) ...
+
+    # Detect reading/documentation activity during idle
+    is_reading = False
+    reading_title = None
+    reading_app = None
+    if (idle_duration <= MAX_READING_IDLE_SECONDS
+            and self.current_window_key
+            and '|||' in self.current_window_key):
+        last_app, last_title = self.current_window_key.split('|||', 1)
+        if any(url in last_title.lower() for url in READING_URLS):
+            is_reading = True
+            reading_title = last_title
+            reading_app = last_app
+
+    if is_reading:
+        # Create a productive record instead of idle — this gets sent to LLM for matching
+        record = {
+            'user_id': self.current_user_id,
+            'organization_id': self.organization_id,
+            'window_title': reading_title,
+            'application_name': reading_app,
+            'classification': 'productive',
+            'is_idle': False,
+            'start_time': self.idle_start_time.isoformat(),
+            'end_time': idle_end.isoformat(),
+            'duration_seconds': idle_duration,
+            'total_time_seconds': idle_duration,
+            'work_date': _utc_ts_to_local_date(self.idle_start_time.isoformat()),
+            'user_timezone': get_local_timezone_name(),
+            'project_key': project_key,
+            'status': 'pending',  # Send to LLM for issue matching
+            'metadata': {
+                'tracking_mode': 'reading_detection',
+                'idle_reason': reason,
+                'original_classification': 'idle',
+                'app_version': self.app_version
+            }
+        }
+        self._pending_idle_records.append(record)
+        print(f"[READING] Reclassified idle as reading: {reading_title} ({idle_duration}s)")
+        self.idle_start_time = None
+        return
+
+    # ... existing idle record creation (unchanged) ...
+```
+
+**Behavior after fix:**
+```
+10:00 — User opens Confluence in Chrome (active record starts)
+10:05 — 5 min idle threshold hit → idle starts, active record ends (~5 min)
+11:00 — User moves mouse → _create_idle_record() called
+         → Detects current_window_key = "chrome.exe|||API Design - confluence.atlassian.net"
+         → idle_duration = 3300s (55 min) ≤ MAX_READING_IDLE_SECONDS (1800s)? NO → stays idle
+```
+
+Wait — 55 min exceeds 30 min cap. For a 1-hour session the cap matters. Adjust to handle this:
+
+```
+10:00 — Opens Confluence (active record: ~5 min)
+10:05 — Idle starts on Confluence window
+10:35 — 30 min cap: create reading record (30 min, productive, status: pending)
+         → idle_start_time reset to 10:35
+11:00 — User moves mouse → remaining 25 min idle record (classification: idle)
+```
+
+**Alternative (simpler):** Set `MAX_READING_IDLE_SECONDS = 3600` (1 hour) and accept that some "left for lunch from Confluence" time may be counted as reading. This is a better tradeoff than losing all documentation reading time.
+
+**Why this works:**
+- `self.current_window_key` is set at line 8914 when the user switches windows, and persists through the idle period
+- `_create_idle_record()` already has access to `self.current_window_key` — no new data needed
+- Records created with `status: 'pending'` enter the normal LLM matching pipeline
+- Uses `classification: 'productive'` (valid enum value) with `metadata.tracking_mode: 'reading_detection'` for differentiation
+
+**Expected recovery:** 15–45 minutes per user per day for documentation-heavy roles (QA, analysts, support).
 
 ---
 
@@ -336,7 +437,7 @@ Include file path (for IDEs) or URL (for browsers) in the session key to prevent
 | Fix | Effort | Files |
 |-----|--------|-------|
 | Fix 9: project_key in LLM context | ~3 lines | `activity-polling-service.js` |
-| Fix 11: Short idle → reading | ~20 lines | `desktop_app.py` |
+| Fix 11: Idle on reading windows → productive | ~30 lines | `desktop_app.py` |
 | Fix 12: Richer session keys | ~10 lines | `desktop_app.py` |
 
 ---
