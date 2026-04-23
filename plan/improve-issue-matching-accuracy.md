@@ -290,15 +290,15 @@ AI_MATCH_MIN_CONFIDENCE=0.3
 
 ---
 
-### Fix 11: Reclassify Idle on Reading/Documentation Windows as Productive
+### Fix 11: LLM-Based Idle Classification (No Hardcoded URL/App Lists)
 
 **Priority:** High  
-**Effort:** ~30 lines  
+**Effort:** ~40 lines  
 **File:** `python-desktop-app/desktop_app.py` — `_create_idle_record()` at line 9377
 
-**Problem:** When a user reads documentation, reviews a PR, or reads a Jira ticket for 30–60 minutes without touching the mouse/keyboard, the current logic classifies it as idle time. The 5-minute idle timeout (`self.idle_timeout = 300` at line 4841) cannot distinguish "user reading" from "user left for coffee." This causes significant productive time loss — a 1-hour documentation reading session produces a 55-minute idle record that never goes to the LLM.
+**Problem:** When a user reads documentation, reviews a PR, reads a Jira ticket, or attends a meeting for 30–60 minutes without touching mouse/keyboard, the current logic classifies it as idle time. The 5-minute idle timeout (`self.idle_timeout = 300` at line 4841) cannot distinguish "user reading" from "user left for coffee." This causes significant productive time loss — a 1-hour documentation reading session produces a 55-minute idle record that never goes to the LLM.
 
-**Affected activities:** Reading Confluence docs, reviewing GitHub PRs, reading Jira tickets, reading Google Docs/Notion, reviewing emails, watching training videos.
+**Affected activities:** Reading Confluence docs, reviewing GitHub PRs, reading Jira tickets, reading Google Docs/Notion, reviewing emails, watching training videos, attending Zoom/Teams/Meet calls, reviewing PDFs/Word docs.
 
 **Current behavior:**
 ```
@@ -308,44 +308,87 @@ AI_MATCH_MIN_CONFIDENCE=0.3
          → Never sent to LLM, pure dead time
 ```
 
-**Fix:** In `_create_idle_record()`, check `self.current_window_key` (format: `"app_name|||window_title"`, set at line 8914) to detect if the user went idle on a reading/documentation window. If so, create a productive record instead of idle:
+**Key facts about current idle detection:**
+- Mouse movement, mouse click, scroll, and keyboard press ALL reset the idle timer via pynput hooks (line 9432–9449). They are **not** differentiated — all call the same `on_activity` callback.
+- Therefore, if a user goes idle for 5+ minutes, they truly had **zero input of any kind.** The issue is that reading/meetings genuinely produce zero input, not that we're missing input signals.
+- Current idle records are created with `status: 'analyzed'` — they **never reach the LLM.**
+
+**Architecture: 3-Gate Classification**
+
+Instead of maintaining brittle URL/app lists that require constant updates and can never cover internal wikis, custom tools, or offline documents, let the LLM decide. It already has the user's Jira issues and can determine if a window title represents productive work.
+
+```
+Idle detected (5 min no input)
+       │
+       ▼
+┌─────────────────────────┐
+│  Gate 1: Skip Patterns   │  Lock screen, logon, desktop, empty title
+│  (instant → idle)        │  → classification: 'idle', status: 'analyzed'
+└──────────┬──────────────┘
+           │ Not skipped
+           ▼
+┌─────────────────────────┐
+│  Gate 2: Duration Cap    │  idle_duration > MAX_IDLE_FOR_LLM (3600s = 1 hour)
+│  (instant → idle)        │  → Too long, almost certainly away
+└──────────┬──────────────┘
+           │ Under cap
+           ▼
+┌─────────────────────────┐
+│  Gate 3: Send to LLM     │  Create record with window title context
+│                          │  classification: 'unknown', status: 'pending'
+│                          │  LLM classifies using Jira issues + title
+└─────────────────────────┘
+```
+
+**Why no URL/app lists:**
+- Can never be exhaustive (internal wikis, custom portals, PDFs in Acrobat, local .md files)
+- Requires maintenance as new tools are adopted
+- Different organizations use different tools
+- The LLM already has the context to make this decision — window titles like "API Design - Confluence" or "Sprint Planning - Google Meet" are obvious to classify
+
+**Fix:** In `_create_idle_record()`, apply the 3-gate classification:
 
 ```python
-READING_URLS = {
-    'jira', 'atlassian.net', 'confluence', 'notion.so', 'docs.google.com',
-    'github.com/pull', 'github.com/issues', 'gitlab.com/merge_requests',
-    'stackoverflow.com', 'developer.mozilla.org', 'learn.microsoft.com',
-    'readme.md', 'wiki'
-}
+# OS-level screens that are NEVER productive — tiny, stable, never changes
+IDLE_SKIP_PATTERNS = frozenset({
+    'lock screen', 'windows default lock', 'screensaver',
+    'logonui', 'logon', 'windows security', 'user account control',
+    'task switching', 'task view',
+})
 
-# Max idle duration to reclassify as reading (30 minutes).
-# Beyond this, it's more likely the user actually left.
-MAX_READING_IDLE_SECONDS = 1800
+# Maximum idle duration to send to LLM for classification.
+# Beyond this, the user almost certainly left — no point asking the LLM.
+MAX_IDLE_FOR_LLM_SECONDS = 3600  # 1 hour
 
 def _create_idle_record(self, reason="idle timeout"):
     # ... existing validation (idle_start_time check, duration < 60 skip, work hours check) ...
 
-    # Detect reading/documentation activity during idle
-    is_reading = False
-    reading_title = None
-    reading_app = None
-    if (idle_duration <= MAX_READING_IDLE_SECONDS
-            and self.current_window_key
-            and '|||' in self.current_window_key):
-        last_app, last_title = self.current_window_key.split('|||', 1)
-        if any(url in last_title.lower() for url in READING_URLS):
-            is_reading = True
-            reading_title = last_title
-            reading_app = last_app
+    # --- Gate 1: Skip OS-level screens (always idle, don't waste LLM tokens) ---
+    last_app = None
+    last_title = None
+    should_send_to_llm = False
 
-    if is_reading:
-        # Create a productive record instead of idle — this gets sent to LLM for matching
+    if (self.current_window_key and '|||' in self.current_window_key):
+        last_app, last_title = self.current_window_key.split('|||', 1)
+        title_lower = last_title.lower().strip() if last_title else ''
+
+        # Skip: OS screens, empty titles, bare desktop
+        is_os_screen = any(p in title_lower for p in IDLE_SKIP_PATTERNS)
+        is_empty = not title_lower or title_lower in ('', 'desktop', 'program manager')
+
+        if not is_os_screen and not is_empty:
+            # --- Gate 2: Duration cap ---
+            if idle_duration <= MAX_IDLE_FOR_LLM_SECONDS:
+                should_send_to_llm = True
+
+    if should_send_to_llm:
+        # Create record for LLM classification — it will decide productive vs idle
         record = {
             'user_id': self.current_user_id,
             'organization_id': self.organization_id,
-            'window_title': reading_title,
-            'application_name': reading_app,
-            'classification': 'productive',
+            'window_title': last_title,
+            'application_name': last_app,
+            'classification': 'unknown',   # LLM will reclassify
             'is_idle': False,
             'start_time': self.idle_start_time.isoformat(),
             'end_time': idle_end.isoformat(),
@@ -354,50 +397,86 @@ def _create_idle_record(self, reason="idle timeout"):
             'work_date': _utc_ts_to_local_date(self.idle_start_time.isoformat()),
             'user_timezone': get_local_timezone_name(),
             'project_key': project_key,
-            'status': 'pending',  # Send to LLM for issue matching
+            'status': 'pending',           # Enters LLM pipeline
             'metadata': {
-                'tracking_mode': 'reading_detection',
+                'tracking_mode': 'idle_for_llm_review',
                 'idle_reason': reason,
+                'idle_duration_seconds': idle_duration,
                 'original_classification': 'idle',
                 'app_version': self.app_version
             }
         }
         self._pending_idle_records.append(record)
-        print(f"[READING] Reclassified idle as reading: {reading_title} ({idle_duration}s)")
+        print(f"[IDLE→LLM] Sending idle for LLM review: {last_title} ({idle_duration}s)")
         self.idle_start_time = None
         return
 
-    # ... existing idle record creation (unchanged) ...
+    # ... existing idle record creation (unchanged — genuine idle) ...
 ```
 
-**Behavior after fix:**
+**AI Server prompt addition** (in `buildBatchAnalysisPrompt()`, `activity-service.js`):
+
+```
+IDLE REVIEW RECORDS: Records with tracking_mode "idle_for_llm_review" represent periods
+where the user had no keyboard/mouse input but an application was visible. Use the window
+title and application name to determine if this was likely productive activity (reading docs,
+attending a meeting, reviewing code) or genuine idle time (user walked away). For reading/
+meeting activities, match to the most relevant Jira issue. Assign LOWER confidence for longer
+idle durations — a 7-minute idle on Confluence is likely reading (confidence 0.5-0.6), while
+a 45-minute idle on Confluence is less certain (confidence 0.2-0.3). If the window title
+clearly indicates non-work content, classify as idle with no task match.
+```
+
+**Behavior after fix — Reading scenario:**
 ```
 10:00 — User opens Confluence in Chrome (active record starts)
 10:05 — 5 min idle threshold hit → idle starts, active record ends (~5 min)
 11:00 — User moves mouse → _create_idle_record() called
-         → Detects current_window_key = "chrome.exe|||API Design - confluence.atlassian.net"
-         → idle_duration = 3300s (55 min) ≤ MAX_READING_IDLE_SECONDS (1800s)? NO → stays idle
+         → Gate 1: "API Design - confluence.atlassian.net" ≠ skip pattern ✓
+         → Gate 2: 3300s ≤ 3600s ✓
+         → Gate 3: Record created (classification: 'unknown', status: 'pending')
+         → LLM sees title + user's Jira issues → matches to relevant ticket
+         → LLM assigns lower confidence due to 55-min duration (~0.3)
+         → With Fix 1 (threshold 0.3), this gets matched
 ```
 
-Wait — 55 min exceeds 30 min cap. For a 1-hour session the cap matters. Adjust to handle this:
-
+**Behavior after fix — Meeting scenario:**
 ```
-10:00 — Opens Confluence (active record: ~5 min)
-10:05 — Idle starts on Confluence window
-10:35 — 30 min cap: create reading record (30 min, productive, status: pending)
-         → idle_start_time reset to 10:35
-11:00 — User moves mouse → remaining 25 min idle record (classification: idle)
+14:00 — User joins Google Meet (active record starts)
+14:05 — 5 min idle threshold hit → idle starts
+15:00 — Meeting ends, user moves mouse → _create_idle_record()
+         → Gate 1: "Sprint Planning - Google Meet" ≠ skip pattern ✓
+         → Gate 2: 3300s ≤ 3600s ✓
+         → Gate 3: Record created → LLM matches to sprint-related issue
 ```
 
-**Alternative (simpler):** Set `MAX_READING_IDLE_SECONDS = 3600` (1 hour) and accept that some "left for lunch from Confluence" time may be counted as reading. This is a better tradeoff than losing all documentation reading time.
+**Behavior after fix — Lock screen:**
+```
+12:00 — User locks screen for lunch
+13:00 — User unlocks → _create_idle_record(reason="screen lock")
+         → Gate 1: title contains "lock screen" → SKIP
+         → Existing idle record created (status: 'analyzed'), never hits LLM ✓
+```
 
-**Why this works:**
-- `self.current_window_key` is set at line 8914 when the user switches windows, and persists through the idle period
-- `_create_idle_record()` already has access to `self.current_window_key` — no new data needed
-- Records created with `status: 'pending'` enter the normal LLM matching pipeline
-- Uses `classification: 'productive'` (valid enum value) with `metadata.tracking_mode: 'reading_detection'` for differentiation
+**Behavior after fix — 2-hour away:**
+```
+10:00 — User on Confluence, walks away
+12:00 — Returns → _create_idle_record()
+         → Gate 1: "Confluence" ≠ skip pattern ✓
+         → Gate 2: 7200s > 3600s → SKIP (too long)
+         → Existing idle record created ✓
+```
 
-**Expected recovery:** 15–45 minutes per user per day for documentation-heavy roles (QA, analysts, support).
+**Cost impact:** Idle records sent to LLM have no OCR text (lightweight). At ~4-6 extra records per user per day for a 50-user team = 200-300 extra LLM calls/day. With Gemini 2.0 Flash, this is <$1/day. The value recovered (15-45 min/user/day of productive time) far exceeds the cost.
+
+**Why this is better than URL/app lists:**
+- **Zero maintenance** — no list to update when new docs sites or tools are adopted
+- **Handles everything** — internal wikis, PDFs in Acrobat, Word docs, custom portals, meeting apps
+- **Context-aware** — LLM sees the user's actual Jira issues and can match "API Design - Confluence" to the right ticket
+- **Duration-aware** — LLM naturally assigns lower confidence for longer idle periods
+- **Skip patterns are stable** — OS-level screens (lock, logon, screensaver) genuinely never change, unlike app/URL lists
+
+**Expected recovery:** 15–45 minutes per user per day for documentation-heavy and meeting-heavy roles (QA, analysts, PMs, support).
 
 ---
 
@@ -408,6 +487,64 @@ Wait — 55 min exceeds 30 min cap. For a 1-hour session the cap matters. Adjust
 **File:** `python-desktop-app/desktop_app.py:4206` — session resumption query
 
 Include file path (for IDEs) or URL (for browsers) in the session key to prevent collapsing unrelated work under the same generic window title.
+
+---
+
+### Fix 13: Allow Users to Assign Unassigned/Idle Records from Forge UI
+
+**Priority:** Medium  
+**Effort:** ~40 lines  
+**Files:** `forge-app/src/resolvers/approval/approvalResolvers.js`, `forge-app/static/main/` (React UI)
+
+**Problem:** The existing approval system (`approveRecords`, `reassignAndApproveRecords`, `createIssueAndApproveRecords`) only works on records that already have an assigned issue (`approval_status: 'pending_approval'`). Unassigned records and idle records have no override path — users can't say "this idle time was actually ESW-6489 work."
+
+With Fix 11 sending more idle records to the LLM, some will still come back unmatched. Users need a way to manually assign these.
+
+**Fix:** Add an "Assign" action to the Unassigned Work panel in the Forge UI:
+
+1. New resolver: `assignUnassignedRecords(recordIds, issueKey)` — sets `task_key`, `approval_status: 'approved'`, `user_assigned_issue_key`
+2. UI: Add an "Assign to Issue" button in the Unassigned Work panel with issue key picker
+3. Track these corrections via `recordAccuracyEvents()` to measure how often the LLM fails vs. succeeds on idle-origin records
+
+**Why:** Closes the feedback loop. Even the best LLM classification won't be 100% accurate. Users need a fallback.
+
+**Future enhancement:** Feed user corrections back into the LLM prompt as few-shot examples for per-user tuning.
+
+---
+
+### Fix 14: Audio-Based Meeting Detection (Future)
+
+**Priority:** Low  
+**Effort:** ~30 lines + new dependency (`pycaw`)  
+**File:** `python-desktop-app/desktop_app.py` — idle detection loop
+
+**Problem:** Fix 11 handles meetings via LLM classification of window titles ("Sprint Planning - Google Meet" → productive). This works for ~90% of cases. The remaining 10% are edge cases:
+- User on a call but window title is generic ("Google Chrome")
+- Screen sharing where the meeting app isn't the foreground window
+
+**Fix:** Use `pycaw` (Windows Core Audio API) to detect if the meeting app's audio session is active:
+
+```python
+from pycaw.pycaw import AudioUtilities
+
+def is_meeting_audio_active(foreground_pid):
+    """Check if the foreground app has an active audio session."""
+    sessions = AudioUtilities.GetAllSessions()
+    for session in sessions:
+        if (session.Process
+                and session.Process.pid == foreground_pid
+                and session.State == 1):  # AudioSessionStateActive
+            return True
+    return False
+```
+
+**Critical:** Must correlate audio PID with foreground window PID. Without this, background Spotify/YouTube Music triggers false positives.
+
+**Why deferred to Phase 4:**
+- Adds a new dependency (`pycaw` → `comtypes` → Windows COM DLLs)
+- Requires PyInstaller spec changes and testing across Windows versions
+- Fix 11's LLM approach already handles 90% of meeting cases via window title
+- Can be added incrementally without changing the architecture
 
 ---
 
@@ -432,13 +569,20 @@ Include file path (for IDEs) or URL (for browsers) in the session key to prevent
 | Fix 7: Issue list to 30, sorted | ~10 lines | `prompts.js` |
 | Fix 8: Flag low-confidence OCR | ~5 lines | `activity-service.js` |
 
-### Phase 3 — Desktop App Enhancements
+### Phase 3 — Desktop App + Idle Recovery
 
 | Fix | Effort | Files |
 |-----|--------|-------|
 | Fix 9: project_key in LLM context | ~3 lines | `activity-polling-service.js` |
-| Fix 11: Idle on reading windows → productive | ~30 lines | `desktop_app.py` |
+| Fix 11: LLM-based idle classification (3-gate) | ~40 lines | `desktop_app.py` + `activity-service.js` (prompt) |
 | Fix 12: Richer session keys | ~10 lines | `desktop_app.py` |
+| Fix 13: Assign unassigned/idle from UI | ~40 lines | `approvalResolvers.js` + React UI |
+
+### Phase 4 — Future Enhancements
+
+| Fix | Effort | Files |
+|-----|--------|-------|
+| Fix 14: Audio-based meeting detection | ~30 lines + pycaw dep | `desktop_app.py` |
 
 ---
 
