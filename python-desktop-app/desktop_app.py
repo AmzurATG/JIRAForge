@@ -333,7 +333,7 @@ load_dotenv()
 
 # Application version - IMPORTANT: Update this when releasing new versions
 # This is used for update checking and notifications
-APP_VERSION = "1.4.5"
+APP_VERSION = "1.4.7"
 
 # Hard-disable screenshot monitoring/storage in desktop app.
 # OCR text extraction for activity records still runs via event-based flow.
@@ -642,13 +642,15 @@ def verify_download_checksum(file_path, expected_checksum):
         print(f"  Actual:   {actual_checksum}")
         return False
 
-def show_update_notification(update_info, callback=None, state='available'):
+def show_update_notification(update_info, callback=None, state='available', web_port=None):
     """
     Show a Windows toast notification about available update.
     
     Args:
         update_info: Dict with update information from check_for_updates()
         callback: Optional callback function to call when notification is clicked
+        state: Current update state ('available', 'downloading', 'ready', 'mandatory_ready', 'failed')
+        web_port: Local web server port for notification click actions
     """
     if not WINOTIFY_AVAILABLE:
         print(f"[INFO] Update available: v{update_info.get('latest_version')} (notifications not available)")
@@ -659,15 +661,18 @@ def show_update_notification(update_info, callback=None, state='available'):
         release_notes = update_info.get('release_notes', 'A new version is available.') or 'A new version is available.'
         is_mandatory = update_info.get('is_mandatory', False)
 
+        # Determine the launch URL for notification click
+        install_url = f"http://localhost:{web_port}/api/update/install" if web_port else None
+
         if state == 'downloading':
             title = "Update Available"
             release_notes = f"Update v{latest_version} available - downloading in background..."
         elif state == 'ready':
             title = "Update Ready"
-            release_notes = f"Update v{latest_version} is ready to install. Open tray menu to install now."
+            release_notes = f"Update v{latest_version} is ready to install. Click to install now."
         elif state == 'mandatory_ready':
             title = "Update Required"
-            release_notes = f"Required update v{latest_version} is ready. Tracking paused until updated."
+            release_notes = f"Required update v{latest_version} is ready. Click to install now."
         elif state == 'failed':
             title = "Update Failed"
             release_notes = "Update download failed. The app will retry later."
@@ -684,6 +689,10 @@ def show_update_notification(update_info, callback=None, state='available'):
         )
         
         notification.set_audio(audio.Default, loop=False)
+
+        # Add clickable action buttons for actionable states
+        if install_url and state in ('ready', 'mandatory_ready'):
+            notification.add_actions(label="Install Now", launch=install_url)
         
         notification.show()
         
@@ -5025,7 +5034,7 @@ class TimeTracker:
             version_changed = latest_version and self._last_notified_update_version != latest_version
             state_changed = self._last_update_notification_state != state
             if version_changed or state_changed:
-                show_update_notification(update_info, state=state)
+                show_update_notification(update_info, state=state, web_port=self.web_port)
                 self._last_update_notification_state = state
                 self._last_notified_update_version = latest_version
 
@@ -5930,6 +5939,26 @@ class TimeTracker:
                 'consent_version': ConsentManager.CONSENT_VERSION,
                 'consent_info': consent_info
             })
+
+        # ============================================================================
+        # UPDATE INSTALL API (triggered from notification click)
+        # ============================================================================
+
+        @self.app.route('/api/update/install')
+        def trigger_update_install():
+            """Trigger update installation from notification click."""
+            if not self.update_manager:
+                return "No update manager available", 503
+            status = self.update_manager.get_status()
+            state = status.get('state', 'idle')
+            if state in ('ready', 'mandatory_ready', 'deferred'):
+                threading.Thread(target=self.update_manager.apply_update, daemon=True).start()
+                return "<html><body><h2>Installing update...</h2><p>The application will restart shortly.</p></body></html>", 200
+            elif state == 'downloading':
+                progress = int((status.get('progress', 0) or 0) * 100)
+                return f"<html><body><h2>Download in progress ({progress}%)</h2><p>The update will be installed automatically when download completes.</p></body></html>", 200
+            else:
+                return "<html><body><h2>No update available</h2><p>You are running the latest version.</p></body></html>", 200
 
         # ============================================================================
         # APPLICATION DETECTION API (for Admin App Classification)
@@ -10643,12 +10672,6 @@ class TimeTracker:
         def install_update_action():
             self.update_manager.apply_update()
 
-        def cancel_download_action():
-            self.update_manager.cancel_download()
-
-        def defer_update_action():
-            self.update_manager.defer_update()
-
         status = self.update_manager.get_status() if self.update_manager else {'state': 'idle'}
         state = status.get('state', 'idle')
         info = status.get('update_info') or {}
@@ -10657,12 +10680,10 @@ class TimeTracker:
 
         if state == 'downloading':
             menu_items.append(item(lambda text: f"Downloading v{latest} ({progress}%) - Current: v{self.app_version}", lambda: None, enabled=False))
-            menu_items.append(item('Cancel Download', cancel_download_action))
         elif state == 'mandatory_ready':
             menu_items.append(item(lambda text: f"Current: v{self.app_version} → Update Available: v{latest} (Required)", install_update_action))
         elif state in ('ready', 'deferred'):
             menu_items.append(item(lambda text: f"Current: v{self.app_version} → Update Available: v{latest}", install_update_action))
-            menu_items.append(item('Later', defer_update_action))
         else:
             menu_items.append(item(lambda text: f"Up to Date (v{self.app_version})", check_updates_action))
 
