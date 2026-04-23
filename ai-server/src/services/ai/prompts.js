@@ -18,10 +18,25 @@ function formatAssignedIssues(userAssignedIssues) {
     return 'None - track all work';
   }
 
-  return userAssignedIssues
-    .slice(0, 20) // Limit to first 20 issues to avoid token limits
+  // Sort by recency (newest first) then limit to 30 issues
+  const sorted = [...userAssignedIssues].sort((a, b) => {
+    const aDate = a.updated ? new Date(a.updated).getTime() : 0;
+    const bDate = b.updated ? new Date(b.updated).getTime() : 0;
+    return bDate - aDate;
+  });
+
+  return sorted
+    .slice(0, 30)
     .map(issue => {
       let issueText = `- ${issue.key}: ${issue.summary} (Status: ${issue.status})`;
+
+      // Add recency signal so LLM deprioritizes stale issues
+      if (issue.updated) {
+        const daysAgo = Math.floor((Date.now() - new Date(issue.updated).getTime()) / 86400000);
+        if (daysAgo > 14) {
+          issueText += ` [Last updated: ${daysAgo} days ago — likely inactive]`;
+        }
+      }
 
       // Add description if available (provides important context)
       if (issue.description && issue.description.trim()) {

@@ -159,12 +159,19 @@ serve(async (req) => {
       }
     }
 
-    // Priority: Record-embedded issues (fresh at capture time) > Cache (may be stale)
-    const issuesForAnalysis = recordIssues.length > 0
-      ? recordIssues
-      : userAssignedIssues;
+    // Priority: Merge both record-embedded (fresh) and cached issues, deduplicate by key.
+    // Record-embedded issues may be hours old. Cache may have newer assignments. Merging gives widest coverage.
+    const mergedIssues = [...recordIssues];
+    const seenKeys = new Set(recordIssues.map((i: any) => i.key));
+    for (const cached of userAssignedIssues) {
+      if (!seenKeys.has((cached as any).key)) {
+        mergedIssues.push(cached);
+        seenKeys.add((cached as any).key);
+      }
+    }
+    const issuesForAnalysis = mergedIssues.length > 0 ? mergedIssues : userAssignedIssues;
 
-    console.log(`Using ${recordIssues.length > 0 ? 'record-embedded' : 'cache'} issues for analysis (${issuesForAnalysis.length} issues)`);
+    console.log(`Using merged issues for analysis (${issuesForAnalysis.length} issues: ${recordIssues.length} record-embedded + ${issuesForAnalysis.length - recordIssues.length} from cache)`);
 
     // Send ALL records to AI server in a single /api/analyze-batch call
     try {

@@ -6751,7 +6751,7 @@ class TimeTracker:
                 # so we still fetch assigned issues from all other projects
                 if configured_projects:
                     not_in_list = ', '.join([f'"{pk}"' for pk in configured_projects])
-                    catch_all = f'(project NOT IN ({not_in_list}) AND statusCategory = "In Progress")'
+                    catch_all = f'(project NOT IN ({not_in_list}) AND statusCategory = "In Progress" AND updated >= -30d)'
                     project_clauses.append(catch_all)
                 
                 # Combine all project clauses with OR
@@ -6762,7 +6762,7 @@ class TimeTracker:
 
         # Fallback: Use statusCategory if no project settings
         print("[INFO] No project settings, using statusCategory = 'In Progress'")
-        return 'assignee = currentUser() AND statusCategory = "In Progress"'
+        return 'assignee = currentUser() AND statusCategory = "In Progress" AND updated >= -30d'
 
     def fetch_issues_from_cache(self):
         """Read user's issues from user_jira_issues_cache in Supabase.
@@ -6885,7 +6885,7 @@ class TimeTracker:
                 if not issues:
                     print("!!!DEBUG!!! Entering fallback JQL block for assigned issues.")
                     # Fallback: broad status-based query covering all project types (software, service desk, business)
-                    fallback_jql_open = 'assignee = currentUser() AND statusCategory = "In Progress"'
+                    fallback_jql_open = 'assignee = currentUser() AND statusCategory = "In Progress" AND updated >= -30d'
                     print(f"[INFO] Retrying with fallback JQL (status-based, all project types)")
                     fallback_resp_open = requests.post(
                         f'https://api.atlassian.com/ex/jira/{cloud_id}/rest/api/3/search/jql',
