@@ -333,7 +333,7 @@ load_dotenv()
 
 # Application version - IMPORTANT: Update this when releasing new versions
 # This is used for update checking and notifications
-APP_VERSION = "1.4.9"
+APP_VERSION = "1.4.7"
 
 # Hard-disable screenshot monitoring/storage in desktop app.
 # OCR text extraction for activity records still runs via event-based flow.
@@ -1441,6 +1441,14 @@ class UpdateManager:
             self._set_state('failed', error=str(e))
             print(f"[ERROR] Failed to apply update: {e}")
             return False
+
+    def auto_apply(self):
+        """Automatically apply a downloaded update without user interaction.
+        Called by _on_update_manager_state_changed when state transitions
+        to 'ready' or 'mandatory_ready'."""
+        if self.state not in ('ready', 'mandatory_ready'):
+            return False
+        return self.apply_update()
 
 def _generate_uninstaller_at_path(uninstall_path, install_dir):
     """Generate uninstall.bat at the specified path"""
@@ -5029,7 +5037,29 @@ class TimeTracker:
         if state != 'mandatory_ready':
             self._mandatory_update_enforced = False
 
-        should_notify = state in ('downloading', 'ready', 'mandatory_ready', 'failed')
+        # Auto-apply: when download is verified and ready, install immediately
+        if state in ('ready', 'mandatory_ready') and self.update_manager:
+            latest = update_info.get('latest_version', 'unknown')
+            print(f"[UPDATE] Auto-applying update v{latest}...")
+            self.add_admin_log('INFO', f'Auto-applying update v{latest}')
+            # Show brief "restarting" toast so user isn't surprised
+            if WINOTIFY_AVAILABLE:
+                try:
+                    notification = Notification(
+                        app_id="Time Tracker",
+                        title="Updating Time Tracker",
+                        msg=f"Installing v{latest}. The app will restart shortly.",
+                        duration="short"
+                    )
+                    notification.set_audio(audio.Default, loop=False)
+                    notification.show()
+                except Exception:
+                    pass
+            self.update_manager.auto_apply()
+            return  # app is shutting down, skip tray updates
+
+        # Still notify for downloading/failed states (informational only)
+        should_notify = state in ('downloading', 'failed')
         if should_notify:
             version_changed = latest_version and self._last_notified_update_version != latest_version
             state_changed = self._last_update_notification_state != state
@@ -5038,7 +5068,7 @@ class TimeTracker:
                     update_info,
                     state=state,
                     web_port=self.web_port,
-                    install_callback=self.update_manager.apply_update if self.update_manager else None
+                    install_callback=None  # No manual install button needed
                 )
                 self._last_update_notification_state = state
                 self._last_notified_update_version = latest_version
@@ -10666,25 +10696,6 @@ class TimeTracker:
         # Add separator and update-related menu items
         menu_items.append(pystray.Menu.SEPARATOR)
 
-        def check_updates_action():
-            """Check for updates and start background download when available."""
-            update_info = self.check_for_app_updates(show_notification=True, force=True)
-            if not update_info or not update_info.get('update_available'):
-                if WINOTIFY_AVAILABLE:
-                    try:
-                        notification = Notification(
-                            app_id="Time Tracker",
-                            title="No Updates Available",
-                            msg=f"You're running the latest version (v{self.app_version})",
-                            duration="short"
-                        )
-                        notification.show()
-                    except Exception:
-                        pass
-
-        def install_update_action():
-            self.update_manager.apply_update()
-
         status = self.update_manager.get_status() if self.update_manager else {'state': 'idle'}
         state = status.get('state', 'idle')
         info = status.get('update_info') or {}
@@ -10692,13 +10703,13 @@ class TimeTracker:
         progress = int((status.get('progress', 0) or 0) * 100)
 
         if state == 'downloading':
-            menu_items.append(item(lambda text: f"Downloading v{latest} ({progress}%) - Current: v{self.app_version}", lambda: None, enabled=False))
-        elif state == 'mandatory_ready':
-            menu_items.append(item(lambda text: f"Current: v{self.app_version} → Update Available: v{latest} (Required)", install_update_action))
-        elif state in ('ready', 'deferred'):
-            menu_items.append(item(lambda text: f"Current: v{self.app_version} → Update Available: v{latest}", install_update_action))
+            menu_items.append(item(lambda text: f"Downloading update v{latest} ({progress}%)", lambda: None, enabled=False))
+        elif state in ('ready', 'mandatory_ready'):
+            menu_items.append(item(lambda text: f"Installing update v{latest}...", lambda: None, enabled=False))
+        elif state == 'installing':
+            menu_items.append(item(lambda text: f"Restarting for update v{latest}...", lambda: None, enabled=False))
         else:
-            menu_items.append(item(lambda text: f"Up to Date (v{self.app_version})", check_updates_action))
+            menu_items.append(item(lambda text: f"Up to Date (v{self.app_version})", lambda: None, enabled=False))
 
         return pystray.Menu(*menu_items)
 
