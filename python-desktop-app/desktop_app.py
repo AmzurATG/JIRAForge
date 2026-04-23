@@ -333,7 +333,7 @@ load_dotenv()
 
 # Application version - IMPORTANT: Update this when releasing new versions
 # This is used for update checking and notifications
-APP_VERSION = "1.4.7"
+APP_VERSION = "1.4.9"
 
 # Hard-disable screenshot monitoring/storage in desktop app.
 # OCR text extraction for activity records still runs via event-based flow.
@@ -642,7 +642,7 @@ def verify_download_checksum(file_path, expected_checksum):
         print(f"  Actual:   {actual_checksum}")
         return False
 
-def show_update_notification(update_info, callback=None, state='available', web_port=None):
+def show_update_notification(update_info, callback=None, state='available', web_port=None, install_callback=None):
     """
     Show a Windows toast notification about available update.
     
@@ -651,6 +651,7 @@ def show_update_notification(update_info, callback=None, state='available', web_
         callback: Optional callback function to call when notification is clicked
         state: Current update state ('available', 'downloading', 'ready', 'mandatory_ready', 'failed')
         web_port: Local web server port for notification click actions
+        install_callback: Callable to trigger update installation directly (no browser)
     """
     if not WINOTIFY_AVAILABLE:
         print(f"[INFO] Update available: v{update_info.get('latest_version')} (notifications not available)")
@@ -661,18 +662,15 @@ def show_update_notification(update_info, callback=None, state='available', web_
         release_notes = update_info.get('release_notes', 'A new version is available.') or 'A new version is available.'
         is_mandatory = update_info.get('is_mandatory', False)
 
-        # Determine the launch URL for notification click
-        install_url = f"http://localhost:{web_port}/api/update/install" if web_port else None
-
         if state == 'downloading':
             title = "Update Available"
             release_notes = f"Update v{latest_version} available - downloading in background..."
         elif state == 'ready':
             title = "Update Ready"
-            release_notes = f"Update v{latest_version} is ready to install. Click to install now."
+            release_notes = f"Update v{latest_version} is ready to install. Click Install Now to update."
         elif state == 'mandatory_ready':
             title = "Update Required"
-            release_notes = f"Required update v{latest_version} is ready. Click to install now."
+            release_notes = f"Required update v{latest_version} is ready. Click Install Now to update."
         elif state == 'failed':
             title = "Update Failed"
             release_notes = "Update download failed. The app will retry later."
@@ -690,9 +688,11 @@ def show_update_notification(update_info, callback=None, state='available', web_
         
         notification.set_audio(audio.Default, loop=False)
 
-        # Add clickable action buttons for actionable states
-        if install_url and state in ('ready', 'mandatory_ready'):
-            notification.add_actions(label="Install Now", launch=install_url)
+        # Add "Install Now" button that triggers install directly (no browser)
+        if install_callback and state in ('ready', 'mandatory_ready'):
+            install_url = f"http://localhost:{web_port}/api/update/install" if web_port else None
+            if install_url:
+                notification.add_actions(label="Install Now", launch=install_url)
         
         notification.show()
         
@@ -5034,7 +5034,12 @@ class TimeTracker:
             version_changed = latest_version and self._last_notified_update_version != latest_version
             state_changed = self._last_update_notification_state != state
             if version_changed or state_changed:
-                show_update_notification(update_info, state=state, web_port=self.web_port)
+                show_update_notification(
+                    update_info,
+                    state=state,
+                    web_port=self.web_port,
+                    install_callback=self.update_manager.apply_update if self.update_manager else None
+                )
                 self._last_update_notification_state = state
                 self._last_notified_update_version = latest_version
 
@@ -5946,19 +5951,27 @@ class TimeTracker:
 
         @self.app.route('/api/update/install')
         def trigger_update_install():
-            """Trigger update installation from notification click."""
+            """Trigger update installation from notification click. Auto-closes the browser tab."""
+            auto_close_page = lambda title, msg: (
+                f'<html><head><title>{title}</title>'
+                f'<script>setTimeout(function(){{window.close()}},1500)</script>'
+                f'</head><body style="font-family:sans-serif;padding:20px">'
+                f'<h2>{title}</h2><p>{msg}</p>'
+                f'<p style="color:#888;font-size:12px">This tab will close automatically.</p>'
+                f'</body></html>'
+            )
             if not self.update_manager:
-                return "No update manager available", 503
+                return auto_close_page('Error', 'No update manager available.'), 503
             status = self.update_manager.get_status()
             state = status.get('state', 'idle')
             if state in ('ready', 'mandatory_ready', 'deferred'):
                 threading.Thread(target=self.update_manager.apply_update, daemon=True).start()
-                return "<html><body><h2>Installing update...</h2><p>The application will restart shortly.</p></body></html>", 200
+                return auto_close_page('Installing update...', 'The application will restart shortly.'), 200
             elif state == 'downloading':
                 progress = int((status.get('progress', 0) or 0) * 100)
-                return f"<html><body><h2>Download in progress ({progress}%)</h2><p>The update will be installed automatically when download completes.</p></body></html>", 200
+                return auto_close_page(f'Download in progress ({progress}%)', 'The update will install automatically when complete.'), 200
             else:
-                return "<html><body><h2>No update available</h2><p>You are running the latest version.</p></body></html>", 200
+                return auto_close_page('No update available', 'You are running the latest version.'), 200
 
         # ============================================================================
         # APPLICATION DETECTION API (for Admin App Classification)

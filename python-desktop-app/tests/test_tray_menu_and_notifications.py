@@ -254,11 +254,13 @@ class TestNotificationInstallAction:
         mock_instance = MagicMock()
         MockNotif.return_value = mock_instance
         mock_audio.Default = "default"
+        fake_callback = MagicMock()
 
         show_update_notification(
             {"latest_version": "2.0.0"},
             state="ready",
             web_port=9876,
+            install_callback=fake_callback,
         )
 
         mock_instance.add_actions.assert_called_once()
@@ -276,11 +278,13 @@ class TestNotificationInstallAction:
         mock_instance = MagicMock()
         MockNotif.return_value = mock_instance
         mock_audio.Default = "default"
+        fake_callback = MagicMock()
 
         show_update_notification(
             {"latest_version": "2.0.0", "is_mandatory": True},
             state="mandatory_ready",
             web_port=9876,
+            install_callback=fake_callback,
         )
 
         mock_instance.add_actions.assert_called_once()
@@ -293,11 +297,13 @@ class TestNotificationInstallAction:
         mock_instance = MagicMock()
         MockNotif.return_value = mock_instance
         mock_audio.Default = "default"
+        fake_callback = MagicMock()
 
         show_update_notification(
             {"latest_version": "2.0.0"},
             state="downloading",
             web_port=9876,
+            install_callback=fake_callback,
         )
 
         mock_instance.add_actions.assert_not_called()
@@ -310,11 +316,13 @@ class TestNotificationInstallAction:
         mock_instance = MagicMock()
         MockNotif.return_value = mock_instance
         mock_audio.Default = "default"
+        fake_callback = MagicMock()
 
         show_update_notification(
             {"latest_version": "2.0.0"},
             state="failed",
             web_port=9876,
+            install_callback=fake_callback,
         )
 
         mock_instance.add_actions.assert_not_called()
@@ -322,8 +330,8 @@ class TestNotificationInstallAction:
     @patch("desktop_app.WINOTIFY_AVAILABLE", True)
     @patch("desktop_app.Notification")
     @patch("desktop_app.audio")
-    def test_no_install_button_without_web_port(self, mock_audio, MockNotif):
-        """When web_port is None, no action button is added."""
+    def test_no_install_button_without_callback(self, mock_audio, MockNotif):
+        """When install_callback is None, no action button is added."""
         mock_instance = MagicMock()
         MockNotif.return_value = mock_instance
         mock_audio.Default = "default"
@@ -331,7 +339,8 @@ class TestNotificationInstallAction:
         show_update_notification(
             {"latest_version": "2.0.0"},
             state="ready",
-            web_port=None,
+            web_port=9876,
+            install_callback=None,
         )
 
         mock_instance.add_actions.assert_not_called()
@@ -346,8 +355,8 @@ class TestNotificationMessageText:
     @patch("desktop_app.WINOTIFY_AVAILABLE", True)
     @patch("desktop_app.Notification")
     @patch("desktop_app.audio")
-    def test_ready_message_says_click_to_install(self, mock_audio, MockNotif):
-        """Ready state notification message should say 'Click to install now'."""
+    def test_ready_message_says_install_now(self, mock_audio, MockNotif):
+        """Ready state notification message should mention Install Now."""
         mock_instance = MagicMock()
         MockNotif.return_value = mock_instance
         mock_audio.Default = "default"
@@ -359,13 +368,13 @@ class TestNotificationMessageText:
         )
 
         _, kwargs = MockNotif.call_args
-        assert "Click to install now" in kwargs["msg"]
+        assert "Install Now" in kwargs["msg"]
 
     @patch("desktop_app.WINOTIFY_AVAILABLE", True)
     @patch("desktop_app.Notification")
     @patch("desktop_app.audio")
-    def test_mandatory_ready_message_says_click_to_install(self, mock_audio, MockNotif):
-        """Mandatory ready notification message should say 'Click to install now'."""
+    def test_mandatory_ready_message_says_install_now(self, mock_audio, MockNotif):
+        """Mandatory ready notification message should mention Install Now."""
         mock_instance = MagicMock()
         MockNotif.return_value = mock_instance
         mock_audio.Default = "default"
@@ -377,7 +386,7 @@ class TestNotificationMessageText:
         )
 
         _, kwargs = MockNotif.call_args
-        assert "Click to install now" in kwargs["msg"]
+        assert "Install Now" in kwargs["msg"]
 
     @patch("desktop_app.WINOTIFY_AVAILABLE", True)
     @patch("desktop_app.Notification")
@@ -413,18 +422,26 @@ class TestUpdateInstallRoute:
 
         @app.route("/api/update/install")
         def trigger_update_install():
+            auto_close_page = lambda title, msg: (
+                f'<html><head><title>{title}</title>'
+                f'<script>setTimeout(function(){{window.close()}},1500)</script>'
+                f'</head><body style="font-family:sans-serif;padding:20px">'
+                f'<h2>{title}</h2><p>{msg}</p>'
+                f'<p style="color:#888;font-size:12px">This tab will close automatically.</p>'
+                f'</body></html>'
+            )
             if not update_manager:
-                return "No update manager available", 503
+                return auto_close_page('Error', 'No update manager available.'), 503
             status = update_manager.get_status()
             state = status.get("state", "idle")
             if state in ("ready", "mandatory_ready", "deferred"):
                 threading.Thread(target=update_manager.apply_update, daemon=True).start()
-                return "<html><body><h2>Installing update...</h2><p>The application will restart shortly.</p></body></html>", 200
+                return auto_close_page('Installing update...', 'The application will restart shortly.'), 200
             elif state == "downloading":
                 progress = int((status.get("progress", 0) or 0) * 100)
-                return f"<html><body><h2>Download in progress ({progress}%)</h2><p>The update will be installed automatically when download completes.</p></body></html>", 200
+                return auto_close_page(f'Download in progress ({progress}%)', 'The update will install automatically when complete.'), 200
             else:
-                return "<html><body><h2>No update available</h2><p>You are running the latest version.</p></body></html>", 200
+                return auto_close_page('No update available', 'You are running the latest version.'), 200
 
         return app.test_client()
 
@@ -443,6 +460,7 @@ class TestUpdateInstallRoute:
             resp = client.get("/api/update/install")
             assert resp.status_code == 200
             assert b"Installing update" in resp.data
+            assert b"window.close()" in resp.data
             # Give daemon thread a moment
             import time; time.sleep(0.1)
             mock_apply.assert_called_once()
@@ -508,6 +526,7 @@ class TestStateChangeNotificationPort:
         _, kwargs = mock_notif.call_args
         assert kwargs["web_port"] == 9999
         assert kwargs["state"] == "ready"
+        assert kwargs["install_callback"] is not None
 
 
 # ---------------------------------------------------------------------------

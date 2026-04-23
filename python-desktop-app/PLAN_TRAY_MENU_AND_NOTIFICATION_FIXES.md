@@ -1,6 +1,6 @@
 # Plan: Tray Menu Button Removal & Notification Click Fixes
 
-**Branch:** `feature/smart-auto-update-installer1`  
+**Branch:** `feature/smart-auto-update-installer3`  
 **Date:** April 23, 2026  
 **Status:** Implemented & Tested
 
@@ -77,9 +77,9 @@ menu_items.append(item('Later', defer_update_action))
 `show_update_notification()` used `winotify.Notification` but never added any click actions via `notification.add_actions()`. Notifications were purely informational — clicking them did nothing.
 
 ### Solution
-Three changes were made:
+Four changes were made:
 
-#### 2a. Added `web_port` parameter to `show_update_notification()`
+#### 2a. Added `web_port` and `install_callback` parameters to `show_update_notification()`
 **Location:** `show_update_notification()` function (~line 645)
 
 ```python
@@ -87,30 +87,35 @@ Three changes were made:
 def show_update_notification(update_info, callback=None, state='available'):
 
 # After:
-def show_update_notification(update_info, callback=None, state='available', web_port=None):
+def show_update_notification(update_info, callback=None, state='available', web_port=None, install_callback=None):
 ```
 
-When `web_port` is provided and the state is `ready` or `mandatory_ready`, an "Install Now" button is added to the notification:
+The "Install Now" button is only added when **both** `install_callback` is provided **and** the state is `ready` or `mandatory_ready`:
 
 ```python
-install_url = f"http://localhost:{web_port}/api/update/install" if web_port else None
-
-if install_url and state in ('ready', 'mandatory_ready'):
-    notification.add_actions(label="Install Now", launch=install_url)
+if install_callback and state in ('ready', 'mandatory_ready'):
+    install_url = f"http://localhost:{web_port}/api/update/install" if web_port else None
+    if install_url:
+        notification.add_actions(label="Install Now", launch=install_url)
 ```
+
+This ensures:
+- **`downloading`** notifications have no action button (no URL opened)
+- **`failed`** notifications have no action button
+- Only `ready`/`mandatory_ready` show the "Install Now" button
 
 #### 2b. Updated notification messages
 | State | Old Message | New Message |
 |---|---|---|
-| `ready` | "...Open tray menu to install now." | "...Click to install now." |
-| `mandatory_ready` | "...Tracking paused until updated." | "...Click to install now." |
+| `ready` | "...Open tray menu to install now." | "...Click Install Now to update." |
+| `mandatory_ready` | "...Tracking paused until updated." | "...Click Install Now to update." |
 | `downloading` | (unchanged) | (unchanged) |
 | `failed` | (unchanged) | (unchanged) |
 
-#### 2c. Added `/api/update/install` Flask route
-**Location:** `TimeTracker.setup_routes()` method (~line 5937)
+#### 2c. Added `/api/update/install` Flask route with auto-closing browser tab
+**Location:** `TimeTracker.setup_routes()` method (~line 5947)
 
-New endpoint that handles the notification click action:
+New endpoint that handles the notification click action. The browser tab **auto-closes after 1.5 seconds** via `window.close()` JavaScript so users don't see a lingering browser page:
 
 ```
 GET /api/update/install
@@ -118,12 +123,16 @@ GET /api/update/install
 
 | Current State | Behavior | Response |
 |---|---|---|
-| `ready` / `mandatory_ready` / `deferred` | Triggers `apply_update()` in a daemon thread | "Installing update... The application will restart shortly." |
-| `downloading` | No action (download still in progress) | "Download in progress ({progress}%)" |
-| `idle` / other | No action | "No update available" |
-| No update manager | Error | 503 |
+| `ready` / `mandatory_ready` / `deferred` | Triggers `apply_update()` in a daemon thread | Auto-closing page: "Installing update..." |
+| `downloading` | No action (download still in progress) | Auto-closing page: "Download in progress ({progress}%)" |
+| `idle` / other | No action | Auto-closing page: "No update available" |
+| No update manager | Error | Auto-closing page with 503 status |
 
-#### 2d. Updated state change callback to pass `web_port`
+All responses include:
+- `<script>setTimeout(function(){window.close()},1500)</script>` to auto-close the tab
+- "This tab will close automatically." message as fallback
+
+#### 2d. Updated state change callback to pass `web_port` and `install_callback`
 **Location:** `TimeTracker._on_update_manager_state_changed()` (~line 5028)
 
 ```python
@@ -131,13 +140,21 @@ GET /api/update/install
 show_update_notification(update_info, state=state)
 
 # After:
-show_update_notification(update_info, state=state, web_port=self.web_port)
+show_update_notification(
+    update_info,
+    state=state,
+    web_port=self.web_port,
+    install_callback=self.update_manager.apply_update if self.update_manager else None
+)
 ```
 
 ### User Flow After Fix
 1. Update is downloaded → "Update Ready" notification appears with **"Install Now"** button
-2. User clicks "Install Now" → browser opens `localhost:{port}/api/update/install`
-3. Route triggers `apply_update()` → app exits, updater script runs, app restarts with new version
+2. User clicks "Install Now" → browser tab opens briefly, triggers `apply_update()`
+3. Browser tab auto-closes after 1.5 seconds
+4. App exits, updater script runs, app restarts with new version
+
+**Note:** The `downloading` notification does **not** open any URL or show any action button — it is purely informational.
 
 ---
 
@@ -153,10 +170,10 @@ show_update_notification(update_info, state=state, web_port=self.web_port)
 | 2 | `TestTrayMenuLaterRemoved` | 3 | No "Later" in ready, deferred, or mandatory_ready states |
 | 3 | `TestTrayMenuReleaseNotesRemoved` | 5 | No "Release Notes" in any state (idle, downloading, ready, deferred, mandatory_ready) |
 | 4 | `TestTrayMenuInstallAction` | 2 | Install action present in ready and mandatory_ready states |
-| 5 | `TestNotificationInstallAction` | 5 | "Install Now" button added for ready/mandatory_ready; not added for downloading/failed/no-port |
+| 5 | `TestNotificationInstallAction` | 5 | "Install Now" button added for ready/mandatory_ready; not added for downloading/failed/no-callback |
 | 6 | `TestNotificationMessageText` | 3 | Correct notification message text for ready, mandatory_ready, downloading |
 | 7 | `TestUpdateInstallRoute` | 4 | Flask route triggers install when ready; returns progress when downloading; returns no-update when idle; returns 503 with no manager |
-| 8 | `TestStateChangeNotificationPort` | 1 | `_on_update_manager_state_changed` passes `web_port` to notification |
+| 8 | `TestStateChangeNotificationPort` | 1 | `_on_update_manager_state_changed` passes `web_port` and `install_callback` to notification |
 | 9 | `TestTrayMenuItemCount` | 3 | Exact menu item count for idle (4), ready (4), downloading (4) — confirms no extra buttons |
 
 ### Test Approach
@@ -182,7 +199,7 @@ python -m pytest tests/test_update_manager.py -v  # existing tests (regression c
 | Users can no longer cancel downloads | Downloads are background operations and complete quickly; cancellation was rarely needed |
 | Users can no longer defer updates | Updates only auto-install when the user explicitly clicks "Install Now"; the app doesn't force-install |
 | `/api/update/install` route is unauthenticated | Route is bound to `127.0.0.1` (localhost only) — not accessible from external machines |
-| Notification click opens browser briefly | The browser tab shows a simple "Installing update..." message and the app restarts shortly after |
+| Notification click opens browser briefly | The browser tab auto-closes after 1.5 seconds via `window.close()` JavaScript; user barely sees it |
 | `defer_update()`/`cancel_download()` methods left in UpdateManager | Kept for backward compatibility and potential future use; no dead code risk since they're part of the manager's public API |
 
 ---
@@ -196,6 +213,8 @@ python -m pytest tests/test_update_manager.py -v  # existing tests (regression c
 - [x] Clicking "Install Now" triggers update installation via Flask route
 - [x] Downloading notification does NOT show install button
 - [x] Failed notification does NOT show install button
-- [x] `web_port` correctly passed through state change callback
+- [x] `web_port` and `install_callback` correctly passed through state change callback
+- [x] Browser tab auto-closes after triggering install
+- [x] Downloading notification does NOT open any URL or action
 - [x] All 28 new tests passing
 - [x] All 7 existing update manager tests passing (no regressions)
