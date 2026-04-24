@@ -330,13 +330,13 @@ function DayView({ loading, timeData, onTodayTotalReconciled, onOpenWorklogReass
     // Coalesce adjacent/overlapping blocks within a 10-minute gap into continuous bars.
     // Individual 5-minute activity records are too thin to see on a multi-hour timeline,
     // so we merge nearby blocks into larger visible segments.
-    // Only merge blocks with the same assigned/unassigned status.
+    // Only merge blocks with the same issueKey (so switching issues produces distinct segments).
     const GAP_THRESHOLD_MS = 10 * 60 * 1000; // 10 minutes
     const merged = [];
     for (const block of rawBlocks) {
       const prev = merged[merged.length - 1];
-      if (prev && prev.hasIssue === block.hasIssue && (block.startTime - prev.endTime) <= GAP_THRESHOLD_MS) {
-        // Extend previous block (same assigned/unassigned type)
+      const sameIssue = prev && prev.hasIssue === block.hasIssue && prev.issueKey === block.issueKey;
+      if (sameIssue && (block.startTime - prev.endTime) <= GAP_THRESHOLD_MS) {
         prev.endTime = new Date(Math.max(prev.endTime.getTime(), block.endTime.getTime()));
         prev.durationSeconds += block.durationSeconds;
       } else {
