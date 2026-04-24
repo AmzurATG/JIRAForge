@@ -97,21 +97,21 @@
   transition: all 0.25s ease;
   color: #5E6C84;
   background: #ffffff;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+  /* box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05); */
 }
 
 .focus-tabs button:hover {
-  background: #f4f5f7;
+  background: #fff;
   color: #42526E;
   transform: translateY(-1px);
-  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.1);
+  /* box-shadow: 0 2px 6px rgba(0, 0, 0, 0.1); */
 }
 
 .focus-tabs button.active {
   background: #6656fc;
   color: #FFFFFF;
   font-weight: 700;
-  box-shadow: 0 2px 8px rgba(102, 86, 252, 0.3);
+  /* box-shadow: 0 2px 8px rgba(102, 86, 252, 0.3); */
 }
 
 /* Focus Actions Container */
@@ -147,7 +147,7 @@
   color: var(--ds-text);
   background: #FFFFFF;
   transition: all 0.25s ease;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+  /* box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04); */
 }
 
 .search-input::placeholder {
@@ -198,7 +198,7 @@
   color: #42526E;
   cursor: pointer;
   transition: all 0.25s ease;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+  /* box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04); */
 }
 
 .filter-button:hover {
@@ -338,7 +338,7 @@
   padding: 10px 32px 10px 12px;
   cursor: pointer;
   transition: all 0.25s ease;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+  /* box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04); */
   appearance: none;
   background-image: url("data:image/svg+xml,%3Csvg width='12' height='8' viewBox='0 0 12 8' fill='none' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M1 1.5L6 6.5L11 1.5' stroke='%235E6C84' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
   background-repeat: no-repeat;
@@ -448,7 +448,7 @@
 
 .issue-key a:hover {
   color: #5144d9;
-  text-decoration: underline;
+  /* text-decoration: underline; */
 }
 
 /* Issue Type Icons */
