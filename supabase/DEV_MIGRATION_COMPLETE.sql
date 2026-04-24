@@ -268,9 +268,12 @@ CREATE TABLE IF NOT EXISTS public.user_jira_issues_cache (
     project_name TEXT,
     issue_type TEXT,
     status TEXT,
+    priority TEXT,
+    description TEXT,
+    labels JSONB DEFAULT '[]'::jsonb,
     updated_at TIMESTAMPTZ DEFAULT NOW(),
     cached_at TIMESTAMPTZ DEFAULT NOW(),
-    UNIQUE(user_id, issue_key)
+    UNIQUE(user_id, organization_id, issue_key)
 );
 
 -- ============================================================================
