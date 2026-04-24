@@ -301,15 +301,23 @@ export async function getActiveIssuesWithTime(accountId, cloudId) {
   // Focus.  Pre-approval this surfaces pending records so the user can act on
   // them; post-approval it keeps the row visible after pending->approved so a
   // just-approved Done/closed-sprint issue doesn't silently drop off the
-  // dashboard the moment its last pending record was approved.  Capped to keep
-  // the JQL clause bounded.
-  const CARRYOVER_BATCH_LIMIT = 200;
+  // dashboard the moment its last pending record was approved.
+  //
+  // Capped at 1000 — Jira Cloud's practical ceiling for an `issueKey in (...)`
+  // JQL clause.  Keys past the cap are sorted out by most-recent activity, so
+  // if it ever triggers we drop the oldest stragglers, not the freshest work.
+  const CARRYOVER_BATCH_LIMIT = 1000;
   const issueKeysAlreadyFetched = new Set(issues.map(i => i.key));
   const carryoverKeys = Object.keys(pendingByIssue)
     .filter((k) =>
       !issueKeysAlreadyFetched.has(k) &&
       ((timeByIssue[k] || 0) > 0 || pendingByIssue[k].pendingCount > 0)
     )
+    .sort((a, b) => {
+      const tA = lastWorkedByIssue[a] || '';
+      const tB = lastWorkedByIssue[b] || '';
+      return tB.localeCompare(tA); // most-recent first
+    })
     .slice(0, CARRYOVER_BATCH_LIMIT);
 
   if (carryoverKeys.length > 0) {
