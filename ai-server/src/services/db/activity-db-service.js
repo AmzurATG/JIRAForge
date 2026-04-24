@@ -60,11 +60,10 @@ async function updateActivityRecordAnalysis(recordId, analysisResult) {
   if (!supabase) throw new Error('Supabase client not initialized');
 
   // Only assign issue key when the AI's confidence meets the minimum threshold.
-  // Low-confidence matches (e.g. 0.2–0.4) are often wrong — the AI matched
-  // based on weak signals like "same project" rather than real content alignment.
-  // These records become "unassigned work" for the user to assign manually,
-  // which is better than silently creating a worklog on the wrong issue.
-  const MIN_CONFIDENCE_THRESHOLD = parseFloat(process.env.AI_MATCH_MIN_CONFIDENCE || '0.5');
+  // The prompt defines 0.4–0.5 as "Reasonable match" and records go through
+  // approval_status: 'pending_approval' before syncing to Jira, so false
+  // positives are caught by the human-in-the-loop gate.
+  const MIN_CONFIDENCE_THRESHOLD = parseFloat(process.env.AI_MATCH_MIN_CONFIDENCE || '0.3');
   const confidenceScore = analysisResult.metadata?.confidenceScore ?? 0;
   const taskKeyMeetsThreshold = analysisResult.taskKey && confidenceScore >= MIN_CONFIDENCE_THRESHOLD;
 

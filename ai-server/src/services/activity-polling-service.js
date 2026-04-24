@@ -93,10 +93,12 @@ function transformRecordForAnalysis(record) {
     window_title: record.window_title,
     application_name: record.application_name,
     ocr_text: record.ocr_text,
+    ocr_confidence: record.ocr_confidence,
     total_time_seconds: record.total_time_seconds,
     start_time: record.start_time,
     end_time: record.end_time,
     classification: record.classification,
+    project_key: record.project_key,
     metadata: record.metadata
   };
 }

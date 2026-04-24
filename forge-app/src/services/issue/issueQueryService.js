@@ -226,14 +226,20 @@ export async function getActiveIssuesWithTime(accountId, cloudId) {
         pendingByIssue[issueKey] = { pendingCount: 0, pendingSeconds: 0 };
       }
 
-      // Add to total time (prefer total_time_seconds, fallback to duration_seconds)
+      // timeByIssue (the "Time Tracked" column on All Issues / In Progress / Done)
+      // counts only approved or no-approval-needed time.  Pending time is held in
+      // pendingByIssue and surfaced via the Pending Review tab — approving (or
+      // reassigning) a pending record promotes its time into timeByIssue on the
+      // next refresh, so Approve all becomes a visibly meaningful action instead
+      // of a silent no-op.
       const timeSpent = entry.total_time_seconds || entry.duration_seconds || 0;
-      timeByIssue[issueKey] += timeSpent;
-
       const isPending = entry.approval_status === 'pending_approval';
+
       if (isPending) {
         pendingByIssue[issueKey].pendingCount += 1;
         pendingByIssue[issueKey].pendingSeconds += timeSpent;
+      } else {
+        timeByIssue[issueKey] += timeSpent;
       }
 
       // Update last worked timestamp
@@ -290,18 +296,26 @@ export async function getActiveIssuesWithTime(accountId, cloudId) {
   const issueKeysWithTime = Object.keys(timeByIssue);
   console.log(`[getActiveIssuesWithTime] Time tracked for ${issueKeysWithTime.length} issues: ${JSON.stringify(timeByIssue)}`);
 
-  // Carryover: any key with pending_approval records that isn't in the sprint
-  // JQL result (e.g. closed-sprint issues) still needs to appear in My Focus so
-  // the user can approve or reassign the time. Fetch Jira metadata for those.
+  // Carryover: any key with tracked or pending time that isn't in the sprint
+  // JQL result (e.g. closed-sprint or Done issues) still needs to appear in My
+  // Focus.  Pre-approval this surfaces pending records so the user can act on
+  // them; post-approval it keeps the row visible after pending->approved so a
+  // just-approved Done/closed-sprint issue doesn't silently drop off the
+  // dashboard the moment its last pending record was approved.  Capped to keep
+  // the JQL clause bounded.
+  const CARRYOVER_BATCH_LIMIT = 200;
   const issueKeysAlreadyFetched = new Set(issues.map(i => i.key));
-  const pendingKeysMissing = Object.keys(pendingByIssue).filter(
-    (k) => pendingByIssue[k].pendingCount > 0 && !issueKeysAlreadyFetched.has(k)
-  );
+  const carryoverKeys = Object.keys(pendingByIssue)
+    .filter((k) =>
+      !issueKeysAlreadyFetched.has(k) &&
+      ((timeByIssue[k] || 0) > 0 || pendingByIssue[k].pendingCount > 0)
+    )
+    .slice(0, CARRYOVER_BATCH_LIMIT);
 
-  if (pendingKeysMissing.length > 0) {
-    console.log(`[getActiveIssuesWithTime] Fetching ${pendingKeysMissing.length} carryover issues with pending approvals: ${pendingKeysMissing.join(',')}`);
+  if (carryoverKeys.length > 0) {
+    console.log(`[getActiveIssuesWithTime] Fetching ${carryoverKeys.length} carryover issues with tracked or pending time: ${carryoverKeys.join(',')}`);
     try {
-      const carryoverJql = `issueKey in (${pendingKeysMissing.map(k => `"${k}"`).join(',')})`;
+      const carryoverJql = `issueKey in (${carryoverKeys.map(k => `"${k}"`).join(',')})`;
       const carryoverResp = await api.asUser().requestJira(
         route`/rest/api/3/search/jql`,
         {
@@ -309,7 +323,7 @@ export async function getActiveIssuesWithTime(accountId, cloudId) {
           headers: { 'Accept': 'application/json', 'Content-Type': 'application/json' },
           body: JSON.stringify({
             jql: carryoverJql,
-            maxResults: pendingKeysMissing.length,
+            maxResults: carryoverKeys.length,
             fields: ['summary', 'status', 'project', 'issuetype', 'priority', 'updated']
           })
         }

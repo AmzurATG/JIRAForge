@@ -200,10 +200,10 @@ describe('Activity DB Service', () => {
     });
 
     it('should leave approval_status NULL when confidence is below threshold', async () => {
-      // Default MIN_CONFIDENCE_THRESHOLD = 0.5 — a 0.3 score should null out the taskKey
+      // Default MIN_CONFIDENCE_THRESHOLD = 0.3 — a 0.2 score should null out the taskKey
       const analysisResult = {
         taskKey: 'ATG-111',
-        metadata: { confidenceScore: 0.3 }
+        metadata: { confidenceScore: 0.2 }
       };
       mockSupabase.select.mockResolvedValue({ data: [{ id: recordId }], error: null });
 
@@ -218,14 +218,15 @@ describe('Activity DB Service', () => {
       );
     });
 
-    it('should not override project_key when not provided in analysis', async () => {
+    it('should derive project_key from taskKey when not explicitly provided', async () => {
       const analysisResult = { taskKey: 'ATG-789' };
       mockSupabase.select.mockResolvedValue({ data: [{ id: recordId }], error: null });
 
       await updateActivityRecordAnalysis(recordId, analysisResult);
 
       const updateCall = mockSupabase.update.mock.calls[0][0];
-      expect(updateCall).not.toHaveProperty('project_key');
+      // project_key is derived from taskKey, not from analysisResult.projectKey
+      expect(updateCall.project_key).toBeNull(); // No confidence metadata → confidence 0 → taskKey nulled → project_key null
     });
 
     it('should return null when no data returned', async () => {
@@ -247,6 +248,70 @@ describe('Activity DB Service', () => {
       getClient.mockReturnValue(null);
 
       await expect(updateActivityRecordAnalysis(recordId, {})).rejects.toThrow('Supabase client not initialized');
+    });
+
+    // Fix 1: Confidence threshold lowered to 0.3
+    it('should assign taskKey when confidence is 0.35 (above 0.3 default)', async () => {
+      const analysisResult = {
+        taskKey: 'ATG-222',
+        metadata: { confidenceScore: 0.35 }
+      };
+      mockSupabase.select.mockResolvedValue({ data: [{ id: recordId }], error: null });
+
+      await updateActivityRecordAnalysis(recordId, analysisResult);
+
+      expect(mockSupabase.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          user_assigned_issue_key: 'ATG-222',
+          project_key: 'ATG',
+          approval_status: 'pending_approval'
+        })
+      );
+    });
+
+    it('should set taskKey to null when confidence is 0.25 (below 0.3 default)', async () => {
+      const analysisResult = {
+        taskKey: 'ATG-333',
+        metadata: { confidenceScore: 0.25 }
+      };
+      mockSupabase.select.mockResolvedValue({ data: [{ id: recordId }], error: null });
+
+      await updateActivityRecordAnalysis(recordId, analysisResult);
+
+      expect(mockSupabase.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          user_assigned_issue_key: null,
+          project_key: null,
+          approval_status: null
+        })
+      );
+    });
+
+    it('should respect AI_MATCH_MIN_CONFIDENCE env override', async () => {
+      const originalEnv = process.env.AI_MATCH_MIN_CONFIDENCE;
+      process.env.AI_MATCH_MIN_CONFIDENCE = '0.4';
+
+      const analysisResult = {
+        taskKey: 'ATG-444',
+        metadata: { confidenceScore: 0.35 }
+      };
+      mockSupabase.select.mockResolvedValue({ data: [{ id: recordId }], error: null });
+
+      await updateActivityRecordAnalysis(recordId, analysisResult);
+
+      expect(mockSupabase.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          user_assigned_issue_key: null,
+          approval_status: null
+        })
+      );
+
+      // Cleanup
+      if (originalEnv === undefined) {
+        delete process.env.AI_MATCH_MIN_CONFIDENCE;
+      } else {
+        process.env.AI_MATCH_MIN_CONFIDENCE = originalEnv;
+      }
     });
   });
 
