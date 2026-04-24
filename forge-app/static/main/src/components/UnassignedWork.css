@@ -44,7 +44,7 @@
   border: 1px solid var(--ds-border, #dfe1e6);
   background: #fff;
   color: var(--ds-text, #172b4d);
-  border-radius: 999px;
+  border-radius: 6px;
   padding: 6px 12px;
   font-size: 13px;
   font-weight: 600;
@@ -103,11 +103,55 @@
   opacity: 0.5;
 }
 
+/* Sort By Dropdown */
+.sort-by-filter {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+}
+
+.sort-by-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: #5E6C84;
+  white-space: nowrap;
+}
+
+.sort-by-select {
+  width: 160px;
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  border-radius: 6px;
+  background: #ffffff;
+  color: var(--ds-text);
+  font-size: 13px;
+  font-weight: 500;
+  padding: 8px 32px 8px 12px;
+  cursor: pointer;
+  transition: all 0.25s ease;
+  appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg width='12' height='8' viewBox='0 0 12 8' fill='none' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M1 1.5L6 6.5L11 1.5' stroke='%235E6C84' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 12px center;
+}
+
+.sort-by-select:hover {
+  border-color: rgba(0, 0, 0, 0.12);
+  transform: translateY(-1px);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.06);
+}
+
+.sort-by-select:focus {
+  outline: none;
+  border-color: #6656fc;
+  box-shadow: 0 0 0 3px rgba(102, 86, 252, 0.1), 0 2px 6px rgba(0, 0, 0, 0.06);
+}
+
 .no-groups-message {
   padding: 20px;
   text-align: center;
   background: var(--ds-background-neutral-subtle);
-  border-radius: 8px;
+  border-radius: 6px;
   margin-bottom: 24px;
   box-shadow: 0 1px 2px rgba(9, 30, 66, 0.08);
 }
@@ -176,7 +220,7 @@
   padding: 48px 24px;
   background: #fff;
   border: 1px solid #ffbdad;
-  border-radius: 8px;
+  border-radius: 6px;
   text-align: center;
   box-shadow: 0 1px 2px rgba(9, 30, 66, 0.08);
 }
@@ -224,7 +268,7 @@
   margin-top: 16px;
   padding: 16px 20px;
   background: #fff;
-  border-radius: 8px;
+  border-radius: 6px;
   flex-wrap: wrap;
   border: 1px solid var(--ds-border);
   gap: 12px;
@@ -388,7 +432,7 @@
   height: 36px;
   background: #fff;
   border: 1px solid var(--ds-border);
-  border-radius: 8px;
+  border-radius: 6px;
   cursor: pointer;
   color: #6656fc;
   font-size: 13px;
@@ -434,7 +478,7 @@
   height: 36px;
   background: #fff;
   border: 1px solid var(--ds-border);
-  border-radius: 8px;
+  border-radius: 6px;
   cursor: pointer;
   color: #6656fc;
   transition: all 0.2s ease;
@@ -455,7 +499,7 @@
   width: 280px;
   background: #fff;
   border: 1px solid var(--ds-border);
-  border-radius: 8px;
+  border-radius: 6px;
   padding: 16px;
   box-shadow: 0 4px 16px rgba(9, 30, 66, 0.15);
   z-index: 1000;

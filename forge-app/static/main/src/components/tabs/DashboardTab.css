@@ -513,14 +513,14 @@
 .no-time-indicator {
   display: inline-block;
   padding: 6px 12px;
-  border-radius: 20px;
+  border-radius: 6px;
   background: linear-gradient(135deg, #fff9e6 0%, #fffbf0 100%);
   color: #966B00;
   border: 1px solid rgba(255, 193, 7, 0.2);
   font-size: 11px;
   font-weight: 700;
   white-space: nowrap;
-  box-shadow: 0 1px 3px rgba(255, 193, 7, 0.1);
+  /* box-shadow: 0 1px 3px rgba(255, 193, 7, 0.1); */
 }
 
 .empty-state {

@@ -27,7 +27,8 @@ function UnassignedWork() {
   const [selectedGroup, setSelectedGroup] = useState(null);
   const [showBulkEditModal, setShowBulkEditModal] = useState(false);
 
-  // Notification settings state
+  // Sort state
+  const [sortBy, setSortBy] = useState('time-desc');
   const [notificationsEnabled, setNotificationsEnabled] = useState(true);
   const [savingNotificationSettings, setSavingNotificationSettings] = useState(false);
   const unassignedRequestIdRef = useRef(0);
@@ -584,13 +585,40 @@ function UnassignedWork() {
       return type === groupTypeTab;
     });
 
-    return byType.filter(group => {
+    const filtered = byType.filter(group => {
       if (quickFilter === 'all') return true;
       if (quickFilter === 'recommended') return Boolean(group.recommendation);
       if (quickFilter === 'review') return !group.recommendation;
       return true;
     });
-  }, [groups, groupTypeTab, quickFilter]);
+
+    // Sort
+    const sorted = [...filtered];
+    switch (sortBy) {
+      case 'time-desc':
+        sorted.sort((a, b) => (b.total_seconds || 0) - (a.total_seconds || 0));
+        break;
+      case 'time-asc':
+        sorted.sort((a, b) => (a.total_seconds || 0) - (b.total_seconds || 0));
+        break;
+      case 'sessions-desc':
+        sorted.sort((a, b) => (b.session_count || 0) - (a.session_count || 0));
+        break;
+      case 'sessions-asc':
+        sorted.sort((a, b) => (a.session_count || 0) - (b.session_count || 0));
+        break;
+      case 'newest':
+        sorted.sort((a, b) => new Date(b.created_at || 0) - new Date(a.created_at || 0));
+        break;
+      case 'oldest':
+        sorted.sort((a, b) => new Date(a.created_at || 0) - new Date(b.created_at || 0));
+        break;
+      default:
+        break;
+    }
+
+    return sorted;
+  }, [groups, groupTypeTab, quickFilter, sortBy]);
 
   // Summary calculations
   const getTotalTime = (groupList = groups) => {
@@ -636,6 +664,22 @@ function UnassignedWork() {
         <div className="header-top-row">
           <h2>Unassigned Work</h2>
           <div className="header-buttons-row">
+            <div className="sort-by-filter">
+              <label className="sort-by-label" htmlFor="unassigned-sort">Sort by</label>
+              <select
+                id="unassigned-sort"
+                className="sort-by-select"
+                value={sortBy}
+                onChange={(e) => setSortBy(e.target.value)}
+              >
+                <option value="time-desc">Most Time</option>
+                <option value="time-asc">Least Time</option>
+                <option value="sessions-desc">Most Sessions</option>
+                <option value="sessions-asc">Least Sessions</option>
+                <option value="newest">Newest First</option>
+                <option value="oldest">Oldest First</option>
+              </select>
+            </div>
             <button
               className="bulk-time-edit-btn"
               onClick={() => setShowBulkEditModal(true)}
