@@ -214,9 +214,9 @@ describe('Activity Polling Service', () => {
 
       await activityPollingService.processPendingRecords();
 
-      // Should log debug message for parse failure
+      // Should log debug message for parse failure (uses %s format string)
       expect(logger.debug).toHaveBeenCalledWith(
-        'Failed to parse user_assigned_issues:',
+        'Failed to parse user_assigned_issues: %s',
         expect.any(String)
       );
       
@@ -421,22 +421,30 @@ describe('Activity Polling Service', () => {
     });
 
     it('should handle batch timeout', async () => {
+      // Use real timers for this test since Promise.race timeout uses setTimeout
+      jest.useRealTimers();
       process.env.ACTIVITY_BATCH_TIMEOUT_MS = '100';
-      
-      activityDbService.getPendingActivityBatches.mockResolvedValue([mockRecords[0]]);
-      activityDbService.claimBatchForProcessing.mockResolvedValue(['record1']);
-      activityService.analyzeBatch.mockImplementation(
-        () => new Promise(resolve => setTimeout(resolve, 1000))
-      );
-      activityDbService.markBatchFailed.mockResolvedValue();
 
-      await activityPollingService.processPendingRecords();
+      try {
+        activityDbService.getPendingActivityBatches.mockResolvedValue([mockRecords[0]]);
+        activityDbService.claimBatchForProcessing.mockResolvedValue(['record1']);
+        // Use a promise that never resolves on its own so the timeout fires
+        activityService.analyzeBatch.mockImplementation(
+          () => new Promise(() => { /* intentionally never resolves */ })
+        );
+        activityDbService.markBatchFailed.mockResolvedValue();
 
-      expect(activityDbService.markBatchFailed).toHaveBeenCalledWith(
-        ['record1'],
-        expect.stringContaining('timed out')
-      );
-    });
+        await activityPollingService.processPendingRecords();
+
+        expect(activityDbService.markBatchFailed).toHaveBeenCalledWith(
+          ['record1'],
+          expect.stringContaining('timed out')
+        );
+      } finally {
+        delete process.env.ACTIVITY_BATCH_TIMEOUT_MS;
+        jest.useFakeTimers();
+      }
+    }, 10000);
 
     it('should use first non-empty user_assigned_issues from batch', async () => {
       const recordsWithMixedIssues = [
@@ -560,21 +568,37 @@ describe('Activity Polling Service', () => {
     });
 
     it('should use custom batch size from environment', () => {
+      const originalBatchSize = process.env.ACTIVITY_POLLING_BATCH_SIZE;
       process.env.ACTIVITY_POLLING_BATCH_SIZE = '50';
-      const customService = require('../../src/services/activity-polling-service');
-      
-      expect(customService.batchSize).toBe(50);
-      
-      delete process.env.ACTIVITY_POLLING_BATCH_SIZE;
+      try {
+        jest.isolateModules(() => {
+          const freshService = require('../../src/services/activity-polling-service');
+          expect(freshService.batchSize).toBe(50);
+        });
+      } finally {
+        if (originalBatchSize === undefined) {
+          delete process.env.ACTIVITY_POLLING_BATCH_SIZE;
+        } else {
+          process.env.ACTIVITY_POLLING_BATCH_SIZE = originalBatchSize;
+        }
+      }
     });
 
     it('should use custom polling interval from environment', () => {
+      const originalInterval = process.env.ACTIVITY_POLLING_INTERVAL_MS;
       process.env.ACTIVITY_POLLING_INTERVAL_MS = '60000';
-      const customService = require('../../src/services/activity-polling-service');
-      
-      expect(customService.pollInterval).toBe(60000);
-      
-      delete process.env.ACTIVITY_POLLING_INTERVAL_MS;
+      try {
+        jest.isolateModules(() => {
+          const freshService = require('../../src/services/activity-polling-service');
+          expect(freshService.pollInterval).toBe(60000);
+        });
+      } finally {
+        if (originalInterval === undefined) {
+          delete process.env.ACTIVITY_POLLING_INTERVAL_MS;
+        } else {
+          process.env.ACTIVITY_POLLING_INTERVAL_MS = originalInterval;
+        }
+      }
     });
 
     it('should handle missing organization_id in records', async () => {
@@ -618,7 +642,8 @@ describe('Activity Polling Service', () => {
       ];
 
       activityDbService.getPendingActivityBatches.mockResolvedValue(multiUserRecords);
-      activityDbService.claimBatchForProcessing.mockResolvedValue(['record1', 'record2', 'record3']);
+      // Each per-user batch claims 1 record, so return array with 1 item
+      activityDbService.claimBatchForProcessing.mockResolvedValue(['record1']);
       
       activityService.analyzeBatch
         .mockRejectedValueOnce(new Error('User 1 failed'))
@@ -630,6 +655,7 @@ describe('Activity Polling Service', () => {
       await activityPollingService.processPendingRecords();
 
       expect(activityDbService.markBatchFailed).toHaveBeenCalledTimes(2);
+      // user2 succeeds with 1 record (claimed.length=1), user1+user3 fail with 1 record each
       expect(logger.info).toHaveBeenCalledWith(
         expect.stringContaining('1 succeeded, 2 failed')
       );

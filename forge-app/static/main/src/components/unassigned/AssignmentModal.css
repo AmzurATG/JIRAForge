@@ -60,6 +60,12 @@
   padding: 20px;
 }
 
+/* Base .match-tip-banner styles live in components/modals/Modals.css.
+   Override margin for the assignment modal's tighter layout. */
+.assignment-modal .match-tip-banner {
+  margin: 0 0 16px 0;
+}
+
 .assignment-options {
   display: flex;
   flex-direction: column;

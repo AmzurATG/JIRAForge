@@ -10687,12 +10687,6 @@ class TimeTracker:
             )
         ]
 
-        # Add Send Feedback menu item
-        def send_feedback_action():
-            self._open_feedback_form()
-
-        menu_items.append(item('Send Feedback', send_feedback_action))
-
         # Add separator and update-related menu items
         menu_items.append(pystray.Menu.SEPARATOR)
 
@@ -10712,62 +10706,6 @@ class TimeTracker:
             menu_items.append(item(lambda text: f"Up to Date (v{self.app_version})", lambda: None, enabled=False))
 
         return pystray.Menu(*menu_items)
-
-    def _open_feedback_form(self):
-        """Open the feedback form in the browser via a session-authenticated URL"""
-        try:
-            access_token = self.auth_manager.tokens.get('access_token')
-            if not access_token:
-                print("[WARN] No access token available for feedback, opening login")
-                webbrowser.open(f'http://localhost:{self.web_port}/login')
-                return
-
-            cloud_id = self.get_jira_cloud_id()
-            if not cloud_id:
-                print("[WARN] No Jira Cloud ID available for feedback")
-                return
-
-            # Create a feedback session on the AI server
-            print("[INFO] Creating feedback session...")
-            ai_server_url = self.auth_manager.ai_server_url
-            response = requests.post(
-                f"{ai_server_url}/api/feedback/session",
-                json={
-                    'atlassian_token': access_token,
-                    'cloud_id': cloud_id
-                },
-                timeout=15
-            )
-
-            # Handle 401 - token expired, try refresh
-            if response.status_code == 401:
-                print("[WARN] Token expired for feedback session, refreshing...")
-                if self.auth_manager.refresh_access_token():
-                    access_token = self.auth_manager.tokens.get('access_token')
-                    response = requests.post(
-                        f"{ai_server_url}/api/feedback/session",
-                        json={
-                            'atlassian_token': access_token,
-                            'cloud_id': cloud_id
-                        },
-                        timeout=15
-                    )
-                else:
-                    print("[ERROR] Token refresh failed for feedback")
-                    return
-
-            if response.status_code == 200:
-                result = response.json()
-                feedback_url = result.get('feedback_url')
-                if feedback_url:
-                    print(f"[OK] Opening feedback form: {feedback_url}")
-                    webbrowser.open(feedback_url)
-                else:
-                    print("[ERROR] No feedback URL in response")
-            else:
-                print(f"[ERROR] Failed to create feedback session: {response.status_code} - {response.text}")
-        except Exception as e:
-            print(f"[ERROR] Failed to open feedback form: {e}")
 
     def _shutdown_cleanup(self):
         """Gracefully shut down OCR worker, flush sessions, and close DB connections."""

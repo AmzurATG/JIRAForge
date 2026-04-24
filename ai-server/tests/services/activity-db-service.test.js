@@ -370,35 +370,29 @@ describe('Activity DB Service', () => {
     const errorMessage = 'AI analysis failed';
 
     it('should increment retry_count and keep pending status when under limit', async () => {
-      // Setup fresh mock for this test
-      const selectMock = jest.fn();
       const updateMock = jest.fn();
-      
-      let selectCallCount = 0;
-      let updateCallCount = 0;
-      
+
+      // The implementation does:
+      // 1. .from().select('id, retry_count, metadata').in('id', recordIds) → bulk fetch
+      // 2. .from().update({...}).eq('id', record.id) → per-record update
       mockSupabase.from.mockImplementation(() => ({
-        select: selectMock.mockImplementation(() => ({
-          eq: jest.fn().mockImplementation(() => ({
-            single: jest.fn().mockImplementation(() => {
-              selectCallCount++;
-              if (selectCallCount === 1) {
-                return Promise.resolve({ data: { retry_count: 1, metadata: { existing: 'data' } } });
-              }
-              return Promise.resolve({ data: { retry_count: 0, metadata: null } });
-            })
-          }))
+        select: jest.fn().mockImplementation(() => ({
+          in: jest.fn().mockResolvedValue({
+            data: [
+              { id: 'rec-1', retry_count: 1, metadata: { existing: 'data' } },
+              { id: 'rec-2', retry_count: 0, metadata: null }
+            ]
+          })
         })),
         update: updateMock.mockImplementation(() => ({
-          eq: jest.fn().mockImplementation(() => {
-            updateCallCount++;
-            return Promise.resolve({ data: null, error: null });
-          })
+          eq: jest.fn().mockResolvedValue({ data: null, error: null })
         }))
       }));
 
       await markBatchFailed(recordIds, errorMessage);
 
+      // Both records must be updated — one call per record
+      expect(updateMock).toHaveBeenCalledTimes(2);
       // First record: retry_count 1 -> 2, stays pending
       expect(updateMock).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -407,16 +401,24 @@ describe('Activity DB Service', () => {
           metadata: { existing: 'data', error: errorMessage }
         })
       );
+      // Second record: retry_count 0 -> 1, stays pending
+      expect(updateMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          status: 'pending',
+          retry_count: 1,
+          metadata: { error: errorMessage }
+        })
+      );
     });
 
     it('should mark as failed when retry_count reaches 3', async () => {
       const updateMock = jest.fn();
-      
+
       mockSupabase.from.mockImplementation(() => ({
         select: jest.fn().mockImplementation(() => ({
-          eq: jest.fn().mockImplementation(() => ({
-            single: jest.fn().mockResolvedValue({ data: { retry_count: 2, metadata: {} } })
-          }))
+          in: jest.fn().mockResolvedValue({
+            data: [{ id: 'rec-1', retry_count: 2, metadata: {} }]
+          })
         })),
         update: updateMock.mockImplementation(() => ({
           eq: jest.fn().mockResolvedValue({ data: null, error: null })
@@ -435,12 +437,12 @@ describe('Activity DB Service', () => {
 
     it('should handle record with null metadata', async () => {
       const updateMock = jest.fn();
-      
+
       mockSupabase.from.mockImplementation(() => ({
         select: jest.fn().mockImplementation(() => ({
-          eq: jest.fn().mockImplementation(() => ({
-            single: jest.fn().mockResolvedValue({ data: { retry_count: 0, metadata: null } })
-          }))
+          in: jest.fn().mockResolvedValue({
+            data: [{ id: 'rec-1', retry_count: 0, metadata: null }]
+          })
         })),
         update: updateMock.mockImplementation(() => ({
           eq: jest.fn().mockResolvedValue({ data: null, error: null })
@@ -456,61 +458,37 @@ describe('Activity DB Service', () => {
       );
     });
 
-    it('should handle missing record gracefully', async () => {
+    it('should return early when no records found', async () => {
       const updateMock = jest.fn();
-      
+
       mockSupabase.from.mockImplementation(() => ({
         select: jest.fn().mockImplementation(() => ({
-          eq: jest.fn().mockImplementation(() => ({
-            single: jest.fn().mockResolvedValue({ data: null })
-          }))
+          in: jest.fn().mockResolvedValue({ data: [] })
         })),
-        update: updateMock.mockImplementation(() => ({
-          eq: jest.fn().mockResolvedValue({ data: null, error: null })
-        }))
+        update: updateMock
       }));
 
       await markBatchFailed(['rec-1'], errorMessage);
 
-      // Should still attempt update with default values
-      expect(updateMock).toHaveBeenCalledWith(
-        expect.objectContaining({
-          retry_count: 1,
-          status: 'pending'
-        })
-      );
+      // No records returned → should not attempt any updates
+      expect(updateMock).not.toHaveBeenCalled();
     });
 
-    it('should log error and continue on individual record failure', async () => {
-      const dbError = new Error('Single record fetch failed');
-      let callCount = 0;
-      const updateMock = jest.fn();
-      
+    it('should log error when bulk fetch fails', async () => {
+      const dbError = new Error('Bulk fetch failed');
+
       mockSupabase.from.mockImplementation(() => ({
         select: jest.fn().mockImplementation(() => ({
-          eq: jest.fn().mockImplementation(() => ({
-            single: jest.fn().mockImplementation(() => {
-              callCount++;
-              if (callCount === 1) {
-                return Promise.reject(dbError);
-              }
-              return Promise.resolve({ data: { retry_count: 0, metadata: {} } });
-            })
-          }))
-        })),
-        update: updateMock.mockImplementation(() => ({
-          eq: jest.fn().mockResolvedValue({ data: null, error: null })
+          in: jest.fn().mockRejectedValue(dbError)
         }))
       }));
 
       await markBatchFailed(recordIds, errorMessage);
 
       expect(logger.error).toHaveBeenCalledWith(
-        '[ActivityDB] Failed to mark record rec-1 as failed:',
+        '[ActivityDB] Failed to mark batch as failed:',
         dbError
       );
-      // Second record should still be processed
-      expect(updateMock).toHaveBeenCalled();
     });
 
     it('should throw when Supabase client is not initialized', async () => {

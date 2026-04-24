@@ -186,6 +186,10 @@ function SessionReassignModal({
             <strong>{sessionToReassign.fromIssueKey}</strong>
           </p>
 
+          <p className="match-tip-banner">
+            <span>Our AI matches sessions to Jira issues using their <strong>summary</strong> and <strong>description</strong>. Use clear, descriptive titles in Jira to improve matching accuracy.</span>
+          </p>
+
           {/* Optional comment / reason — shown for pending sessions only,
               since the legacy reassignSession resolver ignores it. */}
           {isPendingApproval && (
