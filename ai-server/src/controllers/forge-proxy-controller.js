@@ -1350,7 +1350,7 @@ exports.cacheUserIssues = async (req, res) => {
 
     const { error: upsertErr } = await supabase
       .from('user_jira_issues_cache')
-      .upsert(rows, { onConflict: 'user_id,issue_key' });
+      .upsert(rows, { onConflict: 'user_id,organization_id,issue_key' });
 
     if (upsertErr) throw upsertErr;
 

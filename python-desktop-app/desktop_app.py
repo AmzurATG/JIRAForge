@@ -333,7 +333,7 @@ load_dotenv()
 
 # Application version - IMPORTANT: Update this when releasing new versions
 # This is used for update checking and notifications
-APP_VERSION = "1.4.7"
+APP_VERSION = "1.4.8"
 
 # Hard-disable screenshot monitoring/storage in desktop app.
 # OCR text extraction for activity records still runs via event-based flow.
