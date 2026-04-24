@@ -425,23 +425,25 @@ describe('Activity Polling Service', () => {
       jest.useRealTimers();
       process.env.ACTIVITY_BATCH_TIMEOUT_MS = '100';
 
-      activityDbService.getPendingActivityBatches.mockResolvedValue([mockRecords[0]]);
-      activityDbService.claimBatchForProcessing.mockResolvedValue(['record1']);
-      // Use a promise that never resolves on its own so the timeout fires
-      activityService.analyzeBatch.mockImplementation(
-        () => new Promise(() => { /* intentionally never resolves */ })
-      );
-      activityDbService.markBatchFailed.mockResolvedValue();
+      try {
+        activityDbService.getPendingActivityBatches.mockResolvedValue([mockRecords[0]]);
+        activityDbService.claimBatchForProcessing.mockResolvedValue(['record1']);
+        // Use a promise that never resolves on its own so the timeout fires
+        activityService.analyzeBatch.mockImplementation(
+          () => new Promise(() => { /* intentionally never resolves */ })
+        );
+        activityDbService.markBatchFailed.mockResolvedValue();
 
-      await activityPollingService.processPendingRecords();
+        await activityPollingService.processPendingRecords();
 
-      expect(activityDbService.markBatchFailed).toHaveBeenCalledWith(
-        ['record1'],
-        expect.stringContaining('timed out')
-      );
-
-      delete process.env.ACTIVITY_BATCH_TIMEOUT_MS;
-      jest.useFakeTimers();
+        expect(activityDbService.markBatchFailed).toHaveBeenCalledWith(
+          ['record1'],
+          expect.stringContaining('timed out')
+        );
+      } finally {
+        delete process.env.ACTIVITY_BATCH_TIMEOUT_MS;
+        jest.useFakeTimers();
+      }
     }, 10000);
 
     it('should use first non-empty user_assigned_issues from batch', async () => {
@@ -566,23 +568,37 @@ describe('Activity Polling Service', () => {
     });
 
     it('should use custom batch size from environment', () => {
-      // Module is already cached by require(), so we test by setting the property
-      // directly — the constructor reads env at load time, not per-access
-      const originalBatchSize = activityPollingService.batchSize;
-      activityPollingService.batchSize = 50;
-
-      expect(activityPollingService.batchSize).toBe(50);
-
-      activityPollingService.batchSize = originalBatchSize;
+      const originalBatchSize = process.env.ACTIVITY_POLLING_BATCH_SIZE;
+      process.env.ACTIVITY_POLLING_BATCH_SIZE = '50';
+      try {
+        jest.isolateModules(() => {
+          const freshService = require('../../src/services/activity-polling-service');
+          expect(freshService.batchSize).toBe(50);
+        });
+      } finally {
+        if (originalBatchSize === undefined) {
+          delete process.env.ACTIVITY_POLLING_BATCH_SIZE;
+        } else {
+          process.env.ACTIVITY_POLLING_BATCH_SIZE = originalBatchSize;
+        }
+      }
     });
 
     it('should use custom polling interval from environment', () => {
-      const originalInterval = activityPollingService.pollInterval;
-      activityPollingService.pollInterval = 60000;
-
-      expect(activityPollingService.pollInterval).toBe(60000);
-
-      activityPollingService.pollInterval = originalInterval;
+      const originalInterval = process.env.ACTIVITY_POLLING_INTERVAL_MS;
+      process.env.ACTIVITY_POLLING_INTERVAL_MS = '60000';
+      try {
+        jest.isolateModules(() => {
+          const freshService = require('../../src/services/activity-polling-service');
+          expect(freshService.pollInterval).toBe(60000);
+        });
+      } finally {
+        if (originalInterval === undefined) {
+          delete process.env.ACTIVITY_POLLING_INTERVAL_MS;
+        } else {
+          process.env.ACTIVITY_POLLING_INTERVAL_MS = originalInterval;
+        }
+      }
     });
 
     it('should handle missing organization_id in records', async () => {

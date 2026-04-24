@@ -391,6 +391,8 @@ describe('Activity DB Service', () => {
 
       await markBatchFailed(recordIds, errorMessage);
 
+      // Both records must be updated — one call per record
+      expect(updateMock).toHaveBeenCalledTimes(2);
       // First record: retry_count 1 -> 2, stays pending
       expect(updateMock).toHaveBeenCalledWith(
         expect.objectContaining({

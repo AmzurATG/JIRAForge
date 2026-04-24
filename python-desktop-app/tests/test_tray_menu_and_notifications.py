@@ -61,7 +61,6 @@ def _build_fake_app(update_manager, app_version="1.0.0", web_port=9876):
     app.current_user = {"email": "test@example.com"}
     app.current_user_id = "user-123"
     app.auth_manager = MagicMock()
-    app._open_feedback_form = MagicMock()
     app.check_for_app_updates = MagicMock(return_value=None)
 
     # Bind the real _build_tray_menu method to our fake app
@@ -536,7 +535,7 @@ class TestStateChangeNotificationPort:
 class TestTrayMenuItemCount:
 
     def test_idle_state_has_expected_items(self, tmp_path):
-        """Idle state: user label + feedback + separator + up-to-date = 4 items."""
+        """Idle state: user label + separator + up-to-date = 3 items."""
         manager = UpdateManager(str(tmp_path), "1.0.0")
 
         with patch.object(desktop_app, "pystray") as mock_pystray:
@@ -546,11 +545,11 @@ class TestTrayMenuItemCount:
                 app = _build_fake_app(manager)
                 menu = app._build_tray_menu()
 
-        # user label, feedback, separator, up-to-date
-        assert len(menu.items) == 4
+        # user label, separator, up-to-date
+        assert len(menu.items) == 3
 
     def test_ready_state_has_expected_items(self, tmp_path):
-        """Ready state: user label + feedback + separator + install = 4 items (no Later)."""
+        """Ready state: user label + separator + install = 3 items (no Later)."""
         manager = UpdateManager(str(tmp_path), "1.0.0")
         manager.update_info = {"latest_version": "2.0.0"}
         manager.download_path = os.path.join(str(tmp_path), "updates", "fake.exe")
@@ -563,11 +562,11 @@ class TestTrayMenuItemCount:
                 app = _build_fake_app(manager)
                 menu = app._build_tray_menu()
 
-        # user label, feedback, separator, install  (NO Later)
-        assert len(menu.items) == 4
+        # user label, separator, install  (NO Later)
+        assert len(menu.items) == 3
 
     def test_downloading_state_has_expected_items(self, tmp_path):
-        """Downloading state: user label + feedback + separator + progress = 4 items (no Cancel)."""
+        """Downloading state: user label + separator + progress = 3 items (no Cancel)."""
         manager = UpdateManager(str(tmp_path), "1.0.0")
         manager.update_info = {"latest_version": "2.0.0"}
         manager._set_state("downloading")
@@ -579,5 +578,5 @@ class TestTrayMenuItemCount:
                 app = _build_fake_app(manager)
                 menu = app._build_tray_menu()
 
-        # user label, feedback, separator, progress (NO Cancel Download)
-        assert len(menu.items) == 4
+        # user label, separator, progress (NO Cancel Download)
+        assert len(menu.items) == 3

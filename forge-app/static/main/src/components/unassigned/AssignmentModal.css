@@ -60,25 +60,10 @@
   padding: 20px;
 }
 
-.match-tip-banner {
-  display: flex;
-  gap: 8px;
-  align-items: flex-start;
+/* Base .match-tip-banner styles live in components/modals/Modals.css.
+   Override margin for the assignment modal's tighter layout. */
+.assignment-modal .match-tip-banner {
   margin: 0 0 16px 0;
-  padding: 8px 12px;
-  background: #E9F2FF;
-  border: 1px solid #CCE0FF;
-  border-radius: 6px;
-  font-size: 12px;
-  line-height: 1.4;
-  color: #172B4D;
-}
-
-.match-tip-banner::before {
-  content: 'ⓘ';
-  color: #0C66E4;
-  font-weight: 600;
-  flex-shrink: 0;
 }
 
 .assignment-options {
