@@ -95,13 +95,6 @@ function DashboardTab({ onOpenReassignModal }) {
     loadActiveIssues();
   }, [loadActiveIssues]);
 
-  const matchesStatusFilter = (issue) => {
-    if (issueFilter === 'all') return true;
-    if (issueFilter === 'in-progress') return issue.statusCategory === 'indeterminate';
-    if (issueFilter === 'done') return issue.statusCategory === 'done';
-    return true;
-  };
-
   const matchesTimeFilter = (issue) => {
     const trackedSeconds = Number(issue.timeTracked) || 0;
     if (timeFilter === 'all') return true;

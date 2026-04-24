@@ -1151,6 +1151,10 @@ function DayView({ loading, timeData, onTodayTotalReconciled, onOpenWorklogReass
               </span>
             </div>
 
+            <p className="popover-match-tip">
+              <span>Our AI matches sessions to Jira issues using their <strong>summary</strong> and <strong>description</strong>. Clear, descriptive titles in Jira improve matching accuracy.</span>
+            </p>
+
             {/* Step 1: Reason */}
             <label className="popover-label">What were you working on?</label>
             <input

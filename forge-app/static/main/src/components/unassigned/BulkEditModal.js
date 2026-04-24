@@ -176,6 +176,10 @@ function BulkEditModal({ isOpen, userIssues, onClose, onSuccess }) {
             </div>
           ) : (
             <>
+              <p className="match-tip-banner">
+                <span>Our AI matches sessions to Jira issues using their <strong>summary</strong> and <strong>description</strong>. Use clear, descriptive titles in Jira to improve matching accuracy.</span>
+              </p>
+
               {/* Time Selection Section */}
               <div className="time-selection-section">
                 <h4>Select Time Interval</h4>

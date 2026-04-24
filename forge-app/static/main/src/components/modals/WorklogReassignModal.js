@@ -86,6 +86,10 @@ function WorklogReassignModal({
             <strong>{displayIssueKey}</strong> — Total: <strong>{formatTime(timeSpentSeconds)}</strong>
           </p>
 
+          <p className="match-tip-banner">
+            <span>Our AI matches sessions to Jira issues using their <strong>summary</strong> and <strong>description</strong>. Use clear, descriptive titles in Jira to improve matching accuracy.</span>
+          </p>
+
           {/* Time split controls — only show if there's more than 1 minute and not unassigned */}
           {totalMinutes > 1 && !isUnassigned && (
             <div className="split-time-section">
