@@ -10687,12 +10687,6 @@ class TimeTracker:
             )
         ]
 
-        # Add Send Feedback menu item
-        def send_feedback_action():
-            self._open_feedback_form()
-
-        menu_items.append(item('Send Feedback', send_feedback_action))
-
         # Add separator and update-related menu items
         menu_items.append(pystray.Menu.SEPARATOR)
 
