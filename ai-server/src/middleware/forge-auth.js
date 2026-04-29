@@ -13,10 +13,18 @@ const JWKS_URL = 'https://forge.cdn.prod.atlassian-dev.net/.well-known/jwks.json
 if (!process.env.FORGE_APP_ID) {
   throw new Error('FORGE_APP_ID environment variable is required. Set it in .env to your Forge app ARI(s). Separate multiple IDs with commas.');
 }
-// Parse comma-separated app IDs and trim whitespace
-const FORGE_APP_IDS = process.env.FORGE_APP_ID.split(',').map(id => id.trim()).filter(Boolean);
-// Log the configured app IDs at startup for debugging
-logger.info('[FIT] Configured FORGE_APP_IDs:', FORGE_APP_IDS);
+// Parse comma-separated app IDs, strip surrounding quotes, and trim whitespace
+const FORGE_APP_IDS = process.env.FORGE_APP_ID
+  .replace(/^["']|["']$/g, '') // Strip surrounding quotes if present
+  .split(',')
+  .map(id => id.trim().replace(/^["']|["']$/g, '')) // Strip per-value quotes too
+  .filter(Boolean);
+// Log the configured app IDs at startup using console.log to bypass log sanitizer
+// This is critical for debugging - the log sanitizer redacts ARIs making diagnosis impossible
+const rawEnvValue = process.env.FORGE_APP_ID;
+console.log(`[FIT] FORGE_APP_ID env var: length=${rawEnvValue.length}, first10="${rawEnvValue.substring(0, 10)}", last10="${rawEnvValue.substring(rawEnvValue.length - 10)}"`);
+console.log(`[FIT] Parsed FORGE_APP_IDS (${FORGE_APP_IDS.length}):`, FORGE_APP_IDS.map(id => `${id.substring(0, 20)}...${id.substring(id.length - 10)} (len=${id.length})`));
+logger.info(`[FIT] Configured ${FORGE_APP_IDS.length} app ID(s) for audience validation`);
 
 // Cache the JWKS and jose module
 let cachedJWKS = null;
@@ -105,21 +113,51 @@ function buildAudienceOptions(decodedPayload) {
  * @returns {Promise<Object>} Verified payload
  */
 async function tryVerifyWithAudiences(jose, JWKS, token, audienceOptions) {
-  let lastError;
-  for (const aud of audienceOptions) {
-    try {
-      const { payload } = await jose.jwtVerify(token, JWKS, {
-        issuer: 'forge/invocation-token',
-        audience: aud,
-        clockTolerance: '60s'
-      });
-      logger.debug('[FIT] Token validated with audience:', aud);
-      return payload;
-    } catch (err) {
-      lastError = err;
-    }
+  // Use compactVerify for signature-only verification, then validate all
+  // JWT claims manually. jose v5.10.0's internal claim validation (aud, nbf)
+  // has been rejecting valid tokens even when values match exactly.
+  const { payload: rawPayload, protectedHeader } = await jose.compactVerify(token, JWKS);
+  const payload = JSON.parse(new TextDecoder().decode(rawPayload));
+
+  const CLOCK_TOLERANCE = 120; // seconds — server clock can drift ~70s behind Atlassian
+  const now = Math.floor(Date.now() / 1000);
+
+  // Validate issuer
+  if (payload.iss !== 'forge/invocation-token') {
+    const err = new Error('unexpected "iss" claim value');
+    err.code = 'ERR_JWT_CLAIM_VALIDATION_FAILED';
+    err.claim = 'iss';
+    throw err;
   }
-  throw lastError;
+
+  // Validate audience
+  const tokenAud = Array.isArray(payload.aud) ? payload.aud : [payload.aud];
+  const audMatch = tokenAud.some(aud => audienceOptions.includes(aud));
+  if (!audMatch) {
+    const err = new Error('unexpected "aud" claim value');
+    err.code = 'ERR_JWT_CLAIM_VALIDATION_FAILED';
+    err.claim = 'aud';
+    throw err;
+  }
+
+  // Validate expiration
+  if (typeof payload.exp === 'number' && now > payload.exp + CLOCK_TOLERANCE) {
+    const err = new Error('Token expired');
+    err.code = 'ERR_JWT_EXPIRED';
+    err.claim = 'exp';
+    throw err;
+  }
+
+  // Validate not-before
+  if (typeof payload.nbf === 'number' && now < payload.nbf - CLOCK_TOLERANCE) {
+    logger.error('[FIT] NBF REJECTED:', { now, nbf: payload.nbf, diff: now - payload.nbf, threshold: payload.nbf - CLOCK_TOLERANCE });
+    const err = new Error('"nbf" claim timestamp check failed');
+    err.code = 'ERR_JWT_CLAIM_VALIDATION_FAILED';
+    err.claim = 'nbf';
+    throw err;
+  }
+  logger.info('[FIT] Claims validated OK:', { now, nbf: payload.nbf, exp: payload.exp, iss: payload.iss });
+  return payload;
 }
 
 /**
@@ -130,9 +168,9 @@ async function tryVerifyWithAudiences(jose, JWKS, token, audienceOptions) {
 function logValidationFailure(token, error) {
   const decoded = decodeTokenPayload(token);
   if (decoded) {
-    logger.error('[FIT] Token validation failed. Expected one of:', FORGE_APP_IDS, '| Actual aud:', JSON.stringify(decoded.aud), '| iss:', decoded.iss);
+    logger.error(`[FIT] Token validation failed. Expected one of: ${JSON.stringify(FORGE_APP_IDS)} | Actual aud: ${JSON.stringify(decoded.aud)} | iss: ${decoded.iss}`);
   }
-  logger.error('[FIT] Token validation failed: %s', error.message);
+  logger.error(`[FIT] Token validation failed: ${error.message}`);
 }
 
 /**

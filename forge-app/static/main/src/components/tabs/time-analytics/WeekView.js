@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useMemo, useRef } from 'react';
 import { formatTime } from '../../../utils';
 import { normalizeDate, formatLocalDate, getWeekDates } from './dateUtils';
 import DayIssueDrilldown from './DayIssueDrilldown';
@@ -44,11 +44,16 @@ function WeekView({ loading, timeData, summaryDrillDate }) {
   const startOfWeek = new Date(today);
   const dow = today.getDay();
   startOfWeek.setDate(today.getDate() - (dow === 0 ? 6 : dow - 1));
-  const weekDates = getWeekDates(today);
+  const weekDates = useMemo(() => getWeekDates(today), [todayStr]);
   const daysCount = weekDates.length;
+
+  // Track the last consumed summaryDrillDate to avoid re-applying on every render
+  const lastDrillDateRef = useRef(null);
 
   useEffect(() => {
     if (!summaryDrillDate) return;
+    if (summaryDrillDate === lastDrillDateRef.current) return;
+    lastDrillDateRef.current = summaryDrillDate;
     if (weekDates.some(item => item.dateStr === summaryDrillDate)) {
       setSelectedDate(summaryDrillDate);
     }
