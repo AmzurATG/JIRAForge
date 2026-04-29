@@ -63,7 +63,7 @@ async function updateActivityRecordAnalysis(recordId, analysisResult) {
   // The prompt defines 0.4–0.5 as "Reasonable match" and records go through
   // approval_status: 'pending_approval' before syncing to Jira, so false
   // positives are caught by the human-in-the-loop gate.
-  const MIN_CONFIDENCE_THRESHOLD = parseFloat(process.env.AI_MATCH_MIN_CONFIDENCE || '0.3');
+  const MIN_CONFIDENCE_THRESHOLD = parseFloat(process.env.AI_MATCH_MIN_CONFIDENCE || '0.4');
   const confidenceScore = analysisResult.metadata?.confidenceScore ?? 0;
   const taskKeyMeetsThreshold = analysisResult.taskKey && confidenceScore >= MIN_CONFIDENCE_THRESHOLD;
 

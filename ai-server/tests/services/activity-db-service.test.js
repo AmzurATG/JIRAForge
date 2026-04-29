@@ -252,11 +252,29 @@ describe('Activity DB Service', () => {
       await expect(updateActivityRecordAnalysis(recordId, {})).rejects.toThrow('Supabase client not initialized');
     });
 
-    // Fix 1: Confidence threshold lowered to 0.3
-    it('should assign taskKey when confidence is 0.35 (above 0.3 default)', async () => {
+    // P4 Fix: Confidence threshold unified at 0.4 (was 0.3)
+    it('should reject taskKey when confidence is 0.35 (below 0.4 default)', async () => {
       const analysisResult = {
         taskKey: 'ATG-222',
         metadata: { confidenceScore: 0.35 }
+      };
+      mockSupabase.select.mockResolvedValue({ data: [{ id: recordId }], error: null });
+
+      await updateActivityRecordAnalysis(recordId, analysisResult);
+
+      expect(mockSupabase.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          user_assigned_issue_key: null,
+          project_key: null,
+          approval_status: null
+        })
+      );
+    });
+
+    it('should assign taskKey when confidence is 0.45 (above 0.4 default)', async () => {
+      const analysisResult = {
+        taskKey: 'ATG-222',
+        metadata: { confidenceScore: 0.45 }
       };
       mockSupabase.select.mockResolvedValue({ data: [{ id: recordId }], error: null });
 
@@ -271,7 +289,7 @@ describe('Activity DB Service', () => {
       );
     });
 
-    it('should set taskKey to null when confidence is 0.25 (below 0.3 default)', async () => {
+    it('should set taskKey to null when confidence is 0.25 (below 0.4 default)', async () => {
       const analysisResult = {
         taskKey: 'ATG-333',
         metadata: { confidenceScore: 0.25 }

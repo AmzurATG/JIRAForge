@@ -21,8 +21,14 @@
 // On transient errors records stay 'pending' for polling retry (safety net).
 // On permanent errors (4xx) records are marked 'failed'.
 
-import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
+import { serve } from "https://deno.land/std@0.208.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+
+declare const Deno: {
+  env: {
+    get(key: string): string | undefined;
+  };
+};
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -59,7 +65,7 @@ interface BatchPayload {
   records: ActivityRecord[];
 }
 
-serve(async (req) => {
+serve(async (req: Request) => {
   // Handle CORS preflight requests
   if (req.method === 'OPTIONS') {
     return new Response('ok', { headers: corsHeaders });
@@ -116,20 +122,24 @@ serve(async (req) => {
     // Fetch user's assigned Jira issues from cache
     const { data: cachedIssues, error: cacheError } = await supabaseClient
       .from('user_jira_issues_cache')
-      .select('issue_key, summary, status, project_key, issue_type')
+      .select('issue_key, issue_summary, summary, status, project_key, issue_type, description, labels, priority, updated_at')
       .eq('user_id', userId)
       .order('updated_at', { ascending: false })
       .limit(50);
 
-    let userAssignedIssues: { key: string; summary: string; status: string; project: string; issueType: string }[] = [];
+    let userAssignedIssues: { key: string; summary: string; status: string; project: string; issueType: string; description: string | null; labels: string[]; priority: string | null; updated: string | null }[] = [];
 
     if (cachedIssues && cachedIssues.length > 0) {
-      userAssignedIssues = cachedIssues.map(issue => ({
+      userAssignedIssues = cachedIssues.map((issue: any) => ({
         key: issue.issue_key,
-        summary: issue.summary,
+        summary: issue.issue_summary || issue.summary,
         status: issue.status,
         project: issue.project_key,
-        issueType: issue.issue_type
+        issueType: issue.issue_type,
+        description: issue.description || null,
+        labels: issue.labels || [],
+        priority: issue.priority || null,
+        updated: issue.updated_at || null
       }));
 
       console.log(`Fetched ${userAssignedIssues.length} cached issues for user ${userId}`);

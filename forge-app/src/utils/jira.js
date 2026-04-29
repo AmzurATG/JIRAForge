@@ -77,7 +77,7 @@ export async function getUserAssignedIssues(statuses = JQL_ACTIVE_STATUSES, maxR
       body: JSON.stringify({
         jql: jql,
         maxResults: maxResults,
-        fields: ['summary', 'status', 'project', 'issuetype', 'updated']
+        fields: ['summary', 'status', 'project', 'issuetype', 'updated', 'description', 'labels', 'priority']
       })
     }
   );

@@ -6,6 +6,7 @@
 import { getUserAssignedIssues } from '../../utils/jira.js';
 import { getSupabaseConfig, getOrCreateUser, getOrCreateOrganization, supabaseRequest } from '../../utils/supabase.js';
 import { JQL_ACTIVE_STATUSES, ISSUE_BATCH_SIZE } from '../../config/constants.js';
+import { extractDescriptionText } from '../../utils/adfToText.js';
 
 /**
  * Update user's assigned Jira issues cache in Supabase
@@ -56,7 +57,10 @@ export async function updateAssignedIssuesCache(accountId, cloudId) {
       status: issue.fields.status?.name || 'Unknown',
       project_key: issue.fields.project?.key || '',
       issue_type: issue.fields.issuetype?.name || 'Task',
-      updated_at: issue.fields.updated || issue.fields.created || new Date().toISOString()
+      updated_at: issue.fields.updated || issue.fields.created || new Date().toISOString(),
+      description: extractDescriptionText(issue.fields.description) || null,
+      labels: issue.fields.labels || [],
+      priority: issue.fields.priority?.name || null
     }));
 
     // Insert in batches (Supabase has limits on batch size)

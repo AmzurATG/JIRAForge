@@ -8,6 +8,7 @@
 
 const activityService = require('./activity-service');
 const activityDbService = require('./db/activity-db-service');
+const userDbService = require('./db/user-db-service');
 const logger = require('../utils/logger');
 
 /**
@@ -191,6 +192,31 @@ class ActivityPollingService {
     // Extract user's assigned issues from the records
     const userAssignedIssues = extractUserAssignedIssues(records);
 
+    // Fallback: if no issues embedded in records, fetch from cache
+    let issuesForAnalysis = userAssignedIssues;
+    if (!issuesForAnalysis || issuesForAnalysis.length === 0) {
+      try {
+        const organizationId = records[0]?.organization_id || null;
+        const cachedIssues = await userDbService.getUserCachedIssues(userId, organizationId);
+        if (cachedIssues && cachedIssues.length > 0) {
+          issuesForAnalysis = cachedIssues.map(issue => ({
+            key: issue.issue_key,
+            summary: issue.issue_summary || issue.summary,
+            status: issue.status,
+            project: issue.project_key,
+            issueType: issue.issue_type,
+            description: issue.description || null,
+            labels: issue.labels || [],
+            priority: issue.priority || null,
+            updated: issue.updated_at || null
+          }));
+          logger.info(`[Polling] Fetched ${issuesForAnalysis.length} cached issues as fallback for user ${userId}`);
+        }
+      } catch (cacheErr) {
+        logger.warn(`[Polling] Failed to fetch cached issues fallback for user ${userId}:`, cacheErr.message);
+      }
+    }
+
     // Per-batch timeout (default: 60 seconds)
     const batchTimeoutMs = Number.parseInt(process.env.ACTIVITY_BATCH_TIMEOUT_MS || '60000', 10);
 
@@ -198,7 +224,7 @@ class ActivityPollingService {
     await Promise.race([
       activityService.analyzeBatch(
         records.map(transformRecordForAnalysis),
-        userAssignedIssues,
+        issuesForAnalysis,
         userId,
         records[0]?.organization_id
       ),

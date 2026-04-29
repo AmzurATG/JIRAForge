@@ -41,8 +41,8 @@ function formatAssignedIssues(userAssignedIssues) {
       // Add description if available (provides important context)
       if (issue.description && issue.description.trim()) {
         // Truncate long descriptions to save tokens
-        const desc = issue.description.length > 200
-          ? issue.description.substring(0, 200) + '...'
+        const desc = issue.description.length > 600
+          ? issue.description.substring(0, 600) + '...'
           : issue.description;
         issueText += `\n  Description: ${desc}`;
       }

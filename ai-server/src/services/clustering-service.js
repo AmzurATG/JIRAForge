@@ -104,9 +104,12 @@ ${createClusteringInput(session)}`;
 
     // Create user issues context
     const issuesContext = userIssues.length > 0
-      ? `\n\nUser's assigned Jira issues (for matching suggestions):\n${userIssues.map(issue =>
-          `- ${issue.issue_key}: ${issue.summary}`
-        ).join('\n')}`
+      ? `\n\nUser's assigned Jira issues (for matching suggestions):\n${userIssues.map(issue => {
+          const descSuffix = issue.description
+            ? ` — ${issue.description.substring(0, 200)}`
+            : '';
+          return `- ${issue.issue_key}: ${issue.summary}${descSuffix}`;
+        }).join('\n')}`
       : '';
 
     // Pre-categorize sessions by application type for better context
@@ -526,8 +529,10 @@ function formatDuration(seconds) {
       return `${minutes}m ${secs}s`;
     }
     return `${minutes}m`;
-  } else {
+  } else if (secs > 0) {
     return `${secs}s`;
+  } else {
+    return '0m';
   }
 }
 
