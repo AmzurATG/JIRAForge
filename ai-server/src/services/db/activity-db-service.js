@@ -123,15 +123,48 @@ async function markBatchAnalyzed(recordIds) {
   return data || [];
 }
 
+// Patterns that identify transient/upstream failures.
+// Retrying after the provider recovers will succeed, so we don't burn retry
+// budget on these. Anything not matching falls through to the permanent path.
+const TRANSIENT_ERROR_PATTERNS = [
+  'enotfound',
+  'econnrefused',
+  'etimedout',
+  'econnreset',
+  'timeout',
+  'timed out',
+  'fetch failed',
+  'socket hang up',
+  'all ai providers failed',
+  'service unavailable',
+  '429',
+  '500',
+  '502',
+  '503',
+  '504',
+  '408'
+];
+
+function isTransientError(errorMessage) {
+  if (!errorMessage) return false;
+  const lower = String(errorMessage).toLowerCase();
+  return TRANSIENT_ERROR_PATTERNS.some(p => lower.includes(p));
+}
+
 /**
- * Mark records as failed, incrementing retry_count.
- * Records with retry_count >= 3 are permanently marked 'failed'.
+ * Mark records as failed after an analysis attempt.
+ * - Transient/upstream errors (Portkey down, network, "All AI providers failed"):
+ *   keep status='pending' and do NOT increment retry_count. The next polling
+ *   cycle will retry once the provider recovers.
+ * - Permanent errors: increment retry_count and flip to 'failed' once it caps.
  * @param {Array<string>} recordIds - UUIDs of records
  * @param {string} errorMessage - Error description
  */
 async function markBatchFailed(recordIds, errorMessage) {
   const supabase = getClient();
   if (!supabase) throw new Error('Supabase client not initialized');
+
+  const transient = isTransientError(errorMessage);
 
   try {
     // Fetch all records in one query instead of N individual queries
@@ -144,11 +177,12 @@ async function markBatchFailed(recordIds, errorMessage) {
 
     // Update all records in parallel
     await Promise.all(records.map(record => {
-      const retryCount = (record.retry_count || 0) + 1;
-      const newStatus = retryCount >= 3 ? 'failed' : 'pending';
+      const currentCount = record.retry_count || 0;
+      const retryCount = transient ? currentCount : currentCount + 1;
+      const newStatus = !transient && retryCount >= 3 ? 'failed' : 'pending';
       const newMetadata = record.metadata
-        ? { ...record.metadata, error: errorMessage }
-        : { error: errorMessage };
+        ? { ...record.metadata, error: errorMessage, transient }
+        : { error: errorMessage, transient };
 
       return supabase
         .from('activity_records')
@@ -160,6 +194,10 @@ async function markBatchFailed(recordIds, errorMessage) {
         })
         .eq('id', record.id);
     }));
+
+    if (transient) {
+      logger.warn(`[ActivityDB] Transient error on ${records.length} record(s), keeping pending without burning retry budget: ${errorMessage}`);
+    }
   } catch (err) {
     logger.error('[ActivityDB] Failed to mark batch as failed:', err);
   }
@@ -197,11 +235,48 @@ async function resetStuckProcessingRecords(minutesThreshold = 10) {
   }
 }
 
+/**
+ * Reset records permanently marked 'failed' if they've been stuck long enough.
+ * Acts as a dead-letter re-drive: if a record was marked failed during an
+ * outage and we missed classifying it as transient, this safety net brings it
+ * back into the processing pool once the provider has had time to recover.
+ * @param {number} minutesThreshold - Minutes a record must have been failed before reset
+ */
+async function resetStuckFailedRecords(minutesThreshold = 30) {
+  const supabase = getClient();
+  if (!supabase) return;
+
+  try {
+    const threshold = new Date(Date.now() - minutesThreshold * 60 * 1000).toISOString();
+
+    const { data } = await supabase
+      .from('activity_records')
+      .update({
+        status: 'pending',
+        retry_count: 0,
+        updated_at: new Date().toISOString()
+      })
+      .eq('status', 'failed')
+      .lt('updated_at', threshold)
+      .select();
+
+    if (data && data.length > 0) {
+      logger.info(`[ActivityDB] Re-queued ${data.length} stuck failed records for retry`);
+    }
+  } catch (error) {
+    if (!isNetworkError(error)) {
+      logger.error('[ActivityDB] Error resetting stuck failed records:', error);
+    }
+  }
+}
+
 module.exports = {
   getPendingActivityBatches,
   claimBatchForProcessing,
   updateActivityRecordAnalysis,
   markBatchAnalyzed,
   markBatchFailed,
-  resetStuckProcessingRecords
+  resetStuckProcessingRecords,
+  resetStuckFailedRecords,
+  isTransientError
 };
