@@ -19,7 +19,9 @@ const {
   updateActivityRecordAnalysis,
   markBatchAnalyzed,
   markBatchFailed,
-  resetStuckProcessingRecords
+  resetStuckProcessingRecords,
+  resetStuckFailedRecords,
+  isTransientError
 } = require('../../src/services/db/activity-db-service');
 
 describe('Activity DB Service', () => {
@@ -398,7 +400,7 @@ describe('Activity DB Service', () => {
         expect.objectContaining({
           status: 'pending',
           retry_count: 2,
-          metadata: { existing: 'data', error: errorMessage }
+          metadata: { existing: 'data', error: errorMessage, transient: false }
         })
       );
       // Second record: retry_count 0 -> 1, stays pending
@@ -406,7 +408,7 @@ describe('Activity DB Service', () => {
         expect.objectContaining({
           status: 'pending',
           retry_count: 1,
-          metadata: { error: errorMessage }
+          metadata: { error: errorMessage, transient: false }
         })
       );
     });
@@ -453,7 +455,7 @@ describe('Activity DB Service', () => {
 
       expect(updateMock).toHaveBeenCalledWith(
         expect.objectContaining({
-          metadata: { error: errorMessage }
+          metadata: { error: errorMessage, transient: false }
         })
       );
     });
@@ -495,6 +497,137 @@ describe('Activity DB Service', () => {
       getClient.mockReturnValue(null);
 
       await expect(markBatchFailed(recordIds, errorMessage)).rejects.toThrow('Supabase client not initialized');
+    });
+
+    it('should keep status pending and NOT increment retry_count on transient errors', async () => {
+      const updateMock = jest.fn();
+      const transientMessage = 'All AI providers failed: Portkey/Gemini: 503 Service Unavailable';
+
+      mockSupabase.from.mockImplementation(() => ({
+        select: jest.fn().mockImplementation(() => ({
+          in: jest.fn().mockResolvedValue({
+            data: [{ id: 'rec-1', retry_count: 2, metadata: {} }]
+          })
+        })),
+        update: updateMock.mockImplementation(() => ({
+          eq: jest.fn().mockResolvedValue({ data: null, error: null })
+        }))
+      }));
+
+      await markBatchFailed(['rec-1'], transientMessage);
+
+      // Even though retry_count was 2 (would have hit cap on next perm failure),
+      // a transient error must NOT advance the counter or flip to 'failed'.
+      expect(updateMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          status: 'pending',
+          retry_count: 2,
+          metadata: expect.objectContaining({ transient: true })
+        })
+      );
+    });
+
+    it('should treat ETIMEDOUT and fetch failed as transient', async () => {
+      const updateMock = jest.fn();
+
+      mockSupabase.from.mockImplementation(() => ({
+        select: jest.fn().mockImplementation(() => ({
+          in: jest.fn().mockResolvedValue({
+            data: [{ id: 'rec-1', retry_count: 1, metadata: null }]
+          })
+        })),
+        update: updateMock.mockImplementation(() => ({
+          eq: jest.fn().mockResolvedValue({ data: null, error: null })
+        }))
+      }));
+
+      await markBatchFailed(['rec-1'], 'fetch failed: ETIMEDOUT');
+
+      expect(updateMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          status: 'pending',
+          retry_count: 1,
+          metadata: expect.objectContaining({ transient: true })
+        })
+      );
+    });
+
+    it('isTransientError correctly classifies known signals', () => {
+      expect(isTransientError('All AI providers failed: x')).toBe(true);
+      expect(isTransientError('connect ECONNREFUSED 1.2.3.4:443')).toBe(true);
+      expect(isTransientError('Request timed out after 30000ms')).toBe(true);
+      expect(isTransientError('Portkey returned 503')).toBe(true);
+      expect(isTransientError('Invalid JSON in AI response')).toBe(false);
+      expect(isTransientError('schema validation failed')).toBe(false);
+      expect(isTransientError('')).toBe(false);
+      expect(isTransientError(null)).toBe(false);
+    });
+  });
+
+  // ==========================================================================
+  // resetStuckFailedRecords
+  // ==========================================================================
+  describe('resetStuckFailedRecords', () => {
+    beforeEach(() => {
+      jest.useFakeTimers();
+      jest.setSystemTime(new Date('2024-06-15T12:00:00Z'));
+    });
+
+    afterEach(() => {
+      jest.useRealTimers();
+    });
+
+    it('should re-queue stuck failed records older than threshold', async () => {
+      const reQueued = [{ id: 'failed-1' }, { id: 'failed-2' }];
+      mockSupabase.select.mockResolvedValue({ data: reQueued, error: null });
+
+      await resetStuckFailedRecords();
+
+      expect(mockSupabase.from).toHaveBeenCalledWith('activity_records');
+      expect(mockSupabase.update).toHaveBeenCalledWith({
+        status: 'pending',
+        retry_count: 0,
+        updated_at: expect.any(String)
+      });
+      expect(mockSupabase.eq).toHaveBeenCalledWith('status', 'failed');
+      // Default 30-minute threshold
+      expect(mockSupabase.lt).toHaveBeenCalledWith('updated_at', '2024-06-15T11:30:00.000Z');
+      expect(logger.info).toHaveBeenCalledWith('[ActivityDB] Re-queued 2 stuck failed records for retry');
+    });
+
+    it('should accept a custom threshold', async () => {
+      mockSupabase.select.mockResolvedValue({ data: [], error: null });
+
+      await resetStuckFailedRecords(60);
+
+      expect(mockSupabase.lt).toHaveBeenCalledWith('updated_at', '2024-06-15T11:00:00.000Z');
+    });
+
+    it('should not log when no records re-queued', async () => {
+      mockSupabase.select.mockResolvedValue({ data: [], error: null });
+
+      await resetStuckFailedRecords();
+
+      expect(logger.info).not.toHaveBeenCalled();
+    });
+
+    it('should return silently when Supabase client is not initialized', async () => {
+      getClient.mockReturnValue(null);
+
+      await expect(resetStuckFailedRecords()).resolves.toBeUndefined();
+    });
+
+    it('should log error on non-network failure', async () => {
+      const dbError = new Error('Database query failed');
+      mockSupabase.select.mockRejectedValue(dbError);
+      isNetworkError.mockReturnValue(false);
+
+      await resetStuckFailedRecords();
+
+      expect(logger.error).toHaveBeenCalledWith(
+        '[ActivityDB] Error resetting stuck failed records:',
+        dbError
+      );
     });
   });
 

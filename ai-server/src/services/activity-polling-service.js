@@ -262,6 +262,12 @@ class ActivityPollingService {
       // Reset records stuck in 'processing' for too long
       await activityDbService.resetStuckProcessingRecords(10);
 
+      // Dead-letter re-drive: re-queue records that ended up 'failed'
+      // (e.g. during an extended Portkey outage) so we never need to fix
+      // them by hand in the database.
+      const failedResetMinutes = Number.parseInt(process.env.FAILED_RECORD_RESET_MINUTES || '30', 10);
+      await activityDbService.resetStuckFailedRecords(failedResetMinutes);
+
       // Get pending records (only productive records that need AI analysis)
       const pendingRecords = await activityDbService.getPendingActivityBatches(this.batchSize);
 
