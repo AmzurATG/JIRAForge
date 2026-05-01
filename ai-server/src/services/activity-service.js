@@ -248,13 +248,32 @@ function tryParseJsonObject(objectStr) {
  * any fully-formed objects from the partial output.
  */
 function salvageTruncatedJsonArray(truncatedJson) {
-  // Iterate through string to find balanced {...} blocks (no regex)
+  // Iterate through string to find balanced {...} blocks (no regex).
+  // String-aware so braces inside quoted reasoning text don't throw off the depth counter.
   const salvaged = [];
   let depth = 0;
   let start = -1;
+  let inString = false;
+  let escaped = false;
 
   for (let i = 0; i < truncatedJson.length; i++) {
     const char = truncatedJson[i];
+
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+      } else if (char === '\\') {
+        escaped = true;
+      } else if (char === '"') {
+        inString = false;
+      }
+      continue;
+    }
+
+    if (char === '"') {
+      inString = true;
+      continue;
+    }
 
     if (char === '{') {
       if (depth === 0) start = i;
@@ -294,10 +313,14 @@ function parseAnalysisResponse(content) {
   } catch (error) {
     logger.debug('[ActivityService] Direct JSON parse failed, trying markdown extraction: %s', error.message);
     const startIdx = content.indexOf('[');
-    const endIdx = content.lastIndexOf(']');
-    if (startIdx === -1 || endIdx <= startIdx) {
+    if (startIdx === -1) {
       logger.error('[ActivityService] Failed to parse batch analysis response: %s', content.substring(0, 200));
       throw new Error('Failed to parse AI response as JSON array');
+    }
+    const endIdx = content.lastIndexOf(']');
+    if (endIdx <= startIdx) {
+      logger.warn('[ActivityService] No closing bracket found, response truncated — attempting salvage');
+      return salvageTruncatedJsonArray(content.substring(startIdx));
     }
     const jsonMatch = content.substring(startIdx, endIdx + 1);
     try {
@@ -397,13 +420,11 @@ async function analyzeBatch(records, userAssignedIssues, userId, organizationId)
   ];
 
   try {
-    // Each record needs ~150 tokens for JSON output; add buffer for array structure
-    const maxTokens = Math.max(1500, records.length * 150 + 200);
-
+    // Set to provider hard cap (Gemini 2.0 Flash = 8192) so verbose batches never truncate
     const { response, provider, model } = await chatCompletionWithFallback({
       messages,
       temperature: 0.3,
-      max_tokens: maxTokens,
+      max_tokens: 8192,
       isVision: false,
       userId,
       organizationId,
@@ -455,7 +476,7 @@ async function classifyUnknownApp(appName, windowTitle, ocrText, userId = null, 
     const { response, provider, model } = await chatCompletionWithFallback({
       messages,
       temperature: 0.2,
-      max_tokens: 300,
+      max_tokens: 8192,
       isVision: false,
       userId,
       organizationId,
@@ -548,7 +569,7 @@ async function identifyAppByName(searchTerm) {
     const { response, provider, model } = await chatCompletionWithFallback({
       messages,
       temperature: 0.2,
-      max_tokens: 150,
+      max_tokens: 8192,
       isVision: false,
       apiCallName: 'app-identification'
     });

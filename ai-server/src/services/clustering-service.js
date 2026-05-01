@@ -228,7 +228,7 @@ CRITICAL - DESCRIPTIONS MUST BE SPECIFIC:
     const { response, provider, model } = await chatCompletionWithFallback({
       messages,
       temperature: 0.2,
-      max_tokens: 8000,
+      max_tokens: 8192,
       isVision: false,
       userId: null, // Clustering doesn't have user context
       organizationId: null,
