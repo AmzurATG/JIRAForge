@@ -1,7 +1,6 @@
 /**
  * Clustering Service
- * Groups unassigned work sessions using AI
- * Supports Fireworks AI primary with automatic LiteLLM fallback
+ * Groups unassigned work sessions using AI (via Portkey gateway).
  */
 
 const { chatCompletionWithFallback, isActivityAIEnabled } = require('./ai/ai-client');
@@ -72,8 +71,7 @@ Duration: ${Math.round((session.time_spent_seconds || 0) / 60)} minutes${additio
 }
 
 /**
- * Cluster unassigned work sessions using AI
- * Uses Fireworks AI as primary, falls back to LiteLLM on consecutive failures
+ * Cluster unassigned work sessions using AI (via Portkey gateway).
  *
  * @param {Array} sessions - Array of unassigned work sessions
  * @param {Array} userIssues - User's assigned Jira issues for suggestion

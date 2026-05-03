@@ -58,8 +58,8 @@ const VALID_CLUSTER_RESPONSE = JSON.stringify({
 function makeAIResult(content) {
   return {
     response: { choices: [{ message: { content } }] },
-    provider: 'fireworks',
-    model: 'llama-v3',
+    provider: 'portkey',
+    model: 'gemini-2.0-flash',
   };
 }
 
@@ -105,8 +105,8 @@ describe('clusterUnassignedWork', () => {
     expect(g.total_seconds).toBe(3600);
     expect(g.session_count).toBe(1);
     expect(typeof g.total_time_formatted).toBe('string');
-    expect(g.aiProvider).toBe('fireworks');
-    expect(g.aiModel).toBe('llama-v3');
+    expect(g.aiProvider).toBe('portkey');
+    expect(g.aiModel).toBe('gemini-2.0-flash');
   });
 
   it('returns total_sessions and total_groups counts', async () => {

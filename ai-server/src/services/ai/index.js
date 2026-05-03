@@ -1,30 +1,25 @@
 /**
  * AI Services Module - Re-exports
- * Provides a single entry point for all AI-related services
- * Supports Portkey (Gemini) primary with automatic Fireworks fallback
+ * Single entry point for all AI-related services. Routing/fallback across
+ * model providers is handled by Portkey's saved Config (PORTKEY_CONFIG_ID).
  */
 
 const aiClient = require('./ai-client');
 const prompts = require('./prompts');
 
 module.exports = {
-  // AI Client (Portkey + Fireworks)
+  // AI Client (Portkey)
   initializeClient: aiClient.initializeClient,
   getClient: aiClient.getClient,
-  getFireworksClient: aiClient.getFireworksClient,
   getPortkeyClient: aiClient.getPortkeyClient,
-  isFireworksEnabled: aiClient.isFireworksEnabled,
   isPortkeyEnabled: aiClient.isPortkeyEnabled,
-  getProviderOrder: aiClient.getProviderOrder,
-  isProviderDemoted: aiClient.isProviderDemoted,
-  getProviderStatus: aiClient.getProviderStatus,
+  isActivityAIEnabled: aiClient.isActivityAIEnabled,
 
   // Model getters
   getTextModel: aiClient.getTextModel,
-  getFireworksModel: aiClient.getFireworksModel,
   getPortkeyModel: aiClient.getPortkeyModel,
 
-  // Main request function with fallback
+  // Main request function
   chatCompletionWithFallback: aiClient.chatCompletionWithFallback,
 
   // Prompts

@@ -5,8 +5,7 @@
  * - classifyUnknownApp(): Classifies unknown applications via LLM
  * - identifyAppByName(): Identifies apps by search term using LLM (for admin app classification)
  *
- * Uses the existing AI client with 3-tier fallback (Fireworks → LiteLLM).
- * No vision model needed — all analysis is text-only.
+ * Uses the Portkey-backed AI client. No vision model needed — all analysis is text-only.
  */
 
 const { chatCompletionWithFallback, isActivityAIEnabled } = require('./ai/ai-client');
