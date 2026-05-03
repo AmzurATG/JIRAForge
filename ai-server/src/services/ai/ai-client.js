@@ -560,11 +560,13 @@ async function chatCompletionWithFallback({ messages, temperature = 0.3, max_tok
       logRequestAttempt(requestType, config, errors);
 
       // Make the API call
+      // Use `max_completion_tokens`: GPT-5 / o-series reject the legacy
+      // `max_tokens` field; Gemini via Portkey accepts both.
       const requestParams = {
         model: config.model,
         messages,
         temperature,
-        max_tokens
+        max_completion_tokens: max_tokens
       };
 
       const response = await config.client.chat.completions.create(requestParams);
