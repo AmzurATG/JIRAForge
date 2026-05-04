@@ -97,7 +97,7 @@ async function getUserActiveIssues(userId, organizationId) {
     // First try to get from cache (has summaries) - filter by organization
     let cacheQuery = supabase
       .from('user_jira_issues_cache')
-      .select('issue_key, summary, project_key, status')
+      .select('issue_key, issue_summary, summary, project_key, status, description, labels, priority, updated_at')
       .eq('user_id', userId)
       .order('updated_at', { ascending: false })
       .limit(50);
@@ -111,9 +111,13 @@ async function getUserActiveIssues(userId, organizationId) {
     if (!cacheError && cachedIssues && cachedIssues.length > 0) {
       return cachedIssues.map(issue => ({
         issue_key: issue.issue_key,
-        summary: issue.summary,
+        summary: issue.issue_summary || issue.summary,
         project: issue.project_key,
-        status: issue.status
+        status: issue.status,
+        description: issue.description || null,
+        labels: issue.labels || [],
+        priority: issue.priority || null,
+        updated_at: issue.updated_at || null
       }));
     }
 
