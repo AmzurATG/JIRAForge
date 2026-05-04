@@ -27,9 +27,13 @@ const { formatAssignedIssues, buildAppIdentificationPrompt } = require('../../sr
 const activityDbService = require('../../src/services/db/activity-db-service');
 const { analyzeBatch, classifyUnknownApp, identifyAppByName } = require('../../src/services/activity-service');
 
-// Helper — builds a standard LLM response around a content string
-const makeLLMResponse = (content) => ({
-  response: { choices: [{ message: { content } }] },
+// Helper — builds a standard LLM response around a content string.
+// finish_reason defaults to 'stop' (normal completion); pass 'length' to
+// simulate a max_tokens truncation.
+const makeLLMResponse = (content, finishReason = 'stop') => ({
+  response: {
+    choices: [{ message: { content }, finish_reason: finishReason }],
+  },
   provider: 'portkey',
   model: 'gemini-2.0-flash',
 });
@@ -127,6 +131,42 @@ describe('analyzeBatch', () => {
     const result = await analyzeBatch(records, issues, 'user-1', 'org-1');
     expect(result.analyses).toHaveLength(1);
     expect(result.analyses[0].taskKey).toBe('ATG-123');
+  });
+
+  it('returns truncated:false when finish_reason is "stop"', async () => {
+    const result = await analyzeBatch(records, issues, 'user-1', 'org-1');
+    expect(result.truncated).toBe(false);
+  });
+
+  it('returns truncated:true and warns when finish_reason is "length"', async () => {
+    const logger = require('../../src/utils/logger');
+    chatCompletionWithFallback.mockResolvedValue(
+      makeLLMResponse(JSON.stringify(validAnalysis), 'length')
+    );
+    const result = await analyzeBatch(records, issues, 'user-1', 'org-1');
+    expect(result.truncated).toBe(true);
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.stringContaining('Response incomplete')
+    );
+  });
+
+  it('reports recordsProcessed as analyses.length, not records.length, on partial salvage', async () => {
+    // Send 3 records but the LLM only returns 1 complete entry before truncation.
+    const threeRecords = [
+      { ...records[0], id: 'rec-1' },
+      { ...records[0], id: 'rec-2' },
+      { ...records[0], id: 'rec-3' },
+    ];
+    const truncated =
+      '[{"recordIndex":0,"taskKey":"ATG-123","projectKey":"ATG","confidenceScore":0.9,"workType":"office","reasoning":"x"},' +
+      '{"recordIndex":1,"taskKey":';
+    chatCompletionWithFallback.mockResolvedValue(
+      makeLLMResponse(truncated, 'length')
+    );
+    const result = await analyzeBatch(threeRecords, issues, 'user-1', 'org-1');
+    expect(result.analyses).toHaveLength(1);
+    expect(result.recordsProcessed).toBe(1);
+    expect(result.truncated).toBe(true);
   });
 
   it('throws when truncated JSON array has no recoverable complete objects', async () => {

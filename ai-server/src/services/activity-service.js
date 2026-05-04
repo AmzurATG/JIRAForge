@@ -105,7 +105,17 @@ CONFIDENCE SCORING:
 - 0.6-0.7: Strong contextual match (same project area, related functionality)
 - 0.4-0.5: Reasonable match (working in project, related to general area)
 - 0.2-0.3: Weak match (only project matches, specific task unclear)
-- 0.0-0.1: No match possible`;
+- 0.0-0.1: No match possible
+
+REASONING FIELD RULES:
+- Maximum 80 characters per record. Hard limit.
+- Use fragments, not sentences. No narration of your thought process.
+- Examples of good reasoning values:
+  - "Window title shows ABC-123"
+  - "VS Code on api/ folder, related to API epic"
+  - "Slack DM, no semantic match"
+  - "Generic file explorer, no task connection"
+- Do NOT restate the matching rules. Do NOT explain confidence math.`;
 
 const APP_CLASSIFICATION_SYSTEM_PROMPT = `You are an expert at classifying desktop applications and websites into work categories. You determine whether an application is productive (work-related), non_productive (entertainment/personal), or private (sensitive personal data like banking, healthcare, passwords). You base your classification on the application name, window title, and any visible text content.`;
 
@@ -176,7 +186,7 @@ Return ONLY valid JSON (no markdown code blocks, no extra text). Your response m
     "taskKey": "PROJECT-123" or null,
     "confidenceScore": 0.0-1.0,
     "workType": "office" or "non-office",
-    "reasoning": "Brief explanation"
+    "reasoning": "<= 80 chars, fragment is fine, no narration"
   }
 ]
 Include one entry per record, in order.`;
@@ -418,11 +428,12 @@ async function analyzeBatch(records, userAssignedIssues, userId, organizationId)
   ];
 
   try {
-    // Set to provider hard cap (Gemini 2.0 Flash = 8192) so verbose batches never truncate
+    // 30000 fits a 20-record batch with the tightened reasoning field while
+    // staying under Gemini 2.5 Flash's 65K cap and the bumped Portkey timeout.
     const { response, provider, model } = await chatCompletionWithFallback({
       messages,
       temperature: 0.3,
-      max_tokens: 8192,
+      max_tokens: 30000,
       isVision: false,
       userId,
       organizationId,
@@ -430,6 +441,7 @@ async function analyzeBatch(records, userAssignedIssues, userId, organizationId)
     });
 
     const content = response.choices[0].message.content.trim();
+    const finishReason = response.choices[0].finish_reason;
     logger.info(`[ActivityService] Batch analysis done | ${provider} (${model}) | ${records.length} records`);
 
     const analyses = parseAnalysisResponse(content);
@@ -440,7 +452,30 @@ async function analyzeBatch(records, userAssignedIssues, userId, organizationId)
     validateAnalysisKeys(analyses, userAssignedIssues);
     await persistAnalysisResults(analyses, records, provider, model);
 
-    return { analyses, recordsProcessed: records.length, provider, model };
+    // Treat any short return as truncated, regardless of finish_reason.
+    // Two cases produce a short return:
+    //   1. finish_reason === 'length' — model hit max_tokens cap.
+    //   2. JSON parse error mid-stream → salvage recovers a subset with
+    //      finish_reason === 'stop'.
+    // Either way, the polling service must know so it can re-queue the rest.
+    const truncated = finishReason === 'length' || analyses.length < records.length;
+
+    if (truncated) {
+      logger.warn(
+        `[ActivityService] Response incomplete (finish_reason=${finishReason}): salvaged ${analyses.length} of ${records.length} records — ${records.length - analyses.length} record(s) will be re-queued`
+      );
+    }
+
+    // recordsProcessed reflects what was actually analyzed, not what we sent.
+    // The polling service uses this to identify unanalyzed records and release
+    // them back to 'pending' for the next cycle.
+    return {
+      analyses,
+      recordsProcessed: analyses.length,
+      truncated,
+      provider,
+      model
+    };
 
   } catch (error) {
     logger.error('[ActivityService] Batch analysis failed: %s', error.message);
@@ -474,7 +509,7 @@ async function classifyUnknownApp(appName, windowTitle, ocrText, userId = null, 
     const { response, provider, model } = await chatCompletionWithFallback({
       messages,
       temperature: 0.2,
-      max_tokens: 8192,
+      max_tokens: 30000,
       isVision: false,
       userId,
       organizationId,
@@ -567,7 +602,7 @@ async function identifyAppByName(searchTerm) {
     const { response, provider, model } = await chatCompletionWithFallback({
       messages,
       temperature: 0.2,
-      max_tokens: 8192,
+      max_tokens: 30000,
       isVision: false,
       apiCallName: 'app-identification'
     });

@@ -137,7 +137,13 @@ describe('Activity Polling Service', () => {
     beforeEach(() => {
       activityDbService.resetStuckProcessingRecords.mockResolvedValue();
       activityDbService.claimBatchForProcessing.mockResolvedValue(['record1', 'record2']);
-      activityService.analyzeBatch.mockResolvedValue();
+      // Default: pretend the LLM analyzed every record sent in. Tests that
+      // need partial results / truncation override this with mockResolvedValueOnce.
+      activityService.analyzeBatch.mockImplementation(async (records) => ({
+        analyses: records.map((_, i) => ({ recordIndex: i })),
+        recordsProcessed: records.length,
+        truncated: false,
+      }));
     });
 
     it('should process pending records successfully', async () => {
@@ -260,6 +266,43 @@ describe('Activity Polling Service', () => {
       expect(activityService.analyzeBatch).not.toHaveBeenCalled();
     });
 
+    it('should release unanalyzed records to pending when LLM truncates', async () => {
+      // Two records claimed; LLM only returns analysis for index 0 (truncated mid-array).
+      // Polling service should detect this and release record at index 1 back to pending.
+      activityDbService.getPendingActivityBatches.mockResolvedValue(mockRecords);
+      activityDbService.claimBatchForProcessing.mockResolvedValue([
+        { id: 'record1' },
+        { id: 'record2' },
+      ]);
+      activityService.analyzeBatch.mockResolvedValueOnce({
+        analyses: [{ recordIndex: 0 }],
+        recordsProcessed: 1,
+        truncated: true,
+      });
+      activityDbService.releaseRecordsToPending.mockResolvedValue();
+
+      await activityPollingService.processPendingRecords();
+
+      expect(activityDbService.releaseRecordsToPending).toHaveBeenCalledWith(['record2']);
+      expect(logger.warn).toHaveBeenCalledWith(
+        expect.stringContaining('1 analyzed, 1 re-queued')
+      );
+    });
+
+    it('should not release when all records are analyzed', async () => {
+      activityDbService.getPendingActivityBatches.mockResolvedValue(mockRecords);
+      activityDbService.claimBatchForProcessing.mockResolvedValue([
+        { id: 'record1' },
+        { id: 'record2' },
+      ]);
+      // Default mock returns analyses for every record — no release should fire.
+      activityDbService.releaseRecordsToPending.mockResolvedValue();
+
+      await activityPollingService.processPendingRecords();
+
+      expect(activityDbService.releaseRecordsToPending).not.toHaveBeenCalled();
+    });
+
     it('should mark batch as failed on processing error', async () => {
       activityDbService.getPendingActivityBatches.mockResolvedValue(mockRecords);
       activityDbService.claimBatchForProcessing.mockResolvedValue(['record1', 'record2']);
@@ -374,7 +417,7 @@ describe('Activity Polling Service', () => {
         .mockResolvedValueOnce(['record2']);
       
       activityService.analyzeBatch
-        .mockResolvedValueOnce()
+        .mockResolvedValueOnce({ analyses: [{ recordIndex: 0 }], recordsProcessed: 1, truncated: false })
         .mockRejectedValueOnce(new Error('Failed'));
       
       activityDbService.markBatchFailed.mockResolvedValue();
@@ -647,7 +690,7 @@ describe('Activity Polling Service', () => {
       
       activityService.analyzeBatch
         .mockRejectedValueOnce(new Error('User 1 failed'))
-        .mockResolvedValueOnce()
+        .mockResolvedValueOnce({ analyses: [{ recordIndex: 0 }], recordsProcessed: 1, truncated: false })
         .mockRejectedValueOnce(new Error('User 3 failed'));
       
       activityDbService.markBatchFailed.mockResolvedValue();
