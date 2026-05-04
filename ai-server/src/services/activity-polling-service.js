@@ -221,7 +221,7 @@ class ActivityPollingService {
     const batchTimeoutMs = Number.parseInt(process.env.ACTIVITY_BATCH_TIMEOUT_MS || '60000', 10);
 
     // Analyze the batch with timeout
-    await Promise.race([
+    const analyzeResult = await Promise.race([
       activityService.analyzeBatch(
         records.map(transformRecordForAnalysis),
         issuesForAnalysis,
@@ -233,8 +233,33 @@ class ActivityPollingService {
       )
     ]);
 
-    logger.info(`Batch for user ${userId}: ${claimed.length} records analyzed`);
-    return claimed.length;
+    // If the LLM truncated, release the unanalyzed records back to 'pending'
+    // so the next polling cycle picks them up (no silent data loss).
+    //
+    // Note on indexing: the LLM's `recordIndex` is an index into `records`
+    // (the array we sent to analyzeBatch), not into `claimed`. We restrict
+    // the release set to records we actually claimed, so we never touch rows
+    // a different process is processing.
+    const analyses = analyzeResult?.analyses || [];
+    const analyzedIndices = new Set(
+      analyses
+        .map(a => a?.recordIndex)
+        .filter(idx => typeof idx === 'number')
+    );
+    const claimedIds = new Set(claimed.map(c => c.id));
+    const unanalyzedIds = records
+      .filter((record, idx) => claimedIds.has(record.id) && !analyzedIndices.has(idx))
+      .map(record => record.id);
+
+    if (unanalyzedIds.length > 0) {
+      await activityDbService.releaseRecordsToPending(unanalyzedIds);
+      logger.warn(
+        `Batch for user ${userId}: ${analyses.length} analyzed, ${unanalyzedIds.length} re-queued (truncated response)`
+      );
+    } else {
+      logger.info(`Batch for user ${userId}: ${claimed.length} records analyzed`);
+    }
+    return analyses.length;
   }
 
   /**

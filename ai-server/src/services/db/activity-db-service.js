@@ -204,6 +204,37 @@ async function markBatchFailed(recordIds, errorMessage) {
 }
 
 /**
+ * Release a subset of records back to 'pending' without burning retry budget.
+ * Used when an LLM call returns truncated output: the records the model didn't
+ * cover never got a fair shot, so we re-queue them for the next polling cycle
+ * instead of leaving them stuck in 'processing' or marking them analyzed-but-blank.
+ * @param {Array<string>} recordIds - UUIDs of records to release
+ */
+async function releaseRecordsToPending(recordIds) {
+  if (!recordIds || recordIds.length === 0) return [];
+  const supabase = getClient();
+  if (!supabase) throw new Error('Supabase client not initialized');
+
+  const { data, error } = await supabase
+    .from('activity_records')
+    .update({
+      status: 'pending',
+      updated_at: new Date().toISOString()
+    })
+    .in('id', recordIds)
+    .select();
+
+  if (error) {
+    logger.error('[ActivityDB] Failed to release records to pending:', error);
+    throw error;
+  }
+  if (data && data.length > 0) {
+    logger.warn(`[ActivityDB] Released ${data.length} record(s) to pending after truncated LLM response`);
+  }
+  return data || [];
+}
+
+/**
  * Reset records stuck in 'processing' status for too long.
  * Recovers records that were claimed but never completed (e.g., server crash).
  * @param {number} minutesThreshold - Minutes before considering a record stuck
@@ -276,6 +307,7 @@ module.exports = {
   updateActivityRecordAnalysis,
   markBatchAnalyzed,
   markBatchFailed,
+  releaseRecordsToPending,
   resetStuckProcessingRecords,
   resetStuckFailedRecords,
   isTransientError
