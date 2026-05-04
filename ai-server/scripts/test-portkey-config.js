@@ -72,7 +72,7 @@ async function testClientInit() {
   console.log(`\n${C.bold}[2/4] Client Init — x-portkey-config Header${C.reset}`);
   sep();
 
-  const { initializeClient, getPortkeyClient, getProviderStatus } = require('../src/services/ai/ai-client');
+  const { initializeClient, getPortkeyClient, isPortkeyEnabled } = require('../src/services/ai/ai-client');
 
   try {
     initializeClient();
@@ -92,10 +92,7 @@ async function testClientInit() {
       `x-portkey-config header missing or wrong — got: "${configHeader || 'undefined'}"`
     );
 
-    const status = getProviderStatus();
-    info(`Provider order  : ${status.providerOrder.join(' → ')}`);
-    info(`Current primary : ${status.currentPrimary}`);
-    info(`Fireworks ready : ${status.fireworksEnabled}`);
+    info(`Portkey enabled : ${isPortkeyEnabled()}`);
   } catch (err) {
     fail(`Client init threw: ${err.message}`);
     failed++;

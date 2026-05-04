@@ -254,7 +254,7 @@ async function analyzeFeedbackWithAI(feedback) {
       { role: 'user', content: prompt }
     ],
     temperature: 0.3,
-    max_tokens: 1000,
+    max_tokens: 8192,
     isVision: false,
     apiCallName: 'feedback-analysis'
   });

@@ -13,9 +13,6 @@
 
 require('dotenv').config();
 
-// Force Portkey-only for this test — Fireworks is not being tested here
-process.env.USE_FIREWORKS = 'false';
-
 // ─── Colours ─────────────────────────────────────────────────────────────────
 const C = {
   reset:  '\x1b[0m',
@@ -79,15 +76,13 @@ async function testEnvConfig() {
       `PORTKEY_MODEL="${model}"`,
       `PORTKEY_MODEL="${model}" — expected format: @virtualKeySlug/model-name (or set PORTKEY_CONFIG_ID for config mode)`);
   }
-
-  info('Fireworks disabled for this test (Portkey-only)');
 }
 
 async function testClientInit() {
   console.log(`\n${C.bold}[2/3] Client Initialisation${C.reset}`);
   sep();
 
-  const { initializeClient, getPortkeyClient, getProviderStatus } = require('../src/services/ai/ai-client');
+  const { initializeClient, getPortkeyClient, isPortkeyEnabled } = require('../src/services/ai/ai-client');
 
   try {
     initializeClient();
@@ -97,11 +92,7 @@ async function testClientInit() {
       'Portkey client initialised successfully',
       'Portkey client is null — check PORTKEY_API_KEY');
 
-    const status = getProviderStatus();
-    info(`Provider order: ${status.providerOrder.join(' → ')}`);
-    info(`Current primary: ${status.currentPrimary}`);
-    info(`Portkey enabled: ${status.portKeyEnabled}`);
-    info(`Fireworks enabled: ${status.fireworksEnabled}`);
+    info(`Portkey enabled: ${isPortkeyEnabled()}`);
 
   } catch (err) {
     fail(`Client init threw: ${err.message}`);

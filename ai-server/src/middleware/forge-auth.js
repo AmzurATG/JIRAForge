@@ -119,7 +119,14 @@ async function tryVerifyWithAudiences(jose, JWKS, token, audienceOptions) {
   const { payload: rawPayload, protectedHeader } = await jose.compactVerify(token, JWKS);
   const payload = JSON.parse(new TextDecoder().decode(rawPayload));
 
-  const CLOCK_TOLERANCE = 120; // seconds — server clock can drift ~70s behind Atlassian
+  const CLOCK_TOLERANCE = 600; // seconds — was 120; permanently fixes "nbf claim
+                               // timestamp check failed" errors caused by host
+                               // clock drift on managed infrastructure.
+                               // Applies to both nbf and exp checks.
+                               // Signature, audience, and issuer validation are
+                               // unchanged and remain the primary security
+                               // guarantees per Atlassian's FIT validation spec:
+                               // https://developer.atlassian.com/platform/forge/remote/essentials/
   const now = Math.floor(Date.now() / 1000);
 
   // Validate issuer
