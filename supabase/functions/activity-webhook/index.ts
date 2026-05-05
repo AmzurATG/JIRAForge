@@ -169,16 +169,47 @@ serve(async (req: Request) => {
       }
     }
 
-    // Priority: Merge both record-embedded (fresh) and cached issues, deduplicate by key.
-    // Record-embedded issues may be hours old. Cache may have newer assignments. Merging gives widest coverage.
-    const mergedIssues = [...recordIssues];
-    const seenKeys = new Set(recordIssues.map((i: any) => i.key));
-    for (const cached of userAssignedIssues) {
-      if (!seenKeys.has((cached as any).key)) {
-        mergedIssues.push(cached);
-        seenKeys.add((cached as any).key);
+    // Field-level merge so cache-only fields (updated, priority, issueType)
+    // reach the AI even when an issue exists in both sources.
+    //
+    // The desktop app's embedded issues only contain key/summary/status/
+    // project/description/labels — they have NO updated/priority/issueType.
+    // A naive record-level merge that keeps embedded for duplicate keys
+    // silently throws away the cache's recency/priority signals.
+    //
+    // Strategy: cache provides the base shape (richest); record-embedded
+    // values overwrite for fields the desktop app actually populates,
+    // because record-embedded reflects the desktop app's view at capture
+    // time and may be fresher for status/summary changes.
+    const cacheByKey = new Map<string, any>(
+      userAssignedIssues.map(issue => [issue.key, issue])
+    );
+    const recordByKey = new Map<string, any>(
+      (recordIssues as any[])
+        .filter((i: any) => i && typeof i.key === 'string')
+        .map((i: any) => [i.key, i])
+    );
+    const allKeys = new Set<string>([...cacheByKey.keys(), ...recordByKey.keys()]);
+
+    const mergedIssues: any[] = [];
+    for (const key of allKeys) {
+      const cached = cacheByKey.get(key);
+      const embedded = recordByKey.get(key);
+      // Start from cache (rich shape with updated/priority/issueType when present),
+      // then overlay non-empty fields from the embedded record.
+      const merged: any = { ...(cached || {}) };
+      if (embedded) {
+        for (const [field, value] of Object.entries(embedded)) {
+          if (value !== null && value !== undefined && value !== '') {
+            merged[field] = value;
+          }
+        }
+        // Ensure key is set when there is no cached entry
+        merged.key = embedded.key;
       }
+      mergedIssues.push(merged);
     }
+
     const issuesForAnalysis = mergedIssues.length > 0 ? mergedIssues : userAssignedIssues;
 
     console.log(`Using merged issues for analysis (${issuesForAnalysis.length} issues: ${recordIssues.length} record-embedded + ${issuesForAnalysis.length - recordIssues.length} from cache)`);

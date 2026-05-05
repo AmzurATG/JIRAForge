@@ -228,7 +228,7 @@ CRITICAL - DESCRIPTIONS MUST BE SPECIFIC:
     // Note: userId not available in clustering context, cost tracking will log without user
     const { response, provider, model } = await chatCompletionWithFallback({
       messages,
-      temperature: 0.2,
+      // temperature intentionally omitted — see ai-client.js:178-181 for rationale
       max_tokens: 30000,
       isVision: false,
       userId: null, // Clustering doesn't have user context

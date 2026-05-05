@@ -373,16 +373,20 @@ function validateAnalysisKeys(analyses, userAssignedIssues) {
  * Logs individual update failures without stopping the rest of the batch.
  */
 async function persistAnalysisResults(analyses, records, provider, model) {
+  // Read the same env var the DB layer uses, so the log line and the actual
+  // demotion never drift if AI_MATCH_MIN_CONFIDENCE is overridden in env.
+  const MIN_CONFIDENCE_THRESHOLD = parseFloat(process.env.AI_MATCH_MIN_CONFIDENCE || '0.4');
 
   for (const analysis of analyses) {
     const recordIndex = analysis.recordIndex;
     if (recordIndex >= 0 && recordIndex < records.length && records[recordIndex].id) {
       // Log low-confidence matches for observability (threshold enforcement is in activity-db-service)
-      if (analysis.taskKey && (analysis.confidenceScore || 0) < 0.4) {
+      if (analysis.taskKey && (analysis.confidenceScore || 0) < MIN_CONFIDENCE_THRESHOLD) {
         logger.info(
           `[ActivityService] Low-confidence match (will be demoted by DB layer) | ` +
           `record=${records[recordIndex].id} taskKey=${analysis.taskKey} ` +
-          `confidence=${analysis.confidenceScore} reasoning="${analysis.reasoning}"`
+          `confidence=${analysis.confidenceScore} threshold=${MIN_CONFIDENCE_THRESHOLD} ` +
+          `reasoning="${analysis.reasoning}"`
         );
       }
 
@@ -432,7 +436,7 @@ async function analyzeBatch(records, userAssignedIssues, userId, organizationId)
     // staying under Gemini 2.5 Flash's 65K cap and the bumped Portkey timeout.
     const { response, provider, model } = await chatCompletionWithFallback({
       messages,
-      temperature: 0.3,
+      // temperature intentionally omitted — see ai-client.js:178-181 for rationale
       max_tokens: 30000,
       isVision: false,
       userId,
@@ -508,7 +512,7 @@ async function classifyUnknownApp(appName, windowTitle, ocrText, userId = null, 
   try {
     const { response, provider, model } = await chatCompletionWithFallback({
       messages,
-      temperature: 0.2,
+      // temperature intentionally omitted — see ai-client.js:178-181 for rationale
       max_tokens: 30000,
       isVision: false,
       userId,
@@ -601,7 +605,7 @@ async function identifyAppByName(searchTerm) {
   try {
     const { response, provider, model } = await chatCompletionWithFallback({
       messages,
-      temperature: 0.2,
+      // temperature intentionally omitted — see ai-client.js:178-181 for rationale
       max_tokens: 30000,
       isVision: false,
       apiCallName: 'app-identification'

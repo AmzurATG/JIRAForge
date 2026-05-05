@@ -115,7 +115,7 @@ async function testSingleRequest() {
       messages: [
         { role: 'user', content: 'Reply with exactly this text and nothing else: "config ok"' }
       ],
-      temperature: 0,
+      // temperature intentionally omitted — GPT-5 family rejects non-default values
       max_tokens: 15,
       apiCallName: 'config-connectivity-test'
     });
@@ -149,7 +149,7 @@ async function testLoadBalancing() {
     const start = Date.now();
     return chatCompletionWithFallback({
       messages: [{ role: 'user', content: `Reply with exactly: "req${n} ok"` }],
-      temperature: 0,
+      // temperature intentionally omitted — GPT-5 family rejects non-default values
       max_tokens: 10,
       apiCallName: `lb-test-${n}`
     })

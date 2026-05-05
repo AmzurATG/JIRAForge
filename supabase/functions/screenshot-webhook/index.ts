@@ -107,14 +107,49 @@ serve(async (req: Request) => {
         // Continue with empty array - AI server will work without it but with lower accuracy
       }
 
-      // Determine which Jira issues to use
-      // Priority: Screenshot data (fresh at capture time) > Cache (may be stale)
+      // Field-level merge so cache-only fields (updated, priority, issueType)
+      // reach the AI even when an issue exists in both sources.
+      //
+      // The desktop app's embedded screenshot issues only contain key/summary/
+      // status/project/description/labels — they have NO updated/priority/
+      // issueType. Naively preferring screenshot data for duplicates throws
+      // away the cache's recency/priority signals.
+      //
+      // Strategy: cache provides the base shape (richest); screenshot-embedded
+      // values overwrite for fields the desktop app actually populates,
+      // because they may be fresher for status/summary changes.
       const screenshotIssues = payload.record.user_assigned_issues || [];
-      const issuesForAnalysis = screenshotIssues.length > 0 
-        ? screenshotIssues      // Prefer screenshot data (fetched fresh by desktop app)
-        : userAssignedIssues;   // Fallback to cache if screenshot has no issues
+      const cacheByKey = new Map<string, any>(
+        userAssignedIssues.map((issue: any) => [issue.key, issue])
+      );
+      const screenshotByKey = new Map<string, any>(
+        (screenshotIssues as any[])
+          .filter((i: any) => i && typeof i.key === 'string')
+          .map((i: any) => [i.key, i])
+      );
+      const allKeys = new Set<string>([...cacheByKey.keys(), ...screenshotByKey.keys()]);
 
-      console.log(`Using ${screenshotIssues.length > 0 ? 'screenshot' : 'cache'} issues for analysis (${issuesForAnalysis.length} issues)`);
+      const mergedIssues: any[] = [];
+      for (const key of allKeys) {
+        const cached = cacheByKey.get(key);
+        const embedded = screenshotByKey.get(key);
+        const merged: any = { ...(cached || {}) };
+        if (embedded) {
+          for (const [field, value] of Object.entries(embedded)) {
+            if (value !== null && value !== undefined && value !== '') {
+              merged[field] = value;
+            }
+          }
+          merged.key = embedded.key;
+        }
+        mergedIssues.push(merged);
+      }
+
+      const issuesForAnalysis = mergedIssues.length > 0 ? mergedIssues : userAssignedIssues;
+      // Buckets sum to total: each key was either (a) embedded (with or
+      // without a cache match) or (b) only in cache.
+      const cacheOnlyCount = issuesForAnalysis.length - screenshotByKey.size;
+      console.log(`Using merged issues for analysis (${issuesForAnalysis.length} total: ${screenshotByKey.size} screenshot-embedded + ${cacheOnlyCount} from cache only)`);
 
       // Notify AI Analysis Server
       try {

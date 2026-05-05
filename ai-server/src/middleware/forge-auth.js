@@ -119,14 +119,17 @@ async function tryVerifyWithAudiences(jose, JWKS, token, audienceOptions) {
   const { payload: rawPayload, protectedHeader } = await jose.compactVerify(token, JWKS);
   const payload = JSON.parse(new TextDecoder().decode(rawPayload));
 
-  const CLOCK_TOLERANCE = 600; // seconds — was 120; permanently fixes "nbf claim
-                               // timestamp check failed" errors caused by host
-                               // clock drift on managed infrastructure.
-                               // Applies to both nbf and exp checks.
-                               // Signature, audience, and issuer validation are
-                               // unchanged and remain the primary security
-                               // guarantees per Atlassian's FIT validation spec:
-                               // https://developer.atlassian.com/platform/forge/remote/essentials/
+  // Asymmetric clock tolerance:
+  //   - NBF_TOLERANCE is generous (10 min) because our host clock can run
+  //     ~120s behind Atlassian, and the only failure mode of accepting a
+  //     not-yet-valid token is rare and benign.
+  //   - EXP_TOLERANCE is tight (30s) because expanding it widens the
+  //     replay window for a captured token. This middleware does not track
+  //     JTIs, so a captured FIT can be replayed for the lifetime of its
+  //     exp + this tolerance. Atlassian's exp window is short (~55s), so
+  //     30s of clock skew is plenty without doubling the replay surface.
+  const NBF_TOLERANCE = 600;
+  const EXP_TOLERANCE = 30;
   const now = Math.floor(Date.now() / 1000);
 
   // Validate issuer
@@ -147,17 +150,17 @@ async function tryVerifyWithAudiences(jose, JWKS, token, audienceOptions) {
     throw err;
   }
 
-  // Validate expiration
-  if (typeof payload.exp === 'number' && now > payload.exp + CLOCK_TOLERANCE) {
+  // Validate expiration (tight tolerance — replay-window sensitive)
+  if (typeof payload.exp === 'number' && now > payload.exp + EXP_TOLERANCE) {
     const err = new Error('Token expired');
     err.code = 'ERR_JWT_EXPIRED';
     err.claim = 'exp';
     throw err;
   }
 
-  // Validate not-before
-  if (typeof payload.nbf === 'number' && now < payload.nbf - CLOCK_TOLERANCE) {
-    logger.error('[FIT] NBF REJECTED:', { now, nbf: payload.nbf, diff: now - payload.nbf, threshold: payload.nbf - CLOCK_TOLERANCE });
+  // Validate not-before (generous tolerance — clock-skew sensitive)
+  if (typeof payload.nbf === 'number' && now < payload.nbf - NBF_TOLERANCE) {
+    logger.error('[FIT] NBF REJECTED:', { now, nbf: payload.nbf, diff: now - payload.nbf, threshold: payload.nbf - NBF_TOLERANCE });
     const err = new Error('"nbf" claim timestamp check failed');
     err.code = 'ERR_JWT_CLAIM_VALIDATION_FAILED';
     err.claim = 'nbf';
@@ -312,3 +315,6 @@ const forgeAuthMiddleware = async (req, res, next) => {
 
 module.exports = forgeAuthMiddleware;
 module.exports.validateFIT = validateFIT;
+// Exported for unit tests (boundary checks on iss/aud/exp/nbf without
+// having to mock the dynamic `import('jose')`).
+module.exports._tryVerifyWithAudiences = tryVerifyWithAudiences;

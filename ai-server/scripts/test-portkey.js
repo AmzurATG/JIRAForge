@@ -125,7 +125,7 @@ async function testSimpleCompletion() {
   try {
     const { response, provider, model } = await chatCompletionWithFallback({
       messages,
-      temperature: 0,
+      // temperature intentionally omitted — GPT-5 family rejects non-default values
       max_tokens: 20,
       isVision: false,
       apiCallName: 'portkey-connection-test'
