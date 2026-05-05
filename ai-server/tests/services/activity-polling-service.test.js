@@ -4,11 +4,13 @@
 
 const activityService = require('../../src/services/activity-service');
 const activityDbService = require('../../src/services/db/activity-db-service');
+const userDbService = require('../../src/services/db/user-db-service');
 const logger = require('../../src/utils/logger');
 
 // Mock all dependencies
 jest.mock('../../src/services/activity-service');
 jest.mock('../../src/services/db/activity-db-service');
+jest.mock('../../src/services/db/user-db-service');
 jest.mock('../../src/utils/logger');
 
 // Import service after mocks
@@ -286,6 +288,115 @@ describe('Activity Polling Service', () => {
       expect(activityDbService.releaseRecordsToPending).toHaveBeenCalledWith(['record2']);
       expect(logger.warn).toHaveBeenCalledWith(
         expect.stringContaining('1 analyzed, 1 re-queued')
+      );
+    });
+
+    // ---------------------------------------------------------------------
+    // D3 — cache fallback BEHAVIORAL tests (replacing the prior
+    // source-inspection-only coverage in audit-defects.test.js).
+    // ---------------------------------------------------------------------
+    it('should call getUserCachedIssues and forward mapped cache to analyzeBatch when records have no embedded issues', async () => {
+      const recordsWithoutIssues = [{
+        ...mockRecords[0],
+        user_assigned_issues: null,
+      }];
+      activityDbService.getPendingActivityBatches.mockResolvedValue(recordsWithoutIssues);
+      activityDbService.claimBatchForProcessing.mockResolvedValue([{ id: 'record1' }]);
+      userDbService.getUserCachedIssues.mockResolvedValue([
+        {
+          issue_key: 'PROJ-1',
+          issue_summary: 'Cached issue summary',
+          status: 'In Progress',
+          project_key: 'PROJ',
+          issue_type: 'Story',
+          description: 'cached desc',
+          labels: ['cache'],
+          priority: 'High',
+          updated_at: '2026-04-30T10:00:00Z',
+        },
+      ]);
+
+      await activityPollingService.processPendingRecords();
+
+      // The cache helper was actually invoked (with the right userId/orgId)
+      expect(userDbService.getUserCachedIssues).toHaveBeenCalledWith('user1', 'org1');
+
+      // The mapped result was forwarded to analyzeBatch in the SHAPE the AI expects
+      expect(activityService.analyzeBatch).toHaveBeenCalledWith(
+        expect.any(Array),
+        [
+          expect.objectContaining({
+            key: 'PROJ-1',
+            summary: 'Cached issue summary',
+            status: 'In Progress',
+            project: 'PROJ',
+            issueType: 'Story',
+            description: 'cached desc',
+            labels: ['cache'],
+            priority: 'High',
+            updated: '2026-04-30T10:00:00Z',
+          }),
+        ],
+        'user1',
+        'org1'
+      );
+    });
+
+    it('should NOT call getUserCachedIssues when records already carry embedded issues', async () => {
+      // Default mockRecords[0] already carries user_assigned_issues — fallback should be skipped
+      activityDbService.getPendingActivityBatches.mockResolvedValue([mockRecords[0]]);
+      activityDbService.claimBatchForProcessing.mockResolvedValue([{ id: 'record1' }]);
+
+      await activityPollingService.processPendingRecords();
+
+      expect(userDbService.getUserCachedIssues).not.toHaveBeenCalled();
+    });
+
+    it('should swallow cache errors and still call analyzeBatch with empty issues array', async () => {
+      const recordsWithoutIssues = [{
+        ...mockRecords[0],
+        user_assigned_issues: null,
+      }];
+      activityDbService.getPendingActivityBatches.mockResolvedValue(recordsWithoutIssues);
+      activityDbService.claimBatchForProcessing.mockResolvedValue([{ id: 'record1' }]);
+      userDbService.getUserCachedIssues.mockRejectedValue(new Error('Cache DB down'));
+
+      await activityPollingService.processPendingRecords();
+
+      // The cache helper was tried, the error was swallowed (no throw),
+      // and analyzeBatch was still invoked so the polling cycle didn't abort.
+      expect(userDbService.getUserCachedIssues).toHaveBeenCalled();
+      expect(logger.warn).toHaveBeenCalledWith(
+        expect.stringContaining('Failed to fetch cached issues fallback'),
+        'Cache DB down'
+      );
+      expect(activityService.analyzeBatch).toHaveBeenCalledWith(
+        expect.any(Array),
+        [], // Empty issues array — fallback failed, original userAssignedIssues was empty
+        'user1',
+        'org1'
+      );
+    });
+
+    it('should still proceed with empty issues when cache returns an empty array', async () => {
+      const recordsWithoutIssues = [{
+        ...mockRecords[0],
+        user_assigned_issues: null,
+      }];
+      activityDbService.getPendingActivityBatches.mockResolvedValue(recordsWithoutIssues);
+      activityDbService.claimBatchForProcessing.mockResolvedValue([{ id: 'record1' }]);
+      userDbService.getUserCachedIssues.mockResolvedValue([]);
+
+      await activityPollingService.processPendingRecords();
+
+      // Cache was tried (returned empty), so issuesForAnalysis stays as the
+      // original empty array — but analyzeBatch is still invoked.
+      expect(userDbService.getUserCachedIssues).toHaveBeenCalledWith('user1', 'org1');
+      expect(activityService.analyzeBatch).toHaveBeenCalledWith(
+        expect.any(Array),
+        [],
+        'user1',
+        'org1'
       );
     });
 

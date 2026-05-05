@@ -178,6 +178,77 @@ describe('analyzeBatch', () => {
       .rejects.toThrow('no complete records found');
   });
 
+  // --- salvage parser: state-machine edge cases ---
+  // The depth counter must ignore { and } chars that appear inside JSON
+  // string values. Without the inString/escaped state machine, a brace
+  // inside a `reasoning` string would prematurely close an object.
+
+  it('salvages an object whose reasoning string contains brace characters', async () => {
+    // The reasoning text contains { and } — naive depth counting would
+    // close the outer object early and salvage would yield nothing.
+    const truncated =
+      '[{"recordIndex":0,"taskKey":"ATG-123","projectKey":"ATG","confidenceScore":0.9,"workType":"office","reasoning":"matched function authenticate() { return true; }"},' +
+      '{"recordIndex":1,"taskKey":';
+    chatCompletionWithFallback.mockResolvedValue(makeLLMResponse(truncated));
+    const result = await analyzeBatch(records, issues, 'user-1', 'org-1');
+    expect(result.analyses).toHaveLength(1);
+    expect(result.analyses[0].recordIndex).toBe(0);
+    expect(result.analyses[0].reasoning).toContain('return true;');
+  });
+
+  it('salvages an object whose reasoning string contains an escaped quote', async () => {
+    // Escaped quotes inside reasoning must not flip the inString flag —
+    // otherwise braces after the escaped quote would be counted as depth.
+    const truncated =
+      '[{"recordIndex":0,"taskKey":"ATG-123","projectKey":"ATG","confidenceScore":0.9,"workType":"office","reasoning":"window title says \\"login {feature}\\" so matched"},' +
+      '{"recordIndex":1,"taskKey":';
+    chatCompletionWithFallback.mockResolvedValue(makeLLMResponse(truncated));
+    const result = await analyzeBatch(records, issues, 'user-1', 'org-1');
+    expect(result.analyses).toHaveLength(1);
+    expect(result.analyses[0].recordIndex).toBe(0);
+  });
+
+  it('salvages multiple objects when each contains brace characters in reasoning', async () => {
+    const truncated =
+      '[{"recordIndex":0,"taskKey":"ATG-123","projectKey":"ATG","confidenceScore":0.9,"workType":"office","reasoning":"code: foo() {}"},' +
+      '{"recordIndex":1,"taskKey":"ATG-456","projectKey":"ATG","confidenceScore":0.7,"workType":"office","reasoning":"bar() {}"},' +
+      '{"recordIndex":2,"taskKey":';
+    chatCompletionWithFallback.mockResolvedValue(makeLLMResponse(truncated));
+    const result = await analyzeBatch(records, issues, 'user-1', 'org-1');
+    expect(result.analyses).toHaveLength(2);
+    expect(result.analyses.map(a => a.recordIndex)).toEqual([0, 1]);
+  });
+
+  it('salvages an object whose reasoning contains an UNBALANCED open brace', async () => {
+    // This is the test that actually distinguishes the state machine from
+    // naive depth counting. With a `{` inside the string and no matching `}`,
+    // naive counting leaves depth=1 forever after the real object closes,
+    // so the object is never extracted. The string-aware state machine
+    // ignores braces inside string values and closes the object correctly.
+    const truncated =
+      '[{"recordIndex":0,"taskKey":"ATG-123","projectKey":"ATG","confidenceScore":0.9,"workType":"office","reasoning":"saw if (x) { with no close"},' +
+      '{"recordIndex":1,"taskKey":';
+    chatCompletionWithFallback.mockResolvedValue(makeLLMResponse(truncated));
+    const result = await analyzeBatch(records, issues, 'user-1', 'org-1');
+    expect(result.analyses).toHaveLength(1);
+    expect(result.analyses[0].recordIndex).toBe(0);
+    expect(result.analyses[0].reasoning).toContain('if (x)');
+  });
+
+  it('salvages an object whose reasoning contains an UNBALANCED close brace', async () => {
+    // Mirror case: `}` inside string with no matching `{`. Naive counting
+    // would close the wrapping object early at the in-string `}`, then
+    // tryParseJsonObject would see truncated/invalid JSON and discard it.
+    const truncated =
+      '[{"recordIndex":0,"taskKey":"ATG-123","projectKey":"ATG","confidenceScore":0.9,"workType":"office","reasoning":"end of block } with extra fields after"},' +
+      '{"recordIndex":1,"taskKey":';
+    chatCompletionWithFallback.mockResolvedValue(makeLLMResponse(truncated));
+    const result = await analyzeBatch(records, issues, 'user-1', 'org-1');
+    expect(result.analyses).toHaveLength(1);
+    expect(result.analyses[0].recordIndex).toBe(0);
+    expect(result.analyses[0].reasoning).toContain('with extra fields after');
+  });
+
   // --- validateAnalysisKeys ---
 
   it('clears taskKey and projectKey when AI returns a key not in assigned issues', async () => {
