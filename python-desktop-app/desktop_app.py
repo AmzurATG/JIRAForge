@@ -7,6 +7,7 @@ import os
 import re
 import sys
 import time
+import logging
 import json
 import queue
 import atexit
@@ -333,7 +334,7 @@ load_dotenv()
 
 # Application version - IMPORTANT: Update this when releasing new versions
 # This is used for update checking and notifications
-APP_VERSION = "1.4.8"
+APP_VERSION = "1.4.9"
 
 # Hard-disable screenshot monitoring/storage in desktop app.
 # OCR text extraction for activity records still runs via event-based flow.
@@ -2355,7 +2356,35 @@ class AtlassianAuthManager:
 
         # Token expired or doesn't exist, get a new one
         print("[INFO] Supabase token expired or missing, getting new one...")
-        return self.get_supabase_token()
+        for attempt in range(3):
+            try:
+                return self.get_supabase_token()
+            except (requests.exceptions.ConnectionError, requests.exceptions.Timeout, Exception) as e:
+                error_type = type(e).__name__
+                network_status = "unknown"
+                try:
+                    # Lightweight connectivity probe for diagnostics during retryable failures.
+                    socket.create_connection(("8.8.8.8", 53), timeout=2).close()
+                    network_status = "online"
+                except Exception:
+                    network_status = "offline"
+
+                warn_message = (
+                    f"[WARN] JWT exchange attempt {attempt + 1}/3 failed: {e} "
+                    f"(error_type={error_type}, network_status={network_status})"
+                )
+                print(warn_message)
+                logging.warning(warn_message)
+
+                if attempt < 2:
+                    wait_seconds = (attempt + 1) * 3
+                    print(f"[INFO] Retrying JWT exchange in {wait_seconds}s...")
+                    time.sleep(wait_seconds)
+
+        error_message = "[ERROR] Could not get Supabase token after 3 attempts"
+        print(error_message)
+        logging.error(error_message)
+        return None
 
     def get_supabase_config(self):
         """Fetch Supabase configuration from AI Server (requires valid Atlassian token)"""
@@ -5213,7 +5242,9 @@ class TimeTracker:
 
             # Set custom JWT from AI server on the client for RLS-scoped access
             if not self._set_supabase_jwt():
-                print("[WARN] Could not set Supabase JWT — RLS operations may fail until next refresh")
+                print("[ERROR] Could not set Supabase JWT - authentication incomplete")
+                logging.error("Could not set Supabase JWT - authentication incomplete")
+                return False
 
             self.supabase_initialized = True
             self.add_admin_log('INFO', 'Supabase initialized with custom JWT (RLS-scoped)')
