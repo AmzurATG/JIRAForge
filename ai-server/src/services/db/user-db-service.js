@@ -88,9 +88,10 @@ async function getUserCachedIssues(userId, organizationId = null) {
  * Get user's active Jira issues for better AI recommendations
  * @param {string} userId - User ID
  * @param {string} organizationId - Organization ID for multi-tenancy filtering
+ * @param {Array<string>} projectKeys - Optional project keys to prioritize (issues from these projects appear first)
  * @returns {Promise<Array>} Array of user's active issues with summaries
  */
-async function getUserActiveIssues(userId, organizationId) {
+async function getUserActiveIssues(userId, organizationId, projectKeys = []) {
   try {
     const supabase = getClient();
 
@@ -109,7 +110,7 @@ async function getUserActiveIssues(userId, organizationId) {
     const { data: cachedIssues, error: cacheError } = await cacheQuery;
 
     if (!cacheError && cachedIssues && cachedIssues.length > 0) {
-      return cachedIssues.map(issue => ({
+      let issues = cachedIssues.map(issue => ({
         issue_key: issue.issue_key,
         summary: issue.issue_summary || issue.summary,
         project: issue.project_key,
@@ -119,6 +120,16 @@ async function getUserActiveIssues(userId, organizationId) {
         priority: issue.priority || null,
         updated_at: issue.updated_at || null
       }));
+
+      // Prioritize issues from the same project(s) as the unassigned work
+      if (projectKeys.length > 0) {
+        const projectKeySet = new Set(projectKeys);
+        const sameProject = issues.filter(i => projectKeySet.has(i.project));
+        const otherProject = issues.filter(i => !projectKeySet.has(i.project));
+        issues = [...sameProject, ...otherProject].slice(0, 50);
+      }
+
+      return issues;
     }
 
     // Fallback: get from analysis_results (no summaries, but at least we have keys)
@@ -137,11 +148,21 @@ async function getUserActiveIssues(userId, organizationId) {
     // Get unique issues
     const uniqueIssues = [...new Set(data.map(item => item.active_task_key))];
 
-    return uniqueIssues.map(key => ({
+    let issues = uniqueIssues.map(key => ({
       issue_key: key,
       summary: '', // No summary available from analysis_results
       project: data.find(d => d.active_task_key === key)?.active_project_key
     }));
+
+    // Prioritize issues from the same project(s)
+    if (projectKeys.length > 0) {
+      const projectKeySet = new Set(projectKeys);
+      const sameProject = issues.filter(i => projectKeySet.has(i.project));
+      const otherProject = issues.filter(i => !projectKeySet.has(i.project));
+      issues = [...sameProject, ...otherProject].slice(0, 50);
+    }
+
+    return issues;
   } catch (error) {
     logger.error('Error fetching user active issues:', error);
     return [];

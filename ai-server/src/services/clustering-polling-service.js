@@ -103,8 +103,16 @@ async function processUserUnassignedWork(userId, organizationId) {
     return;
   }
 
-  // 2. Get user's active Jira issues for better AI recommendations
-  const userIssues = await supabaseService.getUserActiveIssues(userId, organizationId);
+  // 2. Extract distinct project keys from unassigned sessions for scoping
+  const sessionProjectKeys = [...new Set(
+    sessions.map(s => s.project_key).filter(Boolean)
+  )];
+  if (sessionProjectKeys.length > 0) {
+    logger.info(`[Clustering] Session project keys for user ${userId}: ${sessionProjectKeys.join(', ')}`);
+  }
+
+  // 3. Get user's active Jira issues — prioritize issues from same project(s)
+  const userIssues = await supabaseService.getUserActiveIssues(userId, organizationId, sessionProjectKeys);
   logger.info(`[Clustering] Found ${userIssues.length} active issues for user ${userId}`);
 
   // 3. Cluster sessions using GPT-4

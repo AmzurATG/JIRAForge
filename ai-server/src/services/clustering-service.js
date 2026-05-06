@@ -102,15 +102,45 @@ exports.clusterUnassignedWork = async (sessions, userIssues = []) => {
 ${createClusteringInput(session)}`;
     }).join('\n\n');
 
-    // Create user issues context
-    const issuesContext = userIssues.length > 0
-      ? `\n\nUser's assigned Jira issues (for matching suggestions):\n${userIssues.map(issue => {
+    // Build project-grouped issues context for better AI scoping
+    let issuesContext = '';
+    if (userIssues.length > 0) {
+      // Extract project keys present in the sessions for context
+      const sessionProjectKeys = [...new Set(
+        sessions.map(s => s.project_key).filter(Boolean)
+      )];
+
+      // Group issues by project
+      const issuesByProject = {};
+      for (const issue of userIssues) {
+        const proj = issue.project || 'UNKNOWN';
+        if (!issuesByProject[proj]) issuesByProject[proj] = [];
+        issuesByProject[proj].push(issue);
+      }
+
+      // Build context string with project grouping
+      let issueLines = '';
+      for (const [project, issues] of Object.entries(issuesByProject)) {
+        const marker = sessionProjectKeys.includes(project) ? ' [SAME PROJECT AS ACTIVITY]' : '';
+        issueLines += `\n  Project ${project}${marker}:\n`;
+        issueLines += issues.map(issue => {
           const descSuffix = issue.description
             ? ` — ${issue.description.substring(0, 200)}`
             : '';
-          return `- ${issue.issue_key}: ${issue.summary}${descSuffix}`;
-        }).join('\n')}`
-      : '';
+          return `    - ${issue.issue_key}: ${issue.summary}${descSuffix}`;
+        }).join('\n');
+      }
+
+      issuesContext = `\n\nUser's assigned Jira issues (grouped by project):\n${issueLines}`;
+
+      // Add explicit project constraint instruction
+      if (sessionProjectKeys.length > 0) {
+        issuesContext += `\n\nPROJECT MATCHING RULE: The unassigned activities belong to project(s): ${sessionProjectKeys.join(', ')}. ` +
+          `You MUST ONLY suggest issue keys from these same project(s) that the user has access to. ` +
+          `If no issue from these projects matches the work, recommend "create_new_issue" instead of forcing a match from another project. ` +
+          `NEVER suggest an issue from a different project the user does not have access to or that is unrelated to the activity.`;
+      }
+    }
 
     // Pre-categorize sessions by application type for better context
     const systemSessions = sessions.filter(s => isSystemApp(s.application_name));
@@ -209,6 +239,7 @@ KEY RULES:
 3. Different code editors working on the SAME project = SAME GROUP
 4. Look at window titles, file paths, and descriptions to identify which project/task the work belongs to
 5. Always respond with valid JSON only, no markdown formatting.
+6. ONLY suggest issue keys from the SAME project as the activity. If issues are grouped by project and marked with [SAME PROJECT AS ACTIVITY], prefer those issues. If no matching issue exists in the activity's project, recommend "create_new_issue" — NEVER force-match an issue from a different project.
 
 CRITICAL - DESCRIPTIONS MUST BE SPECIFIC:
 - Extract specific file names, component names, or URLs from the session data

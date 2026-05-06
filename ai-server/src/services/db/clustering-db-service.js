@@ -169,7 +169,7 @@ async function getUnassignedActivities(userId, organizationId) {
     // Step 2b: Get new-pipeline activity_records that have no assigned issue
     let arQuery = supabase
       .from('activity_records')
-      .select('id, window_title, application_name, ocr_text, duration_seconds, total_time_seconds, organization_id, start_time')
+      .select('id, window_title, application_name, ocr_text, duration_seconds, total_time_seconds, organization_id, start_time, project_key')
       .eq('user_id', userId)
       .is('user_assigned_issue_key', null)
       .in('status', ['pending', 'processing', 'analyzed'])
@@ -199,6 +199,7 @@ async function getUnassignedActivities(userId, organizationId) {
       time_spent_seconds: record.duration_seconds || record.total_time_seconds || 0,
       reasoning: record.window_title || 'Activity record',
       organization_id: record.organization_id,
+      project_key: record.project_key || null,
       source: 'activity_records'
     }));
 
