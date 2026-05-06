@@ -2585,7 +2585,7 @@ def send_ocr_diagnostics(auth_manager):
 
 def send_login_diagnostics(auth_manager, status: str, step: str, error: str = None, error_details: dict = None):
     """
-    Send login event diagnostics to the AI server.
+    Send login event diagnostics to the AI server and log locally.
     
     Args:
         auth_manager: AtlassianAuthManager instance
@@ -2613,6 +2613,10 @@ def send_login_diagnostics(auth_manager, status: str, step: str, error: str = No
     if error_details:
         diagnostics['error_details'] = error_details
     
+    # Log diagnostics locally in JSON format (AC8: structured diagnostic logging)
+    print(f"[DIAGNOSTIC] Login flow: {json.dumps(diagnostics, indent=2)}")
+    
+    # Send to AI server for centralized logging
     auth_manager.send_diagnostics('login', diagnostics)
 
 # ============================================================================
