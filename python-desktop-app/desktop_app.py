@@ -5384,7 +5384,24 @@ class TimeTracker:
 
                 secure_log("[OK] Authenticated user", email=user_info.get('email', 'unknown'))
                 
-                # Send successful login diagnostics
+                # Reset notification timestamps on successful login
+                self._reauth_notification_last_shown = 0
+                self._login_reminder_last_shown = 0
+
+                # Update desktop app status to logged in
+                success = self._update_desktop_status(logged_in=True)
+                if not success:
+                    error_msg = "Failed to complete authentication - please try logging in again"
+                    print(f"[ERROR] {error_msg}")
+                    send_login_diagnostics(
+                        self.auth_manager, 
+                        'failed', 
+                        'desktop_status_write',
+                        error=error_msg
+                    )
+                    return error_msg, 500
+
+                # Send successful login diagnostics (after status write verified)
                 send_login_diagnostics(
                     self.auth_manager, 'success', 'complete',
                     error_details={'user_id': self.current_user_id}
@@ -5393,13 +5410,6 @@ class TimeTracker:
                 # Send OCR diagnostics now that user is authenticated
                 print("[INFO] Sending OCR diagnostics to server...")
                 send_ocr_diagnostics(self.auth_manager)
-
-                # Reset notification timestamps on successful login
-                self._reauth_notification_last_shown = 0
-                self._login_reminder_last_shown = 0
-
-                # Update desktop app status to logged in
-                self._update_desktop_status(logged_in=True)
 
                 # Sync app classifications from Supabase (all projects)
                 try:
