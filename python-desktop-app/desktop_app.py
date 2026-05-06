@@ -6841,7 +6841,7 @@ class TimeTracker:
                 json={
                     'jql': jql,
                     'maxResults': 50,
-                    'fields': ['summary', 'status', 'project', 'description', 'labels']
+                    'fields': ['summary', 'status', 'project', 'description', 'labels', 'updated']
                 },
                 headers={
                     'Authorization': f'Bearer {access_token}',
@@ -6863,7 +6863,7 @@ class TimeTracker:
                         json={
                             'jql': jql,
                             'maxResults': 50,
-                            'fields': ['summary', 'status', 'project', 'description', 'labels']
+                            'fields': ['summary', 'status', 'project', 'description', 'labels', 'updated']
                         },
                         headers={
                             'Authorization': f'Bearer {access_token}',
@@ -6892,7 +6892,7 @@ class TimeTracker:
                         json={
                             'jql': fallback_jql_open,
                             'maxResults': 50,
-                            'fields': ['summary', 'status', 'project', 'description', 'labels']
+                            'fields': ['summary', 'status', 'project', 'description', 'labels', 'updated']
                         },
                         headers={
                             'Authorization': f'Bearer {access_token}',
@@ -6930,16 +6930,22 @@ class TimeTracker:
                     description = ''
                     if fields.get('description'):
                         # Jira uses Atlassian Document Format (ADF)
-                        # Extract plain text from content
+                        # Extract plain text from content recursively
                         desc_content = fields['description']
                         if isinstance(desc_content, dict) and desc_content.get('content'):
-                            # Simple text extraction from ADF
+                            # Recursive text extraction from all ADF node types
                             text_parts = []
+
+                            def extract_text_recursive(node):
+                                if not isinstance(node, dict):
+                                    return
+                                if node.get('type') == 'text':
+                                    text_parts.append(node.get('text', ''))
+                                for child in node.get('content', []):
+                                    extract_text_recursive(child)
+
                             for content_item in desc_content.get('content', []):
-                                if content_item.get('type') == 'paragraph':
-                                    for text_node in content_item.get('content', []):
-                                        if text_node.get('type') == 'text':
-                                            text_parts.append(text_node.get('text', ''))
+                                extract_text_recursive(content_item)
                             description = ' '.join(text_parts).strip()
                         elif isinstance(desc_content, str):
                             description = desc_content
@@ -6953,7 +6959,8 @@ class TimeTracker:
                         'status': fields['status']['name'],
                         'project': fields['project']['key'],
                         'description': description,
-                        'labels': labels
+                        'labels': labels,
+                        'updated': fields.get('updated', '')
                     })
 
                 return formatted_issues

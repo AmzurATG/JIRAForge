@@ -127,7 +127,7 @@ const APP_CLASSIFICATION_SYSTEM_PROMPT = `You are an expert at classifying deskt
  * @param {string} assignedIssuesText - Formatted list of user's Jira issues
  * @returns {string} Complete user prompt
  */
-function buildBatchAnalysisPrompt(records, assignedIssuesText) {
+function buildBatchAnalysisPrompt(records, assignedIssuesText, previousMatchContext) {
   const recordDescriptions = records.map((record, index) => {
     const ocrSnippet = record.ocr_text
       ? sanitizeOcrText(record.ocr_text.substring(0, 1000))
@@ -149,6 +149,12 @@ function buildBatchAnalysisPrompt(records, assignedIssuesText) {
   ${ocrLabel}${trackingMode}`;
   }).join('\n\n');
 
+  // Build previous session context hint for cross-batch continuity (RC5)
+  let previousSessionHint = '';
+  if (previousMatchContext && previousMatchContext.taskKey) {
+    previousSessionHint = `\nPrevious session context: The user's most recent activity (${previousMatchContext.minutesAgo} min ago) was matched to ${previousMatchContext.taskKey} (confidence ${previousMatchContext.confidenceScore}). Consider this when evaluating ambiguous records — the user may still be working on the same task.\n`;
+  }
+
   return `Analyze these activity records and match each to the most relevant Jira issue.
 Match based on MEANING, not just keywords. If a window title contains a Jira key, use it. If OCR text references specific features or code related to an issue, match it.
 
@@ -163,7 +169,7 @@ For browsers with technical sites in the title, match based on the topic being r
 CRITICAL TASK KEY RULE: You must ONLY use task keys from the assigned issues list below. NEVER invent, fabricate, or extract issue keys from OCR text, window titles, or any other source. If no assigned issue is a clear semantic match, return taskKey as null. Generic activities (Task Manager, File Explorer, Windows Settings, system utilities, download history) should return null unless they clearly relate to a specific issue.
 
 SESSION CONTINUITY: Records are shown in chronological order. If consecutive records show the same user in the same or related application (e.g., switching between VS Code and Chrome while working), and a previous record was confidently matched to an issue, subsequent records in the same work session should inherit that match at slightly lower confidence (0.5-0.6) unless the content clearly indicates a different task. Developers typically work on one issue for extended periods, switching between IDE, browser, and terminal.
-
+${previousSessionHint}
 IDLE REVIEW RECORDS: Records with tracking_mode "idle_for_llm_review" represent periods where the user had no keyboard/mouse input but an application was visible. Use the window title and application name to determine if this was likely productive activity (reading docs, attending a meeting, reviewing code) or genuine idle time (user walked away). For reading/meeting activities, match to the most relevant Jira issue. Assign LOWER confidence for longer idle durations — a 7-minute idle on Confluence is likely reading (confidence 0.5-0.6), while a 45-minute idle on Confluence is less certain (confidence 0.2-0.3). If the window title clearly indicates non-work content, classify as idle with no task match.
 
 NOTE: projectKey is derived server-side from the matched taskKey. You do not need to detect it independently.
