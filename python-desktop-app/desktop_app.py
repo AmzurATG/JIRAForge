@@ -6370,19 +6370,22 @@ class TimeTracker:
         return None
 
     def _update_desktop_status(self, logged_in=True):
-        """Update desktop app login status in Supabase
+        """Update desktop app login status in Supabase.
 
         Args:
             logged_in: True when logging in, False when logging out
+
+        Returns:
+            bool: True if successful, False if failed
         """
         if not self.current_user_id or self.current_user_id.startswith('anonymous_'):
-            return
+            return False
 
         try:
             client = self.supabase
             if not client:
                 print("[WARN] No Supabase client available for status update")
-                return
+                return False
 
             update_data = {
                 'desktop_logged_in': logged_in,
@@ -6393,13 +6396,19 @@ class TimeTracker:
             if logged_in:
                 update_data['desktop_app_version'] = self.app_version
 
-            client.table('users').update(update_data).eq('id', self.current_user_id).execute()
+            result = client.table('users').update(update_data).eq('id', self.current_user_id).execute()
+            if not result.data or len(result.data) == 0:
+                print("[WARN] Desktop status update returned no rows - RLS may be blocking")
+                return False
 
             status_text = "logged in" if logged_in else "logged out"
             print(f"[OK] Desktop status updated: {status_text}")
+            return True
 
         except Exception as e:
             print(f"[WARN] Failed to update desktop status: {e}")
+            traceback.print_exc()
+            return False
 
     def _send_heartbeat(self):
         """Send heartbeat to Supabase to indicate app is still running"""
