@@ -7,6 +7,7 @@ import os
 import re
 import sys
 import time
+import logging
 import json
 import queue
 import atexit
@@ -333,7 +334,7 @@ load_dotenv()
 
 # Application version - IMPORTANT: Update this when releasing new versions
 # This is used for update checking and notifications
-APP_VERSION = "1.4.8"
+APP_VERSION = "1.4.9"
 
 # Hard-disable screenshot monitoring/storage in desktop app.
 # OCR text extraction for activity records still runs via event-based flow.
@@ -2355,7 +2356,35 @@ class AtlassianAuthManager:
 
         # Token expired or doesn't exist, get a new one
         print("[INFO] Supabase token expired or missing, getting new one...")
-        return self.get_supabase_token()
+        for attempt in range(3):
+            try:
+                return self.get_supabase_token()
+            except (requests.exceptions.ConnectionError, requests.exceptions.Timeout, Exception) as e:
+                error_type = type(e).__name__
+                network_status = "unknown"
+                try:
+                    # Lightweight connectivity probe for diagnostics during retryable failures.
+                    socket.create_connection(("8.8.8.8", 53), timeout=2).close()
+                    network_status = "online"
+                except Exception:
+                    network_status = "offline"
+
+                warn_message = (
+                    f"[WARN] JWT exchange attempt {attempt + 1}/3 failed: {e} "
+                    f"(error_type={error_type}, network_status={network_status})"
+                )
+                print(warn_message)
+                logging.warning(warn_message)
+
+                if attempt < 2:
+                    wait_seconds = (attempt + 1) * 3
+                    print(f"[INFO] Retrying JWT exchange in {wait_seconds}s...")
+                    time.sleep(wait_seconds)
+
+        error_message = "[ERROR] Could not get Supabase token after 3 attempts"
+        print(error_message)
+        logging.error(error_message)
+        return None
 
     def get_supabase_config(self):
         """Fetch Supabase configuration from AI Server (requires valid Atlassian token)"""
@@ -2556,7 +2585,7 @@ def send_ocr_diagnostics(auth_manager):
 
 def send_login_diagnostics(auth_manager, status: str, step: str, error: str = None, error_details: dict = None):
     """
-    Send login event diagnostics to the AI server.
+    Send login event diagnostics to the AI server and log locally.
     
     Args:
         auth_manager: AtlassianAuthManager instance
@@ -2584,6 +2613,10 @@ def send_login_diagnostics(auth_manager, status: str, step: str, error: str = No
     if error_details:
         diagnostics['error_details'] = error_details
     
+    # Log diagnostics locally in JSON format (AC8: structured diagnostic logging)
+    print(f"[DIAGNOSTIC] Login flow: {json.dumps(diagnostics, indent=2)}")
+    
+    # Send to AI server for centralized logging
     auth_manager.send_diagnostics('login', diagnostics)
 
 # ============================================================================
@@ -5213,7 +5246,9 @@ class TimeTracker:
 
             # Set custom JWT from AI server on the client for RLS-scoped access
             if not self._set_supabase_jwt():
-                print("[WARN] Could not set Supabase JWT — RLS operations may fail until next refresh")
+                print("[ERROR] Could not set Supabase JWT - authentication incomplete")
+                logging.error("Could not set Supabase JWT - authentication incomplete")
+                return False
 
             self.supabase_initialized = True
             self.add_admin_log('INFO', 'Supabase initialized with custom JWT (RLS-scoped)')
@@ -5353,7 +5388,24 @@ class TimeTracker:
 
                 secure_log("[OK] Authenticated user", email=user_info.get('email', 'unknown'))
                 
-                # Send successful login diagnostics
+                # Reset notification timestamps on successful login
+                self._reauth_notification_last_shown = 0
+                self._login_reminder_last_shown = 0
+
+                # Update desktop app status to logged in
+                success = self._update_desktop_status(logged_in=True)
+                if not success:
+                    error_msg = "Failed to complete authentication - please try logging in again"
+                    print(f"[ERROR] {error_msg}")
+                    send_login_diagnostics(
+                        self.auth_manager, 
+                        'failed', 
+                        'desktop_status_write',
+                        error=error_msg
+                    )
+                    return error_msg, 500
+
+                # Send successful login diagnostics (after status write verified)
                 send_login_diagnostics(
                     self.auth_manager, 'success', 'complete',
                     error_details={'user_id': self.current_user_id}
@@ -5362,13 +5414,6 @@ class TimeTracker:
                 # Send OCR diagnostics now that user is authenticated
                 print("[INFO] Sending OCR diagnostics to server...")
                 send_ocr_diagnostics(self.auth_manager)
-
-                # Reset notification timestamps on successful login
-                self._reauth_notification_last_shown = 0
-                self._login_reminder_last_shown = 0
-
-                # Update desktop app status to logged in
-                self._update_desktop_status(logged_in=True)
 
                 # Sync app classifications from Supabase (all projects)
                 try:
@@ -6339,19 +6384,22 @@ class TimeTracker:
         return None
 
     def _update_desktop_status(self, logged_in=True):
-        """Update desktop app login status in Supabase
+        """Update desktop app login status in Supabase.
 
         Args:
             logged_in: True when logging in, False when logging out
+
+        Returns:
+            bool: True if successful, False if failed
         """
         if not self.current_user_id or self.current_user_id.startswith('anonymous_'):
-            return
+            return False
 
         try:
             client = self.supabase
             if not client:
                 print("[WARN] No Supabase client available for status update")
-                return
+                return False
 
             update_data = {
                 'desktop_logged_in': logged_in,
@@ -6362,13 +6410,19 @@ class TimeTracker:
             if logged_in:
                 update_data['desktop_app_version'] = self.app_version
 
-            client.table('users').update(update_data).eq('id', self.current_user_id).execute()
+            result = client.table('users').update(update_data).eq('id', self.current_user_id).execute()
+            if not result.data or len(result.data) == 0:
+                print("[WARN] Desktop status update returned no rows - RLS may be blocking")
+                return False
 
             status_text = "logged in" if logged_in else "logged out"
             print(f"[OK] Desktop status updated: {status_text}")
+            return True
 
         except Exception as e:
             print(f"[WARN] Failed to update desktop status: {e}")
+            traceback.print_exc()
+            return False
 
     def _send_heartbeat(self):
         """Send heartbeat to Supabase to indicate app is still running"""
