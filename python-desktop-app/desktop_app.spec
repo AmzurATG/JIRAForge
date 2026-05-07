@@ -177,6 +177,56 @@ for engine_name in dynamic_engines:
     except Exception as e:
         print(f"[WARN] Error bundling '{engine_name}': {e}")
 
+# ==============================================================================
+# NUMPY BINARY DEPENDENCIES (critical for C-extensions)
+# ==============================================================================
+# NumPy's C-extensions need proper DLL bundling to work on target systems
+print("[INFO] Collecting NumPy binary dependencies...")
+try:
+    numpy_binaries = collect_dynamic_libs('numpy')
+    if numpy_binaries:
+        engine_binaries += numpy_binaries
+        print(f"[INFO] Collected {len(numpy_binaries)} NumPy binary dependencies")
+    else:
+        print("[INFO] No dynamic NumPy binaries returned by hook; using explicit numpy.libs scan")
+except Exception as e:
+    print(f"[WARN] Could not collect NumPy binaries: {e}")
+
+# Also explicitly ensure NumPy libs are bundled
+try:
+    import numpy as np
+    # On Windows wheels, NumPy DLLs live in sibling folder: site-packages/numpy.libs
+    numpy_libs_path = os.path.abspath(
+        os.path.join(os.path.dirname(np.__file__), '..', 'numpy.libs')
+    )
+    if os.path.exists(numpy_libs_path):
+        numpy_dll_files = glob.glob(os.path.join(numpy_libs_path, '*.dll'))
+        if numpy_dll_files:
+            for dll in numpy_dll_files:
+                engine_binaries.append((dll, 'numpy.libs'))
+            print(f"[INFO] Explicitly added {len(numpy_dll_files)} NumPy DLLs from numpy.libs")
+        else:
+            print("[WARN] numpy.libs exists but no DLLs were found")
+    else:
+        print(f"[WARN] NumPy libs directory not found: {numpy_libs_path}")
+except Exception as e:
+    print(f"[WARN] Could not explicitly bundle NumPy .libs DLLs: {e}")
+
+# Include VC runtime DLLs from the Python installation as a defensive fallback.
+try:
+    python_dir = os.path.dirname(sys.executable)
+    vc_runtime_dlls = ['vcruntime140.dll', 'vcruntime140_1.dll', 'msvcp140.dll']
+    added_runtime = 0
+    for dll_name in vc_runtime_dlls:
+        dll_path = os.path.join(python_dir, dll_name)
+        if os.path.exists(dll_path):
+            engine_binaries.append((dll_path, '.'))
+            added_runtime += 1
+    if added_runtime:
+        print(f"[INFO] Added {added_runtime} VC runtime DLL(s) from Python installation")
+except Exception as e:
+    print(f"[WARN] Could not add VC runtime DLL fallback: {e}")
+
 # Always include the dynamic engine adapter
 engine_hiddenimports.append('ocr.engines.dynamic_engine')
 
@@ -220,16 +270,37 @@ dynamic_hiddenimports += collect_submodules('supabase')
 dynamic_hiddenimports += collect_submodules('keyring')
 dynamic_hiddenimports += collect_submodules('pynput')
 dynamic_hiddenimports += collect_submodules('pystray')
+# NumPy submodules - critical for C-extension imports
+try:
+    dynamic_hiddenimports += collect_submodules('numpy')
+    print("[INFO] NumPy submodules collected")
+except Exception as e:
+    print(f"[WARN] Could not collect NumPy submodules: {e}")
+# Collect pkg_resources dependencies (platformdirs required at runtime)
+try:
+    dynamic_hiddenimports += collect_submodules('platformdirs')
+except Exception:
+    print("[WARN] Could not collect platformdirs submodules")
 
 # Runtime data files needed by some dependencies
 runtime_datas = []
 runtime_datas += collect_data_files('certifi')
 runtime_datas += collect_data_files('tzdata')
+# NumPy data files and binary dependencies - critical for C-extension imports
+try:
+    runtime_datas += collect_data_files('numpy')
+    print("[INFO] NumPy data files collected")
+except Exception as e:
+    print(f"[WARN] Could not collect NumPy data files: {e}")
 try:
     runtime_datas += collect_data_files('presidio_analyzer')
     runtime_datas += collect_data_files('presidio_anonymizer')
 except Exception:
     print("[WARN] Could not collect presidio data files")
+try:
+    runtime_datas += collect_data_files('platformdirs')
+except Exception:
+    print("[WARN] Could not collect platformdirs data files")
 # ==============================================================================
 # BUILD SUMMARY
 # ==============================================================================
@@ -343,6 +414,8 @@ a = Analysis(
         'jaraco.text',
         'jaraco.functools',
         'jaraco.context',
+        # platformdirs (required by pkg_resources via setuptools)
+        'platformdirs',
         # OCR core (always needed)
         'ocr',
         'ocr.facade',
@@ -389,6 +462,15 @@ a = Analysis(
         # Exclude unnecessary packages to reduce size
         'matplotlib',
         ] + (['pandas'] if ('winrtocr' not in configured_engines and 'winrt' not in configured_engines) else []) + [
+        # Exclude pandas test modules (dramatically speeds up build)
+        'pandas.tests',
+        'pandas.tests.test_algos',
+        'pandas.tests.frame',
+        'pandas.tests.indexes',
+        'pandas.tests.groupby',
+        'pandas.tests.series',
+        'pandas.tests.plotting',
+        'pandas.tests.io',
         'xmlrpc',
         # Security: spacy/NLP not needed
         'detect_secrets',
