@@ -129,7 +129,7 @@ class ActivityPollingService {
   processing = false;
   // Poll every 3 minutes by default (configurable via env)
   pollInterval = Number.parseInt(process.env.ACTIVITY_POLLING_INTERVAL_MS || '180000', 10);
-  batchSize = Number.parseInt(process.env.ACTIVITY_POLLING_BATCH_SIZE || '20', 10);
+  batchSize = Number.parseInt(process.env.ACTIVITY_POLLING_BATCH_SIZE || '60', 10);
 
   /**
    * Start the activity polling service

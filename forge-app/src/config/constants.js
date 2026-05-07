@@ -3,7 +3,7 @@
  */
 
 // Jira Configuration
-export const JQL_ACTIVE_STATUSES = ['In Progress'];
+export const JQL_ACTIVE_STATUSES = 'statusCategory = "In Progress"';
 export const MAX_JIRA_SEARCH_RESULTS = 50;
 export const ISSUE_BATCH_SIZE = 20;
 
