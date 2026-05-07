@@ -18,7 +18,7 @@ function formatAssignedIssues(userAssignedIssues) {
     return 'None - track all work';
   }
 
-  // Sort by recency (newest first) then limit to 30 issues
+  // Sort by recency (newest first) then limit to 50 issues
   const sorted = [...userAssignedIssues].sort((a, b) => {
     const aDate = a.updated ? new Date(a.updated).getTime() : 0;
     const bDate = b.updated ? new Date(b.updated).getTime() : 0;
@@ -26,7 +26,7 @@ function formatAssignedIssues(userAssignedIssues) {
   });
 
   return sorted
-    .slice(0, 30)
+    .slice(0, 50)
     .map(issue => {
       let issueText = `- ${issue.key}: ${issue.summary} (Status: ${issue.status})`;
 
