@@ -98,6 +98,27 @@ CRITICAL RULES:
 - Return null for taskKey when there is no clear semantic connection between the activity and a specific issue
 - A match requires a meaningful content relationship, not just both being work-related
 
+WORK TYPE CLASSIFICATION — READ CAREFULLY:
+- "office" = ANY activity connected to work, regardless of whether a Jira task can be matched
+- "non-office" = ONLY genuinely personal/non-work activity (social media, entertainment, personal browsing, gaming, shopping)
+- taskKey and workType are INDEPENDENT fields. A team standup has taskKey=null AND workType="office".
+- Do NOT conflate "no Jira match" with "non-office activity".
+
+MEETING APPLICATIONS ARE ALWAYS workType="office":
+- Google Meet (meet.google.com in URL or window title, or process Hangouts/Meet)
+- Microsoft Teams (Teams.exe, teams.microsoft.com)
+- Zoom (Zoom.exe, zoom.us)
+- Webex, Slack Huddles, Discord in work context, any video conferencing tool
+- Calendar apps showing meeting blocks
+- Even if taskKey=null, meetings are ALWAYS "office"
+
+Examples:
+- Teams standup → taskKey=null, workType="office"
+- Google Meet call → taskKey=null, workType="office"
+- Zoom sprint review → taskKey=null, workType="office"
+- Facebook during work hours → taskKey=null, workType="non-office"
+- Personal YouTube video → taskKey=null, workType="non-office"
+
 PROJECT KEY: Do NOT return projectKey — it is automatically derived from the matched taskKey (e.g., PROJ-123 → PROJ). You may omit it or set it to null; it will be overwritten server-side.
 
 CONFIDENCE SCORING:
@@ -182,7 +203,7 @@ ${recordDescriptions}
 
 For EACH record, determine:
 1. Which Jira issue is the user most likely working on? Return null if the activity has no clear connection to any specific issue.
-2. Is this office work or non-office?
+2. Is this office work or non-office? Use "office" for ANY work-related activity (coding, meetings, email, documentation, research). Use "non-office" ONLY for personal/entertainment activity (social media, gaming, personal shopping). Meetings (Google Meet, Teams, Zoom, Webex, etc.) are ALWAYS "office" even when taskKey is null.
 3. How confident are you in the match?
 
 Return ONLY valid JSON (no markdown code blocks, no extra text). Your response must be exactly one JSON array:
