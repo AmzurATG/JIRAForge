@@ -6,6 +6,8 @@ jest.mock('../../src/services/activity-service', () => ({
   identifyAppByName: jest.fn(),
 }));
 
+jest.mock('../../src/services/db/activity-db-service');
+
 jest.mock('../../src/utils/logger', () => ({
   info: jest.fn(),
   warn: jest.fn(),
@@ -14,7 +16,8 @@ jest.mock('../../src/utils/logger', () => ({
 }));
 
 const activityService = require('../../src/services/activity-service');
-const { analyzeBatch, classifyApp, identifyApp } = require('../../src/controllers/activity-controller');
+const activityDbService = require('../../src/services/db/activity-db-service');
+const { analyzeBatch, classifyApp, identifyApp, createActivity } = require('../../src/controllers/activity-controller');
 
 function makeRes() {
   const res = {
@@ -225,5 +228,102 @@ describe('identifyApp', () => {
     const next = jest.fn();
     await identifyApp(req, res, next);
     expect(next).toHaveBeenCalledWith(expect.any(Error));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// createActivity - Idempotency (AC3)
+// ---------------------------------------------------------------------------
+
+describe('Activity Controller - Idempotency (AC3)', () => {
+  let res;
+
+  beforeEach(() => {
+    res = makeRes();
+    jest.clearAllMocks();
+  });
+  
+  test('Duplicate request_id returns 200 without creating record', async () => {
+    const req = {
+      body: {
+        request_id: 'duplicate-uuid-123',
+        org_id: 'org-abc',
+        user_id: 'user-xyz',
+        timestamp: '2026-05-07T10:00:00Z',
+        window_title: 'VS Code',
+        duration_seconds: 60
+      }
+    };
+    
+    // Mock: record with this request_id already exists
+    activityDbService.findByRequestId.mockResolvedValue({ 
+      id: 'existing-record-id' 
+    });
+    
+    await createActivity(req, res);
+    
+    expect(res._status).toBe(200);
+    expect(res._body).toEqual(
+      expect.objectContaining({
+        id: 'existing-record-id',
+        duplicate: true,
+        message: 'Activity already recorded'
+      })
+    );
+    expect(activityDbService.createWithRequestId).not.toHaveBeenCalled();
+  });
+  
+  test('Missing request_id returns 400 error', async () => {
+    const req = {
+      body: {
+        // request_id is missing
+        org_id: 'org-abc',
+        user_id: 'user-xyz',
+        timestamp: '2026-05-07T10:00:00Z',
+        duration_seconds: 60
+      }
+    };
+    
+    await createActivity(req, res);
+    
+    expect(res._status).toBe(400);
+    expect(res._body).toEqual({ 
+      error: 'request_id is required' 
+    });
+  });
+  
+  test('New request_id creates record successfully', async () => {
+    const req = {
+      body: {
+        request_id: 'new-uuid-456',
+        org_id: 'org-abc',
+        user_id: 'user-xyz',
+        timestamp: '2026-05-07T10:00:00Z',
+        window_title: 'Chrome',
+        duration_seconds: 120
+      }
+    };
+    
+    // Mock: request_id not found (new submission)
+    activityDbService.findByRequestId.mockResolvedValue(null);
+    activityDbService.createWithRequestId.mockResolvedValue({
+      id: 'new-record-id'
+    });
+    
+    await createActivity(req, res);
+    
+    expect(res._status).toBe(201);
+    expect(res._body).toEqual(
+      expect.objectContaining({
+        id: 'new-record-id',
+        duplicate: false
+      })
+    );
+    expect(activityDbService.createWithRequestId).toHaveBeenCalledWith(
+      expect.objectContaining({
+        request_id: 'new-uuid-456',
+        org_id: 'org-abc'
+      })
+    );
   });
 });

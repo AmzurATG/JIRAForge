@@ -623,5 +623,67 @@ export async function getFeedbackStatus(feedbackId) {
   return result;
 }
 
+/**
+ * Get daily total work time for a user (unified aggregation service).
+ * 
+ * AC4 & AC8: Uses unified aggregation service to ensure consistency across all surfaces.
+ * 
+ * @param {string} org_id - Organization ID
+ * @param {string} user_id - User ID
+ * @param {string} date - Date in YYYY-MM-DD format
+ * @param {string} timezone - IANA timezone (default: UTC)
+ * @returns {Promise<Object>} { date, total_seconds, hours, timezone }
+ */
+export async function getDailyWorkTotal(org_id, user_id, date, timezone = 'UTC') {
+  if (!org_id || !user_id || !date) {
+    throw new Error('Missing required parameters: org_id, user_id, date');
+  }
+
+  console.log(`[Remote] getDailyWorkTotal: ${date} for user ${user_id}`);
+
+  const response = await invokeRemote(REMOTE_KEY, {
+    path: `/api/analytics/daily?org_id=${encodeURIComponent(org_id)}&user_id=${encodeURIComponent(user_id)}&date=${encodeURIComponent(date)}&timezone=${encodeURIComponent(timezone)}`,
+    method: 'GET'
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    console.error('[Remote] getDailyWorkTotal failed:', errorText);
+    throw new Error(`Failed to get daily total: ${errorText}`);
+  }
+
+  return await response.json();
+}
+
+/**
+ * Get weekly total work time for a user (unified aggregation service).
+ * 
+ * @param {string} org_id - Organization ID
+ * @param {string} user_id - User ID
+ * @param {string} week_start - Monday date in YYYY-MM-DD format
+ * @param {string} timezone - IANA timezone (default: UTC)
+ * @returns {Promise<Object>} { week_start, total_seconds, hours, timezone }
+ */
+export async function getWeeklyWorkTotal(org_id, user_id, week_start, timezone = 'UTC') {
+  if (!org_id || !user_id || !week_start) {
+    throw new Error('Missing required parameters: org_id, user_id, week_start');
+  }
+
+  console.log(`[Remote] getWeeklyWorkTotal: ${week_start} for user ${user_id}`);
+
+  const response = await invokeRemote(REMOTE_KEY, {
+    path: `/api/analytics/weekly?org_id=${encodeURIComponent(org_id)}&user_id=${encodeURIComponent(user_id)}&week_start=${encodeURIComponent(week_start)}&timezone=${encodeURIComponent(timezone)}`,
+    method: 'GET'
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    console.error('[Remote] getWeeklyWorkTotal failed:', errorText);
+    throw new Error(`Failed to get weekly total: ${errorText}`);
+  }
+
+  return await response.json();
+}
+
 // Export the remote request function for custom calls
 export { remoteRequest };

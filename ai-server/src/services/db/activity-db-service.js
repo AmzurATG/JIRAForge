@@ -301,6 +301,78 @@ async function resetStuckFailedRecords(minutesThreshold = 30) {
   }
 }
 
+/**
+ * Find activity by request_id (for idempotency check).
+ * 
+ * @param {string} org_id - Organization ID (RLS enforcement)
+ * @param {string} request_id - Unique request identifier
+ * @returns {Promise<object|null>} Activity record or null if not found
+ */
+async function findByRequestId(org_id, request_id) {
+  if (!org_id) {
+    throw new Error('org_id is required (RLS enforcement)');
+  }
+  
+  if (!request_id) {
+    throw new Error('request_id is required');
+  }
+  
+  const supabase = getClient();
+  if (!supabase) throw new Error('Supabase client not initialized');
+  
+  const { data, error } = await supabase
+    .from('activity_records')
+    .select('id, created_at')
+    .eq('org_id', org_id)
+    .eq('request_id', request_id)
+    .single();
+    
+  if (error) {
+    if (error.code === 'PGRST116') {
+      // Not found — expected for new submissions
+      return null;
+    }
+    logger.error('findByRequestId query failed', { org_id, request_id, error });
+    throw error;
+  }
+  
+  return data;
+}
+
+/**
+ * Create activity with request_id (for idempotency).
+ * 
+ * @param {object} activity - Activity data including request_id
+ * @returns {Promise<object>} Created activity record
+ */
+async function createWithRequestId(activity) {
+  const { org_id, request_id } = activity;
+  
+  if (!org_id) {
+    throw new Error('org_id is required (RLS enforcement)');
+  }
+  
+  if (!request_id) {
+    throw new Error('request_id is required');
+  }
+  
+  const supabase = getClient();
+  if (!supabase) throw new Error('Supabase client not initialized');
+  
+  const { data, error } = await supabase
+    .from('activity_records')
+    .insert(activity)
+    .select()
+    .single();
+    
+  if (error) {
+    logger.error('createWithRequestId failed', { org_id, request_id, error });
+    throw error;
+  }
+  
+  return data;
+}
+
 module.exports = {
   getPendingActivityBatches,
   claimBatchForProcessing,
@@ -310,5 +382,7 @@ module.exports = {
   releaseRecordsToPending,
   resetStuckProcessingRecords,
   resetStuckFailedRecords,
-  isTransientError
+  isTransientError,
+  findByRequestId,
+  createWithRequestId
 };

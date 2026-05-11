@@ -5,6 +5,7 @@
 
 import { fetchTimeAnalytics, fetchTimeAnalyticsBatch, fetchAllAnalytics, fetchProjectAnalytics, fetchProjectTeamAnalytics, fetchTeamDayTimeline, fetchMyDayTimeline, fetchMyDayIssueBreakdown, convertIdleToWorklog, fetchMemberDayDetails, fetchMemberWeekDetails, fetchMemberMonthDetails, generateTeamExportData, generateTeamExportDataStructured } from '../services/analyticsService.js';
 import { isJiraAdmin, checkUserPermissions, createJiraIssue, getIssueTransitions, transitionIssue, createJiraWorklog, textToADF } from '../utils/jira.js';
+import { getDailyWorkTotal, getWeeklyWorkTotal, getOrCreateOrganization, getOrCreateUser } from '../utils/remote.js';
 
 // Feature flag for using batch API (set to true for production)
 const USE_BATCH_API = true;
@@ -575,6 +576,55 @@ export function registerAnalyticsResolvers(resolver) {
       };
     } catch (error) {
       console.error('Error exporting team analytics (Excel):', error);
+      return { success: false, error: error.message };
+    }
+  });
+
+  /**
+   * Resolver for fetching worklog summary (unified aggregation service)
+   * 
+   * AC4 & AC8: Uses unified aggregation service to ensure consistency across all surfaces.
+   * Returns same value as dashboard, issue panel, and other surfaces.
+   */
+  resolver.define('getWorklogSummary', async (req) => {
+    const { payload, context } = req;
+    const { date, timezone, period } = payload;
+    const accountId = context.accountId;
+    const cloudId = context.cloudId;
+
+    try {
+      // Get or create organization and user
+      const organization = await getOrCreateOrganization(cloudId);
+      if (!organization) {
+        return { success: false, error: 'Unable to get organization information' };
+      }
+
+      const userId = await getOrCreateUser(accountId, organization.id);
+      if (!userId) {
+        return { success: false, error: 'Unable to get user information' };
+      }
+
+      // Call unified aggregation service
+      if (period === 'weekly') {
+        const data = await getWeeklyWorkTotal(
+          organization.id,
+          userId,
+          date, // week_start date
+          timezone || 'UTC'
+        );
+        return { success: true, data };
+      } else {
+        // Default to daily
+        const data = await getDailyWorkTotal(
+          organization.id,
+          userId,
+          date,
+          timezone || 'UTC'
+        );
+        return { success: true, data };
+      }
+    } catch (error) {
+      console.error('Error fetching worklog summary:', error);
       return { success: false, error: error.message };
     }
   });

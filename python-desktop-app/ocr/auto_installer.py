@@ -17,8 +17,14 @@ import sys
 import subprocess
 import logging
 import platform
+import importlib.util
 from typing import Dict, List, Optional
 from pathlib import Path
+
+try:
+    from importlib import metadata as importlib_metadata
+except ImportError:  # pragma: no cover
+    import importlib_metadata  # type: ignore
 
 # Load environment variables from .env file
 try:
@@ -195,13 +201,18 @@ def is_package_installed(package_name: str) -> bool:
         True if installed, False otherwise
     """
     # Remove version specifier if present
-    package = package_name.split('>=')[0].split('==')[0].split('<')[0]
-    
+    package = package_name.split('>=')[0].split('==')[0].split('<')[0].strip()
+
+    # 1) Prefer distribution metadata lookup (no module import side effects).
     try:
-        __import__(package)
+        importlib_metadata.distribution(package)
         return True
-    except ImportError:
-        return False
+    except Exception:
+        pass
+
+    # 2) Fallback to module spec lookup for import-name checks.
+    module_name = package.replace('-', '_')
+    return importlib.util.find_spec(module_name) is not None
 
 
 def get_configured_engines() -> List[str]:

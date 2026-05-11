@@ -5,10 +5,10 @@
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │                    Desktop App (Python)                         │
-│  - Captures screenshot every 5 minutes                         │
+│  - Captures screenshot every 5 minutes                          │
 │  - Detects active window                                        │
 │  - Uploads to Supabase Storage                                  │
-│  - Inserts metadata to Supabase DB                             │
+│  - Inserts metadata to Supabase DB                              │
 └────────────────────┬────────────────────────────────────────────┘
                      │
                      │ 1. Upload screenshot file
@@ -28,7 +28,7 @@
 │        Supabase Edge Function (screenshot-webhook)              │
 │  - Deno runtime                                                 │
 │  - Receives webhook payload                                     │
-│  - Fetches user's cached Jira issues                           │
+│  - Fetches user's cached Jira issues                            │
 │  - Calls AI Server via HTTP POST                                │
 └────────────────────┬────────────────────────────────────────────┘
                      │
@@ -39,10 +39,10 @@
                      ▼
 ┌─────────────────────────────────────────────────────────────────┐
 │              AI Server (Node.js - External)                     │
-│  - Must be running and accessible                              │
+│  - Must be running and accessible                               │
 │  - Receives screenshot metadata                                 │
 │  - Downloads screenshot from Supabase Storage                   │
-│  - Performs OCR (Tesseract.js)                                 │
+│  - Performs OCR (Tesseract.js)                                  │
 │  - AI analysis (OpenAI)                                         │
 │  - Writes results to Supabase DB                                │
 │  - Creates worklog in Jira (optional)                           │
