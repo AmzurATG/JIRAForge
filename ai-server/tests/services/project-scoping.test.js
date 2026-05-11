@@ -344,3 +344,221 @@ describe('Fix 4 — clustering-service AI prompt project scoping', () => {
     expect(promptContent).not.toContain('A'.repeat(201));
   });
 });
+
+// ==========================================================================
+// Fix 5 — Project Inference from Content
+// ==========================================================================
+
+describe('Fix 5 — inferProjectFromSessions content analysis', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockIsActivityAIEnabled.mockReturnValue(true);
+    mockChatCompletion.mockResolvedValue(makeAIResult(VALID_CLUSTER_RESPONSE));
+  });
+
+  it('should infer project from issue key in window title', async () => {
+    const sessions = [
+      {
+        id: 's1',
+        time_spent_seconds: 3600,
+        application_name: 'chrome',
+        window_title: 'DEVOPS-42 - Deploy to Production',
+        extracted_text: '',
+        reasoning: 'Working on deployment'
+      }
+    ];
+    const userIssues = [
+      { issue_key: 'SCRUM-1', summary: 'Fix login', project: 'SCRUM' },
+      { issue_key: 'DEVOPS-42', summary: 'Deploy prod', project: 'DEVOPS' }
+    ];
+
+    await clusterUnassignedWork(sessions, userIssues);
+
+    const promptContent = mockChatCompletion.mock.calls[0][0].messages[1].content;
+    
+    // Should infer DEVOPS and add PROJECT MATCHING RULE
+    expect(promptContent).toContain('PROJECT MATCHING RULE');
+    expect(promptContent).toContain('DEVOPS');
+    expect(promptContent).toContain('[SAME PROJECT AS ACTIVITY]');
+  });
+
+  it('should infer project from project name in OCR text', async () => {
+    const sessions = [
+      {
+        id: 's1',
+        time_spent_seconds: 3600,
+        application_name: 'code',
+        window_title: 'main.js',
+        extracted_text: 'Working on SCRUM board, sprint planning',
+        reasoning: 'Development work'
+      }
+    ];
+    const userIssues = [
+      { issue_key: 'SCRUM-1', summary: 'Sprint planning', project: 'SCRUM' },
+      { issue_key: 'DEVOPS-1', summary: 'Infrastructure', project: 'DEVOPS' }
+    ];
+
+    await clusterUnassignedWork(sessions, userIssues);
+
+    const promptContent = mockChatCompletion.mock.calls[0][0].messages[1].content;
+    
+    // Should infer SCRUM from content
+    expect(promptContent).toContain('PROJECT MATCHING RULE');
+    expect(promptContent).toContain('SCRUM');
+  });
+
+  it('should infer project from issue summary keywords', async () => {
+    const sessions = [
+      {
+        id: 's1',
+        time_spent_seconds: 3600,
+        application_name: 'chrome',
+        window_title: 'Authentication implementation',
+        extracted_text: 'login form validation authentication',
+        reasoning: 'Implementing authentication feature SCRUM'
+      }
+    ];
+    const userIssues = [
+      { issue_key: 'SCRUM-100', summary: 'Implement user authentication system', project: 'SCRUM' },
+      { issue_key: 'DEVOPS-50', summary: 'Database backup', project: 'DEVOPS' }
+    ];
+
+    await clusterUnassignedWork(sessions, userIssues);
+
+    const promptContent = mockChatCompletion.mock.calls[0][0].messages[1].content;
+    
+    // Should infer SCRUM based on project name + keyword matches (5 + 2 + 2 = 9 points)
+    expect(promptContent).toContain('PROJECT MATCHING RULE');
+    expect(promptContent).toContain('SCRUM');
+  });
+
+  it('should handle multiple project hints and pick highest score', async () => {
+    const sessions = [
+      {
+        id: 's1',
+        time_spent_seconds: 1800,
+        window_title: 'SCRUM-42 code review',
+        extracted_text: 'scrum project',
+        reasoning: 'Code review'
+      },
+      {
+        id: 's2',
+        time_spent_seconds: 1800,
+        window_title: 'Meeting notes',
+        extracted_text: 'devops',
+        reasoning: 'Meeting'
+      }
+    ];
+    const userIssues = [
+      { issue_key: 'SCRUM-42', summary: 'Feature dev', project: 'SCRUM' },
+      { issue_key: 'DEVOPS-10', summary: 'Infra', project: 'DEVOPS' }
+    ];
+
+    await clusterUnassignedWork(sessions, userIssues);
+
+    const promptContent = mockChatCompletion.mock.calls[0][0].messages[1].content;
+    
+    // Should include both projects, with SCRUM first (higher score: issue key + name = 15 vs 5)
+    expect(promptContent).toContain('PROJECT MATCHING RULE');
+    expect(promptContent).toContain('SCRUM');
+    expect(promptContent).toContain('DEVOPS');
+  });
+
+  it('should fall back to multi-project mode when no hints found', async () => {
+    const sessions = [
+      {
+        id: 's1',
+        time_spent_seconds: 3600,
+        application_name: 'chrome',
+        window_title: 'Google Search',
+        extracted_text: 'random research',
+        reasoning: 'Generic browsing'
+      }
+    ];
+    const userIssues = [
+      { issue_key: 'SCRUM-1', summary: 'Fix login', project: 'SCRUM' },
+      { issue_key: 'DEVOPS-1', summary: 'Deploy', project: 'DEVOPS' }
+    ];
+
+    await clusterUnassignedWork(sessions, userIssues);
+
+    const promptContent = mockChatCompletion.mock.calls[0][0].messages[1].content;
+    
+    // Should use multi-project mode
+    expect(promptContent).toContain('MULTI-PROJECT MATCHING MODE');
+    expect(promptContent).not.toContain('PROJECT MATCHING RULE');
+    expect(promptContent).toContain('Consider all projects EQUALLY');
+  });
+
+  it('should not infer projects that user does not have access to', async () => {
+    const sessions = [
+      {
+        id: 's1',
+        time_spent_seconds: 3600,
+        window_title: 'ADMIN-999 system config', // Issue key not in user's issues
+        extracted_text: '',
+        reasoning: 'System work'
+      }
+    ];
+    const userIssues = [
+      { issue_key: 'SCRUM-1', summary: 'Fix login', project: 'SCRUM' }
+    ];
+
+    await clusterUnassignedWork(sessions, userIssues);
+
+    const promptContent = mockChatCompletion.mock.calls[0][0].messages[1].content;
+    
+    // Should NOT infer ADMIN as a project (no marker for ADMIN)
+    expect(promptContent).not.toContain('Project ADMIN [SAME PROJECT AS ACTIVITY]');
+    expect(promptContent).not.toContain('PROJECT MATCHING RULE');
+    // Should fall back to multi-project mode
+    expect(promptContent).toContain('MULTI-PROJECT MATCHING MODE');
+  });
+
+  it('should handle empty session content gracefully', async () => {
+    const sessions = [
+      {
+        id: 's1',
+        time_spent_seconds: 3600,
+        window_title: '',
+        extracted_text: null,
+        reasoning: undefined,
+        application_name: 'idle'
+      }
+    ];
+    const userIssues = [
+      { issue_key: 'SCRUM-1', summary: 'Work', project: 'SCRUM' }
+    ];
+
+    await clusterUnassignedWork(sessions, userIssues);
+
+    const promptContent = mockChatCompletion.mock.calls[0][0].messages[1].content;
+    
+    // Should handle gracefully and fall back to multi-project mode
+    expect(promptContent).toContain('MULTI-PROJECT MATCHING MODE');
+  });
+
+  it('should require minimum score threshold (avoid weak matches)', async () => {
+    const sessions = [
+      {
+        id: 's1',
+        time_spent_seconds: 3600,
+        window_title: 'the user login page', // "user" and "login" are short words
+        extracted_text: '',
+        reasoning: 'Work'
+      }
+    ];
+    const userIssues = [
+      { issue_key: 'SCRUM-1', summary: 'User login fix', project: 'SCRUM' }
+    ];
+
+    await clusterUnassignedWork(sessions, userIssues);
+
+    const promptContent = mockChatCompletion.mock.calls[0][0].messages[1].content;
+    
+    // "user" and "login" are filtered (≤4 chars), only "page" matches but gives 2 points
+    // Below threshold of 5, should fall back to multi-project mode
+    expect(promptContent).toContain('MULTI-PROJECT MATCHING MODE');
+  });
+});
+

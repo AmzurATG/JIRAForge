@@ -44,6 +44,107 @@ function isSystemApp(appName) {
 }
 
 /**
+ * Infer project keys from session content (window titles, OCR text, reasoning)
+ * Useful when sessions don't have explicit project_key set
+ * 
+ * Scoring system:
+ * - Issue key match (PROJ-123): +10 points
+ * - Project name mention: +5 points
+ * - Issue summary keyword match (>4 chars): +2 points
+ * 
+ * @param {Array} sessions - Unassigned work sessions
+ * @param {Array} userIssues - User's active issues with project info
+ * @returns {Array<string>} Inferred project keys sorted by relevance score
+ */
+function inferProjectFromSessions(sessions, userIssues) {
+  if (!sessions || sessions.length === 0 || !userIssues || userIssues.length === 0) {
+    return [];
+  }
+
+  const projectHints = new Map(); // project -> score
+
+  // Build searchable content from all sessions
+  for (const session of sessions) {
+    const content = [
+      session.window_title || '',
+      session.extracted_text || '',
+      session.reasoning || '',
+      session.application_name || ''
+    ].join(' ').toLowerCase();
+
+    if (!content.trim()) {
+      continue; // Skip empty content
+    }
+
+    // Strategy 1: Look for explicit issue key patterns (PROJ-123)
+    // This is the strongest signal - exact match to a project
+    const issueKeyMatches = content.match(/\b([A-Z][A-Z0-9]+)-\d+\b/g) || [];
+    for (const issueKey of issueKeyMatches) {
+      const projectKey = issueKey.split('-')[0];
+      
+      // Only count if this project exists in user's issues
+      const projectExists = userIssues.some(issue => issue.project === projectKey);
+      if (projectExists) {
+        projectHints.set(projectKey, (projectHints.get(projectKey) || 0) + 10);
+        logger.debug(`[Inference] Found issue key ${issueKey} -> +10 for ${projectKey}`);
+      }
+    }
+
+    // Strategy 2: Look for project names mentioned explicitly
+    // e.g., "Working on SCRUM project" or "DEVOPS deployment"
+    for (const issue of userIssues) {
+      const projectKey = issue.project;
+      if (!projectKey) continue;
+
+      const projectNameLower = projectKey.toLowerCase();
+      
+      // Check for exact project key mention
+      if (content.includes(projectNameLower)) {
+        projectHints.set(projectKey, (projectHints.get(projectKey) || 0) + 5);
+        logger.debug(`[Inference] Found project name "${projectKey}" -> +5`);
+      }
+    }
+
+    // Strategy 3: Look for issue summary keywords
+    // e.g., if user has issue "Fix authentication bug" and content mentions "authentication"
+    for (const issue of userIssues) {
+      const projectKey = issue.project;
+      if (!projectKey || !issue.summary) continue;
+
+      // Extract meaningful words from issue summary (>4 chars, not common words)
+      const summaryWords = issue.summary
+        .toLowerCase()
+        .split(/[\s\-_\/\\,\.]+/)
+        .filter(word => {
+          // Filter out common/short words
+          if (word.length <= 4) return false;
+          const commonWords = ['with', 'from', 'that', 'this', 'have', 'been', 'were', 'their'];
+          return !commonWords.includes(word);
+        });
+
+      for (const word of summaryWords) {
+        if (content.includes(word)) {
+          projectHints.set(projectKey, (projectHints.get(projectKey) || 0) + 2);
+          logger.debug(`[Inference] Found keyword "${word}" from ${issue.issue_key} -> +2 for ${projectKey}`);
+        }
+      }
+    }
+  }
+
+  // Filter and sort by score
+  const MIN_SCORE_THRESHOLD = 5; // Require at least 5 points (1 project mention or 1 issue key match)
+  const inferredProjects = Array.from(projectHints.entries())
+    .filter(([_, score]) => score >= MIN_SCORE_THRESHOLD)
+    .sort((a, b) => b[1] - a[1]) // Sort by score descending
+    .map(([project, score]) => {
+      logger.info(`[Inference] Project ${project} scored ${score} points`);
+      return project;
+    });
+
+  return inferredProjects;
+}
+
+/**
  * Create clustering input text from session data
  * Includes as much context as possible for better AI grouping
  */
@@ -106,9 +207,23 @@ ${createClusteringInput(session)}`;
     let issuesContext = '';
     if (userIssues.length > 0) {
       // Extract project keys present in the sessions for context
-      const sessionProjectKeys = [...new Set(
+      let sessionProjectKeys = [...new Set(
         sessions.map(s => s.project_key).filter(Boolean)
       )];
+
+      // NEW: If no explicit project keys, try to infer from content
+      if (sessionProjectKeys.length === 0) {
+        logger.info('[AI] No explicit project_key in sessions, attempting inference from content...');
+        sessionProjectKeys = inferProjectFromSessions(sessions, userIssues);
+        
+        if (sessionProjectKeys.length > 0) {
+          logger.info(`[AI] ✓ Inferred ${sessionProjectKeys.length} project(s) from content: ${sessionProjectKeys.join(', ')}`);
+        } else {
+          logger.warn('[AI] ✗ Could not infer any projects from session content');
+        }
+      } else {
+        logger.info(`[AI] Using explicit project keys from sessions: ${sessionProjectKeys.join(', ')}`);
+      }
 
       // Group issues by project
       const issuesByProject = {};
@@ -139,6 +254,14 @@ ${createClusteringInput(session)}`;
           `You MUST ONLY suggest issue keys from these same project(s) that the user has access to. ` +
           `If no issue from these projects matches the work, recommend "create_new_issue" instead of forcing a match from another project. ` +
           `NEVER suggest an issue from a different project the user does not have access to or that is unrelated to the activity.`;
+      } else {
+        // NEW: No project hints found - use multi-project mode
+        issuesContext += `\n\nMULTI-PROJECT MATCHING MODE: The activities could relate to any of the user's projects. ` +
+          `Carefully analyze the session content (window titles, screen text, activity descriptions) to determine which project is most relevant. ` +
+          `Only suggest an issue if there is CLEAR evidence in the content that matches a specific issue. ` +
+          `Consider all projects EQUALLY - do not favor one project over another without evidence. ` +
+          `If no strong match exists in ANY project, recommend "create_new_issue". ` +
+          `When you find a match, explain WHAT content evidence led you to that specific project and issue.`;
       }
     }
 
