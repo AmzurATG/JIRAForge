@@ -2,7 +2,7 @@ import React from 'react';
 import { formatTime } from '../../utils';
 import './SelectionBar.css';
 
-function SelectionBar({ groupCount, sessionCount, totalSeconds, onClear, onAssign }) {
+function SelectionBar({ groupCount, sessionCount, totalSeconds, onClear, onAssign, onDelete }) {
   if (groupCount === 0 && sessionCount === 0) return null;
 
   const groupLabel = groupCount === 1 ? 'group' : 'groups';
@@ -20,6 +20,9 @@ function SelectionBar({ groupCount, sessionCount, totalSeconds, onClear, onAssig
       <div className="selection-bar-actions">
         <button className="selection-bar-clear" onClick={onClear}>
           Clear
+        </button>
+        <button className="selection-bar-delete" onClick={onDelete}>
+          Delete Selected
         </button>
         <button className="selection-bar-assign" onClick={onAssign}>
           Assign Selected

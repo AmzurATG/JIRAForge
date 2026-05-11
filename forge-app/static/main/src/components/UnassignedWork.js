@@ -507,6 +507,62 @@ function UnassignedWork() {
     setShowAssignModal(true);
   };
 
+  const handleDeleteSelection = async () => {
+    const payload = buildSelectionPayload();
+    if (payload.sessionIds.length === 0) return;
+
+    // Confirmation dialog
+    const groupLabel = payload.groupIds.length === 1 ? 'group' : 'groups';
+    const sessionLabel = payload.sessionCount === 1 ? 'session' : 'sessions';
+    const confirmMsg = `Delete ${payload.groupIds.length} ${groupLabel} (${payload.sessionCount} ${sessionLabel}, ${formatTime(payload.totalSeconds)})?
+
+This will permanently dismiss these sessions from clustering. They won't appear in unassigned work again.`;
+
+    if (!window.confirm(confirmMsg)) {
+      return;
+    }
+
+    try {
+      // Call new backend resolver
+      const result = await invoke('deleteSelectedSessions', {
+        sessionIds: payload.sessionIds,
+        groupIds: payload.groupIds
+      });
+
+      if (result.success) {
+        // Remove fully dismissed groups from UI
+        setGroups(prev => prev.filter(g => !result.fullyDismissedGroupIds.includes(g.id)));
+        setTotalGroups(prev => Math.max(0, prev - result.fullyDismissedGroupIds.length));
+
+        // Clear caches for affected groups
+        result.groupIds.forEach(gid => {
+          setGroupDetails(prev => {
+            const next = { ...prev };
+            delete next[gid];
+            return next;
+          });
+          setGroupWorkSessions(prev => {
+            const next = { ...prev };
+            delete next[gid];
+            return next;
+          });
+        });
+
+        // Clear selection state
+        clearSelection();
+
+        console.log(`[UnassignedWork] ✓ Deleted ${result.dismissedSessionCount} sessions across ${result.groupIds.length} groups`);
+      } else {
+        const errorMsg = result.error || 'Unknown error';
+        console.error('[UnassignedWork] Delete selected failed:', errorMsg);
+        alert(`Failed to delete sessions: ${errorMsg}`);
+      }
+    } catch (err) {
+      console.error('[UnassignedWork] Error deleting selection:', err);
+      alert(`Error deleting sessions: ${err.message || String(err)}`);
+    }
+  };
+
   // Dismiss handlers
   const handleDismissGroup = async (groupId) => {
     try {
@@ -755,6 +811,7 @@ function UnassignedWork() {
         totalSeconds={selectionSummary.totalSeconds}
         onClear={clearSelection}
         onAssign={handleAssignSelection}
+        onDelete={handleDeleteSelection}
       />
 
       {/* Assignment Modal */}
