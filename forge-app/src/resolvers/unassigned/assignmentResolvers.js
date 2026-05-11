@@ -1370,6 +1370,211 @@ export async function dismissUnassignedGroup(req) {
 }
 
 /**
+ * Delete (dismiss) selected sessions across multiple groups.
+ * Multi-group aware — fully dismisses groups when all members are selected,
+ * otherwise removes selected intervals and updates group aggregates.
+ * 
+ * Mirrors assignSelectionToExistingIssue pattern for consistency.
+ */
+export async function deleteSelectedSessions(req) {
+  try {
+    const { sessionIds, groupIds } = req.payload;
+
+    // Validate input
+    const validSessionIds = sanitizeUUIDArray(sessionIds);
+    if (validSessionIds.length === 0) {
+      return { success: false, error: 'No valid session IDs provided' };
+    }
+
+    const validGroupIds = sanitizeUUIDArray(groupIds);
+    if (validGroupIds.length === 0) {
+      return { success: false, error: 'No valid group IDs provided' };
+    }
+
+    // Initialize context
+    const ctx = await initializeRequestContext(req);
+    if (!ctx.success) return ctx;
+
+    const { config: supabaseConfig, organization, userId } = ctx;
+    const now = new Date().toISOString();
+    const sessionIdsSet = new Set(validSessionIds);
+
+    console.log(`[deleteSelectedSessions] Processing ${validSessionIds.length} sessions across ${validGroupIds.length} groups`);
+
+    // Step 1: Determine full vs partial coverage per group
+    const fullyDismissedGroupIds = [];
+    const partialGroupIds = [];
+    const memberIdsToDelete = []; // unassigned_group_members rows to remove
+
+    for (const groupId of validGroupIds) {
+      // Fetch group members
+      const members = ensureArray(await supabaseRequest(
+        supabaseConfig,
+        `unassigned_group_members?group_id=eq.${groupId}&select=id,activity_record_id,unassigned_activity_id`
+      ));
+
+      if (members.length === 0) {
+        console.warn(`[deleteSelectedSessions] Group ${groupId} has no members, skipping`);
+        continue;
+      }
+
+      // Collect all session IDs from members (both pipelines)
+      const memberSessionIds = members
+        .flatMap(m => [m.activity_record_id, m.unassigned_activity_id])
+        .filter(Boolean);
+
+      // Check if user selected ALL members of this group
+      const fullyCovered = memberSessionIds.every(id => sessionIdsSet.has(id));
+
+      if (fullyCovered) {
+        // Dismiss entire group
+        fullyDismissedGroupIds.push(groupId);
+      } else {
+        // Partial dismissal — only mark selected members
+        partialGroupIds.push(groupId);
+        
+        // Collect member row IDs to delete from unassigned_group_members
+        members.forEach(m => {
+          const sessionId = m.activity_record_id || m.unassigned_activity_id;
+          if (sessionId && sessionIdsSet.has(sessionId)) {
+            memberIdsToDelete.push(m.id);
+          }
+        });
+      }
+    }
+
+    console.log(`[deleteSelectedSessions] Full dismissals: ${fullyDismissedGroupIds.length}, Partial: ${partialGroupIds.length}`);
+
+    // Step 2: Mark all selected sessions as clustering_dismissed
+    // (Regardless of full/partial, every selected session gets dismissed)
+    const activityRecordIds = validSessionIds.filter(id => id); // All are activity_record UUIDs in new pipeline
+    const unassignedActivityIds = []; // Legacy pipeline if needed (usually empty for new groups)
+
+    if (activityRecordIds.length > 0) {
+      try {
+        const arResult = await supabaseRequest(
+          supabaseConfig,
+          `activity_records?id=in.(${activityRecordIds.join(',')})&user_id=eq.${userId}`,
+          {
+            method: 'PATCH',
+            body: { clustering_dismissed: true, clustering_dismissed_at: now }
+          }
+        );
+        const arUpdated = ensureArray(arResult).length;
+        console.log(`[deleteSelectedSessions] Marked ${arUpdated}/${activityRecordIds.length} activity_records as dismissed`);
+      } catch (err) {
+        console.error(`[deleteSelectedSessions] Error updating activity_records:`, err.message);
+        throw err;
+      }
+    }
+
+    // Also handle legacy unassigned_activity if present (rare for new groups)
+    if (unassignedActivityIds.length > 0) {
+      try {
+        await supabaseRequest(
+          supabaseConfig,
+          `unassigned_activity?id=in.(${unassignedActivityIds.join(',')})&user_id=eq.${userId}&organization_id=eq.${organization.id}`,
+          {
+            method: 'PATCH',
+            body: { clustering_dismissed: true, clustering_dismissed_at: now }
+          }
+        );
+      } catch (err) {
+        console.error(`[deleteSelectedSessions] Error updating unassigned_activity:`, err.message);
+        // Don't throw — legacy path is optional
+      }
+    }
+
+    // Step 3: Process fully dismissed groups
+    if (fullyDismissedGroupIds.length > 0) {
+      try {
+        const groupResult = await supabaseRequest(
+          supabaseConfig,
+          `unassigned_work_groups?id=in.(${fullyDismissedGroupIds.join(',')})&user_id=eq.${userId}&organization_id=eq.${organization.id}`,
+          {
+            method: 'PATCH',
+            body: { is_dismissed: true, dismissed_at: now, dismissed_by: userId }
+          }
+        );
+        const groupsUpdated = ensureArray(groupResult).length;
+        console.log(`[deleteSelectedSessions] Marked ${groupsUpdated} groups as fully dismissed`);
+      } catch (err) {
+        console.error(`[deleteSelectedSessions] Error dismissing groups:`, err.message);
+        throw err;
+      }
+    }
+
+    // Step 4: Process partial groups — remove selected members and update aggregates
+    if (partialGroupIds.length > 0 && memberIdsToDelete.length > 0) {
+      try {
+        // Delete member links
+        await supabaseRequest(
+          supabaseConfig,
+          `unassigned_group_members?id=in.(${memberIdsToDelete.join(',')})`,
+          { method: 'DELETE' }
+        );
+        console.log(`[deleteSelectedSessions] Deleted ${memberIdsToDelete.length} member links`);
+
+        // Recalculate aggregates per partial group
+        for (const groupId of partialGroupIds) {
+          // Fetch remaining members
+          const remainingMembers = ensureArray(await supabaseRequest(
+            supabaseConfig,
+            `unassigned_group_members?group_id=eq.${groupId}&select=activity_record_id,unassigned_activity_id`
+          ));
+
+          const newSessionCount = remainingMembers.length;
+
+          // Fetch total_time_seconds from remaining activity_records
+          const remainingActivityIds = remainingMembers
+            .map(m => m.activity_record_id)
+            .filter(Boolean);
+          
+          let newTotalSeconds = 0;
+          if (remainingActivityIds.length > 0) {
+            const activities = ensureArray(await supabaseRequest(
+              supabaseConfig,
+              `activity_records?id=in.(${remainingActivityIds.join(',')})&select=total_time_seconds,duration_seconds`
+            ));
+            newTotalSeconds = activities.reduce((sum, a) => sum + (a.total_time_seconds || a.duration_seconds || 0), 0);
+          }
+
+          // Update group
+          await supabaseRequest(
+            supabaseConfig,
+            `unassigned_work_groups?id=eq.${groupId}&user_id=eq.${userId}&organization_id=eq.${organization.id}`,
+            {
+              method: 'PATCH',
+              body: {
+                session_count: newSessionCount,
+                total_seconds: newTotalSeconds
+              }
+            }
+          );
+          console.log(`[deleteSelectedSessions] Updated group ${groupId}: session_count=${newSessionCount}, total_seconds=${newTotalSeconds}`);
+        }
+      } catch (err) {
+        console.error(`[deleteSelectedSessions] Error processing partial groups:`, err.message);
+        throw err;
+      }
+    }
+
+    // Step 5: Return success with metadata
+    return {
+      success: true,
+      dismissedSessionCount: validSessionIds.length,
+      groupIds: validGroupIds,
+      fullyDismissedGroupIds,
+      partialGroupIds
+    };
+
+  } catch (error) {
+    console.error(`[deleteSelectedSessions] Fatal error:`, error);
+    return handleResolverError(error, 'deleting selected sessions');
+  }
+}
+
+/**
  * Remove a single session from an unassigned work group.
  * Marks the session as excluded from future clustering and removes it from the group.
  * The underlying activity record is NOT deleted from Supabase.
@@ -1510,4 +1715,5 @@ export function registerAssignmentResolvers(resolver) {
   resolver.define('bulkReassignByTimeInterval', bulkReassignByTimeInterval);
   resolver.define('dismissUnassignedGroup', dismissUnassignedGroup);
   resolver.define('dismissGroupMember', dismissGroupMember);
+  resolver.define('deleteSelectedSessions', deleteSelectedSessions);
 }
