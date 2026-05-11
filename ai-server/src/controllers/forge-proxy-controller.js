@@ -25,18 +25,33 @@ const RESERVED_PARAMS = new Set(['order', 'limit', 'offset', 'select', 'on_confl
 // (Node/undici socket-level errors). When matched, the proxy returns 503 so the
 // Forge app's existing retry logic in remote.js kicks in. See
 // plan/fix-forge-proxy-transient-fetch-error.md for context.
+// Lowercased for case-insensitive matching against the supabase-js error.
 const TRANSIENT_FETCH_ERROR_PATTERNS = [
   'fetch failed',
-  'ECONNRESET',
-  'ETIMEDOUT',
+  'econnreset',
+  'etimedout',
   'socket hang up',
-  'UND_ERR_SOCKET',
+  'und_err_socket',
   'other side closed'
 ];
 
 function isTransientNetworkError(message) {
   if (!message || typeof message !== 'string') return false;
-  return TRANSIENT_FETCH_ERROR_PATTERNS.some(p => message.includes(p));
+  const normalized = message.toLowerCase();
+  return TRANSIENT_FETCH_ERROR_PATTERNS.some(p => normalized.includes(p));
+}
+
+// Extract a usable string from supabase-js's result.error, which may be a plain
+// Error, a PostgrestError, or in rare cases an object without `.message`.
+function extractErrorMessage(err) {
+  if (err == null) return 'unknown supabase error';
+  if (typeof err === 'string') return err;
+  if (typeof err.message === 'string' && err.message.length > 0) return err.message;
+  try {
+    return JSON.stringify(err);
+  } catch {
+    return String(err);
+  }
 }
 
 /**
@@ -323,7 +338,7 @@ exports.supabaseQuery = async (req, res) => {
     }
 
     if (result.error) {
-      const message = result.error.message;
+      const message = extractErrorMessage(result.error);
       // Transient outbound-fetch failures (undici socket errors) → 503 so the
       // Forge app's remote.js retries. Real query errors stay 400.
       const status = isTransientNetworkError(message) ? 503 : 400;
