@@ -20,6 +20,7 @@ const clusteringPollingService = require('./services/clustering-polling-service'
 const notificationPollingService = require('./services/notifications/notification-polling');
 const aiService = require('./services/ai');
 const activityController = require('./controllers/activity-controller');
+const analyticsController = require('./controllers/analytics-controller');
 const adminDashboardController = require('./controllers/admin-dashboard-controller');
 const activityPollingService = require('./services/activity-polling-service');
 // REMOVABLE: AI accuracy tracking dashboard. Surfaced inside the Forge app
@@ -435,6 +436,10 @@ app.post('/api/analyze-batch', express.json({ limit: '10mb' }), authMiddleware, 
 app.post('/api/classify-app', atlassianAuthMiddleware, activityController.classifyApp);
 // identify-app uses Forge auth (called from Forge app for admin app classification)
 app.post('/api/identify-app', ...forgeMiddleware, activityController.identifyApp);
+
+// Analytics endpoints (unified aggregation service)
+app.get('/api/analytics/daily', authMiddleware, analyticsController.getDailyTotal);
+app.get('/api/analytics/weekly', authMiddleware, analyticsController.getWeeklyTotal);
 
 // Manual trigger for clustering - called by organization admins from Forge app
 app.post('/api/trigger-clustering', authMiddleware, async (req, res, next) => {

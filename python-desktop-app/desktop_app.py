@@ -20,8 +20,10 @@ import urllib.parse
 import secrets
 import hashlib
 import base64
+import uuid
 from datetime import datetime, timezone, timedelta
 from io import BytesIO
+from enum import Enum
 
 # Fix broken TLS CA-bundle env vars before any HTTPS library is imported.
 # The PostgreSQL Windows installer (v14-17) sets CURL_CA_BUNDLE to a path
@@ -4794,6 +4796,24 @@ class LocalOCRProcessor:
 
 
 # ============================================================================
+# TRACKING STATE MACHINE
+# ============================================================================
+
+class TrackingState(Enum):
+    """Tracking state machine states.
+    
+    - STOPPED: App not tracking (initial state, after logout)
+    - ACTIVE: Actively capturing screenshots and tracking work
+    - IDLE: User idle (no activity, screen locked, or system sleep)
+    - PAUSED: User manually paused tracking (via tray menu)
+    """
+    STOPPED = 0
+    ACTIVE = 1
+    IDLE = 2
+    PAUSED = 3
+
+
+# ============================================================================
 # MAIN APPLICATION
 # ============================================================================
 
@@ -4863,7 +4883,13 @@ class TimeTracker:
         # Tracking state
         self.running = False
         self.tracking_active = False
-        self.is_idle = False  # Idle state - when no activity for idle_timeout seconds
+        self.is_idle = False  # KEEP for backward compatibility (will be phased out)
+        
+        # New state machine (replaces is_idle boolean)
+        self.state = TrackingState.STOPPED
+        self.state_lock = threading.Lock()  # Protect state transitions from race conditions
+        self.idle_start_time = None  # Timestamp when idle state was entered
+        self.idle_reason = None  # Reason for idle (e.g., 'system sleep', 'screen lock')
 
         # ============================================================================
         # PAUSE SETTINGS (stored locally on user's machine)
@@ -8308,6 +8334,7 @@ class TimeTracker:
                     'project_key': record_project_key,
                     'user_assigned_issues': json.dumps(self.user_issues) if self.user_issues else None,
                     'status': status,
+                    'request_id': str(uuid.uuid4()),  # Unique request ID for idempotency
                     'metadata': {
                         'tracking_mode': 'event_based',
                         'app_version': self.app_version,
@@ -9422,6 +9449,112 @@ class TimeTracker:
         except Exception as e:
             print(f"[ERROR] Error finalizing session ({reason}): {e}")
 
+    def enter_idle(self, reason):
+        """Thread-safe transition to idle state.
+        
+        Called when entering idle (timeout, system sleep, or screen lock).
+        Only transitions if currently in ACTIVE state.
+        
+        Args:
+            reason: String describing why entering idle (e.g., 'system sleep', 'idle timeout')
+            
+        Returns:
+            bool: True if transition succeeded, False if already idle/paused/stopped
+        """
+        with self.state_lock:
+            if self.state == TrackingState.IDLE:
+                # Already idle — no-op
+                return False
+                
+            print(f"[STATE] {self.state.name} → IDLE (reason: {reason})")
+            
+            # Only finalize session if we were actively tracking
+            if self.state == TrackingState.ACTIVE:
+                # Finalize current work session
+                self._finalize_active_session(reason)
+                
+                # Stop SQLite activity timer so idle time isn't counted in activity_records
+                self.session_manager.stop_current_timer()
+                
+                # Record when idle started (backdate to last activity)
+                self.idle_start_time = datetime.fromtimestamp(self.last_activity_time, tz=timezone.utc)
+                
+                # Store the project key at idle entry — this is the project the user
+                # was actually working on, not whatever project is active when they resume
+                self.idle_project_key = self.current_project_key
+            else:
+                # Entering idle from STOPPED state (e.g., system sleep before tracking starts)
+                # Just record the current time
+                self.idle_start_time = datetime.now(timezone.utc)
+            
+            # Store idle reason for logging
+            self.idle_reason = reason
+            
+            # Transition state
+            self.state = TrackingState.IDLE
+            self.is_idle = True  # Keep boolean flag in sync for backward compatibility
+            
+            # Update UI
+            self.update_tray_icon()
+            self.add_admin_log('INFO', f'Entered idle state: {reason}')
+            
+            return True
+
+    def resume_from_idle(self):
+        """Thread-safe transition from idle to active state.
+        
+        Called when user activity is detected after idle period.
+        Resets all tracking state so new session starts fresh.
+        
+        Returns:
+            bool: True if transition succeeded, False if not idle
+        """
+        with self.state_lock:
+            if self.state != TrackingState.IDLE:
+                # Not idle — no-op
+                return False
+                
+            print(f"[STATE] IDLE → ACTIVE")
+            
+            # Create an idle record for the period the user was away
+            self._create_idle_record("idle timeout")
+            
+            # Clear idle tracking variables
+            self.idle_start_time = None
+            self.idle_reason = None
+            
+            # Transition state
+            self.state = TrackingState.ACTIVE
+            self.is_idle = False  # Keep boolean flag in sync
+            self.needs_idle_resume = False
+            
+            # Start new SQLite timer for the active session
+            self.session_manager.start_new_timer()
+            
+            # Update UI
+            self.update_tray_icon()
+            self.add_admin_log('INFO', 'Resumed from idle - tracking active')
+            
+            # Reset interval timer so first capture happens after full interval
+            self.last_interval_time = time.time()
+            
+            # Reset ALL tracking state — new session starts fresh
+            # IMPORTANT: This prevents idle time from being counted as work time
+            self.current_window_start_time = None
+            self.current_window_db_start_time = None
+            self.current_window_screenshot_id = None
+            self.current_window_record_created_at = None
+            self.last_screenshot_end_time = None
+            self.previous_window_key = None
+            self.previous_window_screenshot_id = None
+            self.previous_window_start_time = None
+            self.previous_window_db_start_time = None
+            self.current_window_key = None  # Force detection as "new" window
+            self.current_project_key = None
+            self.current_window_title = None
+            
+            return True
+
     def _is_within_work_hours(self, utc_dt):
         """Check if a UTC datetime falls within configured working hours (local time).
         Supports cross-midnight schedules (e.g. 22:00–06:00 for night shifts).
@@ -9500,6 +9633,7 @@ class TimeTracker:
             'user_timezone': get_local_timezone_name(),
             'project_key': project_key,
             'status': 'analyzed',  # No AI analysis needed for idle records
+            'request_id': str(uuid.uuid4()),  # Unique request ID for idempotency
             'metadata': {
                 'tracking_mode': 'idle_detection',
                 'idle_reason': reason,
@@ -9589,30 +9723,16 @@ class TimeTracker:
                 try:
                     if msg == WM_POWERBROADCAST:
                         if wparam == PBT_APMSUSPEND:
-                            print("[INFO] System sleep detected — finalizing session")
-                            if not self.is_idle:
-                                self._finalize_active_session("system sleep")
-                                self.session_manager.stop_current_timer()  # Stop SQLite activity timer so idle time isn't counted in activity_records
-                                self.idle_start_time = datetime.fromtimestamp(self.last_activity_time, tz=timezone.utc)
-                                self.idle_project_key = self.current_project_key
-                                self.is_idle = True
-                                self.update_tray_icon()
-                                self.add_admin_log('INFO', 'System sleep detected — entered idle')
+                            print("[INFO] System sleep detected — entering idle state")
+                            self.enter_idle("system sleep")
                         elif wparam == PBT_APMRESUMEAUTOMATIC:
                             print("[INFO] System wake detected — will resume tracking on activity")
                             self._create_idle_record("system sleep")
                             self.needs_idle_resume = True
                     elif msg == WM_WTSSESSION_CHANGE:
                         if wparam == WTS_SESSION_LOCK:
-                            print("[INFO] Screen lock detected — finalizing session")
-                            if not self.is_idle:
-                                self._finalize_active_session("screen lock")
-                                self.session_manager.stop_current_timer()  # Stop SQLite activity timer so idle time isn't counted in activity_records
-                                self.idle_start_time = datetime.fromtimestamp(self.last_activity_time, tz=timezone.utc)
-                                self.idle_project_key = self.current_project_key
-                                self.is_idle = True
-                                self.update_tray_icon()
-                                self.add_admin_log('INFO', 'Screen locked — entered idle')
+                            print("[INFO] Screen lock detected — entering idle state")
+                            self.enter_idle("screen lock")
                         elif wparam == WTS_SESSION_UNLOCK:
                             print("[INFO] Screen unlock detected — will resume tracking on activity")
                             self._create_idle_record("screen lock")
@@ -9887,30 +10007,17 @@ class TimeTracker:
                     # but the screen is still locked, we must stay in idle mode to avoid
                     # tracking LockApp.exe as active work time.
                     if self._is_screen_locked():
-                        print(f"[INFO] Screen still locked after suspension — staying in idle mode")
-                        self.is_idle = True
-                        self.idle_start_time = datetime.fromtimestamp(self.last_activity_time, tz=timezone.utc)
-                        self.idle_project_key = self.current_project_key
+                        print(f"[INFO] Screen still locked after suspension — entering idle state")
+                        self.enter_idle("screen still locked after suspension")
                         self.needs_idle_resume = False
                         self.current_window_key = None
-                        self.update_tray_icon()
                         last_loop_time = current_loop_time
-                        self.add_admin_log('INFO', f'System suspension detected ({int(time_since_last_loop)}s gap) — screen locked, staying idle')
                         continue
 
                     # Reset ALL tracking state — new session starts fresh
-                    self.is_idle = False
+                    if self.resume_from_idle():
+                        print(f"[INFO] Resumed from suspension — tracking state reset")
                     self.needs_idle_resume = False
-                    self.current_window_start_time = None
-                    self.current_window_db_start_time = None
-                    self.current_window_screenshot_id = None
-                    self.current_window_record_created_at = None
-                    self.last_screenshot_end_time = None
-                    self.previous_window_key = None
-                    self.previous_window_screenshot_id = None
-                    self.previous_window_start_time = None
-                    self.previous_window_db_start_time = None
-                    self.current_window_key = None
                     self.last_interval_time = current_loop_time
                     self.last_activity_time = current_loop_time
                     last_loop_time = current_loop_time
@@ -10001,34 +10108,19 @@ class TimeTracker:
                 idle_duration = time.time() - self.last_activity_time
                 current_idle_timeout = self.tracking_settings.get('idle_threshold_seconds', self.idle_timeout)
                 if idle_duration > current_idle_timeout:
-                    if not self.is_idle:
+                    if self.state == TrackingState.ACTIVE:
                         idle_start_time = datetime.now(timezone.utc)
                         last_activity = datetime.fromtimestamp(self.last_activity_time, tz=timezone.utc)
-                        print(f"[INFO] Entering idle mode at {idle_start_time.strftime('%H:%M:%S')} UTC:")
-                        print(f"     - Last activity: {last_activity.strftime('%H:%M:%S')} UTC")
-                        print(f"     - Idle duration: {int(idle_duration)}s (threshold: {current_idle_timeout}s)")
+                        print(f"[INFO] Idle timeout ({int(idle_duration)}s) — entering idle state")
                         
-                        # Finalize the current window's duration BEFORE going idle
-                        # This prevents idle time from being counted as work time
-                        self._finalize_active_session("idle timeout")
-                        self.session_manager.stop_current_timer()  # Stop SQLite activity timer so idle time isn't counted in activity_records
-
-                        # Flush accumulated sessions to database BEFORE entering idle
-                        # This prevents data sitting in SQLite for hours during long idle periods
+                        # Use state machine instead of direct assignment
+                        self.enter_idle("idle timeout")
+                        
+                        # Upload accumulated data before entering idle
                         try:
                             self.upload_activity_batch()
                         except Exception as e:
-                            print(f"[WARN] Pre-idle batch upload failed: {e} — data remains in SQLite for next cycle")
-
-                        # Record when idle started (backdate to last activity)
-                        self.idle_start_time = last_activity
-                        # Store the project key at idle entry — this is the project the user
-                        # was actually working on, not whatever project is active when they resume
-                        self.idle_project_key = self.current_project_key
-
-                        self.is_idle = True
-                        self.update_tray_icon()
-                        self.add_admin_log('INFO', f'User idle (no activity for {int(idle_duration)}s)')
+                            print(f"[WARN] Pre-idle batch upload failed: {e}")
 
                     # While idle, check every 5 seconds for activity
                     # Don't skip if needs_idle_resume is set - we need to process the resume
@@ -10039,52 +10131,27 @@ class TimeTracker:
                 # Resume from idle if activity was detected by pynput
                 if self.needs_idle_resume:
                     resume_time = datetime.now(timezone.utc)
-                    print(f"[INFO] Activity detected at {resume_time.strftime('%H:%M:%S')} UTC, resuming tracking from idle")
-                    print(f"     - All tracking state reset - new session will start fresh")
-
-                    # Create an idle record for the period the user was away
-                    self._create_idle_record("idle timeout")
-
-                    # Immediately flush idle records to database instead of waiting
-                    # for the next periodic batch upload cycle
-                    if self._pending_idle_records:
-                        try:
-                            print(f"[IDLE] Flushing {len(self._pending_idle_records)} idle record(s) to database...")
-                            self.upload_activity_batch()
-                        except Exception as e:
-                            print(f"[WARN] Immediate idle record flush failed: {e} — will retry on next batch cycle")
-
-                    self.is_idle = False
+                    print(f"[INFO] Activity detected — resuming from idle")
+                    
+                    # Use state machine instead of direct assignment
+                    if self.resume_from_idle():
+                        # Immediately flush idle records to database
+                        if self._pending_idle_records:
+                            try:
+                                print(f"[IDLE] Flushing {len(self._pending_idle_records)} idle record(s)...")
+                                self.upload_activity_batch()
+                            except Exception as e:
+                                print(f"[WARN] Idle record flush failed: {e}")
+                    
+                    # Clear the resume flag regardless of whether resume succeeded
                     self.needs_idle_resume = False
-                    self.update_tray_icon()
-                    self.add_admin_log('INFO', 'User active - resuming tracking')
-                    # Reset interval timer so first capture happens after full interval
-                    self.last_interval_time = time.time()
-                    # Start fresh - next screenshot will be the start of a new work session
-                    # IMPORTANT: Reset ALL tracking state so new session starts from "now"
-                    self.current_window_start_time = None
-                    self.current_window_db_start_time = None
-                    self.current_window_screenshot_id = None
-                    self.current_window_record_created_at = None
-                    self.last_screenshot_end_time = None  # Critical: prevents idle time from being counted
-                    self.previous_window_key = None
-                    self.previous_window_screenshot_id = None
-                    self.previous_window_start_time = None
-                    self.previous_window_db_start_time = None
-                    self.current_window_key = None  # Also reset current window so it's detected as "new"
 
                 # Guard: if screen is locked (e.g., PC woke briefly from sleep but user
                 # hasn't unlocked), re-enter idle mode instead of tracking LockApp.exe.
                 if self._is_screen_locked():
-                    if not self.is_idle:
-                        print(f"[INFO] Screen locked — entering idle mode instead of tracking")
-                        self._finalize_active_session("screen still locked")
-                        self.session_manager.stop_current_timer()
-                        self.idle_start_time = datetime.fromtimestamp(self.last_activity_time, tz=timezone.utc)
-                        self.idle_project_key = self.current_project_key
-                        self.is_idle = True
-                        self.update_tray_icon()
-                        self.add_admin_log('INFO', 'Screen locked detected in main loop — entered idle')
+                    if self.state == TrackingState.ACTIVE:
+                        print(f"[INFO] Screen locked — entering idle state")
+                        self.enter_idle("screen still locked")
                     time.sleep(5)
                     continue
 
@@ -10331,7 +10398,8 @@ class TimeTracker:
 
         self.running = True
         self.tracking_active = True
-        self.is_idle = False
+        self.state = TrackingState.ACTIVE
+        self.is_idle = False  # Keep boolean flag in sync
         self.last_activity_time = time.time()  # Reset activity time
         
         # Initialize window tracking for event-based tracking
@@ -10444,7 +10512,8 @@ class TimeTracker:
             self.pause_end_time = None  # Clear auto-resume time
             self.next_popup_show_time = None  # Clear next popup show time
             self.popup_show_count = 0  # Reset popup show count
-            self.is_idle = False
+            self.state = TrackingState.ACTIVE
+            self.is_idle = False  # Keep boolean flag in sync
             self.last_activity_time = time.time()
             self.update_tray_icon()
             self.update_tray_menu()  # Update menu to show Pause option

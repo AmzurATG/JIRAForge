@@ -6,6 +6,7 @@
  */
 
 const activityService = require('../services/activity-service');
+const activityDbService = require('../services/db/activity-db-service');
 const logger = require('../utils/logger');
 
 /**
@@ -121,4 +122,71 @@ async function identifyApp(req, res, next) {
   }
 }
 
-module.exports = { analyzeBatch, classifyApp, identifyApp };
+/**
+ * POST /api/activity
+ * Create activity record with idempotency check.
+ * 
+ * AC3: Duplicate request_id returns 200 with {duplicate: true} and creates zero new records.
+ * 
+ * Security: No PII (window_title) logged at info level per copilot-instructions.md.
+ */
+async function createActivity(req, res) {
+  const { request_id, org_id, user_id, timestamp, window_title, duration_seconds } = req.body;
+  
+  // Validate request_id is present
+  if (!request_id) {
+    logger.warn('Activity submission missing request_id', { org_id, user_id });
+    return res.status(400).json({ error: 'request_id is required' });
+  }
+  
+  try {
+    // Check if already processed (idempotency)
+    const existing = await activityDbService.findByRequestId(org_id, request_id);
+    if (existing) {
+      logger.debug('Duplicate activity submission detected', { 
+        request_id, 
+        existing_id: existing.id,
+        org_id
+      });
+      return res.status(200).json({ 
+        id: existing.id, 
+        duplicate: true,
+        message: 'Activity already recorded'
+      });
+    }
+    
+    // Insert with request_id
+    const result = await activityDbService.createWithRequestId({
+      request_id,
+      org_id,
+      user_id,
+      timestamp,
+      window_title,
+      duration_seconds,
+      created_at: new Date().toISOString()
+    });
+    
+    logger.info('Activity recorded', { 
+      activity_id: result.id, 
+      org_id, 
+      user_id, 
+      duration: duration_seconds 
+    });
+    
+    return res.status(201).json({ 
+      id: result.id, 
+      duplicate: false 
+    });
+    
+  } catch (error) {
+    logger.error('Activity creation failed', { 
+      error: error.message, 
+      org_id, 
+      user_id,
+      request_id 
+    });
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+}
+
+module.exports = { analyzeBatch, classifyApp, identifyApp, createActivity };
