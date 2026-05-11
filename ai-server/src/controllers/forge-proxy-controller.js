@@ -21,6 +21,24 @@ const SENSITIVE_TABLES = new Set([
 // Reserved PostgREST query parameters that should not be used as column names
 const RESERVED_PARAMS = new Set(['order', 'limit', 'offset', 'select', 'on_conflict']);
 
+// Substrings that identify a transient outbound-fetch failure from supabase-js
+// (Node/undici socket-level errors). When matched, the proxy returns 503 so the
+// Forge app's existing retry logic in remote.js kicks in. See
+// plan/fix-forge-proxy-transient-fetch-error.md for context.
+const TRANSIENT_FETCH_ERROR_PATTERNS = [
+  'fetch failed',
+  'ECONNRESET',
+  'ETIMEDOUT',
+  'socket hang up',
+  'UND_ERR_SOCKET',
+  'other side closed'
+];
+
+function isTransientNetworkError(message) {
+  if (!message || typeof message !== 'string') return false;
+  return TRANSIENT_FETCH_ERROR_PATTERNS.some(p => message.includes(p));
+}
+
 /**
  * Log security warnings for sensitive table access without org filter
  */
@@ -305,8 +323,12 @@ exports.supabaseQuery = async (req, res) => {
     }
 
     if (result.error) {
-      logger.error('[ForgeProxy] Supabase error', { table, error: result.error.message });
-      return res.status(400).json({ success: false, error: result.error.message });
+      const message = result.error.message;
+      // Transient outbound-fetch failures (undici socket errors) → 503 so the
+      // Forge app's remote.js retries. Real query errors stay 400.
+      const status = isTransientNetworkError(message) ? 503 : 400;
+      logger.error('[ForgeProxy] Supabase error', { table, error: message, status });
+      return res.status(status).json({ success: false, error: message });
     }
 
     res.json({ success: true, data: result.data });

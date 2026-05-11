@@ -437,6 +437,37 @@ describe('supabaseQuery', () => {
     );
   });
 
+  // Transient outbound-fetch failures from supabase-js → 503 so the Forge
+  // remote.js retry path triggers. See plan/fix-forge-proxy-transient-fetch-error.md.
+  it.each([
+    ['TypeError: fetch failed'],
+    ['ECONNRESET: socket reset by peer'],
+    ['socket hang up'],
+    ['Client network socket disconnected before secure TLS connection was established (ETIMEDOUT)'],
+    ['UND_ERR_SOCKET'],
+    ['other side closed'],
+  ])('returns 503 (not 400) for transient fetch error: %s', async (message) => {
+    const { ...client } = makeSimpleClient({ data: null, error: { message } });
+    getClient.mockReturnValue(client);
+    const res = makeRes();
+    await supabaseQuery(makeQueryReq(), res);
+    expect(res.status).toHaveBeenCalledWith(503);
+    expect(res.json).toHaveBeenCalledWith(
+      expect.objectContaining({ success: false, error: message })
+    );
+  });
+
+  it('keeps 400 for genuine query errors (no transient pattern)', async () => {
+    const { ...client } = makeSimpleClient({
+      data: null,
+      error: { message: 'column organizations.jira_host does not exist' }
+    });
+    getClient.mockReturnValue(client);
+    const res = makeRes();
+    await supabaseQuery(makeQueryReq(), res);
+    expect(res.status).toHaveBeenCalledWith(400);
+  });
+
   it('returns 500 when an unexpected exception is thrown', async () => {
     getClient.mockImplementation(() => { throw new Error('Unexpected crash'); });
     const res = makeRes();
