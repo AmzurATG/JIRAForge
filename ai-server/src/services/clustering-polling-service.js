@@ -262,7 +262,7 @@ async function saveGroupToDatabase(userId, organizationId, group) {
     // removed cross-group duplicates — filter to only sessions that survived deduplication.
     const sessionIds = group.session_ids || [];
     const deduplicatedIdSet = new Set(sessionIds);
-    const groupSessions = group.sessions || [];
+    // groupSessions already declared above (line 238) for is_idle_only computation
     const members = groupSessions.length > 0
       ? groupSessions
           .filter(s => deduplicatedIdSet.has(s.id))
