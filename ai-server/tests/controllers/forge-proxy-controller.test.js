@@ -468,6 +468,34 @@ describe('supabaseQuery', () => {
     expect(res.status).toHaveBeenCalledWith(400);
   });
 
+  // Case-insensitive matching: error messages with mixed case still detected as transient.
+  it('detects transient errors regardless of message casing', async () => {
+    const { ...client } = makeSimpleClient({
+      data: null,
+      error: { message: 'TypeError: Fetch Failed during request' }
+    });
+    getClient.mockReturnValue(client);
+    const res = makeRes();
+    await supabaseQuery(makeQueryReq(), res);
+    expect(res.status).toHaveBeenCalledWith(503);
+  });
+
+  // Defensive: supabase-js error without .message field still produces a non-empty body.
+  it('returns a non-empty error body when result.error has no message', async () => {
+    const { ...client } = makeSimpleClient({
+      data: null,
+      error: { code: 'PGRST123' }
+    });
+    getClient.mockReturnValue(client);
+    const res = makeRes();
+    await supabaseQuery(makeQueryReq(), res);
+    expect(res.status).toHaveBeenCalledWith(400);
+    const body = res.json.mock.calls[0][0];
+    expect(body.success).toBe(false);
+    expect(typeof body.error).toBe('string');
+    expect(body.error.length).toBeGreaterThan(0);
+  });
+
   it('returns 500 when an unexpected exception is thrown', async () => {
     getClient.mockImplementation(() => { throw new Error('Unexpected crash'); });
     const res = makeRes();
