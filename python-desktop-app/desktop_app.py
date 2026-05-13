@@ -2303,6 +2303,9 @@ class AtlassianAuthManager:
                             if user_data:
                                 self.tokens['exchange_user_id'] = user_data.get('id')
                                 self.tokens['exchange_organization_id'] = user_data.get('organization_id')
+                                retry_cloud_id = user_data.get('jira_cloud_id')
+                                if retry_cloud_id:
+                                    self.tokens['exchange_jira_cloud_id'] = retry_cloud_id
                             self._save_tokens()
                             print(f"[OK] Supabase token received on retry (expires in {expires_in}s)")
                             return supabase_token
@@ -2331,12 +2334,20 @@ class AtlassianAuthManager:
 
             # Store user data from exchange-token response (includes organization_id, user id)
             # The AI server creates/finds the org via service_role during token exchange,
-            # so this is the authoritative source for organization_id.
+            # so this is the authoritative source for organization_id AND jira_cloud_id.
+            # jira_cloud_id is critical: without it, get_jira_cloud_id() falls back to
+            # resources[0] which may be a different Jira site when the user has multiple
+            # instances, causing issue fetches to return tickets from the wrong org.
             user_data = result.get('user', {})
             if user_data:
                 self.tokens['exchange_user_id'] = user_data.get('id')
                 self.tokens['exchange_organization_id'] = user_data.get('organization_id')
-                print(f"[OK] Exchange-token user data: user_id={user_data.get('id')}, org_id={user_data.get('organization_id')}")
+                exchange_cloud_id = user_data.get('jira_cloud_id')
+                if exchange_cloud_id:
+                    self.tokens['exchange_jira_cloud_id'] = exchange_cloud_id
+                    print(f"[OK] Exchange-token user data: user_id={user_data.get('id')}, org_id={user_data.get('organization_id')}, jira_cloud_id={exchange_cloud_id}")
+                else:
+                    print(f"[OK] Exchange-token user data: user_id={user_data.get('id')}, org_id={user_data.get('organization_id')}")
 
             self._save_tokens()
 
@@ -5306,17 +5317,23 @@ class TimeTracker:
             _ = self.supabase.storage
             self.supabase.storage.session.headers["Authorization"] = f"Bearer {supabase_token}"
 
-            # Extract organization_id and user_id from exchange-token response data.
+            # Extract organization_id, user_id, and jira_cloud_id from exchange-token response data.
             # The AI server (service_role) creates/finds the org during token exchange,
             # so this is the authoritative source — avoids RLS chicken-and-egg issues.
             exchange_org_id = self.auth_manager.tokens.get('exchange_organization_id')
             exchange_user_id = self.auth_manager.tokens.get('exchange_user_id')
+            exchange_cloud_id = self.auth_manager.tokens.get('exchange_jira_cloud_id')
             if exchange_org_id and not self.organization_id:
                 self.organization_id = exchange_org_id
                 print(f"[OK] Organization ID set from exchange-token: {self.organization_id}")
             if exchange_user_id and not self.current_user_id:
                 self.current_user_id = exchange_user_id
                 print(f"[OK] User ID set from exchange-token: {self.current_user_id}")
+            # Pre-seed jira_cloud_id so get_jira_cloud_id() picks the right site
+            # even before accessible-resources is fetched.
+            if exchange_cloud_id and not self.jira_cloud_id:
+                self.jira_cloud_id = exchange_cloud_id
+                print(f"[OK] Jira Cloud ID pre-seeded from exchange-token: {self.jira_cloud_id}")
 
             print("[OK] Supabase JWT set on client (PostgREST + Storage)")
             return True
@@ -6570,8 +6587,26 @@ class TimeTracker:
                         for i, r in enumerate(resources):
                             print(f"     [{i}] {r.get('name', '?')} — {r.get('url', '?')} (id: {r['id']})")
 
-                    # Use the first resource as primary (selected during OAuth)
-                    selected_resource = resources[0]
+                    # Prefer the jira_cloud_id returned by exchange-token (authoritative):
+                    # it reflects which Jira instance the Forge app is installed in and
+                    # which organization_id the user belongs to in our DB.
+                    # Falling back to resources[0] is WRONG when the user has access to
+                    # multiple Jira sites (e.g. prod + dev) because the order returned by
+                    # accessible-resources is arbitrary and may not be the production site.
+                    exchange_cloud_id = self.auth_manager.tokens.get('exchange_jira_cloud_id')
+                    if exchange_cloud_id:
+                        matched = next((r for r in resources if r['id'] == exchange_cloud_id), None)
+                        if matched:
+                            selected_resource = matched
+                            print(f"[OK] Using jira_cloud_id from exchange-token: {exchange_cloud_id}")
+                        else:
+                            # exchange-token cloud_id not in accessible-resources — fall back to first
+                            print(f"[WARN] exchange-token jira_cloud_id {exchange_cloud_id} not found in accessible-resources; falling back to resources[0]")
+                            selected_resource = resources[0]
+                    else:
+                        # No cloud_id from exchange-token yet (first run before token exchange)
+                        selected_resource = resources[0]
+
                     self.jira_cloud_id = selected_resource['id']
                     self.organization_name = selected_resource.get('name', 'Unknown Organization')
                     self.jira_instance_url = selected_resource.get('url', '')

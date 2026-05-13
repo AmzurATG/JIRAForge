@@ -677,6 +677,27 @@ exports.exchangeToken = async (req, res) => {
 
     logger.info('[Auth] Minted Supabase JWT for user: %s (expires in %ds)', atlassianAccountId, expiresIn);
 
+    // Look up the organization's jira_cloud_id so the desktop app can select
+    // the correct Jira site when the user has access to multiple instances.
+    // Without this, the desktop app falls back to resources[0] which may be
+    // a different Jira site (e.g. a dev/test instance), causing issue fetches
+    // to return tickets from the wrong organization.
+    let orgJiraCloudId = null;
+    if (dbUser.organization_id) {
+      const supabase = getClient();
+      if (supabase) {
+        const { data: orgData } = await supabase
+          .from('organizations')
+          .select('jira_cloud_id')
+          .eq('id', dbUser.organization_id)
+          .single();
+        orgJiraCloudId = orgData?.jira_cloud_id || null;
+        if (orgJiraCloudId) {
+          logger.info('[Auth] Resolved jira_cloud_id=%s for org %s', orgJiraCloudId, dbUser.organization_id);
+        }
+      }
+    }
+
     res.json({
       success: true,
       supabase_token: supabaseToken,
@@ -685,7 +706,8 @@ exports.exchangeToken = async (req, res) => {
         id: dbUser.id,
         atlassian_account_id: atlassianAccountId,
         email: email,
-        organization_id: dbUser.organization_id
+        organization_id: dbUser.organization_id,
+        jira_cloud_id: orgJiraCloudId
       }
     });
 
