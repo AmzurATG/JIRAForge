@@ -1,4 +1,4 @@
-/* AdminAccuracyDashboardTab — REMOVABLE LAYER */
+/* AdminAccuracyDashboardTab — REMOVABLE LAYER (v2: 2026-05-14) */
 
 .accuracy-dashboard {
   padding: 24px;
@@ -84,11 +84,13 @@
   font-size: 14px;
 }
 
+/* ── KPI cards ─────────────────────────────────────────── */
+
 .accuracy-cards {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
   gap: 12px;
-  margin-bottom: 20px;
+  margin-bottom: 12px;
 }
 
 .accuracy-card {
@@ -123,12 +125,69 @@
   margin-top: 6px;
 }
 
-.accuracy-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(420px, 1fr));
-  gap: 16px;
-  margin-bottom: 16px;
+/* ── Visual breakdown bar ──────────────────────────────── */
+
+.accuracy-breakdown {
+  background: #fff;
+  border: 1px solid #dfe1e6;
+  border-radius: 6px;
+  padding: 14px 16px;
+  margin-bottom: 20px;
 }
+
+.breakdown-total {
+  font-size: 13px;
+  color: #6b778c;
+  margin-bottom: 8px;
+}
+.breakdown-total strong {
+  color: #172b4d;
+  font-weight: 600;
+}
+
+.breakdown-bar {
+  display: flex;
+  width: 100%;
+  height: 14px;
+  background: #f0f1f3;
+  border-radius: 7px;
+  overflow: hidden;
+  margin-bottom: 10px;
+}
+
+.breakdown-seg {
+  height: 100%;
+  transition: width 0.25s ease;
+}
+.breakdown-seg-matched     { background: #36b37e; } /* green */
+.breakdown-seg-reassigned  { background: #ffab00; } /* amber */
+.breakdown-seg-unmatched   { background: #6b778c; } /* slate */
+
+.breakdown-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  font-size: 12px;
+  color: #5e6c84;
+}
+
+.legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.legend-swatch {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+}
+.legend-swatch-matched     { background: #36b37e; }
+.legend-swatch-reassigned  { background: #ffab00; }
+.legend-swatch-unmatched   { background: #6b778c; }
+
+/* ── Panels and tables ─────────────────────────────────── */
 
 .accuracy-panel {
   background: #fff;
@@ -161,6 +220,7 @@
   text-align: left;
   padding: 8px 10px;
   border-bottom: 1px solid #f0f1f3;
+  vertical-align: middle;
 }
 
 .accuracy-table th {
@@ -198,16 +258,75 @@
   white-space: nowrap;
 }
 
-.cal-bar {
+/* "(new)" tag next to a destination issue key in Reassignments */
+.new-issue-tag {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 6px;
+  border-radius: 10px;
+  background: #deebff;
+  color: #0747a6;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  vertical-align: middle;
+}
+
+/* ── Calibration visual ────────────────────────────────── */
+
+.cal-table .cal-bar {
+  position: relative;
   width: 100%;
-  height: 8px;
+  min-width: 160px;
+  height: 10px;
   background: #f0f1f3;
-  border-radius: 4px;
+  border-radius: 5px;
   overflow: hidden;
 }
 
 .cal-bar-fill {
-  height: 100%;
+  position: absolute;
+  inset: 0 auto 0 0;
   background: #0052cc;
   transition: width 0.2s ease;
+}
+
+/* Dashed marker showing where actual accuracy *should* be (bucket midpoint) */
+.cal-expected-marker {
+  position: absolute;
+  top: -2px;
+  bottom: -2px;
+  width: 0;
+  border-left: 2px dashed #172b4d;
+  opacity: 0.55;
+}
+
+/* Drift coloring (in the Drift cell) */
+.cal-drift-good { color: #006644; font-weight: 600; }
+.cal-drift-mid  { color: #974f0c; font-weight: 600; }
+.cal-drift-bad  { color: #bf2600; font-weight: 600; }
+
+/* Low-sample bucket — render the whole row greyed so the reader notices */
+.cal-row-low-sample {
+  color: #97a0af;
+  background: #fafbfc;
+}
+.cal-row-low-sample code,
+.cal-row-low-sample .cal-bar-fill {
+  opacity: 0.5;
+}
+
+.low-sample-tag {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 1px 6px;
+  border-radius: 10px;
+  background: #f4f5f7;
+  color: #6b778c;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  vertical-align: middle;
 }
