@@ -505,8 +505,16 @@ exports.refreshToken = async (req, res) => {
 
     const { clientId, clientSecret } = getAtlassianCredentials();
 
+    // Generate correlation ID for tracing
+    const crypto = require('crypto');
+    const correlationId = crypto.randomUUID();
+
     // Refresh the token with Atlassian
-    logger.info('[Auth] Refreshing Atlassian access token');
+    logger.info('[Auth] Refreshing Atlassian access token', {
+      correlationId,
+      client_id_prefix: clientId.substring(0, 8),
+      refresh_token_prefix: refresh_token.substring(0, 8) + '...',
+    });
 
     const tokenResponse = await axios.post(
       ATLASSIAN_TOKEN_URL,
@@ -527,18 +535,37 @@ exports.refreshToken = async (req, res) => {
 
     const tokens = tokenResponse.data;
 
-    logger.info('[Auth] Successfully refreshed access token');
+    logger.info('[Auth] Successfully refreshed access token', {
+      correlationId,
+      token_rotated: !!tokens.refresh_token, // True if Atlassian returned new refresh token
+      expires_in: tokens.expires_in,
+    });
 
     res.json({
       success: true,
       access_token: tokens.access_token,
       refresh_token: tokens.refresh_token || refresh_token, // Atlassian may or may not return new refresh token
       expires_in: tokens.expires_in,
-      token_type: tokens.token_type
+      token_type: tokens.token_type,
+      correlationId, // Include for traceability
     });
 
   } catch (error) {
-    logger.error('[Auth] Token refresh error:', error.response?.data || error.message);
+    // Generate correlation ID for error tracking if not already set
+    const crypto = require('crypto');
+    const correlationId = crypto.randomUUID();
+    const { clientId } = getAtlassianCredentials();
+    const { refresh_token } = req.body;
+
+    logger.error('[Auth] Token refresh error', {
+      correlationId,
+      client_id_prefix: clientId.substring(0, 8),
+      refresh_token_prefix: refresh_token ? refresh_token.substring(0, 8) + '...' : 'none',
+      status: error.response?.status,
+      error_code: error.response?.data?.error,
+      error_description: error.response?.data?.error_description,
+      full_error: error.response?.data || error.message,
+    });
 
     // Only signal requiresReauth for true 401 (token revoked/expired).
     // HTTP 400 can be a transient malformed-request issue and should NOT
@@ -547,7 +574,8 @@ exports.refreshToken = async (req, res) => {
       return res.status(401).json({
         success: false,
         error: 'Refresh token expired or invalid. User must re-authenticate.',
-        requiresReauth: true
+        requiresReauth: true,
+        correlationId, // Include for traceability
       });
     }
 
@@ -555,7 +583,8 @@ exports.refreshToken = async (req, res) => {
     // so the client treats them as transient/retryable failures.
     res.status(error.response?.status || 500).json({
       success: false,
-      error: `Token refresh failed: ${formatAtlassianError(error)}`
+      error: `Token refresh failed: ${formatAtlassianError(error)}`,
+      correlationId, // Include for traceability
     });
   }
 };
