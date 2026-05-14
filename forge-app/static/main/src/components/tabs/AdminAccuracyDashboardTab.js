@@ -9,6 +9,14 @@
  * the parent (App.js) only renders this component when
  * `checkAccuracyDashboardAccess` returns allowed.
  *
+ * v2 layout (2026-05-14): reframed around three time buckets that sum to total
+ * reviewed time, so every panel reconciles by construction.
+ *   matched     -> AI's pick was kept            (approved_as_is)
+ *   reassigned  -> AI's pick was overridden      (reassigned ∪ manually_assigned-with-suggestion)
+ *   unmatched   -> AI didn't classify            (manually_assigned-without-suggestion)
+ * Headline metric is time-weighted match rate = matched / (matched + reassigned).
+ * See plan/2026-05-14_multi-component_ai-accuracy-dashboard-redesign.md.
+ *
  * Removal: delete this file + its CSS, drop the export in tabs/index.js, and
  * remove the sidebar entry + render block in App.js. See
  * plan/AI_ACCURACY_TRACKING_IMPLEMENTATION_PLAN.md.
@@ -25,17 +33,37 @@ const TIME_RANGE_OPTIONS = [
   { value: 90,  label: 'Last 90 days' },
 ];
 
+// Calibration buckets below this many samples are rendered greyed-out and
+// their drift is hidden — too few samples for the rate to be trustworthy.
+const LOW_SAMPLE_THRESHOLD = 20;
+
+// Drift coloring thresholds (in percentage points) for the calibration table.
+// |drift| <= GOOD  -> green  (model is calibrated for that bucket)
+// |drift| <= MID   -> amber  (mild miscalibration)
+// |drift| >  MID   -> red    (substantial miscalibration)
+const DRIFT_GOOD_PP = 5;
+const DRIFT_MID_PP  = 15;
+
 function formatDuration(seconds) {
-  if (!seconds) return '0m';
+  if (!seconds || seconds < 1) return '0m';
   const h = Math.floor(seconds / 3600);
   const m = Math.floor((seconds % 3600) / 60);
   if (h > 0) return `${h}h ${m}m`;
-  return `${m}m`;
+  if (m > 0) return `${m}m`;
+  return `<1m`;
 }
 
-function formatPercent(value) {
+function formatPercent(value, digits = 1) {
   if (value === null || value === undefined) return '—';
-  return `${(value * 100).toFixed(1)}%`;
+  return `${(value * 100).toFixed(digits)}%`;
+}
+
+function formatSignedPP(driftFraction) {
+  // driftFraction is in [-1, 1]; render as signed percentage points
+  if (driftFraction === null || driftFraction === undefined) return '—';
+  const pp = driftFraction * 100;
+  const sign = pp >= 0 ? '+' : '−';
+  return `${sign}${Math.abs(pp).toFixed(1)}pp`;
 }
 
 function formatRelativeTime(iso) {
@@ -48,6 +76,14 @@ function formatRelativeTime(iso) {
   if (h < 24) return `${h}h ago`;
   const d = Math.floor(h / 24);
   return `${d}d ago`;
+}
+
+function driftClass(driftFraction) {
+  if (driftFraction === null || driftFraction === undefined) return '';
+  const absPP = Math.abs(driftFraction * 100);
+  if (absPP <= DRIFT_GOOD_PP) return 'cal-drift-good';
+  if (absPP <= DRIFT_MID_PP)  return 'cal-drift-mid';
+  return 'cal-drift-bad';
 }
 
 function unwrap(result) {
@@ -64,10 +100,10 @@ function AdminAccuracyDashboardTab() {
   const [orgId, setOrgId] = useState('');
   const [orgs, setOrgs] = useState([]);
   const [summary, setSummary] = useState(null);
-  const [wrongPairs, setWrongPairs] = useState([]);
+  const [reassignments, setReassignments] = useState([]);
   const [byApp, setByApp] = useState([]);
   const [calibration, setCalibration] = useState([]);
-  const [recentMistakes, setRecentMistakes] = useState([]);
+  const [recentReassignments, setRecentReassignments] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [lastRefreshed, setLastRefreshed] = useState(null);
@@ -94,10 +130,10 @@ function AdminAccuracyDashboardTab() {
         invoke('getAccuracyRecentMistakes', { org: orgId || undefined, limit: 50 }),
       ]);
       setSummary(unwrap(s));
-      setWrongPairs(unwrap(wp)?.pairs || []);
+      setReassignments(unwrap(wp)?.pairs || []);
       setByApp(unwrap(ba)?.apps || []);
       setCalibration(unwrap(cal)?.series || []);
-      setRecentMistakes(unwrap(rm)?.mistakes || []);
+      setRecentReassignments(unwrap(rm)?.mistakes || []);
       setLastRefreshed(new Date());
     } catch (err) {
       setError(err.message);
@@ -109,9 +145,18 @@ function AdminAccuracyDashboardTab() {
   useEffect(() => { loadOrgs(); }, [loadOrgs]);
   useEffect(() => { loadAll(); }, [loadAll]);
 
-  const headlineAccuracy = summary?.accuracy_rate;
-  const totals = summary?.counts || {};
-  const durations = summary?.duration_seconds || {};
+  // Three time buckets sourced from the v2 /summary response.
+  const matched    = summary?.matched    || { count: 0, seconds: 0 };
+  const reassigned = summary?.reassigned || { count: 0, seconds: 0, new_issue_count: 0, new_issue_seconds: 0 };
+  const unmatched  = summary?.unmatched  || { count: 0, seconds: 0 };
+  const matchRate  = summary?.match_rate;
+  const totalSeconds = summary?.total_seconds || 0;
+
+  // Breakdown bar segment widths (percent of total reviewed time).
+  const segPct = (s) => totalSeconds > 0 ? (s / totalSeconds) * 100 : 0;
+  const matchedPct    = segPct(matched.seconds);
+  const reassignedPct = segPct(reassigned.seconds);
+  const unmatchedPct  = segPct(unmatched.seconds);
 
   return (
     <div className="accuracy-dashboard">
@@ -155,121 +200,103 @@ function AdminAccuracyDashboardTab() {
         </div>
       )}
 
-      {/* Headline */}
+      {/* KPI cards: Match rate · Reassigned · Unmatched */}
       <div className="accuracy-cards">
         <div className="accuracy-card accuracy-card-primary">
-          <div className="card-label">Overall accuracy</div>
-          <div className="card-value">{formatPercent(headlineAccuracy)}</div>
+          <div className="card-label">Match rate</div>
+          <div className="card-value">{formatPercent(matchRate)}</div>
           <div className="card-sub">
-            {totals.approved_as_is || 0} accepted · {totals.reassigned || 0} reassigned ·
-            {' '}{totals.manually_assigned_with_suggestion || 0} overridden
+            By time, of the activity where the AI made a suggestion
           </div>
         </div>
         <div className="accuracy-card">
-          <div className="card-label">Approved time</div>
-          <div className="card-value">{formatDuration(durations.approved)}</div>
-        </div>
-        <div className="accuracy-card">
-          <div className="card-label">Reassigned time</div>
-          <div className="card-value">{formatDuration(durations.reassigned)}</div>
-        </div>
-        <div className="accuracy-card">
-          <div className="card-label">Total events</div>
-          <div className="card-value">{summary?.total_events ?? 0}</div>
+          <div className="card-label">Reassigned</div>
+          <div className="card-value">{formatDuration(reassigned.seconds)}</div>
           <div className="card-sub">
-            {totals.manually_assigned_no_suggestion || 0} had no AI suggestion
+            AI was overruled
+            {reassigned.new_issue_count > 0 && (
+              <> · {reassigned.new_issue_count} via new issue</>
+            )}
           </div>
+        </div>
+        <div className="accuracy-card">
+          <div className="card-label">Unmatched</div>
+          <div className="card-value">{formatDuration(unmatched.seconds)}</div>
+          <div className="card-sub">AI didn't classify — user assigned from scratch</div>
         </div>
       </div>
 
-      <div className="accuracy-grid">
-        <section className="accuracy-panel">
-          <header>
-            <h3>Top wrong pairs</h3>
-            <p>What the AI guessed vs what the user actually picked. Highest-leverage prompt-tuning targets.</p>
-          </header>
-          <table className="accuracy-table">
-            <thead>
-              <tr><th>AI picked</th><th>User picked</th><th className="num">Count</th></tr>
-            </thead>
-            <tbody>
-              {wrongPairs.length === 0 && (
-                <tr><td colSpan={3} className="empty">No reassignments in this window.</td></tr>
-              )}
-              {wrongPairs.map((p, i) => (
-                <tr key={i}>
-                  <td><code>{p.from || '—'}</code></td>
-                  <td><code>{p.to || '—'}</code></td>
-                  <td className="num">{p.count}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </section>
-
-        <section className="accuracy-panel">
-          <header>
-            <h3>Accuracy by application</h3>
-            <p>Where the AI is most wrong, sorted by wrong count.</p>
-          </header>
-          <table className="accuracy-table">
-            <thead>
-              <tr>
-                <th>Application</th>
-                <th className="num">Right</th>
-                <th className="num">Wrong</th>
-                <th className="num">Accuracy</th>
-              </tr>
-            </thead>
-            <tbody>
-              {byApp.length === 0 && (
-                <tr><td colSpan={4} className="empty">No data in this window.</td></tr>
-              )}
-              {byApp.map((a, i) => (
-                <tr key={i}>
-                  <td>{a.app || '—'}</td>
-                  <td className="num">{a.right}</td>
-                  <td className="num">{a.wrong}</td>
-                  <td className="num">{formatPercent(a.accuracy_rate)}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </section>
+      {/* Visual breakdown bar — Matched / Reassigned / Unmatched proportions */}
+      <div className="accuracy-breakdown">
+        <div className="breakdown-total">
+          Total reviewed time: <strong>{formatDuration(totalSeconds)}</strong>
+        </div>
+        <div className="breakdown-bar">
+          {matchedPct > 0 && (
+            <div
+              className="breakdown-seg breakdown-seg-matched"
+              style={{ width: `${matchedPct}%` }}
+              title={`Matched · ${formatDuration(matched.seconds)} (${matchedPct.toFixed(1)}%)`}
+            />
+          )}
+          {reassignedPct > 0 && (
+            <div
+              className="breakdown-seg breakdown-seg-reassigned"
+              style={{ width: `${reassignedPct}%` }}
+              title={`Reassigned · ${formatDuration(reassigned.seconds)} (${reassignedPct.toFixed(1)}%)`}
+            />
+          )}
+          {unmatchedPct > 0 && (
+            <div
+              className="breakdown-seg breakdown-seg-unmatched"
+              style={{ width: `${unmatchedPct}%` }}
+              title={`Unmatched · ${formatDuration(unmatched.seconds)} (${unmatchedPct.toFixed(1)}%)`}
+            />
+          )}
+        </div>
+        <div className="breakdown-legend">
+          <span className="legend-item">
+            <span className="legend-swatch legend-swatch-matched" />
+            Matched {formatDuration(matched.seconds)} ({matchedPct.toFixed(1)}%)
+          </span>
+          <span className="legend-item">
+            <span className="legend-swatch legend-swatch-reassigned" />
+            Reassigned {formatDuration(reassigned.seconds)} ({reassignedPct.toFixed(1)}%)
+          </span>
+          <span className="legend-item">
+            <span className="legend-swatch legend-swatch-unmatched" />
+            Unmatched {formatDuration(unmatched.seconds)} ({unmatchedPct.toFixed(1)}%)
+          </span>
+        </div>
       </div>
 
       <section className="accuracy-panel">
         <header>
-          <h3>Confidence calibration</h3>
-          <p>When the AI says it's 80% sure, is it actually right 80% of the time? A well-calibrated model lines up diagonally.</p>
+          <h3>Reassignments</h3>
+          <p>Where the AI's pick got changed. Sorted by total time — the bigger the time, the bigger the prompt-tuning win.</p>
         </header>
         <table className="accuracy-table">
           <thead>
             <tr>
-              <th>Confidence bucket</th>
-              <th className="num">Sample size</th>
-              <th className="num">Actual accuracy</th>
-              <th>Visual</th>
+              <th>AI suggested</th>
+              <th>User chose</th>
+              <th className="num">Total time</th>
+              <th className="num">Times</th>
             </tr>
           </thead>
           <tbody>
-            {calibration.map((b, i) => (
+            {reassignments.length === 0 && (
+              <tr><td colSpan={4} className="empty">No reassignments in this window.</td></tr>
+            )}
+            {reassignments.map((p, i) => (
               <tr key={i}>
-                <td>{b.bucket_label}</td>
-                <td className="num">{b.sample_count}</td>
-                <td className="num">{formatPercent(b.actual_accuracy)}</td>
+                <td><code>{p.from || '—'}</code></td>
                 <td>
-                  <div className="cal-bar">
-                    <div
-                      className="cal-bar-fill"
-                      style={{
-                        width: b.actual_accuracy != null
-                          ? `${(b.actual_accuracy * 100).toFixed(0)}%`
-                          : '0%'
-                      }}
-                    />
-                  </div>
+                  <code>{p.to || '—'}</code>
+                  {p.is_new_issue && <span className="new-issue-tag" title="Destination issue was created from the AI suggestion">(new)</span>}
                 </td>
+                <td className="num">{formatDuration(p.seconds)}</td>
+                <td className="num">{p.count}</td>
               </tr>
             ))}
           </tbody>
@@ -278,30 +305,126 @@ function AdminAccuracyDashboardTab() {
 
       <section className="accuracy-panel">
         <header>
-          <h3>Recent mistakes</h3>
-          <p>Last reassignments with context — use these to reverse-engineer why the AI got it wrong.</p>
+          <h3>Accuracy by application</h3>
+          <p>Time the AI spent right vs. overruled vs. not even tried, per application. Sorted by total time.</p>
+        </header>
+        <table className="accuracy-table">
+          <thead>
+            <tr>
+              <th>Application</th>
+              <th className="num">Matched</th>
+              <th className="num">Reassigned</th>
+              <th className="num">Unmatched</th>
+              <th className="num">Total</th>
+              <th className="num">Match rate</th>
+            </tr>
+          </thead>
+          <tbody>
+            {byApp.length === 0 && (
+              <tr><td colSpan={6} className="empty">No data in this window.</td></tr>
+            )}
+            {byApp.map((a, i) => (
+              <tr key={i}>
+                <td>{a.app || '—'}</td>
+                <td className="num">{formatDuration(a.matched_seconds)}</td>
+                <td className="num">{formatDuration(a.reassigned_seconds)}</td>
+                <td className="num">{formatDuration(a.unmatched_seconds)}</td>
+                <td className="num">{formatDuration(a.total_seconds)}</td>
+                <td className="num">{formatPercent(a.match_rate)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </section>
+
+      <section className="accuracy-panel">
+        <header>
+          <h3>Confidence calibration</h3>
+          <p>
+            When the AI says it's <em>X%</em> sure, is it actually right <em>X%</em> of the time?
+            Drift = actual − expected. Greyed rows have too few samples to trust (n &lt; {LOW_SAMPLE_THRESHOLD}).
+          </p>
+        </header>
+        <table className="accuracy-table cal-table">
+          <thead>
+            <tr>
+              <th>Confidence bucket</th>
+              <th className="num">Samples</th>
+              <th className="num">Actual</th>
+              <th className="num">Expected</th>
+              <th className="num">Drift</th>
+              <th>Visual (actual vs. expected)</th>
+            </tr>
+          </thead>
+          <tbody>
+            {calibration.map((b, i) => {
+              const expected = ((i * 10) + 5) / 100; // bucket midpoint
+              const actual = b.actual_accuracy;
+              const hasActual = actual !== null && actual !== undefined;
+              const drift = hasActual ? (actual - expected) : null;
+              const lowSample = (b.sample_count || 0) < LOW_SAMPLE_THRESHOLD;
+              return (
+                <tr key={i} className={lowSample ? 'cal-row-low-sample' : ''}>
+                  <td>
+                    {b.bucket_label}
+                    {lowSample && <span className="low-sample-tag">low sample</span>}
+                  </td>
+                  <td className="num">{b.sample_count || 0}</td>
+                  <td className="num">{formatPercent(actual)}</td>
+                  <td className="num">{formatPercent(expected, 0)}</td>
+                  <td className={`num ${lowSample ? '' : driftClass(drift)}`}>
+                    {lowSample ? '—' : formatSignedPP(drift)}
+                  </td>
+                  <td>
+                    <div className="cal-bar">
+                      {hasActual && (
+                        <div
+                          className="cal-bar-fill"
+                          style={{ width: `${(actual * 100).toFixed(0)}%` }}
+                        />
+                      )}
+                      <div
+                        className="cal-expected-marker"
+                        style={{ left: `${(expected * 100).toFixed(0)}%` }}
+                        title={`Expected ${(expected * 100).toFixed(0)}%`}
+                      />
+                    </div>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </section>
+
+      <section className="accuracy-panel">
+        <header>
+          <h3>Recent reassignments</h3>
+          <p>The last reassignments with context — use these to reverse-engineer why the AI got it wrong.</p>
         </header>
         <table className="accuracy-table">
           <thead>
             <tr>
               <th>When</th>
               <th>AI picked</th>
-              <th>User picked</th>
+              <th>User chose</th>
               <th className="num">Conf.</th>
+              <th className="num">Duration</th>
               <th>App</th>
               <th>Window title</th>
             </tr>
           </thead>
           <tbody>
-            {recentMistakes.length === 0 && (
-              <tr><td colSpan={6} className="empty">No mistakes recorded yet.</td></tr>
+            {recentReassignments.length === 0 && (
+              <tr><td colSpan={7} className="empty">No reassignments recorded yet.</td></tr>
             )}
-            {recentMistakes.map((m) => (
+            {recentReassignments.map((m) => (
               <tr key={m.id}>
                 <td>{formatRelativeTime(m.created_at)}</td>
                 <td><code>{m.ai_suggested_issue_key || '—'}</code></td>
                 <td><code>{m.final_issue_key || '—'}</code></td>
                 <td className="num">{formatPercent(m.ai_confidence_score)}</td>
+                <td className="num">{formatDuration(m.duration_seconds)}</td>
                 <td>{m.application_name || '—'}</td>
                 <td className="window-title">{m.window_title || '—'}</td>
               </tr>
