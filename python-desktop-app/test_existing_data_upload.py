@@ -27,7 +27,7 @@ import sys
 import json
 import sqlite3
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
 try:
@@ -58,6 +58,13 @@ except ImportError as e:
     print(f"✗ Missing dependency: {e}")
     print("\nInstall with: pip install supabase python-dotenv")
     sys.exit(1)
+
+# Import TimeTracker for idle record creation
+try:
+    from desktop_app import TimeTracker
+except ImportError:
+    print("Warning: Could not import TimeTracker from desktop_app")
+    TimeTracker = None
 
 
 class ExistingDataBatchTester:
@@ -492,6 +499,95 @@ class ExistingDataBatchTester:
             print(f"\n  ✗ Verification failed: {e}")
             return False
     
+    def test_batch_with_idle_records(self):
+        """Test uploading a batch containing both work and idle records"""
+        print("\n" + "="*80)
+        print("  TEST: BATCH UPLOAD WITH IDLE RECORDS")
+        print("="*80)
+        
+        if TimeTracker is None:
+            print("\n  ✗ TimeTracker not available - cannot create idle records")
+            print("  This test requires desktop_app.py to be importable")
+            return False
+        
+        # Get existing work sessions
+        sessions = self.read_active_sessions()
+        if not sessions:
+            print("\n  No work sessions available - creating mock session")
+            # Create a mock work session
+            sessions = [{
+                'window_title': 'Test',
+                'application_name': 'Test App',
+                'classification': 'productive',
+                'total_time_seconds': 300,
+                'visit_count': 1,
+                'first_seen': datetime.now(timezone.utc).isoformat(),
+                'last_seen': datetime.now(timezone.utc).isoformat(),
+                'ocr_text': 'Test OCR',
+                'ocr_method': 'test',
+                'ocr_confidence': 0.9
+            }]
+        
+        # Take only first 2 sessions
+        work_sessions = sessions[:2]
+        
+        # Build work records
+        work_records = self.build_activity_records(work_sessions)
+        
+        # Create idle records using TimeTracker
+        try:
+            # Create a minimal TimeTracker instance for idle record creation
+            from unittest.mock import Mock, patch
+            
+            with patch.object(TimeTracker, '__init__', return_value=None):
+                app = TimeTracker()
+                app.current_user_id = self.user_id
+                app.organization_id = self.org_id
+                app.user_issues = []
+                app._pending_idle_records = []
+                app.app_version = '1.3.9'
+                app.current_project_key = 'TEST'
+                app.get_user_project_key = Mock(return_value='TEST')
+                app._is_within_work_hours = Mock(return_value=True)
+                
+                app.idle_start_time = datetime.now(timezone.utc) - timedelta(minutes=10)
+                app._create_idle_record(reason="test break")
+                
+                idle_records = app._pending_idle_records
+        except Exception as e:
+            print(f"\n  ✗ Error creating idle records: {e}")
+            import traceback
+            traceback.print_exc()
+            return False
+        
+        # Combine records
+        all_records = work_records + idle_records
+        
+        print(f"\n  Work records: {len(work_records)}")
+        print(f"  Idle records: {len(idle_records)}")
+        print(f"  Total batch size: {len(all_records)}")
+        
+        # Verify schema consistency
+        if work_records and idle_records:
+            work_keys = set(work_records[0].keys())
+            idle_keys = set(idle_records[0].keys())
+            if work_keys != idle_keys:
+                print(f"\n  ✗ SCHEMA MISMATCH DETECTED")
+                print(f"    Missing in idle: {work_keys - idle_keys}")
+                print(f"    Extra in idle: {idle_keys - work_keys}")
+                return False
+            print(f"\n  ✓ Schema consistency verified")
+        
+        # Upload batch
+        success = self.upload_to_supabase(all_records)
+        
+        if success:
+            print(f"\n  ✓ Mixed batch upload successful")
+            return True
+        else:
+            print(f"\n  ✗ Mixed batch upload failed")
+            return False
+    
     def run_test(self):
         """Run the complete test"""
         print("\n╔════════════════════════════════════════════════════════════════════════════╗")
@@ -576,8 +672,38 @@ class ExistingDataBatchTester:
 
 
 def main():
+    """Run batch upload tests"""
     tester = ExistingDataBatchTester()
-    tester.run_test()
+    
+    # Check if user wants to run the idle records test
+    if len(sys.argv) > 1 and sys.argv[1] == '--idle-test':
+        print("\n╔════════════════════════════════════════════════════════════════════════════╗")
+        print("║             IDLE RECORDS INTEGRATION TEST                                  ║")
+        print("╚════════════════════════════════════════════════════════════════════════════╝")
+        
+        # Setup required for idle test
+        if not tester.find_sqlite_database():
+            print("\n❌ Could not find database")
+            return
+        
+        if not tester.connect_supabase():
+            print("\n❌ Could not connect to Supabase")
+            return
+        
+        # Run idle records test
+        success = tester.test_batch_with_idle_records()
+        
+        if success:
+            print("\n" + "="*80)
+            print("  ✅ IDLE RECORDS TEST PASSED")
+            print("="*80)
+        else:
+            print("\n" + "="*80)
+            print("  ❌ IDLE RECORDS TEST FAILED")
+            print("="*80)
+    else:
+        # Run standard test
+        tester.run_test()
 
 
 if __name__ == '__main__':

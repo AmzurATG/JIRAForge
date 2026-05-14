@@ -8353,6 +8353,34 @@ class TimeTracker:
                 records.append(idle_rec)
             if idle_records:
                 print(f"[BATCH] Including {len(idle_records)} idle records in batch")
+                
+                # Defense-in-depth: Validate schema consistency between work and idle records
+                # This should never trigger if _create_idle_record() is implemented correctly
+                if records and len(records) > len(idle_records):
+                    # Get work record keys (from a record that's not idle)
+                    work_record_idx = next((i for i, r in enumerate(records) if not r.get('is_idle')), None)
+                    if work_record_idx is not None:
+                        work_keys = set(records[work_record_idx].keys())
+                        schema_mismatch_found = False
+                        
+                        for i, rec in enumerate(records):
+                            if rec.get('is_idle'):
+                                idle_keys = set(rec.keys())
+                                if work_keys != idle_keys:
+                                    missing_in_idle = work_keys - idle_keys
+                                    extra_in_idle = idle_keys - work_keys
+                                    print(f"[ERROR] Schema mismatch detected in idle record {i}:")
+                                    print(f"        Missing keys: {missing_in_idle}")
+                                    print(f"        Extra keys: {extra_in_idle}")
+                                    print(f"[ERROR] Discarding {len(idle_records)} idle records to prevent batch failure")
+                                    self.add_admin_log('ERROR', f'Idle record schema mismatch detected. {len(idle_records)} records discarded.')
+                                    schema_mismatch_found = True
+                                    break
+                        
+                        if schema_mismatch_found:
+                            # Remove all idle records from batch to prevent PGRST102 error
+                            records = [r for r in records if not r.get('is_idle')]
+                            print(f"[BATCH] Batch reduced to {len(records)} work records only")
 
             # Batch insert to Supabase using anon client with custom JWT (RLS-scoped)
             print(f"[BATCH] Inserting {len(records)} activity records...")
@@ -8595,7 +8623,7 @@ class TimeTracker:
                                 self.current_window_key = None
                                 self.batch_start_time = datetime.now(timezone.utc)
                                 self.last_batch_upload_time = time.time()
-                                self.add_admin_log('WARN', f'Batch uploaded {len(retry_result.data)} work records. Idle records failed — check DB constraints.')
+                                self.add_admin_log('WARN', f'Batch uploaded {len(retry_result.data)} work records. Idle records schema mismatch — discarded to prevent batch poisoning.')
                                 return
                     except Exception as retry_e:
                         print(f"[BATCH] Work-only retry also failed: {retry_e}")
@@ -9634,6 +9662,13 @@ class TimeTracker:
             'project_key': project_key,
             'status': 'analyzed',  # No AI analysis needed for idle records
             'request_id': str(uuid.uuid4()),  # Unique request ID for idempotency
+            # Add missing keys to match work record schema (fixes PGRST102 batch upload error)
+            'ocr_text': None,  # No screen to OCR during idle
+            'ocr_method': None,
+            'ocr_confidence': None,
+            'ocr_error_message': None,
+            'visit_count': 1,  # Each idle period is one contiguous block
+            'user_assigned_issues': json.dumps(self.user_issues) if self.user_issues else None,
             'metadata': {
                 'tracking_mode': 'idle_detection',
                 'idle_reason': reason,
