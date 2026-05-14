@@ -13,6 +13,32 @@ const { toUTCISOString } = require('../../utils/datetime');
 const MIN_CLUSTERING_SESSION_SECONDS = 10;
 
 /**
+ * Compute whether a group should be classified as idle-only
+ * Returns true only if ALL members are activity_records AND all have is_idle = true
+ * Legacy members (from unassigned_activity) are treated as work (no is_idle field)
+ * @param {Array} sessions - Array of session objects from both pipelines
+ * @returns {boolean} True if all sessions are idle activity_records, false otherwise
+ */
+function computeIsIdleOnly(sessions) {
+  // Guard clauses for invalid input
+  if (!sessions || !Array.isArray(sessions) || sessions.length === 0) {
+    return false;
+  }
+
+  // Filter to only activity_records (source field indicates pipeline)
+  const activityRecords = sessions.filter(s => s.source === 'activity_records');
+
+  // If no activity_records, group contains only legacy members → work group
+  // OR if there are mixed members (some legacy, some activity_records) → work group
+  if (activityRecords.length === 0 || activityRecords.length !== sessions.length) {
+    return false;
+  }
+
+  // Check if ALL activity_records have is_idle = true (strict boolean check)
+  return activityRecords.every(record => record.is_idle === true);
+}
+
+/**
  * Get all users who have UNGROUPED unassigned activities (grouped by user and organization)
  * Checks both legacy unassigned_activity table and new activity_records table.
  * @returns {Promise<Array>} Array of user objects with ungrouped unassigned work and their organization
@@ -169,7 +195,7 @@ async function getUnassignedActivities(userId, organizationId) {
     // Step 2b: Get new-pipeline activity_records that have no assigned issue
     let arQuery = supabase
       .from('activity_records')
-      .select('id, window_title, application_name, ocr_text, duration_seconds, total_time_seconds, organization_id, start_time')
+      .select('id, window_title, application_name, ocr_text, duration_seconds, total_time_seconds, organization_id, start_time, is_idle')
       .eq('user_id', userId)
       .is('user_assigned_issue_key', null)
       .in('status', ['pending', 'processing', 'analyzed'])
@@ -199,7 +225,8 @@ async function getUnassignedActivities(userId, organizationId) {
       time_spent_seconds: record.duration_seconds || record.total_time_seconds || 0,
       reasoning: record.window_title || 'Activity record',
       organization_id: record.organization_id,
-      source: 'activity_records'
+      source: 'activity_records',
+      is_idle: record.is_idle  // Include is_idle for computeIsIdleOnly
     }));
 
     const allSessions = [...enrichedLegacy, ...mappedAR];
@@ -276,7 +303,8 @@ async function createUnassignedGroup(groupData) {
         recommendation_reason: groupData.recommendation_reason,
         session_count: groupData.session_count,
         total_seconds: groupData.total_seconds,
-        clustering_metadata: groupData.clustering_metadata || {}
+        clustering_metadata: groupData.clustering_metadata || {},
+        is_idle_only: groupData.is_idle_only || false  // Phase 2: Precomputed idle classification
       })
       .select()
       .single();
@@ -285,7 +313,7 @@ async function createUnassignedGroup(groupData) {
       throw error;
     }
 
-    logger.info(`Created unassigned group: ${data.id} for user ${groupData.user_id} in org ${groupData.organization_id}`);
+    logger.info(`Created unassigned group: ${data.id} for user ${groupData.user_id} in org ${groupData.organization_id} (idle_only: ${data.is_idle_only})`);
     return data;
   } catch (error) {
     logger.error('Error creating unassigned group:', error);
@@ -497,5 +525,6 @@ module.exports = {
   getLastClusteringRunTime,
   hasClusteringRunRecently,
   getUngroupedActivityCount,
-  getUnassignedWorkGroups
+  getUnassignedWorkGroups,
+  computeIsIdleOnly,  // Exported for testing
 };

@@ -232,6 +232,10 @@ async function saveGroupToDatabase(userId, organizationId, group) {
     // Validate and normalize the recommended action
     const recommendedAction = normalizeRecommendedAction(group.recommendation?.action);
 
+    // Compute is_idle_only based on group sessions (Phase 2: Precomputed classification)
+    const groupSessions = group.sessions || [];
+    const isIdleOnly = supabaseService.computeIsIdleOnly(groupSessions);
+
     // 1. Create the group record
     const groupRecord = await supabaseService.createUnassignedGroup({
       user_id: userId,
@@ -244,6 +248,7 @@ async function saveGroupToDatabase(userId, organizationId, group) {
       recommendation_reason: group.recommendation?.reason || '',
       session_count: group.session_count,
       total_seconds: group.total_seconds,
+      is_idle_only: isIdleOnly,  // Phase 2: Precomputed idle classification
       clustering_metadata: {
         session_indices: group.session_indices,
         total_time_formatted: group.total_time_formatted,
@@ -257,7 +262,7 @@ async function saveGroupToDatabase(userId, organizationId, group) {
     // removed cross-group duplicates — filter to only sessions that survived deduplication.
     const sessionIds = group.session_ids || [];
     const deduplicatedIdSet = new Set(sessionIds);
-    const groupSessions = group.sessions || [];
+    // groupSessions already declared above (line 238) for is_idle_only computation
     const members = groupSessions.length > 0
       ? groupSessions
           .filter(s => deduplicatedIdSet.has(s.id))
