@@ -235,6 +235,46 @@ async function getLatestDownloadUrl(platform = 'windows') {
   }
 }
 
+/**
+ * Get Atlassian account IDs of users who have had activity in the last N minutes.
+ * Used by the scheduled Forge cache refresh to know which users need their
+ * Jira issues cache updated.
+ *
+ * @param {number} withinMinutes - Look-back window (default 60)
+ * @returns {Promise<string[]>} Array of distinct atlassian_account_id values
+ */
+async function getRecentlyActiveAccountIds(withinMinutes = 60) {
+  try {
+    const supabase = getClient();
+    const since = new Date(Date.now() - withinMinutes * 60000).toISOString();
+
+    const { data, error } = await supabase
+      .from('activity_records')
+      .select('user_id')
+      .gte('created_at', since)
+      .limit(500);
+
+    if (error) throw error;
+    if (!data || data.length === 0) return [];
+
+    // Deduplicate user IDs
+    const userIds = [...new Set(data.map(r => r.user_id))];
+
+    // Resolve to Atlassian account IDs
+    const { data: users, error: userErr } = await supabase
+      .from('users')
+      .select('atlassian_account_id')
+      .in('id', userIds)
+      .not('atlassian_account_id', 'is', null);
+
+    if (userErr) throw userErr;
+    return (users || []).map(u => u.atlassian_account_id);
+  } catch (error) {
+    logger.error('Error fetching recently active account IDs:', error);
+    return [];
+  }
+}
+
 module.exports = {
   getUserAtlassianAccountId,
   getUserJiraIssues,
@@ -242,5 +282,6 @@ module.exports = {
   getUserActiveIssues,
   getUserById,
   getOrganizationById,
-  getLatestDownloadUrl
+  getLatestDownloadUrl,
+  getRecentlyActiveAccountIds
 };

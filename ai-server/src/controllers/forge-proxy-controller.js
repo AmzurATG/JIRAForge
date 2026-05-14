@@ -1434,3 +1434,21 @@ function extractDescriptionText(description) {
   return null;
 }
 
+/**
+ * GET /api/forge/issues/active-accounts
+ * Returns Atlassian account IDs of users with recent activity.
+ * Called by the scheduled Forge cache refresh trigger to know which users
+ * need their Jira issues cache updated.
+ */
+exports.getRecentlyActiveAccounts = async (req, res) => {
+  try {
+    const userDbService = require('../services/db/user-db-service');
+    const withinMinutes = Math.min(parseInt(req.query.minutes || '60', 10), 1440);
+    const accountIds = await userDbService.getRecentlyActiveAccountIds(withinMinutes);
+    res.json({ success: true, data: { accountIds } });
+  } catch (error) {
+    logger.error('[ForgeProxy] getRecentlyActiveAccounts error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+};
+

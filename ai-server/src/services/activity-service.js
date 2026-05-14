@@ -148,7 +148,7 @@ const APP_CLASSIFICATION_SYSTEM_PROMPT = `You are an expert at classifying deskt
  * @param {string} assignedIssuesText - Formatted list of user's Jira issues
  * @returns {string} Complete user prompt
  */
-function buildBatchAnalysisPrompt(records, assignedIssuesText, previousMatchContext) {
+function buildBatchAnalysisPrompt(records, assignedIssuesText, previousMatchContext, correctionPatterns) {
   const recordDescriptions = records.map((record, index) => {
     const ocrSnippet = record.ocr_text
       ? sanitizeOcrText(record.ocr_text.substring(0, 1000))
@@ -184,13 +184,15 @@ IMPORTANT: When OCR text shows "(no text extracted)", you must rely on:
 - The window title (which often contains file names, project names, or page titles)
 - Context from the project key and issue summaries
 
+When OCR text is marked "low confidence - may be inaccurate", ignore its content entirely and rely on window_title and application_name only.
+
 For development tools with project/file names in the title, match to relevant "In Progress" issues.
 For browsers with technical sites in the title, match based on the topic being researched.
 
 CRITICAL TASK KEY RULE: You must ONLY use task keys from the assigned issues list below. NEVER invent, fabricate, or extract issue keys from OCR text, window titles, or any other source. If no assigned issue is a clear semantic match, return taskKey as null. Generic activities (Task Manager, File Explorer, Windows Settings, system utilities, download history) should return null unless they clearly relate to a specific issue.
 
 SESSION CONTINUITY: Records are shown in chronological order. If consecutive records show the same user in the same or related application (e.g., switching between VS Code and Chrome while working), and a previous record was confidently matched to an issue, subsequent records in the same work session should inherit that match at slightly lower confidence (0.5-0.6) unless the content clearly indicates a different task. Developers typically work on one issue for extended periods, switching between IDE, browser, and terminal.
-${previousSessionHint}
+${previousSessionHint}${correctionPatterns && correctionPatterns.length > 0 ? `\nUSER CORRECTION HISTORY: The user has previously corrected the following AI matches. Use these as guidance for similar future activity:\n${correctionPatterns.map(p => `- [${p.application_name}] "${p.window_title}" → AI suggested ${p.ai_suggested || 'null'}, user corrected to ${p.corrected_to}`).join('\n')}\n` : ''}
 IDLE REVIEW RECORDS: Records with tracking_mode "idle_for_llm_review" represent periods where the user had no keyboard/mouse input but an application was visible. Use the window title and application name to determine if this was likely productive activity (reading docs, attending a meeting, reviewing code) or genuine idle time (user walked away). For reading/meeting activities, match to the most relevant Jira issue. Assign LOWER confidence for longer idle durations — a 7-minute idle on Confluence is likely reading (confidence 0.5-0.6), while a 45-minute idle on Confluence is less certain (confidence 0.2-0.3). If the window title clearly indicates non-work content, classify as idle with no task match.
 
 NOTE: projectKey is derived server-side from the matched taskKey. You do not need to detect it independently.
@@ -446,13 +448,13 @@ async function persistAnalysisResults(analyses, records, provider, model) {
  * @param {string} organizationId - Organization ID
  * @returns {Promise<Object>} Analysis results
  */
-async function analyzeBatch(records, userAssignedIssues, userId, organizationId) {
+async function analyzeBatch(records, userAssignedIssues, userId, organizationId, previousMatchContext, correctionPatterns) {
   if (!isActivityAIEnabled()) {
     throw new Error('AI client not initialized - check API keys');
   }
 
   const assignedIssuesText = formatAssignedIssues(userAssignedIssues);
-  const userPrompt = buildBatchAnalysisPrompt(records, assignedIssuesText);
+  const userPrompt = buildBatchAnalysisPrompt(records, assignedIssuesText, previousMatchContext, correctionPatterns);
   const messages = [
     { role: 'system', content: BATCH_ANALYSIS_SYSTEM_PROMPT },
     { role: 'user', content: userPrompt }

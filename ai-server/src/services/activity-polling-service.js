@@ -52,6 +52,24 @@ function extractUserAssignedIssues(records) {
 }
 
 /**
+ * Get the maximum 'updated' timestamp from an issue list.
+ * Returns 0 if no timestamps are present.
+ * @param {Array} issues - Array of issue objects with optional 'updated' or 'updated_at' field
+ * @returns {number} Maximum timestamp in milliseconds, or 0
+ */
+function getMaxUpdatedTimestamp(issues) {
+  let max = 0;
+  for (const issue of issues) {
+    const ts = issue.updated || issue.updated_at;
+    if (ts) {
+      const t = new Date(ts).getTime();
+      if (t > max) max = t;
+    }
+  }
+  return max;
+}
+
+/**
  * Check if error is a network error
  * @param {Error} error - Error object
  * @returns {boolean} True if network error
@@ -190,35 +208,69 @@ class ActivityPollingService {
     }
 
     // Extract user's assigned issues from the records
-    const userAssignedIssues = extractUserAssignedIssues(records);
+    const embeddedIssues = extractUserAssignedIssues(records);
 
-    // Fallback: if no issues embedded in records, fetch from cache
-    let issuesForAnalysis = userAssignedIssues;
-    if (!issuesForAnalysis || issuesForAnalysis.length === 0) {
-      try {
-        const organizationId = records[0]?.organization_id || null;
-        const cachedIssues = await userDbService.getUserCachedIssues(userId, organizationId);
-        if (cachedIssues && cachedIssues.length > 0) {
-          issuesForAnalysis = cachedIssues.map(issue => ({
-            key: issue.issue_key,
-            summary: issue.issue_summary || issue.summary,
-            status: issue.status,
-            project: issue.project_key,
-            issueType: issue.issue_type,
-            description: issue.description || null,
-            labels: issue.labels || [],
-            priority: issue.priority || null,
-            updated: issue.updated_at || null
-          }));
-          logger.info(`[Polling] Fetched ${issuesForAnalysis.length} cached issues as fallback for user ${userId}`);
-        }
-      } catch (cacheErr) {
-        logger.warn(`[Polling] Failed to fetch cached issues fallback for user ${userId}:`, cacheErr.message);
+    // Always fetch cache to compare freshness with embedded issues
+    let cachedIssuesMapped = [];
+    try {
+      const organizationId = records[0]?.organization_id || null;
+      const cachedIssues = await userDbService.getUserCachedIssues(userId, organizationId);
+      if (cachedIssues && cachedIssues.length > 0) {
+        cachedIssuesMapped = cachedIssues.map(issue => ({
+          key: issue.issue_key,
+          summary: issue.issue_summary || issue.summary,
+          status: issue.status,
+          project: issue.project_key,
+          issueType: issue.issue_type,
+          description: issue.description || null,
+          labels: issue.labels || [],
+          priority: issue.priority || null,
+          updated: issue.updated_at || null
+        }));
+      }
+    } catch (cacheErr) {
+      logger.warn(`[Polling] Failed to fetch cached issues for user ${userId}:`, cacheErr.message);
+    }
+
+    // Pick whichever issue list is fresher
+    let issuesForAnalysis;
+    if (embeddedIssues.length === 0) {
+      issuesForAnalysis = cachedIssuesMapped;
+      if (cachedIssuesMapped.length > 0) {
+        logger.info(`[Polling] Using ${cachedIssuesMapped.length} cached issues (no embedded issues) for user ${userId}`);
+      }
+    } else if (cachedIssuesMapped.length === 0) {
+      issuesForAnalysis = embeddedIssues;
+    } else {
+      // Both available — prefer whichever has a more recent 'updated' timestamp
+      const embeddedMax = getMaxUpdatedTimestamp(embeddedIssues);
+      const cachedMax = getMaxUpdatedTimestamp(cachedIssuesMapped);
+      if (cachedMax > embeddedMax) {
+        issuesForAnalysis = cachedIssuesMapped;
+        logger.info(`[Polling] Preferring fresher cache (${new Date(cachedMax).toISOString()}) over embedded issues (${new Date(embeddedMax).toISOString()}) for user ${userId}`);
+      } else {
+        issuesForAnalysis = embeddedIssues;
       }
     }
 
     // Per-batch timeout (default: 60 seconds)
     const batchTimeoutMs = Number.parseInt(process.env.ACTIVITY_BATCH_TIMEOUT_MS || '60000', 10);
+
+    // Fetch recent match context for cross-batch session continuity
+    let previousMatchContext = null;
+    try {
+      previousMatchContext = await activityDbService.getRecentMatchForUser(userId);
+    } catch (ctxErr) {
+      logger.debug(`[Polling] Failed to fetch recent match context for user ${userId}:`, ctxErr.message);
+    }
+
+    // Fetch user correction patterns for few-shot examples
+    let correctionPatterns = null;
+    try {
+      correctionPatterns = await activityDbService.getRecentCorrectionPatterns(userId);
+    } catch (cpErr) {
+      logger.debug(`[Polling] Failed to fetch correction patterns for user ${userId}:`, cpErr.message);
+    }
 
     // Analyze the batch with timeout
     const analyzeResult = await Promise.race([
@@ -226,7 +278,9 @@ class ActivityPollingService {
         records.map(transformRecordForAnalysis),
         issuesForAnalysis,
         userId,
-        records[0]?.organization_id
+        records[0]?.organization_id,
+        previousMatchContext,
+        correctionPatterns
       ),
       new Promise((_, reject) =>
         setTimeout(() => reject(new Error(`Batch processing timed out after ${batchTimeoutMs / 1000}s`)), batchTimeoutMs)

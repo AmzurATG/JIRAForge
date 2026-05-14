@@ -397,6 +397,9 @@ app.post('/api/forge/feedback/session', ...forgeMiddleware, forgeProxyController
 // Issue cache — called by the avi:jira:updated:issue trigger to keep user_jira_issues_cache fresh
 app.post('/api/forge/issues/cache', ...forgeMiddleware, forgeProxyController.cacheUserIssues);
 
+// Recently active accounts — called by the scheduled Forge cache refresh trigger
+app.get('/api/forge/issues/active-accounts', ...forgeMiddleware, forgeProxyController.getRecentlyActiveAccounts);
+
 // Uninstall handler — called when app is uninstalled from Jira site (Forge-authenticated)
 // Marks organization for deletion with 30-day grace period
 const uninstallController = require('./controllers/uninstall-controller');

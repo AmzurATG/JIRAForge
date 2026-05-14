@@ -110,3 +110,39 @@ async function refreshCacheForUser(accountId) {
     return { success: false, error: error.message };
   }
 }
+
+/**
+ * Scheduled handler for periodic issue cache refresh.
+ * Fetches recently active users from the AI server, then refreshes their Jira
+ * issue caches. Runs every 30 minutes via a Forge scheduled trigger.
+ */
+export async function scheduledIssueCacheRefresh() {
+  try {
+    // Ask the AI server which users had recent activity
+    const activeData = await remoteRequest('/api/forge/issues/active-accounts?minutes=60', {
+      method: 'GET'
+    });
+
+    const accountIds = activeData?.accountIds || [];
+    if (accountIds.length === 0) {
+      console.log('[IssueCache] No recently active users — skipping scheduled refresh');
+      return { success: true, skipped: true, reason: 'no_active_users' };
+    }
+
+    console.log(`[IssueCache] Scheduled refresh: refreshing cache for ${accountIds.length} active user(s)`);
+
+    const results = [];
+    for (const accountId of accountIds) {
+      const result = await refreshCacheForUser(accountId);
+      results.push({ accountId, ...result });
+    }
+
+    const successCount = results.filter(r => r.success).length;
+    console.log(`[IssueCache] Scheduled refresh complete: ${successCount}/${results.length} succeeded`);
+
+    return { success: true, results };
+  } catch (error) {
+    console.error('[IssueCache] Scheduled cache refresh error:', error.message);
+    return { success: false, error: error.message };
+  }
+}
