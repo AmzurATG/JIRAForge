@@ -5348,12 +5348,18 @@ class TimeTracker:
         @self.app.route('/')
         def index():
             if self.current_user:
+                user_account_id = self.current_user.get('account_id')
+                if not self.consent_manager.has_valid_consent(user_account_id):
+                    return redirect('/consent')
                 return redirect('/success')
             return redirect('/login')
 
         @self.app.route('/login')
         def login():
             if self.current_user:
+                user_account_id = self.current_user.get('account_id')
+                if not self.consent_manager.has_valid_consent(user_account_id):
+                    return redirect('/consent')
                 return redirect('/success')
             return self.render_login_page()
         
@@ -5425,9 +5431,34 @@ class TimeTracker:
                 # Check if we had anonymous tracking before login
                 had_anonymous = self.current_user_id and self.current_user_id.startswith('anonymous_')
 
-                # Create or update user in Supabase
-                self.current_user = user_info
-                self.current_user_id = self.ensure_user_exists(user_info)
+                # Create or update user in Supabase.
+                # IMPORTANT: self.current_user is set AFTER ensure_user_exists succeeds to
+                # prevent a partially-authenticated state. If ensure_user_exists raises (e.g.
+                # a transient DNS failure on first-boot), self.current_user stays None so
+                # the /login route cannot bypass the full auth flow on a "Try Again" retry.
+                # Retry up to 3 times to handle first-boot DNS/network race conditions.
+                _ensure_error = None
+                for _db_attempt in range(3):
+                    try:
+                        self.current_user_id = self.ensure_user_exists(user_info)
+                        _ensure_error = None
+                        break
+                    except Exception as _db_e:
+                        _ensure_error = _db_e
+                        _err_lower = str(_db_e).lower()
+                        if _db_attempt < 2 and (
+                            'getaddrinfo' in _err_lower
+                            or 'connect' in _err_lower
+                            or 'timeout' in _err_lower
+                        ):
+                            _wait = (_db_attempt + 1) * 3
+                            print(f"[WARN] Database connection failed (attempt {_db_attempt + 1}/3), retrying in {_wait}s...")
+                            time.sleep(_wait)
+                        else:
+                            break
+                if _ensure_error:
+                    raise _ensure_error
+                self.current_user = user_info  # Set only after successful DB user create/update
 
                 secure_log("[OK] Authenticated user", email=user_info.get('email', 'unknown'))
                 
@@ -5489,6 +5520,9 @@ class TimeTracker:
                 return redirect('/success')
                 
             except Exception as e:
+                # Clear any partial authentication state so the /login route does not
+                # bypass the full auth flow on a subsequent "Try Again" click.
+                self.current_user = None
                 print(f"[ERROR] Auth callback failed: {e}")
                 traceback.print_exc()
                 
@@ -5499,7 +5533,13 @@ class TimeTracker:
                 error_category = 'unknown'
                 if 'timeout' in error_lower or 'timed out' in error_lower:
                     error_category = 'timeout'
-                elif 'connection' in error_lower or 'connect' in error_lower:
+                elif (
+                    'connection' in error_lower
+                    or 'connect' in error_lower
+                    or 'getaddrinfo' in error_lower
+                    or 'nodename nor servname' in error_lower
+                    or 'name resolution' in error_lower
+                ):
                     error_category = 'connection'
                 elif 'token' in error_lower:
                     error_category = 'token_exchange'
