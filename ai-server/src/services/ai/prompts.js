@@ -30,6 +30,11 @@ function formatAssignedIssues(userAssignedIssues) {
     .map(issue => {
       let issueText = `- ${issue.key}: ${issue.summary} (Status: ${issue.status})`;
 
+      // Add priority as a tiebreaker signal for the LLM
+      if (issue.priority) {
+        issueText += ` [Priority: ${issue.priority}]`;
+      }
+
       // Add recency signal so LLM deprioritizes stale issues
       if (issue.updated) {
         const daysAgo = Math.floor((Date.now() - new Date(issue.updated).getTime()) / 86400000);

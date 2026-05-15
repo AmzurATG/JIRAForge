@@ -67,11 +67,13 @@ describe('Activity Polling Service', () => {
 
     it('should trigger initial processing on start', async () => {
       activityDbService.resetStuckProcessingRecords.mockResolvedValue();
+      activityDbService.resetStuckFailedRecords.mockResolvedValue();
       activityDbService.getPendingActivityBatches.mockResolvedValue([]);
 
       activityPollingService.start();
 
-      await Promise.resolve();
+      // Flush the microtask queue so the async processPendingRecords() chain completes
+      for (let i = 0; i < 10; i++) await Promise.resolve();
 
       expect(activityDbService.getPendingActivityBatches).toHaveBeenCalled();
     });
@@ -139,6 +141,9 @@ describe('Activity Polling Service', () => {
     beforeEach(() => {
       activityDbService.resetStuckProcessingRecords.mockResolvedValue();
       activityDbService.claimBatchForProcessing.mockResolvedValue(['record1', 'record2']);
+      activityDbService.getRecentMatchForUser.mockResolvedValue(null);
+      activityDbService.getRecentCorrectionPatterns.mockResolvedValue([]);
+      userDbService.getUserCachedIssues.mockResolvedValue([]);
       // Default: pretend the LLM analyzed every record sent in. Tests that
       // need partial results / truncation override this with mockResolvedValueOnce.
       activityService.analyzeBatch.mockImplementation(async (records) => ({
@@ -207,7 +212,9 @@ describe('Activity Polling Service', () => {
         expect.any(Array),
         [{key: 'PROJ-1', summary: 'Task 1'}],
         'user1',
-        'org1'
+        'org1',
+        null,
+        []
       );
     });
 
@@ -233,7 +240,9 @@ describe('Activity Polling Service', () => {
         expect.any(Array),
         [],
         'user1',
-        'org1'
+        'org1',
+        null,
+        []
       );
     });
 
@@ -252,7 +261,9 @@ describe('Activity Polling Service', () => {
         expect.any(Array),
         [],
         'user1',
-        'org1'
+        'org1',
+        null,
+        []
       );
     });
 
@@ -338,18 +349,21 @@ describe('Activity Polling Service', () => {
           }),
         ],
         'user1',
-        'org1'
+        'org1',
+        null,
+        []
       );
     });
 
-    it('should NOT call getUserCachedIssues when records already carry embedded issues', async () => {
-      // Default mockRecords[0] already carries user_assigned_issues — fallback should be skipped
+    it('should always call getUserCachedIssues for freshness comparison', async () => {
+      // Default mockRecords[0] already carries user_assigned_issues
+      // but cache is now always fetched for freshness comparison
       activityDbService.getPendingActivityBatches.mockResolvedValue([mockRecords[0]]);
       activityDbService.claimBatchForProcessing.mockResolvedValue([{ id: 'record1' }]);
 
       await activityPollingService.processPendingRecords();
 
-      expect(userDbService.getUserCachedIssues).not.toHaveBeenCalled();
+      expect(userDbService.getUserCachedIssues).toHaveBeenCalledWith('user1', 'org1');
     });
 
     it('should swallow cache errors and still call analyzeBatch with empty issues array', async () => {
@@ -367,14 +381,16 @@ describe('Activity Polling Service', () => {
       // and analyzeBatch was still invoked so the polling cycle didn't abort.
       expect(userDbService.getUserCachedIssues).toHaveBeenCalled();
       expect(logger.warn).toHaveBeenCalledWith(
-        expect.stringContaining('Failed to fetch cached issues fallback'),
+        expect.stringContaining('Failed to fetch cached issues'),
         'Cache DB down'
       );
       expect(activityService.analyzeBatch).toHaveBeenCalledWith(
         expect.any(Array),
-        [], // Empty issues array — fallback failed, original userAssignedIssues was empty
+        [], // Empty issues array — cache failed, embedded issues were empty
         'user1',
-        'org1'
+        'org1',
+        null,
+        []
       );
     });
 
@@ -396,7 +412,9 @@ describe('Activity Polling Service', () => {
         expect.any(Array),
         [],
         'user1',
-        'org1'
+        'org1',
+        null,
+        []
       );
     });
 
@@ -558,19 +576,20 @@ describe('Activity Polling Service', () => {
       await activityPollingService.processPendingRecords();
 
       expect(activityService.analyzeBatch).toHaveBeenCalledWith(
-        [{
+        [expect.objectContaining({
           id: 'record1',
           window_title: 'VS Code',
           application_name: 'Code',
           ocr_text: 'test code',
           total_time_seconds: 600,
           start_time: '2024-01-01T10:00:00Z',
-          end_time: '2024-01-01T10:10:00Z',
-          classification: undefined
-        }],
+          end_time: '2024-01-01T10:10:00Z'
+        })],
         expect.any(Array),
         'user1',
-        'org1'
+        'org1',
+        null,
+        []
       );
     });
 
@@ -615,7 +634,9 @@ describe('Activity Polling Service', () => {
         expect.any(Array),
         [{key: 'PROJ-2', summary: 'Task 2'}],
         'user1',
-        'org1'
+        'org1',
+        null,
+        []
       );
     });
 
@@ -634,7 +655,9 @@ describe('Activity Polling Service', () => {
         expect.any(Array),
         [],
         'user1',
-        'org1'
+        'org1',
+        null,
+        []
       );
     });
 
@@ -653,7 +676,9 @@ describe('Activity Polling Service', () => {
         expect.any(Array),
         [{key: 'PROJ-1', summary: 'Task 1'}],
         'user1',
-        'org1'
+        'org1',
+        null,
+        []
       );
     });
 
@@ -672,7 +697,9 @@ describe('Activity Polling Service', () => {
         expect.any(Array),
         [],
         'user1',
-        'org1'
+        'org1',
+        null,
+        []
       );
     });
 
@@ -691,7 +718,9 @@ describe('Activity Polling Service', () => {
         expect.any(Array),
         [{key: 'PROJ-1'}],
         'user1',
-        'org1'
+        'org1',
+        null,
+        []
       );
     });
 
@@ -770,7 +799,9 @@ describe('Activity Polling Service', () => {
         expect.any(Array),
         expect.any(Array),
         'user1',
-        null
+        null,
+        null,
+        []
       );
     });
 
@@ -817,14 +848,19 @@ describe('Activity Polling Service', () => {
 
     it('should handle interval execution', async () => {
       activityDbService.resetStuckProcessingRecords.mockResolvedValue();
+      activityDbService.resetStuckFailedRecords.mockResolvedValue();
       activityDbService.getPendingActivityBatches.mockResolvedValue([]);
 
       activityPollingService.start();
 
+      // Wait for initial processing to complete
+      for (let i = 0; i < 10; i++) await Promise.resolve();
+
       // Fast-forward time by poll interval
       jest.advanceTimersByTime(activityPollingService.pollInterval);
 
-      await Promise.resolve();
+      // Flush microtask queue for the interval callback
+      for (let i = 0; i < 10; i++) await Promise.resolve();
 
       expect(activityDbService.getPendingActivityBatches).toHaveBeenCalled();
     });
