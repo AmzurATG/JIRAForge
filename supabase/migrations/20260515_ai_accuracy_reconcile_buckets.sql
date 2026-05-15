@@ -25,9 +25,15 @@
 --
 -- FIX
 -- ---
--- Add the same `ai_suggested_issue_key <> final_issue_key` predicate to the
--- "reassigned" filters in both get_accuracy_summary_v2 and
--- get_accuracy_by_app_v2 so all three panels reconcile.
+-- Add the same `ai_suggested_issue_key IS NOT NULL AND
+-- ai_suggested_issue_key <> final_issue_key` predicate to the "reassigned"
+-- filters in both get_accuracy_summary_v2 and get_accuracy_by_app_v2 so all
+-- three panels reconcile. The `<>` operator (not `IS DISTINCT FROM`) is used
+-- deliberately: <> returns NULL when either side is NULL — which FILTER
+-- treats as FALSE — matching get_accuracy_reassignments' behavior exactly.
+-- (`IS DISTINCT FROM` would return TRUE for a `reassigned` event with NULL
+-- ai_suggested_issue_key, including it in the summary but not in wrong-pairs
+-- — exactly the kind of cross-panel drift this migration is meant to close.)
 --
 -- Net effect: Reassigned bucket drops by exactly the count/seconds of the
 -- noise events. Matched and Unmatched buckets are unchanged. The visible
@@ -60,26 +66,30 @@ AS $$
     COUNT(*) FILTER (
       WHERE (event_type = 'reassigned'
              OR (event_type = 'manually_assigned' AND ai_suggested_issue_key IS NOT NULL))
-        AND ai_suggested_issue_key IS DISTINCT FROM final_issue_key
+        AND ai_suggested_issue_key IS NOT NULL
+        AND ai_suggested_issue_key <> final_issue_key
     )::bigint
       AS reassigned_count,
     COALESCE(SUM(duration_seconds) FILTER (
       WHERE (event_type = 'reassigned'
              OR (event_type = 'manually_assigned' AND ai_suggested_issue_key IS NOT NULL))
-        AND ai_suggested_issue_key IS DISTINCT FROM final_issue_key
+        AND ai_suggested_issue_key IS NOT NULL
+        AND ai_suggested_issue_key <> final_issue_key
     ), 0)::bigint
       AS reassigned_seconds,
 
     COUNT(*) FILTER (
       WHERE event_type = 'reassigned'
         AND (metadata->>'reassign_reason') = 'created_new_issue'
-        AND ai_suggested_issue_key IS DISTINCT FROM final_issue_key
+        AND ai_suggested_issue_key IS NOT NULL
+        AND ai_suggested_issue_key <> final_issue_key
     )::bigint
       AS reassigned_new_issue_count,
     COALESCE(SUM(duration_seconds) FILTER (
       WHERE event_type = 'reassigned'
         AND (metadata->>'reassign_reason') = 'created_new_issue'
-        AND ai_suggested_issue_key IS DISTINCT FROM final_issue_key
+        AND ai_suggested_issue_key IS NOT NULL
+        AND ai_suggested_issue_key <> final_issue_key
     ), 0)::bigint
       AS reassigned_new_issue_seconds,
 
@@ -129,13 +139,15 @@ AS $$
     COUNT(*) FILTER (
       WHERE (event_type = 'reassigned'
              OR (event_type = 'manually_assigned' AND ai_suggested_issue_key IS NOT NULL))
-        AND ai_suggested_issue_key IS DISTINCT FROM final_issue_key
+        AND ai_suggested_issue_key IS NOT NULL
+        AND ai_suggested_issue_key <> final_issue_key
     )::bigint
       AS reassigned_count,
     COALESCE(SUM(duration_seconds) FILTER (
       WHERE (event_type = 'reassigned'
              OR (event_type = 'manually_assigned' AND ai_suggested_issue_key IS NOT NULL))
-        AND ai_suggested_issue_key IS DISTINCT FROM final_issue_key
+        AND ai_suggested_issue_key IS NOT NULL
+        AND ai_suggested_issue_key <> final_issue_key
     ), 0)::bigint
       AS reassigned_seconds,
 
@@ -153,7 +165,8 @@ AS $$
          OR (event_type = 'manually_assigned' AND ai_suggested_issue_key IS NULL)
          OR ((event_type = 'reassigned'
               OR (event_type = 'manually_assigned' AND ai_suggested_issue_key IS NOT NULL))
-             AND ai_suggested_issue_key IS DISTINCT FROM final_issue_key)
+             AND ai_suggested_issue_key IS NOT NULL
+             AND ai_suggested_issue_key <> final_issue_key)
     ), 0)::bigint
       AS total_seconds
 
