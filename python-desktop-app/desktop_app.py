@@ -336,7 +336,7 @@ load_dotenv()
 
 # Application version - IMPORTANT: Update this when releasing new versions
 # This is used for update checking and notifications
-APP_VERSION = "1.4.0"
+APP_VERSION = "1.4.1"
 
 # Hard-disable screenshot monitoring/storage in desktop app.
 # OCR text extraction for activity records still runs via event-based flow.
@@ -547,49 +547,71 @@ def check_for_updates(ai_server_url=None):
         'checksum': str (SHA256 hash for integrity verification)
     }
     """
-    try:
-        server_url = ai_server_url or get_env_var('AI_SERVER_URL')
-        if not server_url:
-            print("[WARN] AI Server URL not configured, skipping update check")
-            return None
-        
-        url = f"{server_url}/api/app-version/check?platform=windows&current={APP_VERSION}"
-        
-        response = requests.get(url, timeout=10)
-        
-        if response.status_code != 200:
-            print(f"[WARN] Update check failed: HTTP {response.status_code}")
-            return None
-        
-        data = response.json()
-        
-        if not data.get('success'):
-            print(f"[WARN] Update check failed: {data.get('error', 'Unknown error')}")
-            return None
-        
-        result = data.get('data', {})
-        
-        return {
-            'update_available': result.get('updateAvailable', False),
-            'latest_version': result.get('latestVersion'),
-            'current_version': result.get('currentVersion', APP_VERSION),
-            'download_url': result.get('downloadUrl'),
-            'release_notes': result.get('releaseNotes'),
-            'is_mandatory': result.get('isMandatory', False),
-            'can_update': result.get('canUpdate', True),
-            'checksum': result.get('checksum'),  # SHA256 for integrity verification
-            'file_size_bytes': result.get('fileSizeBytes')
-        }
+    server_url = ai_server_url or get_env_var('AI_SERVER_URL')
+    if not server_url:
+        print("[WARN] AI Server URL not configured, skipping update check")
+        return None
     
-    except requests.exceptions.Timeout:
-        print("[WARN] Update check timed out")
-        return None
-    except requests.exceptions.RequestException as e:
-        print(f"[WARN] Update check failed: {e}")
-        return None
-    except Exception as e:
-        print(f"[WARN] Unexpected error during update check: {e}")
-        return None
+    url = f"{server_url}/api/app-version/check?platform=windows&current={APP_VERSION}"
+    
+    # Retry logic with exponential backoff for transient network failures
+    max_attempts = 3
+    backoff_delays = [0, 2, 4]  # seconds between attempts
+    
+    for attempt in range(max_attempts):
+        try:
+            if attempt > 0:
+                delay = backoff_delays[attempt]
+                print(f"[INFO] Retrying update check (attempt {attempt + 1}/{max_attempts}) after {delay}s delay...")
+                time.sleep(delay)
+            
+            response = requests.get(url, timeout=10)
+            
+            if response.status_code != 200:
+                print(f"[WARN] Update check failed: HTTP {response.status_code}")
+                # Don't retry on HTTP errors (4xx/5xx) - these are not transient
+                return None
+            
+            data = response.json()
+            
+            if not data.get('success'):
+                print(f"[WARN] Update check failed: {data.get('error', 'Unknown error')}")
+                # Server returned error response - don't retry
+                return None
+            
+            result = data.get('data', {})
+            
+            return {
+                'update_available': result.get('updateAvailable', False),
+                'latest_version': result.get('latestVersion'),
+                'current_version': result.get('currentVersion', APP_VERSION),
+                'download_url': result.get('downloadUrl'),
+                'release_notes': result.get('releaseNotes'),
+                'is_mandatory': result.get('isMandatory', False),
+                'can_update': result.get('canUpdate', True),
+                'checksum': result.get('checksum'),  # SHA256 for integrity verification
+                'file_size_bytes': result.get('fileSizeBytes')
+            }
+        
+        except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
+            # Retry on timeout and connection errors (transient failures)
+            if attempt < max_attempts - 1:
+                print(f"[WARN] Update check failed (attempt {attempt + 1}/{max_attempts}): {type(e).__name__}")
+                continue  # Retry
+            else:
+                print(f"[WARN] Update check failed after {max_attempts} attempts: {e}")
+                return None
+        
+        except requests.exceptions.RequestException as e:
+            # Other request exceptions (DNS errors, SSL errors, etc.) - don't retry
+            print(f"[WARN] Update check failed: {e}")
+            return None
+        
+        except Exception as e:
+            print(f"[WARN] Unexpected error during update check: {e}")
+            return None
+    
+    return None
 
 def compute_file_checksum(file_path):
     """
@@ -1210,6 +1232,10 @@ class UpdateManager:
         self._lock = threading.Lock()
         self._on_status_change = on_status_change
         self._on_apply_update = on_apply_update
+        
+        # Automatic retry for failed downloads
+        self._last_download_attempt = 0
+        self._download_retry_interval = 30 * 60  # 30 minutes
 
     def _set_state(self, new_state, error=None):
         self.state = new_state
@@ -1296,6 +1322,10 @@ class UpdateManager:
 
             self._set_state('checking')
             self._set_state('downloading')
+            
+            # Record download attempt time for retry logic
+            self._last_download_attempt = time.time()
+            
             self._download_thread = threading.Thread(target=self._download_worker, daemon=True)
             self._download_thread.start()
             return True
@@ -1362,6 +1392,22 @@ class UpdateManager:
         except Exception as e:
             self._set_state('failed', error=str(e))
             print(f"[WARN] Update download failed: {e}")
+            
+            # Notify user about download failure
+            if WINOTIFY_AVAILABLE:
+                try:
+                    error_msg = str(e)[:100]  # Truncate to 100 chars
+                    notification = Notification(
+                        app_id="Time Tracker",
+                        title="Update Download Failed",
+                        msg=f"Failed to download update: {error_msg}\n\nWill retry automatically.",
+                        duration="long"
+                    )
+                    notification.set_audio(audio.Default, loop=False)
+                    notification.show()
+                except Exception as notify_error:
+                    # Don't let notification failure break the app
+                    print(f"[WARN] Failed to show download failure notification: {notify_error}")
         finally:
             if os.path.exists(temp_path):
                 try:
@@ -1382,6 +1428,22 @@ class UpdateManager:
             return False
         self._cancel_event.set()
         return True
+
+    def should_retry_download(self):
+        """Check if we should retry a failed download (30-minute interval)."""
+        if self.state != 'failed':
+            return False
+        
+        if self._last_download_attempt == 0:
+            return False
+        
+        time_since_last_attempt = time.time() - self._last_download_attempt
+        
+        if time_since_last_attempt >= self._download_retry_interval:
+            print(f"[INFO] Retrying failed download after {int(time_since_last_attempt / 60)} minutes")
+            return True
+        
+        return False
 
     def apply_update(self):
         """Apply a previously staged update and request app shutdown."""
@@ -5178,6 +5240,12 @@ class TimeTracker:
             dict with update info or None if no update/error
         """
         try:
+            # Check connectivity first - fail fast if offline
+            if not self.offline_manager.check_connectivity():
+                print("[INFO] Offline - skipping update check")
+                self.add_admin_log('INFO', 'Update check skipped (offline)')
+                return None
+            
             current_time = time.time()
             
             # Skip if checked recently (unless forced)
@@ -10204,11 +10272,6 @@ class TimeTracker:
                             print(f"[WARN] Periodic classification sync failed: {e}")
                         last_classification_sync = time.time()
 
-                    # Periodically check for app updates (every 4 hours by default)
-                    # This runs in the background and shows notification if update available
-                    if time.time() - self.last_version_check_time > self.version_check_interval:
-                        self.check_for_app_updates(show_notification=True)
-
                     # Periodically check for unassigned work and send notifications
                     if time.time() - last_notification_check > notification_check_interval:
                         self.check_and_notify_unassigned_work()
@@ -10217,6 +10280,14 @@ class TimeTracker:
                     # Periodically upload activity batch (event-based tracking)
                     if time.time() - self.last_batch_upload_time >= self.batch_upload_interval:
                         self.upload_activity_batch()
+                
+                # Check for app updates OUTSIDE idle block (every 4 hours by default, or 30 min if last download failed)
+                # Update check and download happen in background, installation waits for user to be active
+                should_check_normal = time.time() - self.last_version_check_time > self.version_check_interval
+                should_retry_download = self.update_manager and self.update_manager.should_retry_download()
+                
+                if should_check_normal or should_retry_download:
+                    self.check_for_app_updates(show_notification=True)
                 
                 # Check for idle timeout (use configurable threshold)
                 idle_duration = time.time() - self.last_activity_time
@@ -10908,6 +10979,65 @@ class TimeTracker:
             except Exception as e:
                 print(f"[WARN] Failed to update tray icon: {e}")
 
+    def _manual_update_trigger(self):
+        """Handle manual update trigger from tray menu"""
+        try:
+            if not self.update_manager:
+                print("[WARN] Update manager not available")
+                return
+            
+            status = self.update_manager.get_status()
+            state = status.get('state', 'idle')
+            
+            # If update is ready, install it immediately
+            if state in ('ready', 'mandatory_ready'):
+                latest = (status.get('update_info') or {}).get('latest_version', 'unknown')
+                print(f"[UPDATE] Manually triggering update installation for v{latest}")
+                self.add_admin_log('INFO', f'User manually triggered update v{latest}')
+                
+                # Show notification
+                if WINOTIFY_AVAILABLE:
+                    try:
+                        notification = Notification(
+                            app_id="Time Tracker",
+                            title="Installing Update",
+                            msg=f"Installing v{latest}. The app will restart shortly.",
+                            duration="short"
+                        )
+                        notification.set_audio(audio.Default, loop=False)
+                        notification.show()
+                    except Exception:
+                        pass
+                
+                self.update_manager.apply_update()
+            else:
+                # Otherwise, force a new update check
+                print("[UPDATE] User manually checking for updates")
+                self.add_admin_log('INFO', 'User manually triggered update check')
+                
+                # Show checking notification
+                if WINOTIFY_AVAILABLE:
+                    try:
+                        notification = Notification(
+                            app_id="Time Tracker",
+                            title="Checking for Updates",
+                            msg="Checking for available updates...",
+                            duration="short"
+                        )
+                        notification.set_audio(audio.Default, loop=False)
+                        notification.show()
+                    except Exception:
+                        pass
+                
+                # Force update check in background thread to avoid blocking tray UI
+                def check_in_background():
+                    self.check_for_app_updates(show_notification=True, force=True)
+                
+                threading.Thread(target=check_in_background, daemon=True).start()
+        
+        except Exception as e:
+            print(f"[ERROR] Manual update trigger failed: {e}")
+
     def _build_tray_menu(self):
         """Build the tray menu with current state"""
         def get_menu_label():
@@ -10941,13 +11071,18 @@ class TimeTracker:
         progress = int((status.get('progress', 0) or 0) * 100)
 
         if state == 'downloading':
-            menu_items.append(item(lambda text: f"Downloading update v{latest} ({progress}%)", lambda: None, enabled=False))
+            menu_items.append(item(lambda text: f"⬇️ Downloading v{latest} ({progress}%)", lambda: None, enabled=False))
         elif state in ('ready', 'mandatory_ready'):
-            menu_items.append(item(lambda text: f"Installing update v{latest}...", lambda: None, enabled=False))
+            # Make this clickable so users can manually trigger installation
+            menu_items.append(item(lambda text: f"✨ Update Ready v{latest} - Click to Install", self._manual_update_trigger, enabled=True))
         elif state == 'installing':
-            menu_items.append(item(lambda text: f"Restarting for update v{latest}...", lambda: None, enabled=False))
+            menu_items.append(item(lambda text: f"🔄 Installing v{latest}...", lambda: None, enabled=False))
+        elif state == 'failed':
+            # Allow retry on failure
+            menu_items.append(item(lambda text: f"❌ Update Failed - Click to Retry", self._manual_update_trigger, enabled=True))
         else:
-            menu_items.append(item(lambda text: f"Up to Date (v{self.app_version})", lambda: None, enabled=False))
+            # Show "Check for Updates" button when no update activity
+            menu_items.append(item(lambda text: f"✓ Up to Date (v{self.app_version}) - Click to Check", self._manual_update_trigger, enabled=True))
 
         return pystray.Menu(*menu_items)
 
@@ -11231,9 +11366,12 @@ class TimeTracker:
             print("[INFO] Found staged update from previous session")
         
         # Check for updates on startup (only if online)
-        if is_online:
+        # Re-check connectivity here (don't trust the is_online from startup - it may be stale after auth)
+        if self.offline_manager.check_connectivity(force=True):
             print("[INFO] Checking for app updates...")
             self.check_for_app_updates(show_notification=True, force=True)
+        else:
+            print("[INFO] Offline after authentication - will check for updates when network is available")
         
         # Determine if we should start tracking
         should_track = self.current_user is not None or self.current_user_id is not None
