@@ -38,6 +38,7 @@ module.exports = {
   hasClusteringRunRecently: clusteringDbService.hasClusteringRunRecently,
   getUngroupedActivityCount: clusteringDbService.getUngroupedActivityCount,
   getUnassignedWorkGroups: clusteringDbService.getUnassignedWorkGroups,
+  computeIsIdleOnly: clusteringDbService.computeIsIdleOnly,
 
   // Feedback DB Service
   createFeedback: feedbackDbService.createFeedback,
