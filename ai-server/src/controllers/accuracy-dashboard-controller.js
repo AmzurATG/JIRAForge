@@ -89,19 +89,20 @@ exports.listOrgs = async (req, res) => {
 
     const orgIds = (orgRows || []).map(r => r.organization_id).filter(Boolean);
 
-    // Resolve display names from organizations table (best-effort).  Falls
-    // back to the org UUID if the name lookup fails or is missing.
+    // Resolve display names from organizations table (best-effort).  Column is
+    // `org_name` (not `name`) — see schema in 20260221_add_activity_records.sql
+    // and earlier org migrations. Falls back to jira_cloud_id, then the UUID.
     let orgs = orgIds.map(id => ({ id, name: id }));
     if (orgIds.length > 0) {
       const { data: orgNames } = await supabase
         .from('organizations')
-        .select('id, name, jira_cloud_id')
+        .select('id, org_name, jira_cloud_id')
         .in('id', orgIds);
       if (orgNames) {
         const byId = new Map(orgNames.map(o => [o.id, o]));
         orgs = orgIds.map(id => ({
           id,
-          name: byId.get(id)?.name || byId.get(id)?.jira_cloud_id || id
+          name: byId.get(id)?.org_name || byId.get(id)?.jira_cloud_id || id
         }));
       }
     }
