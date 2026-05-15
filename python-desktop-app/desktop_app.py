@@ -336,7 +336,7 @@ load_dotenv()
 
 # Application version - IMPORTANT: Update this when releasing new versions
 # This is used for update checking and notifications
-APP_VERSION = "1.4.0"
+APP_VERSION = "1.4.1"
 
 # Hard-disable screenshot monitoring/storage in desktop app.
 # OCR text extraction for activity records still runs via event-based flow.
@@ -10979,6 +10979,65 @@ class TimeTracker:
             except Exception as e:
                 print(f"[WARN] Failed to update tray icon: {e}")
 
+    def _manual_update_trigger(self):
+        """Handle manual update trigger from tray menu"""
+        try:
+            if not self.update_manager:
+                print("[WARN] Update manager not available")
+                return
+            
+            status = self.update_manager.get_status()
+            state = status.get('state', 'idle')
+            
+            # If update is ready, install it immediately
+            if state in ('ready', 'mandatory_ready'):
+                latest = (status.get('update_info') or {}).get('latest_version', 'unknown')
+                print(f"[UPDATE] Manually triggering update installation for v{latest}")
+                self.add_admin_log('INFO', f'User manually triggered update v{latest}')
+                
+                # Show notification
+                if WINOTIFY_AVAILABLE:
+                    try:
+                        notification = Notification(
+                            app_id="Time Tracker",
+                            title="Installing Update",
+                            msg=f"Installing v{latest}. The app will restart shortly.",
+                            duration="short"
+                        )
+                        notification.set_audio(audio.Default, loop=False)
+                        notification.show()
+                    except Exception:
+                        pass
+                
+                self.update_manager.apply_update()
+            else:
+                # Otherwise, force a new update check
+                print("[UPDATE] User manually checking for updates")
+                self.add_admin_log('INFO', 'User manually triggered update check')
+                
+                # Show checking notification
+                if WINOTIFY_AVAILABLE:
+                    try:
+                        notification = Notification(
+                            app_id="Time Tracker",
+                            title="Checking for Updates",
+                            msg="Checking for available updates...",
+                            duration="short"
+                        )
+                        notification.set_audio(audio.Default, loop=False)
+                        notification.show()
+                    except Exception:
+                        pass
+                
+                # Force update check in background thread to avoid blocking tray UI
+                def check_in_background():
+                    self.check_for_app_updates(show_notification=True, force=True)
+                
+                threading.Thread(target=check_in_background, daemon=True).start()
+        
+        except Exception as e:
+            print(f"[ERROR] Manual update trigger failed: {e}")
+
     def _build_tray_menu(self):
         """Build the tray menu with current state"""
         def get_menu_label():
@@ -11012,13 +11071,18 @@ class TimeTracker:
         progress = int((status.get('progress', 0) or 0) * 100)
 
         if state == 'downloading':
-            menu_items.append(item(lambda text: f"Downloading update v{latest} ({progress}%)", lambda: None, enabled=False))
+            menu_items.append(item(lambda text: f"⬇️ Downloading v{latest} ({progress}%)", lambda: None, enabled=False))
         elif state in ('ready', 'mandatory_ready'):
-            menu_items.append(item(lambda text: f"Installing update v{latest}...", lambda: None, enabled=False))
+            # Make this clickable so users can manually trigger installation
+            menu_items.append(item(lambda text: f"✨ Update Ready v{latest} - Click to Install", self._manual_update_trigger, enabled=True))
         elif state == 'installing':
-            menu_items.append(item(lambda text: f"Restarting for update v{latest}...", lambda: None, enabled=False))
+            menu_items.append(item(lambda text: f"🔄 Installing v{latest}...", lambda: None, enabled=False))
+        elif state == 'failed':
+            # Allow retry on failure
+            menu_items.append(item(lambda text: f"❌ Update Failed - Click to Retry", self._manual_update_trigger, enabled=True))
         else:
-            menu_items.append(item(lambda text: f"Up to Date (v{self.app_version})", lambda: None, enabled=False))
+            # Show "Check for Updates" button when no update activity
+            menu_items.append(item(lambda text: f"✓ Up to Date (v{self.app_version}) - Click to Check", self._manual_update_trigger, enabled=True))
 
         return pystray.Menu(*menu_items)
 
