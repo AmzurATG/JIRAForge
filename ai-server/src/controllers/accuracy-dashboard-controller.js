@@ -10,10 +10,10 @@
  * Response shape is {success: true, data: {...}} so that Forge's
  * `remoteRequest` helper unwraps it cleanly.
  *
- * All aggregations are pushed down to Postgres via RPCs declared in migrations
- * 20260422_ai_accuracy_aggregations.sql (v1, calibration only) and
- * 20260514_ai_accuracy_dashboard_redesign.sql (v2 summary/reassignments/by-app);
- * this controller only shapes the response.
+ * All aggregations are pushed down to Postgres via RPCs declared in
+ * 20260514_ai_accuracy_dashboard_redesign.sql (v2 summary/by-app) and
+ * 20260514_ai_accuracy_reassignments_add_user.sql (reassignments with user
+ * attribution); this controller only shapes the response.
  *
  * Bucket model used uniformly by /summary, /wrong-pairs, and /by-app:
  *   matched     -> approved_as_is
@@ -28,9 +28,8 @@
  * Endpoints (all GET, mounted under /api/forge/accuracy/* in src/index.js):
  *   /orgs               List orgs (for filter dropdown)
  *   /summary            Matched/Reassigned/Unmatched buckets + time-weighted match rate
- *   /wrong-pairs        Reassignment pairs with total time + is_new_issue flag
+ *   /wrong-pairs        Reassignment pairs with total time, is_new_issue, user attribution
  *   /by-app             Matched/Reassigned/Unmatched time + counts per application
- *   /calibration        Confidence buckets vs actual accuracy
  *   /recent-mistakes    Last N reassigned events
  *
  * Common query params:
@@ -209,6 +208,9 @@ exports.getWrongPairs = async (req, res) => {
       from: r.ai_suggested_issue_key,
       to: r.final_issue_key,
       is_new_issue: !!r.is_new_issue,
+      user_id: r.user_id || null,
+      user_display_name: r.user_display_name || null,
+      user_email: r.user_email || null,
       seconds: Number(r.total_seconds) || 0,
       count: Number(r.pair_count) || 0
     }));
@@ -270,53 +272,6 @@ exports.getByApp = async (req, res) => {
     return jsonOk(res, { days, apps });
   } catch (err) {
     logger.error('[AccuracyDashboard] getByApp failed:', err.message);
-    return jsonError(res, 500, err.message);
-  }
-};
-
-// ---------------------------------------------------------------------------
-// Calibration — does AI confidence predict actual accuracy?
-//
-// Includes manually_assigned events that had a non-null AI suggestion (the
-// AI tried but the user picked something different in the unassigned-work
-// flow — that's also a confidence-vs-outcome signal).  RPC returns one row
-// per non-empty bucket; we re-pad to the full 10 buckets so the dashboard
-// renders an even axis.
-// ---------------------------------------------------------------------------
-
-exports.getCalibration = async (req, res) => {
-  try {
-    const supabase = getClient();
-    if (!supabase) return jsonError(res, 500, 'Database not configured');
-
-    const { days, sinceISO } = sinceTimestamp(req.query.days);
-
-    const { data, error } = await supabase.rpc('get_accuracy_calibration', {
-      p_org: orgParam(req.query.org),
-      p_since: sinceISO
-    });
-    if (error) throw error;
-
-    const byBucket = new Map();
-    for (const r of (data || [])) {
-      byBucket.set(Number(r.bucket), {
-        sample_count: Number(r.sample_count) || 0,
-        right_count: Number(r.right_count) || 0
-      });
-    }
-
-    const series = Array.from({ length: 10 }, (_, i) => {
-      const b = byBucket.get(i) || { sample_count: 0, right_count: 0 };
-      return {
-        bucket_label: `${i * 10}-${(i + 1) * 10}%`,
-        sample_count: b.sample_count,
-        actual_accuracy: b.sample_count > 0 ? b.right_count / b.sample_count : null
-      };
-    });
-
-    return jsonOk(res, { days, series });
-  } catch (err) {
-    logger.error('[AccuracyDashboard] getCalibration failed:', err.message);
     return jsonError(res, 500, err.message);
   }
 };
