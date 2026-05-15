@@ -33,17 +33,6 @@ const TIME_RANGE_OPTIONS = [
   { value: 90,  label: 'Last 90 days' },
 ];
 
-// Calibration buckets below this many samples are rendered greyed-out and
-// their drift is hidden — too few samples for the rate to be trustworthy.
-const LOW_SAMPLE_THRESHOLD = 20;
-
-// Drift coloring thresholds (in percentage points) for the calibration table.
-// |drift| <= GOOD  -> green  (model is calibrated for that bucket)
-// |drift| <= MID   -> amber  (mild miscalibration)
-// |drift| >  MID   -> red    (substantial miscalibration)
-const DRIFT_GOOD_PP = 5;
-const DRIFT_MID_PP  = 15;
-
 function formatDuration(seconds) {
   if (!seconds || seconds < 1) return '0m';
   const h = Math.floor(seconds / 3600);
@@ -58,14 +47,6 @@ function formatPercent(value, digits = 1) {
   return `${(value * 100).toFixed(digits)}%`;
 }
 
-function formatSignedPP(driftFraction) {
-  // driftFraction is in [-1, 1]; render as signed percentage points
-  if (driftFraction === null || driftFraction === undefined) return '—';
-  const pp = driftFraction * 100;
-  const sign = pp >= 0 ? '+' : '−';
-  return `${sign}${Math.abs(pp).toFixed(1)}pp`;
-}
-
 function formatRelativeTime(iso) {
   if (!iso) return '';
   const diff = Date.now() - new Date(iso).getTime();
@@ -76,14 +57,6 @@ function formatRelativeTime(iso) {
   if (h < 24) return `${h}h ago`;
   const d = Math.floor(h / 24);
   return `${d}d ago`;
-}
-
-function driftClass(driftFraction) {
-  if (driftFraction === null || driftFraction === undefined) return '';
-  const absPP = Math.abs(driftFraction * 100);
-  if (absPP <= DRIFT_GOOD_PP) return 'cal-drift-good';
-  if (absPP <= DRIFT_MID_PP)  return 'cal-drift-mid';
-  return 'cal-drift-bad';
 }
 
 function unwrap(result) {
@@ -102,7 +75,6 @@ function AdminAccuracyDashboardTab() {
   const [summary, setSummary] = useState(null);
   const [reassignments, setReassignments] = useState([]);
   const [byApp, setByApp] = useState([]);
-  const [calibration, setCalibration] = useState([]);
   const [recentReassignments, setRecentReassignments] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -122,17 +94,15 @@ function AdminAccuracyDashboardTab() {
     setError(null);
     try {
       const params = { days, org: orgId || undefined };
-      const [s, wp, ba, cal, rm] = await Promise.all([
+      const [s, wp, ba, rm] = await Promise.all([
         invoke('getAccuracySummary', params),
         invoke('getAccuracyWrongPairs', { ...params, limit: 25 }),
         invoke('getAccuracyByApp', { ...params, limit: 25 }),
-        invoke('getAccuracyCalibration', params),
         invoke('getAccuracyRecentMistakes', { org: orgId || undefined, limit: 50 }),
       ]);
       setSummary(unwrap(s));
       setReassignments(unwrap(wp)?.pairs || []);
       setByApp(unwrap(ba)?.apps || []);
-      setCalibration(unwrap(cal)?.series || []);
       setRecentReassignments(unwrap(rm)?.mistakes || []);
       setLastRefreshed(new Date());
     } catch (err) {
@@ -273,11 +243,12 @@ function AdminAccuracyDashboardTab() {
       <section className="accuracy-panel">
         <header>
           <h3>Reassignments</h3>
-          <p>Where the AI's pick got changed. Sorted by total time — the bigger the time, the bigger the prompt-tuning win.</p>
+          <p>Where the AI's pick got changed, and by whom. Sorted by total time — the bigger the time, the bigger the prompt-tuning win.</p>
         </header>
         <table className="accuracy-table">
           <thead>
             <tr>
+              <th>User</th>
               <th>AI suggested</th>
               <th>User chose</th>
               <th className="num">Total time</th>
@@ -286,10 +257,13 @@ function AdminAccuracyDashboardTab() {
           </thead>
           <tbody>
             {reassignments.length === 0 && (
-              <tr><td colSpan={4} className="empty">No reassignments in this window.</td></tr>
+              <tr><td colSpan={5} className="empty">No reassignments in this window.</td></tr>
             )}
             {reassignments.map((p, i) => (
               <tr key={i}>
+                <td title={p.user_email || ''}>
+                  {p.user_display_name || p.user_email || '(unknown)'}
+                </td>
                 <td><code>{p.from || '—'}</code></td>
                 <td>
                   <code>{p.to || '—'}</code>
@@ -333,66 +307,6 @@ function AdminAccuracyDashboardTab() {
                 <td className="num">{formatPercent(a.match_rate)}</td>
               </tr>
             ))}
-          </tbody>
-        </table>
-      </section>
-
-      <section className="accuracy-panel">
-        <header>
-          <h3>Confidence calibration</h3>
-          <p>
-            When the AI says it's <em>X%</em> sure, is it actually right <em>X%</em> of the time?
-            Drift = actual − expected. Greyed rows have too few samples to trust (n &lt; {LOW_SAMPLE_THRESHOLD}).
-          </p>
-        </header>
-        <table className="accuracy-table cal-table">
-          <thead>
-            <tr>
-              <th>Confidence bucket</th>
-              <th className="num">Samples</th>
-              <th className="num">Actual</th>
-              <th className="num">Expected</th>
-              <th className="num">Drift</th>
-              <th>Visual (actual vs. expected)</th>
-            </tr>
-          </thead>
-          <tbody>
-            {calibration.map((b, i) => {
-              const expected = ((i * 10) + 5) / 100; // bucket midpoint
-              const actual = b.actual_accuracy;
-              const hasActual = actual !== null && actual !== undefined;
-              const drift = hasActual ? (actual - expected) : null;
-              const lowSample = (b.sample_count || 0) < LOW_SAMPLE_THRESHOLD;
-              return (
-                <tr key={i} className={lowSample ? 'cal-row-low-sample' : ''}>
-                  <td>
-                    {b.bucket_label}
-                    {lowSample && <span className="low-sample-tag">low sample</span>}
-                  </td>
-                  <td className="num">{b.sample_count || 0}</td>
-                  <td className="num">{formatPercent(actual)}</td>
-                  <td className="num">{formatPercent(expected, 0)}</td>
-                  <td className={`num ${lowSample ? '' : driftClass(drift)}`}>
-                    {lowSample ? '—' : formatSignedPP(drift)}
-                  </td>
-                  <td>
-                    <div className="cal-bar">
-                      {hasActual && (
-                        <div
-                          className="cal-bar-fill"
-                          style={{ width: `${(actual * 100).toFixed(0)}%` }}
-                        />
-                      )}
-                      <div
-                        className="cal-expected-marker"
-                        style={{ left: `${(expected * 100).toFixed(0)}%` }}
-                        title={`Expected ${(expected * 100).toFixed(0)}%`}
-                      />
-                    </div>
-                  </td>
-                </tr>
-              );
-            })}
           </tbody>
         </table>
       </section>

@@ -193,13 +193,13 @@ app.get('/admin-dashboard/api/stats', adminDashboardController.requireSession, a
 // remove the layer entirely. See plan/AI_ACCURACY_TRACKING_IMPLEMENTATION_PLAN.md.
 // =============================================================================
 
-// Dedicated limiter (200/min) — each dashboard refresh fires ~6 parallel
-// requests (orgs + 5 panels), and changing a filter retriggers all of them.
+// Dedicated limiter (200/min) — each dashboard refresh fires several parallel
+// requests (orgs + summary/wrong-pairs/by-app/recent-mistakes), and changing
+// a filter retriggers all of them.
 app.get('/api/forge/accuracy/orgs',             accuracyDashboardLimiter, forgeAuthMiddleware, accuracyDashboardController.listOrgs);
 app.get('/api/forge/accuracy/summary',          accuracyDashboardLimiter, forgeAuthMiddleware, accuracyDashboardController.getSummary);
 app.get('/api/forge/accuracy/wrong-pairs',      accuracyDashboardLimiter, forgeAuthMiddleware, accuracyDashboardController.getWrongPairs);
 app.get('/api/forge/accuracy/by-app',           accuracyDashboardLimiter, forgeAuthMiddleware, accuracyDashboardController.getByApp);
-app.get('/api/forge/accuracy/calibration',      accuracyDashboardLimiter, forgeAuthMiddleware, accuracyDashboardController.getCalibration);
 app.get('/api/forge/accuracy/recent-mistakes',  accuracyDashboardLimiter, forgeAuthMiddleware, accuracyDashboardController.getRecentMistakes);
 
 // =============================================================================
