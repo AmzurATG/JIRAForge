@@ -336,7 +336,7 @@ load_dotenv()
 
 # Application version - IMPORTANT: Update this when releasing new versions
 # This is used for update checking and notifications
-APP_VERSION = "1.4.9"
+APP_VERSION = "1.4.0"
 
 # Hard-disable screenshot monitoring/storage in desktop app.
 # OCR text extraction for activity records still runs via event-based flow.
@@ -6508,7 +6508,13 @@ class TimeTracker:
             return False
 
     def _send_heartbeat(self):
-        """Send heartbeat to Supabase to indicate app is still running"""
+        """Send heartbeat to Supabase to indicate app is still running.
+        
+        CRITICAL: Validates JWT before UPDATE to prevent silent failures.
+        Pattern copied from batch upload (line 8243) which includes developer
+        comment: "JWT expires after ~1 hour; without this check, all uploads
+        silently fail"
+        """
         if not self.current_user_id or self.current_user_id.startswith('anonymous_'):
             return
 
@@ -6517,15 +6523,48 @@ class TimeTracker:
             if not client:
                 return
 
-            client.table('users').update({
+            # CRITICAL: Ensure JWT is valid before sending heartbeat
+            # (JWT expires after 1 hour; without this check, updates silently fail)
+            sb_expires_at = self.auth_manager.tokens.get('supabase_token_expires_at', 0)
+            if sb_expires_at and time.time() > (sb_expires_at - 300):
+                print("[HEARTBEAT] Supabase JWT expired — refreshing before update...")
+                if not self._set_supabase_jwt():
+                    print("[HEARTBEAT] JWT refresh failed — heartbeat skipped (will retry in 4 hours)")
+                    # Log to admin panel for visibility
+                    self.add_admin_log('WARN', 'Heartbeat skipped: JWT refresh failed. Re-login may be required.')
+                    return  # Skip this heartbeat, don't proceed with expired JWT
+            elif not sb_expires_at:
+                # No expiry info stored — proactively refresh to be safe
+                print("[HEARTBEAT] No JWT expiry info — refreshing proactively...")
+                if not self._set_supabase_jwt():
+                    print("[HEARTBEAT] Proactive JWT refresh failed — proceeding with caution")
+                    # Don't return - attempt the update anyway (JWT might still be valid)
+
+            result = client.table('users').update({
                 'desktop_last_heartbeat': datetime.now(timezone.utc).isoformat(),
                 'desktop_app_version': self.app_version
             }).eq('id', self.current_user_id).execute()
 
-            print(f"[OK] Heartbeat sent (v{self.app_version})")
+            # CRITICAL: Verify the update actually affected a row
+            # Empty result.data means RLS blocked the write (expired JWT or wrong supabase_user_id)
+            if not result.data or len(result.data) == 0:
+                print(f"[WARN] Heartbeat update affected 0 rows - RLS may be blocking update")
+                print(f"[WARN] User ID: {self.current_user_id}, Version: {self.app_version}")
+                print(f"[WARN] This usually means JWT is expired or supabase_user_id is incorrect")
+                # Log to admin panel with diagnostic info
+                self.add_admin_log('ERROR', 
+                    f'Heartbeat failed: UPDATE affected 0 rows (version={self.app_version}). '
+                    f'Re-login may be required. User ID: {self.current_user_id}'
+                )
+            else:
+                print(f"[OK] Heartbeat sent (v{self.app_version})")
 
         except Exception as e:
             print(f"[WARN] Failed to send heartbeat: {e}")
+            # Log exception to admin panel with full traceback
+            import traceback
+            error_detail = traceback.format_exc()
+            self.add_admin_log('ERROR', f'Heartbeat exception: {str(e)}\n{error_detail}')
 
     def _associate_offline_records(self):
         """Associate any anonymous offline records with the current user"""
@@ -9937,7 +9976,7 @@ class TimeTracker:
             heartbeat_counter = 0
             heartbeat_interval = 480  # Send heartbeat every 480 iterations (4 hours at 30s interval)
             token_refresh_counter = 0
-            token_refresh_interval = 20  # Check token expiry every 20 iterations (~10 min at 30s)
+            token_refresh_interval = 10  # Check token expiry every 10 iterations (~5 min at 30s interval)
 
             # Send initial heartbeat immediately on thread start
             if self.current_user_id and not self.current_user_id.startswith('anonymous_'):
