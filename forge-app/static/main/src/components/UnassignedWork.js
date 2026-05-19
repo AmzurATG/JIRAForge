@@ -32,6 +32,16 @@ function UnassignedWork() {
   const [savingNotificationSettings, setSavingNotificationSettings] = useState(false);
   const unassignedRequestIdRef = useRef(0);
 
+  // Date range filter state
+  const [dateFrom, setDateFrom] = useState('');
+  const [dateTo, setDateTo] = useState('');
+  // How many activity records actually fall in the selected date range
+  // (null = no filter active; number = count returned by the resolver)
+
+  const isFirstRender = useRef(true);
+  // True after the first successful load — used to avoid full-page loader on filter reloads
+  const hasLoadedOnce = useRef(false);
+
   // Hoisted group-detail / work-session caches.
   // Lifted out of GroupAccordion so the upcoming multi-select layer can read
   // session_ids and per-interval data without expanding the accordion.
@@ -39,6 +49,13 @@ function UnassignedWork() {
   const [loadingDetails, setLoadingDetails] = useState({});
   const [groupWorkSessions, setGroupWorkSessions] = useState({});
   const [loadingWorkSessions, setLoadingWorkSessions] = useState({});
+
+  const clearGroupCaches = () => {
+    setGroupDetails({});
+    setGroupWorkSessions({});
+    setFullySelectedGroups(new Set());
+    setSelectedIntervalsByGroup(new Map());
+  };
 
   const loadGroupDetails = async (groupId) => {
     if (groupDetails[groupId]) return groupDetails[groupId];
@@ -64,7 +81,11 @@ function UnassignedWork() {
     if (!sessionIds || sessionIds.length === 0) return [];
     setLoadingWorkSessions(prev => ({ ...prev, [groupId]: true }));
     try {
-      const result = await invoke('getGroupWorkSessions', { sessionIds });
+      const result = await invoke('getGroupWorkSessions', {
+        sessionIds,
+        ...(dateFrom ? { dateFrom } : {}),
+        ...(dateTo ? { dateTo } : {})
+      });
       if (result?.success) {
         const dateGroups = result.dateGroups || [];
         setGroupWorkSessions(prev => ({ ...prev, [groupId]: dateGroups }));
@@ -325,6 +346,17 @@ function UnassignedWork() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Reload when date filter changes (skip the initial mount)
+  useEffect(() => {
+    if (isFirstRender.current) {
+      isFirstRender.current = false;
+      return;
+    }
+    clearGroupCaches();
+    loadUnassignedWork(false, 0, { dateFrom, dateTo });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dateFrom, dateTo]);
+
   const loadNotificationSettings = async () => {
     try {
       const result = await invoke('getUnassignedNotificationSettings');
@@ -357,7 +389,7 @@ function UnassignedWork() {
     }
   };
 
-  const loadUnassignedWork = async (append = false, retryCount = 0) => {
+  const loadUnassignedWork = async (append = false, retryCount = 0, dateOverrides = null) => {
     const MAX_RETRIES = 5;
     const RETRY_DELAY_MS = 3000;
     const requestId = unassignedRequestIdRef.current + 1;
@@ -370,12 +402,22 @@ function UnassignedWork() {
 
     try {
       const offset = append ? nextOffset : 0;
+      const activeDateFrom = dateOverrides ? dateOverrides.dateFrom : dateFrom;
+      const activeDateTo = dateOverrides ? dateOverrides.dateTo : dateTo;
+
+      const groupsPayload = { limit: GROUPS_PER_PAGE, offset };
+      if (activeDateFrom) groupsPayload.dateFrom = activeDateFrom;
+      if (activeDateTo) groupsPayload.dateTo = activeDateTo;
+
+      const sessionsPayload = { limit: 100 };
+      if (activeDateFrom) sessionsPayload.dateFrom = activeDateFrom;
+      if (activeDateTo) sessionsPayload.dateTo = activeDateTo;
 
       // Fetch groups and sessions independently so a failure in one
       // request doesn't prevent the other result from being processed
       const [groupsOutcome, sessionsOutcome] = await Promise.allSettled([
-        invoke('getUnassignedGroups', { limit: GROUPS_PER_PAGE, offset }),
-        !append ? invoke('getUnassignedWork', { limit: 100 }) : Promise.resolve(null)
+        invoke('getUnassignedGroups', groupsPayload),
+        !append ? invoke('getUnassignedWork', sessionsPayload) : Promise.resolve(null)
       ]);
 
       const groupsResult = groupsOutcome.status === 'fulfilled'
@@ -403,22 +445,26 @@ function UnassignedWork() {
           setGroups(prev => [...prev, ...newGroups]);
         } else {
           setGroups(newGroups);
+          // matched_activity_count: null = no filter, number = sessions in date range
+
         }
 
         setHasMoreGroups(groupsResult.has_more || false);
         setNextOffset(groupsResult.next_offset || 0);
         setTotalGroups(groupsResult.total_groups || 0);
 
+        hasLoadedOnce.current = true;
         setLoading(false);
         setLoadingMore(false);
       } else if (!append && sessionsResult?.success && (sessionsResult.sessions || []).length > 0) {
         // Groups failed but sessions loaded — show what we have
         console.warn('[UnassignedWork] Groups query failed but sessions loaded:', groupsResult.error);
+        hasLoadedOnce.current = true;
         setLoading(false);
         setLoadingMore(false);
       } else if (!append && retryCount < MAX_RETRIES) {
         console.warn(`[UnassignedWork] Attempt ${retryCount + 1} failed, retrying in ${RETRY_DELAY_MS}ms...`, groupsResult.error);
-        setTimeout(() => loadUnassignedWork(false, retryCount + 1), RETRY_DELAY_MS);
+        setTimeout(() => loadUnassignedWork(false, retryCount + 1, dateOverrides), RETRY_DELAY_MS);
       } else {
         console.error('[UnassignedWork] Load failed:', groupsResult.error);
         setError(groupsResult.error || 'Failed to load unassigned work');
@@ -431,7 +477,7 @@ function UnassignedWork() {
       }
       if (!append && retryCount < MAX_RETRIES) {
         console.warn(`[UnassignedWork] Attempt ${retryCount + 1} threw, retrying in ${RETRY_DELAY_MS}ms...`, err);
-        setTimeout(() => loadUnassignedWork(false, retryCount + 1), RETRY_DELAY_MS);
+        setTimeout(() => loadUnassignedWork(false, retryCount + 1, dateOverrides), RETRY_DELAY_MS);
       } else {
         console.error('[UnassignedWork] Load error:', err);
         setError(err.message || 'Failed to load unassigned work');
@@ -649,19 +695,33 @@ This will permanently dismiss these sessions from clustering. They won't appear 
   }, [groups, groupTypeTab, quickFilter]);
 
   // Summary calculations
+  const hasActiveFilter = !!(dateFrom || dateTo);
+
   const getTotalTime = (groupList = groups) => {
-    return groupList.reduce((sum, g) => sum + (g.total_seconds || 0), 0);
+    return groupList.reduce((sum, g) => {
+      if (hasActiveFilter && g.filtered_total_seconds !== null && g.filtered_total_seconds !== undefined) {
+        return sum + (g.filtered_total_seconds || 0);
+      }
+      return sum + (g.total_seconds || 0);
+    }, 0);
   };
 
   const getTotalSessions = (groupList = groups) => {
-    return groupList.reduce((sum, g) => sum + (g.session_count || 0), 0);
+    return groupList.reduce((sum, g) => {
+      if (hasActiveFilter && g.filtered_session_count !== null && g.filtered_session_count !== undefined) {
+        return sum + (g.filtered_session_count || 0);
+      }
+      return sum + (g.session_count || 0);
+    }, 0);
   };
 
-  if (loading) {
+  // Full-page loader only on the very first load (before any data has ever been shown)
+  if (loading && !hasLoadedOnce.current) {
     return <div className="unassigned-work-container"><div className="loading">Loading unassigned work...</div></div>;
   }
 
-  if (error && sessions.length === 0 && groups.length === 0) {
+  // Full-page error / empty only when we've never successfully loaded anything
+  if (!hasLoadedOnce.current && error && sessions.length === 0 && groups.length === 0) {
     return (
       <div className="unassigned-work-container">
         <h2>Unassigned Work</h2>
@@ -674,7 +734,7 @@ This will permanently dismiss these sessions from clustering. They won't appear 
     );
   }
 
-  if (sessions.length === 0 && groups.length === 0) {
+  if (!hasLoadedOnce.current && sessions.length === 0 && groups.length === 0) {
     return (
       <div className="unassigned-work-container">
         <h2>Unassigned Work</h2>
@@ -707,16 +767,55 @@ This will permanently dismiss these sessions from clustering. They won't appear 
         </div>
         <div className="unassigned-work-summary">
           <span className="summary-item">
-            <strong>{getTotalSessions(displayedGroups)}</strong> sessions
+            {/* When a date filter is active, show the count of sessions that actually
+                fall in the chosen date range (from the resolver's matched_activity_count).
+                Without a filter, show the sum of session_count across displayed groups. */}
+            <strong>{getTotalSessions(displayedGroups)}</strong>{' '}sessions
           </span>
           <span className="summary-divider">•</span>
           <span className="summary-item">
-            <strong>{displayedGroups.length}</strong> groups
+            <strong>{totalGroups > 0 ? totalGroups : displayedGroups.length}</strong> groups
           </span>
           <span className="summary-divider">•</span>
           <span className="summary-item">
             <strong>{formatTime(getTotalTime(displayedGroups))}</strong> total time
           </span>
+          {(dateFrom || dateTo) && (
+            <span className="summary-filter-note">· filtered by date</span>
+          )}
+        </div>
+
+        <div className="date-filter-row">
+          <label className="date-filter-label" htmlFor="uw-date-from">From</label>
+          <input
+            id="uw-date-from"
+            type="date"
+            className="date-filter-input"
+            value={dateFrom}
+            max={dateTo || undefined}
+            onChange={(e) => setDateFrom(e.target.value)}
+            aria-label="Filter from date"
+          />
+          <label className="date-filter-label" htmlFor="uw-date-to">To</label>
+          <input
+            id="uw-date-to"
+            type="date"
+            className="date-filter-input"
+            value={dateTo}
+            min={dateFrom || undefined}
+            onChange={(e) => setDateTo(e.target.value)}
+            aria-label="Filter to date"
+          />
+          {(dateFrom || dateTo) && (
+            <button
+              type="button"
+              className="date-filter-clear-btn"
+              onClick={() => { setDateFrom(''); setDateTo(''); }}
+              aria-label="Clear date filter"
+            >
+              ✕ Clear
+            </button>
+          )}
         </div>
 
         <div className="quick-filter-row" role="group" aria-label="Quick filters">
@@ -758,7 +857,37 @@ This will permanently dismiss these sessions from clustering. They won't appear 
         </div>
       </div>
 
-      {displayedGroups.length > 0 && (
+      {/* Inline loading indicator — shown when re-fetching after a filter change */}
+      {loading && (
+        <div className="loading">Loading unassigned work...</div>
+      )}
+
+      {/* Inline error state — shown when a filter reload fails */}
+      {!loading && error && groups.length === 0 && sessions.length === 0 && (
+        <div className="empty-state">
+          <p>Unable to load unassigned work data.</p>
+          <p className="empty-subtitle">{error}</p>
+          <button className="retry-btn" onClick={() => loadUnassignedWork(false, 0, dateFrom || dateTo ? { dateFrom, dateTo } : null)}>Retry</button>
+        </div>
+      )}
+
+      {/* Empty state — no groups (and no sessions) for the selected date range */}
+      {!loading && !error && groups.length === 0 && sessions.length === 0 && (dateFrom || dateTo) && (
+        <div className="no-groups-message">
+          <p>No unassigned work found for the selected date range.</p>
+          <p>Try adjusting the dates or clearing the filter to see all sessions.</p>
+        </div>
+      )}
+
+      {/* Empty state — no data at all, no filter active */}
+      {!loading && !error && groups.length === 0 && sessions.length === 0 && !(dateFrom || dateTo) && (
+        <div className="no-groups-message">
+          <p>Great job! You don't have any unassigned work sessions.</p>
+          <p>All your work time has been assigned to Jira issues.</p>
+        </div>
+      )}
+
+      {!loading && displayedGroups.length > 0 && (
         <AiDisclaimer 
           notificationsEnabled={notificationsEnabled}
           onToggleNotifications={handleToggleNotifications}
@@ -766,27 +895,39 @@ This will permanently dismiss these sessions from clustering. They won't appear 
         />
       )}
 
-      {displayedGroups.length === 0 && groups.length > 0 && (
+      {!loading && displayedGroups.length === 0 && groups.length > 0 && (
         <div className="no-groups-message">
           <p>No groups found for this filter.</p>
           <p>Try switching tabs or quick filters to view more sessions.</p>
         </div>
       )}
 
-      {groups.length === 0 && sessions.length > 0 && (
+      {/* Sessions exist in the date range but AI hasn't grouped them yet
+           (clustering job runs on a delay — typically takes a few hours after activity) */}
+      {!loading && groups.length === 0 && sessions.length > 0 && (
         <div className="no-groups-message">
-          <p>No groups available yet.</p>
-          <p>Groups are created automatically when work sessions are analyzed.</p>
-          <p>Check back shortly.</p>
+          {(dateFrom || dateTo) ? (
+            <>
+              <p>Your sessions from this period haven't been grouped yet.</p>
+              <p>The AI analyzes and groups your work sessions automatically, usually within a few hours. Check back later or clear the date filter to see already-grouped sessions.</p>
+            </>
+          ) : (
+            <>
+              <p>No groups available yet.</p>
+              <p>Groups are created automatically when work sessions are analyzed.</p>
+              <p>Check back shortly.</p>
+            </>
+          )}
         </div>
       )}
 
-      <GroupAccordion
+      {!loading && <GroupAccordion
         groups={displayedGroups}
         hasMoreGroups={hasMoreGroups}
         totalGroups={totalGroups}
         loadingMore={loadingMore}
         onLoadMore={loadMoreGroups}
+        hasDateFilter={hasActiveFilter}
         onAssignClick={handleAssignClick}
         onDismissGroup={handleDismissGroup}
         onDismissMember={handleDismissMember}
@@ -803,7 +944,7 @@ This will permanently dismiss these sessions from clustering. They won't appear 
         onToggleIntervalSelection={toggleIntervalSelection}
         pendingFullSelectGroupIds={pendingFullSelectGroupIds}
         hasAnySelection={selectionSummary.groupCount > 0}
-      />
+      />}
 
       <SelectionBar
         groupCount={selectionSummary.groupCount}
