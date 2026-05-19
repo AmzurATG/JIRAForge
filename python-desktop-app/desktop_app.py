@@ -336,7 +336,7 @@ load_dotenv()
 
 # Application version - IMPORTANT: Update this when releasing new versions
 # This is used for update checking and notifications
-APP_VERSION = "1.4.1"
+APP_VERSION = "1.4.2"
 
 # Hard-disable screenshot monitoring/storage in desktop app.
 # OCR text extraction for activity records still runs via event-based flow.
@@ -1895,25 +1895,32 @@ class AtlassianAuthManager:
             if not os.path.exists(self.store_path):
                 return
 
-            # Use SecureTokenStorage's migration method
+            # Read the old file BEFORE calling migrate_from_plaintext(), which
+            # deletes it.  This preserves non-sensitive metadata (including
+            # supabase_token_expires_at) so it can be written to auth_metadata.json.
+            old_data = {}
+            try:
+                with open(self.store_path, 'r') as f:
+                    old_data = json.load(f)
+            except Exception as read_err:
+                print(f"[WARN] Could not read old token file before migration: {read_err}")
+
+            # Use SecureTokenStorage's migration method (deletes store_path on success)
             migrated = self.secure_storage.migrate_from_plaintext(self.store_path)
             
             if migrated:
                 print("[OK] Migrated tokens from plaintext to secure storage")
                 
-                # Extract metadata (non-sensitive data) and save separately
+                # Save non-sensitive metadata (e.g. supabase_token_expires_at, expires_at)
+                # to auth_metadata.json using the data we read before deletion.
                 try:
-                    with open(self.store_path, 'r') as f:
-                        old_data = json.load(f)
-                    
-                    # Save non-sensitive metadata separately
                     metadata = {k: v for k, v in old_data.items() if k not in SENSITIVE_TOKEN_KEYS}
                     if metadata:
                         with open(self.metadata_path, 'w') as f:
                             json.dump(metadata, f)
-                        print(f"[OK] Saved non-sensitive metadata separately")
-                except Exception:
-                    pass  # Non-critical
+                        print(f"[OK] Saved non-sensitive metadata separately (migration)")
+                except Exception as meta_err:
+                    print(f"[WARN] Could not save metadata during migration: {meta_err}")
 
         except Exception as e:
             print(f"[WARN] Migration to secure storage failed: {e}")
@@ -2462,10 +2469,30 @@ class AtlassianAuthManager:
         return None
 
     def get_supabase_config(self):
-        """Fetch Supabase configuration from AI Server (requires valid Atlassian token)"""
+        """Fetch Supabase configuration from AI Server (requires valid Atlassian token).
+        
+        Caches the fetched URL and anon key in auth_metadata.json (TTL: 24 hours) so that
+        brief AI server outages at startup do not permanently break Supabase initialization.
+        The cached values are non-sensitive (anon key is intentionally public-facing).
+        """
+        # --- Use local cache if fresh enough ---
+        cached_url = self.tokens.get('cached_supabase_url')
+        cached_anon_key = self.tokens.get('cached_supabase_anon_key')
+        cached_at = self.tokens.get('cached_supabase_config_at', 0)
+        CACHE_TTL = 86400  # 24 hours — refresh once a day at most
+        if cached_url and cached_anon_key and (time.time() - cached_at) < CACHE_TTL:
+            print("[INFO] Using locally cached Supabase config (last fetched <24h ago)")
+            set_runtime_supabase_config(cached_url, cached_anon_key)
+            return True
+
         access_token = self.tokens.get('access_token')
         if not access_token:
             print("[ERROR] No valid Atlassian token - cannot fetch Supabase config")
+            # Fall back to stale cache rather than failing completely
+            if cached_url and cached_anon_key:
+                print("[WARN] Using stale cached Supabase config (no access token for refresh)")
+                set_runtime_supabase_config(cached_url, cached_anon_key)
+                return True
             return False
 
         try:
@@ -2497,17 +2524,34 @@ class AtlassianAuthManager:
                 print(f"[ERROR] Failed to get Supabase config: {result.get('error', 'Unknown error')}")
                 return False
 
+            supabase_url = result.get('supabase_url')
+            supabase_anon_key = result.get('supabase_anon_key')
+
             # Store the Supabase config in runtime config
             # Only URL and anon key are needed — JWT provides identity for RLS
-            set_runtime_supabase_config(
-                result.get('supabase_url'),
-                result.get('supabase_anon_key')
-            )
+            set_runtime_supabase_config(supabase_url, supabase_anon_key)
+
+            # Cache to auth_metadata.json so next startup works even if AI server is briefly down.
+            # The anon key is intentionally public-facing (safe to store locally).
+            self.tokens['cached_supabase_url'] = supabase_url
+            self.tokens['cached_supabase_anon_key'] = supabase_anon_key
+            self.tokens['cached_supabase_config_at'] = time.time()
+            try:
+                self._save_tokens()
+            except Exception as cache_err:
+                print(f"[WARN] Could not cache Supabase config locally: {cache_err}")
+
             return True
 
         except Exception as e:
             print(f"[ERROR] Failed to fetch Supabase config: {e}")
+            # Fall back to stale cache on network errors so startup can proceed
+            if cached_url and cached_anon_key:
+                print("[WARN] Using stale cached Supabase config after network error")
+                set_runtime_supabase_config(cached_url, cached_anon_key)
+                return True
             return False
+
     
     def get_ocr_config(self):
         """
@@ -5240,8 +5284,11 @@ class TimeTracker:
             dict with update info or None if no update/error
         """
         try:
-            # Check connectivity first - fail fast if offline
-            if not self.offline_manager.check_connectivity():
+            # Check connectivity first - fail fast if offline.
+            # When force=True (manual check / startup), bypass the 30-second cache so a
+            # stale "offline" result from a previous failed probe doesn't silently block
+            # the check (common right after system boot or a brief network blip).
+            if not self.offline_manager.check_connectivity(force=force):
                 print("[INFO] Offline - skipping update check")
                 self.add_admin_log('INFO', 'Update check skipped (offline)')
                 return None
@@ -6610,7 +6657,8 @@ class TimeTracker:
 
             result = client.table('users').update({
                 'desktop_last_heartbeat': datetime.now(timezone.utc).isoformat(),
-                'desktop_app_version': self.app_version
+                'desktop_app_version': self.app_version,
+                'desktop_logged_in': True   # Heartbeat proves the app is running; repair stale false
             }).eq('id', self.current_user_id).execute()
 
             # CRITICAL: Verify the update actually affected a row
@@ -6619,6 +6667,16 @@ class TimeTracker:
                 print(f"[WARN] Heartbeat update affected 0 rows - RLS may be blocking update")
                 print(f"[WARN] User ID: {self.current_user_id}, Version: {self.app_version}")
                 print(f"[WARN] This usually means JWT is expired or supabase_user_id is incorrect")
+                # Force a JWT refresh and retry immediately rather than waiting 4 more hours
+                if self._set_supabase_jwt():
+                    retry_result = client.table('users').update({
+                        'desktop_last_heartbeat': datetime.now(timezone.utc).isoformat(),
+                        'desktop_app_version': self.app_version,
+                        'desktop_logged_in': True
+                    }).eq('id', self.current_user_id).execute()
+                    if retry_result.data and len(retry_result.data) > 0:
+                        print(f"[OK] Heartbeat retry succeeded after JWT refresh (v{self.app_version})")
+                        return
                 # Log to admin panel with diagnostic info
                 self.add_admin_log('ERROR', 
                     f'Heartbeat failed: UPDATE affected 0 rows (version={self.app_version}). '
@@ -10045,6 +10103,8 @@ class TimeTracker:
             heartbeat_interval = 480  # Send heartbeat every 480 iterations (4 hours at 30s interval)
             token_refresh_counter = 0
             token_refresh_interval = 10  # Check token expiry every 10 iterations (~5 min at 30s interval)
+            supabase_reinit_counter = 0
+            supabase_reinit_interval = 60  # Retry Supabase init every 30 min (60 × 30s) if it failed at startup
 
             # Send initial heartbeat immediately on thread start
             if self.current_user_id and not self.current_user_id.startswith('anonymous_'):
@@ -10055,6 +10115,28 @@ class TimeTracker:
 
             while self.running:
                 try:
+                    # Background Supabase re-initialization: if initialize_supabase() failed at
+                    # startup (e.g. AI server was briefly unavailable), retry every 30 minutes
+                    # so the session can self-heal without requiring a manual re-login or reboot.
+                    if not self.supabase_initialized and self.auth_manager.is_authenticated():
+                        supabase_reinit_counter += 1
+                        if supabase_reinit_counter >= supabase_reinit_interval:
+                            supabase_reinit_counter = 0
+                            print("[INFO] Supabase not initialized — attempting background re-initialization...")
+                            try:
+                                if self.initialize_supabase():
+                                    print("[OK] Supabase re-initialized successfully in background")
+                                    # Push version + logged-in status now that DB is reachable
+                                    if self.current_user_id and not self.current_user_id.startswith('anonymous_'):
+                                        try:
+                                            self._update_desktop_status(logged_in=True)
+                                        except Exception as ds_err:
+                                            print(f"[WARN] Could not update desktop status after re-init: {ds_err}")
+                            except Exception as ri_err:
+                                print(f"[WARN] Background Supabase re-init failed: {ri_err}")
+                    else:
+                        supabase_reinit_counter = 0  # Reset counter once initialized
+
                     # Sync offline data only when tracking is active
                     if self.tracking_active and self.current_user_id:
                         self.sync_offline_data()
@@ -10286,8 +10368,13 @@ class TimeTracker:
                 should_check_normal = time.time() - self.last_version_check_time > self.version_check_interval
                 should_retry_download = self.update_manager and self.update_manager.should_retry_download()
                 
-                if should_check_normal or should_retry_download:
+                if should_check_normal:
                     self.check_for_app_updates(show_notification=True)
+                elif should_retry_download:
+                    # force=True is required here — without it, check_for_app_updates returns
+                    # cached info early because the 4-hour cooldown hasn't elapsed yet (only 30 min has)
+                    print("[INFO] Retrying failed update download (30-minute retry interval)...")
+                    self.check_for_app_updates(show_notification=True, force=True)
                 
                 # Check for idle timeout (use configurable threshold)
                 idle_duration = time.time() - self.last_activity_time
@@ -11031,8 +11118,35 @@ class TimeTracker:
                 
                 # Force update check in background thread to avoid blocking tray UI
                 def check_in_background():
-                    self.check_for_app_updates(show_notification=True, force=True)
-                
+                    result = self.check_for_app_updates(show_notification=True, force=True)
+                    # Show result notification — without this the user only ever sees
+                    # the "Checking for Updates" toast and gets no feedback on outcome.
+                    if WINOTIFY_AVAILABLE:
+                        try:
+                            update_state = self.update_manager.get_status().get('state', 'idle') if self.update_manager else 'idle'
+                            # Only show "up to date" if no download/install is already in progress
+                            if update_state not in ('downloading', 'ready', 'mandatory_ready', 'installing'):
+                                if result is None:
+                                    msg = "Could not reach the update server. Please check your network connection and try again."
+                                    title = "Update Check Failed"
+                                elif not (result or {}).get('update_available', False):
+                                    msg = f"You're running the latest version (v{self.app_version})."
+                                    title = "App is Up to Date"
+                                else:
+                                    # Update was found and download kicked off — download notification
+                                    # is handled by _on_update_manager_state_changed; no extra toast needed.
+                                    return
+                                notification = Notification(
+                                    app_id="Time Tracker",
+                                    title=title,
+                                    msg=msg,
+                                    duration="short"
+                                )
+                                notification.set_audio(audio.Default, loop=False)
+                                notification.show()
+                        except Exception:
+                            pass
+
                 threading.Thread(target=check_in_background, daemon=True).start()
         
         except Exception as e:
@@ -11331,6 +11445,14 @@ class TimeTracker:
                         self.current_user_id = cached_user.get('user_id')
                         print(f"[OK] Using cached credentials for {cached_user.get('email', 'User')}")
                         print("[INFO] Will retry authentication in the background")
+                        # If Supabase was already initialized via early init, push the new version
+                        # now rather than waiting for the background reinit cycle.
+                        if self.supabase_initialized and self.current_user_id:
+                            try:
+                                self._update_desktop_status(logged_in=True)
+                                print("[OK] Desktop status updated from cached-fallback path")
+                            except Exception as ds_err:
+                                print(f"[WARN] Could not update desktop status in fallback path: {ds_err}")
                     else:
                         # No cache AND no server response — only NOW force re-auth
                         print("[WARN] No cached credentials available, please re-authenticate")
