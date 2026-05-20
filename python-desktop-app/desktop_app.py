@@ -1874,6 +1874,8 @@ class AtlassianAuthManager:
         self._refresh_token_invalid = False
         self._refresh_fail_count = 0
         self._refresh_invalid_set_at = 0  # timestamp when _refresh_token_invalid was set
+        self._last_refresh_fail_time = 0
+        self._last_refresh_error_code = ''
 
         # Initialize secure storage
         self.secure_storage = SecureTokenStorage(get_app_data_dir())
@@ -2118,6 +2120,7 @@ class AtlassianAuthManager:
         self._refresh_fail_count = 0  # Reset consecutive failure counter
         self._refresh_invalid_set_at = 0  # Clear grace-period timestamp
         self._last_refresh_fail_time = 0  # Reset failure window
+        self._last_refresh_error_code = ''
 
         print("[OK] OAuth tokens received via AI Server")
         return result
@@ -2225,6 +2228,7 @@ class AtlassianAuthManager:
 
             refresh_token = refresh_token_now or refresh_token_before
             if not refresh_token:
+                self._last_refresh_error_code = 'OAUTH_REAUTH_REQUIRED'
                 return False
 
             print("[INFO] Refreshing access token via AI Server...")
@@ -2247,14 +2251,24 @@ class AtlassianAuthManager:
                     # NOT for transient errors that happen to contain the word "invalid".
                     # Atlassian returns 'invalid_grant' when the refresh token is truly revoked/expired.
                     error_lower = str(error).lower()
-                    is_permanent_failure = (
-                        error_data.get('requiresReauth') or
-                        'invalid_grant' in error_lower or
-                        'refresh token is invalid' in error_lower or
-                        'token has been revoked' in error_lower or
-                        'token has been expired' in error_lower or
-                        response.status_code == 403
-                    )
+                    error_code = str(error_data.get('errorCode', '')).upper()
+                    if error_code == 'OAUTH_REAUTH_REQUIRED':
+                        is_permanent_failure = True
+                    elif error_code == 'OAUTH_TEMPORARY_FAILURE':
+                        is_permanent_failure = False
+                    else:
+                        is_permanent_failure = (
+                            error_data.get('requiresReauth') or
+                            'invalid_grant' in error_lower or
+                            'refresh token is invalid' in error_lower or
+                            'token has been revoked' in error_lower or
+                            'token has been expired' in error_lower
+                        )
+
+                    if not error_code:
+                        error_code = 'OAUTH_REAUTH_REQUIRED' if is_permanent_failure else 'OAUTH_TEMPORARY_FAILURE'
+                    self._last_refresh_error_code = error_code
+
                     if is_permanent_failure:
                         # Track consecutive permanent failures with time-windowed counting.
                         # Reset the counter if the last failure was more than 10 minutes ago
@@ -2289,10 +2303,12 @@ class AtlassianAuthManager:
                 self._refresh_fail_count = 0  # Reset consecutive failure counter
                 self._refresh_invalid_set_at = 0  # Clear grace-period timestamp
                 self._last_refresh_fail_time = 0  # Reset failure window
+                self._last_refresh_error_code = ''
                 print("[OK] Access token refreshed successfully via AI Server")
                 return True
             except Exception as e:
                 print(f"[ERROR] Failed to refresh access token: {e}")
+                self._last_refresh_error_code = 'OAUTH_TEMPORARY_FAILURE'
                 return False
 
     def is_authenticated(self):
@@ -2622,6 +2638,7 @@ class AtlassianAuthManager:
         self._refresh_fail_count = 0
         self._refresh_invalid_set_at = 0
         self._last_refresh_fail_time = 0
+        self._last_refresh_error_code = ''
 
         # Clear sensitive tokens from secure storage (keyring + encrypted fallback)
         try:
@@ -8191,28 +8208,41 @@ class TimeTracker:
         except Exception as e:
             print(f"[WARN] Failed to show notification: {e}")
 
-    def _show_reauth_notification(self):
-        """Show a periodic notification that the user needs to re-authenticate (every 15 minutes)"""
+    def _show_reauth_notification(self, reason_code=None):
+        """Show auth notification with reason-specific messaging (throttled every 15 minutes per reason)."""
         now = time.time()
-        last_shown = getattr(self, '_reauth_notification_last_shown', 0)
+        reason = str(reason_code or '').upper()
+        is_temporary = reason == 'OAUTH_TEMPORARY_FAILURE'
+        throttle_attr = '_auth_temp_notification_last_shown' if is_temporary else '_reauth_notification_last_shown'
+        last_shown = getattr(self, throttle_attr, 0)
         if now - last_shown < 900:  # 15 minutes
             return
-        self._reauth_notification_last_shown = now
+        setattr(self, throttle_attr, now)
 
         if not WINOTIFY_AVAILABLE:
-            print("[WARN] Re-authentication required (notification unavailable)")
+            if is_temporary:
+                print("[WARN] Temporary authentication issue (notification unavailable)")
+            else:
+                print("[WARN] Re-authentication required (notification unavailable)")
             return
 
         try:
+            if is_temporary:
+                title = "Authentication Issue"
+                msg = "We could not refresh your session right now. Sync will retry automatically."
+            else:
+                title = "Authentication Expired"
+                msg = "Your session has expired. Please open Time Tracker and log in again to continue syncing with Jira."
+
             notification = Notification(
                 app_id="Time Tracker",
-                title="Authentication Expired",
-                msg="Your session has expired. Please open Time Tracker and log in again to continue syncing with Jira.",
+                title=title,
+                msg=msg,
                 duration="long"
             )
             notification.set_audio(audio.Default, loop=False)
             notification.show()
-            print("[OK] Re-authentication notification shown to user")
+            print(f"[OK] Authentication notification shown to user (reason={reason or 'LEGACY'})")
         except Exception as e:
             print(f"[WARN] Failed to show reauth notification: {e}")
 
@@ -10163,6 +10193,9 @@ class TimeTracker:
                                     print("[OK] Proactive token refresh successful")
                                 else:
                                     print("[WARN] Proactive token refresh failed — will retry on next cycle")
+                                    last_error_code = getattr(self.auth_manager, '_last_refresh_error_code', '')
+                                    if str(last_error_code).upper() == 'OAUTH_TEMPORARY_FAILURE':
+                                        self._show_reauth_notification(last_error_code)
 
                             # Refresh Supabase JWT if near expiry (5-minute buffer)
                             # Uses the (possibly freshly refreshed) Atlassian token to get a new JWT
@@ -10187,9 +10220,9 @@ class TimeTracker:
                                 print("[OK] Session recovered automatically after grace period")
                             else:
                                 print("[WARN] Recovery refresh failed — will show re-auth notification")
-                                self._show_reauth_notification()
+                                self._show_reauth_notification(getattr(self.auth_manager, '_last_refresh_error_code', None))
                         else:
-                            self._show_reauth_notification()
+                            self._show_reauth_notification(getattr(self.auth_manager, '_last_refresh_error_code', None))
 
                 except Exception as e:
                     print(f"[ERROR] Sync thread error: {e}")
