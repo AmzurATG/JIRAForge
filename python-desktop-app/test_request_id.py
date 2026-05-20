@@ -32,11 +32,28 @@ def test_idle_record_structure():
         'application_name': 'System',
         'classification': 'idle',
         'is_idle': True,
+        'idle_start_time': idle_start_time.isoformat(),
+        'idle_end_time': idle_end.isoformat(),
+        'ocr_text': None,  # FIX: All batch records must have same fields (PGRST102)
+        'ocr_method': None,
+        'ocr_confidence': None,
+        'ocr_error_message': None,
+        'total_time_seconds': idle_duration,
+        'visit_count': 1,  # FIX: PGRST102
         'start_time': idle_start_time.isoformat(),
         'end_time': idle_end.isoformat(),
         'duration_seconds': idle_duration,
+        'work_date': idle_start_time.date().isoformat(),
+        'user_timezone': 'UTC',
+        'project_key': None,
+        'user_assigned_issues': None,  # FIX: PGRST102
         'status': 'analyzed',
         'request_id': str(uuid.uuid4()),  # This should be present
+        'metadata': {
+            'tracking_mode': 'idle_detection',
+            'idle_reason': 'idle timeout',
+            'app_version': '1.0.0'
+        }
     }
     
     # Verify request_id exists and is valid
@@ -44,7 +61,17 @@ def test_idle_record_structure():
     assert record['request_id'] is not None, "request_id should not be None"
     assert isinstance(record['request_id'], str), "request_id should be string"
     assert len(record['request_id']) == 36, "UUID string should be 36 chars (with dashes)"
+    
+    # Verify required fields for batch upload compatibility
+    assert 'ocr_text' in record, "Idle record should have ocr_text field (NULL for idle)"
+    assert 'ocr_method' in record, "Idle record should have ocr_method field"
+    assert 'ocr_confidence' in record, "Idle record should have ocr_confidence field"
+    assert 'ocr_error_message' in record, "Idle record should have ocr_error_message field"
+    assert 'visit_count' in record, "Idle record should have visit_count field"
+    assert 'user_assigned_issues' in record, "Idle record should have user_assigned_issues field"
+    
     print(f"✅ Idle record request_id: {record['request_id']}")
+    print(f"✅ Idle record has all required fields for batch upload compatibility")
 
 def test_activity_record_structure():
     """Verify activity record has all required fields including request_id."""

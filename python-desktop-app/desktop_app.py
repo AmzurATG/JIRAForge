@@ -336,7 +336,7 @@ load_dotenv()
 
 # Application version - IMPORTANT: Update this when releasing new versions
 # This is used for update checking and notifications
-APP_VERSION = "1.4.2"
+APP_VERSION = "1.4.3"
 
 # Hard-disable screenshot monitoring/storage in desktop app.
 # OCR text extraction for activity records still runs via event-based flow.
@@ -345,10 +345,10 @@ SCREENSHOT_MONITORING_HARD_DISABLED = True
 # Embedded credentials (for production builds - no .env file needed)
 # SECURITY: All sensitive keys moved to AI Server - fetched at runtime after authentication
 EMBEDDED_CONFIG = {
-    'ATLASSIAN_CLIENT_ID': 'Q8HT4Jn205AuTiAarj088oWNDrOqwvM5',
+    'ATLASSIAN_CLIENT_ID': 'k2Xwzy8c1g3Wk6Xpbeev0x70CXEp9lJH',
     # REMOVED: ATLASSIAN_CLIENT_SECRET - now on AI Server only (security fix)
     # REMOVED: SUPABASE_URL, SUPABASE_ANON_KEY, SUPABASE_SERVICE_ROLE_KEY - fetched from AI Server
-    'AI_SERVER_URL': 'https://forgesync.amzur.com',  # AI Server for secure token exchange & config
+    'AI_SERVER_URL': 'https://timetracker-forge.amzur.com',  # AI Server for secure token exchange & config
     'CAPTURE_INTERVAL': '300',
     'WEB_PORT': '51777',
 }
@@ -1859,7 +1859,7 @@ class AtlassianAuthManager:
         self.redirect_uri = f'http://localhost:{web_port}/auth/callback'
         self.authorization_url = 'https://auth.atlassian.com/authorize'
         # Token exchange now goes through AI Server
-        self.ai_server_url = get_env_var('AI_SERVER_URL', 'https://forgesync.amzur.com')
+        self.ai_server_url = get_env_var('AI_SERVER_URL', 'https://timetracker-forge.amzur.com')
         self.store_path = store_path or os.path.join(get_app_data_dir(), 'time_tracker_auth.json')
         self.metadata_path = os.path.join(get_app_data_dir(), 'auth_metadata.json')  # For non-sensitive data
 
@@ -2570,7 +2570,7 @@ class AtlassianAuthManager:
             print("[ERROR] No valid Atlassian token - cannot fetch OCR config")
             return False
 
-        ai_server_url = get_env_var('AI_SERVER_URL', 'https://forgesync.amzur.com')
+        ai_server_url = get_env_var('AI_SERVER_URL', 'https://timetracker-forge.amzur.com')
         
         try:
             print("[INFO] Fetching OCR config from AI Server...")
@@ -5138,7 +5138,7 @@ class TimeTracker:
         self.app_version = APP_VERSION  # Use global constant
         self.latest_version_info = None  # Cached latest version info
         self.last_version_check_time = 0  # Last time we checked for updates
-        self.version_check_interval = 4 * 60 * 60  # Check every 4 hours (in seconds)
+        self.version_check_interval = 1 * 60 * 60  # Check every 1 hour (in seconds)
         self.update_available = False  # Flag for UI to show update badge
         self.update_notification_shown = False  # Track if we've shown notification for this version
         self.update_required = False
@@ -9865,13 +9865,19 @@ class TimeTracker:
             'is_idle': True,
             'idle_start_time': self.idle_start_time.isoformat(),
             'idle_end_time': idle_end.isoformat(),
+            'ocr_text': None,  # No OCR for idle records (FIX: PGRST102 - all batch records must have same fields)
+            'ocr_method': None,  # No OCR method for idle records
+            'ocr_confidence': None,  # No OCR confidence for idle records
+            'ocr_error_message': None,  # No OCR errors for idle records
+            'total_time_seconds': idle_duration,
+            'visit_count': 1,  # Single continuous idle period (FIX: PGRST102)
             'start_time': self.idle_start_time.isoformat(),
             'end_time': idle_end.isoformat(),
             'duration_seconds': idle_duration,
-            'total_time_seconds': idle_duration,
             'work_date': _utc_ts_to_local_date(self.idle_start_time.isoformat()),
             'user_timezone': get_local_timezone_name(),
             'project_key': project_key,
+            'user_assigned_issues': json.dumps(self.user_issues) if self.user_issues else None,  # FIX: PGRST102
             'status': 'analyzed',  # No AI analysis needed for idle records
             'request_id': str(uuid.uuid4()),  # Unique request ID for idempotency
             'metadata': {
@@ -10130,6 +10136,11 @@ class TimeTracker:
                                     if self.current_user_id and not self.current_user_id.startswith('anonymous_'):
                                         try:
                                             self._update_desktop_status(logged_in=True)
+                                            # Reset the heartbeat counter so the next regular heartbeat
+                                            # fires 4h from NOW (the reinit recovery point), not 4h from
+                                            # thread start. Without this, the DB looks stale again within
+                                            # 1h of the recovery (heartbeat_counter already at ~60).
+                                            heartbeat_counter = 0
                                         except Exception as ds_err:
                                             print(f"[WARN] Could not update desktop status after re-init: {ds_err}")
                             except Exception as ri_err:
@@ -11368,12 +11379,20 @@ class TimeTracker:
                     self.current_user_id = cached_user.get('user_id')
                     self.current_user = cached_user
                     print(f"[OK] Restored organization_id from cache: {self.organization_id}")
-                    # Initialize Supabase with cached credentials
-                    try:
-                        if self.initialize_supabase():
-                            print("[OK] Supabase initialized successfully from cache")
-                    except Exception as e:
-                        print(f"[WARN] Could not initialize Supabase from cache: {e}")
+                    # Early Supabase init: only proceed if local config cache exists (FIX-6).
+                    # Without the cache, initialize_supabase() requires a live network call —
+                    # risky before check_connectivity() runs (network may not be ready on boot,
+                    # after sleep/wake, or immediately after an auto-update restart).
+                    has_supabase_cache = bool(self.auth_manager.tokens.get('cached_supabase_url'))
+                    if has_supabase_cache:
+                        try:
+                            if self.initialize_supabase():
+                                print("[OK] Supabase initialized successfully from cache")
+                        except Exception as e:
+                            print(f"[WARN] Could not initialize Supabase from cache: {e}")
+                    else:
+                        print("[INFO] Skipping early Supabase init — no local config cache. "
+                              "Will initialize after connectivity check.")
             except Exception as e:
                 print(f"[WARN] Could not load cached user info early: {e}")
 
