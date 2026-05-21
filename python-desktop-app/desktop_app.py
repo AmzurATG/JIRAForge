@@ -7129,7 +7129,7 @@ class TimeTracker:
             return None
         try:
             result = self.supabase.table('user_jira_issues_cache') \
-                .select('issue_key, issue_summary, project_key, status, description, labels') \
+                .select('issue_key, issue_summary, project_key, status, description, labels, updated_at') \
                 .eq('user_id', self.current_user_id) \
                 .eq('organization_id', self.organization_id) \
                 .limit(50) \
@@ -7154,7 +7154,8 @@ class TimeTracker:
                     'status': row.get('status', ''),
                     'project': row.get('project_key', ''),
                     'description': row.get('description', ''),
-                    'labels': labels
+                    'labels': labels,
+                    'updated': row.get('updated_at', '')
                 })
 
             print(f"[INFO] user_jira_issues_cache: loaded {len(formatted)} issues from Supabase")

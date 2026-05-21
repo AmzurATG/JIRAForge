@@ -35,11 +35,64 @@ async function analyzeBatch(req, res, next) {
 
     logger.info(`[ActivityController] Analyzing batch of ${records.length} records for user ${user_id}`);
 
+    // Atomically claim records (pending → processing) to prevent race with polling service.
+    // Only process records we successfully claimed. If another process already claimed them,
+    // we skip gracefully — the other process will handle them.
+    const recordIds = records.filter(r => r.id).map(r => r.id);
+    let claimedIds = new Set();
+    if (recordIds.length > 0) {
+      try {
+        const claimed = await activityDbService.claimBatchForProcessing(recordIds);
+        claimedIds = new Set(claimed.map(c => c.id));
+      } catch (claimErr) {
+        logger.warn(`[ActivityController] Claim failed (non-fatal): ${claimErr.message}`);
+        // If claim fails (e.g. DB issue), proceed with all records — worst case is a double-process
+        // which results in the same outcome (idempotent update).
+        claimedIds = new Set(recordIds);
+      }
+    }
+
+    // Filter to only claimed records (skip records another process already owns).
+    // Distinguish between "no records have IDs" (can't claim, just process all)
+    // and "records have IDs but none were claimable" (all already owned → skip).
+    let recordsToAnalyze;
+    if (recordIds.length === 0) {
+      // No records have IDs (unusual edge case) — can't claim, process all
+      recordsToAnalyze = records;
+    } else if (claimedIds.size === 0) {
+      // All records had IDs but none were claimable (already processing elsewhere)
+      recordsToAnalyze = [];
+    } else {
+      // Process only the records we successfully claimed
+      recordsToAnalyze = records.filter(r => !r.id || claimedIds.has(r.id));
+    }
+
+    if (recordsToAnalyze.length === 0) {
+      logger.info('[ActivityController] All records already claimed by polling service, skipping');
+      return res.json({ success: true, recordsProcessed: 0, alreadyClaimed: true });
+    }
+
+    // Fetch session continuity context and correction patterns (same as polling service)
+    let previousMatchContext = null;
+    let correctionPatterns = null;
+    try {
+      previousMatchContext = await activityDbService.getRecentMatchForUser(user_id);
+    } catch (ctxErr) {
+      logger.debug(`[ActivityController] Failed to fetch recent match context: ${ctxErr.message}`);
+    }
+    try {
+      correctionPatterns = await activityDbService.getRecentCorrectionPatterns(user_id);
+    } catch (cpErr) {
+      logger.debug(`[ActivityController] Failed to fetch correction patterns: ${cpErr.message}`);
+    }
+
     const result = await activityService.analyzeBatch(
-      records,
+      recordsToAnalyze,
       user_assigned_issues || [],
       user_id,
-      organization_id
+      organization_id,
+      previousMatchContext,
+      correctionPatterns
     );
 
     res.json({ success: true, ...result });
