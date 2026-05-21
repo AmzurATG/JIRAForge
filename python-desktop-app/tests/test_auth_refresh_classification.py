@@ -8,7 +8,7 @@ plan/2026-05-20_multi-component_session-expiration-hardening.md
 import os
 import sys
 import threading
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 # Add parent directory to path for desktop_app imports
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
@@ -40,6 +40,7 @@ def _make_manager():
     manager._refresh_fail_count = 0
     manager._refresh_invalid_set_at = 0
     manager._last_refresh_fail_time = 0
+    manager._last_refresh_error_code = ''
     manager._save_tokens = lambda: None
     return manager
 
@@ -91,3 +92,35 @@ def test_refresh_reauth_error_code_is_permanent_failure():
     assert ok is False
     assert manager._refresh_fail_count == 1
     assert manager._refresh_token_invalid is False
+
+
+def test_refresh_failure_logs_root_cause_details():
+    """
+    Auth expiration diagnostics must include machine-readable root cause context
+    in the desktop log file so support can distinguish reauth vs temporary failure.
+    """
+    manager = _make_manager()
+    mock_logger = MagicMock()
+
+    response = _MockResponse(
+        401,
+        {
+            'success': False,
+            'error': 'Refresh token expired or invalid',
+            'requiresReauth': True,
+            'errorCode': 'OAUTH_REAUTH_REQUIRED'
+        }
+    )
+
+    with patch('desktop_app.APP_LOGGER_AVAILABLE', True), \
+         patch('desktop_app.get_logger', return_value=mock_logger), \
+         patch('desktop_app.requests.post', return_value=response):
+        ok = manager.refresh_access_token()
+
+    assert ok is False
+
+    warning_messages = [str(call.args[0]) for call in mock_logger.warning.call_args_list if call.args]
+    assert any('token_refresh_failed' in msg for msg in warning_messages)
+    assert any('http_status=401' in msg for msg in warning_messages)
+    assert any('error_code=OAUTH_REAUTH_REQUIRED' in msg for msg in warning_messages)
+    assert any('permanent_failure=True' in msg for msg in warning_messages)

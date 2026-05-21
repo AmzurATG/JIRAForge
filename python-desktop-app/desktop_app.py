@@ -203,6 +203,23 @@ def secure_log(message: str, level: str = "INFO", **kwargs) -> None:
     else:
         print(log_line)
 
+
+def log_auth_diagnostic(event: str, level: str = "INFO", **kwargs) -> None:
+    """Write a structured auth diagnostic line to the application log."""
+    if not APP_LOGGER_AVAILABLE:
+        return
+
+    try:
+        logger = get_logger(__name__, 'AUTH')
+        sanitized_kwargs = _sanitize_dict(kwargs) if kwargs else {}
+        details = " | ".join(f"{k}={v}" for k, v in sanitized_kwargs.items())
+        message = event if not details else f"{event} | {details}"
+
+        log_method = getattr(logger, str(level).lower(), logger.info)
+        log_method(message)
+    except Exception:
+        pass
+
 # ============================================================================
 
 # Secure credential storage
@@ -2210,11 +2227,31 @@ class AtlassianAuthManager:
                 self._refresh_invalid_set_at = 0
             else:
                 print("[WARN] Refresh token is marked invalid — re-authentication required")
+                grace_remaining = max(0, int(grace_period - (time.time() - invalid_since))) if invalid_since else grace_period
+                log_auth_diagnostic(
+                    'token_refresh_blocked_invalid_flag',
+                    level='WARNING',
+                    reason_code=getattr(self, '_last_refresh_error_code', '') or 'UNKNOWN',
+                    refresh_fail_count=getattr(self, '_refresh_fail_count', 0),
+                    grace_remaining_sec=grace_remaining,
+                    invalid_flag=True,
+                    next_action='show_auth_notification'
+                )
                 return False
 
         refresh_token_before = self.tokens.get('refresh_token')
         if not refresh_token_before:
             print("[ERROR] No refresh token available")
+            log_auth_diagnostic(
+                'token_refresh_failed',
+                level='ERROR',
+                reason_code='OAUTH_REAUTH_REQUIRED',
+                permanent_failure=True,
+                refresh_fail_count=getattr(self, '_refresh_fail_count', 0),
+                invalid_flag=getattr(self, '_refresh_token_invalid', False),
+                next_action='manual_reauth_required',
+                failure_reason='missing_refresh_token'
+            )
             return False
 
         with self._refresh_lock:
@@ -2242,6 +2279,16 @@ class AtlassianAuthManager:
             refresh_token = refresh_token_now or refresh_token_before
             if not refresh_token:
                 self._last_refresh_error_code = 'OAUTH_REAUTH_REQUIRED'
+                log_auth_diagnostic(
+                    'token_refresh_failed',
+                    level='ERROR',
+                    reason_code='OAUTH_REAUTH_REQUIRED',
+                    permanent_failure=True,
+                    refresh_fail_count=getattr(self, '_refresh_fail_count', 0),
+                    invalid_flag=getattr(self, '_refresh_token_invalid', False),
+                    next_action='manual_reauth_required',
+                    failure_reason='missing_refresh_token_after_lock'
+                )
                 return False
 
             print("[INFO] Refreshing access token via AI Server...")
@@ -2282,6 +2329,10 @@ class AtlassianAuthManager:
                         error_code = 'OAUTH_REAUTH_REQUIRED' if is_permanent_failure else 'OAUTH_TEMPORARY_FAILURE'
                     self._last_refresh_error_code = error_code
 
+                    projected_fail_count = getattr(self, '_refresh_fail_count', 0)
+                    invalid_flag_after_failure = getattr(self, '_refresh_token_invalid', False)
+                    next_action = 'retry_refresh'
+
                     if is_permanent_failure:
                         # Track consecutive permanent failures with time-windowed counting.
                         # Reset the counter if the last failure was more than 10 minutes ago
@@ -2292,12 +2343,32 @@ class AtlassianAuthManager:
                             self._refresh_fail_count = 0  # Reset — failures are not consecutive
                         self._last_refresh_fail_time = now
                         self._refresh_fail_count = getattr(self, '_refresh_fail_count', 0) + 1
+                        projected_fail_count = self._refresh_fail_count
                         if self._refresh_fail_count >= 5:
                             print(f"[WARN] Refresh token failed {self._refresh_fail_count} times within window - marking invalid (will auto-recover in 30 min)")
                             self._refresh_token_invalid = True
                             self._refresh_invalid_set_at = now  # Record when flag was set for auto-expiry
+                            invalid_flag_after_failure = True
+                            next_action = 'show_auth_notification'
                         else:
                             print(f"[WARN] Refresh token failure {self._refresh_fail_count}/5 - will retry before requiring re-auth")
+                            next_action = 'retry_refresh'
+                    else:
+                        next_action = 'retry_refresh'
+
+                    log_auth_diagnostic(
+                        'token_refresh_failed',
+                        level='WARNING' if response.status_code < 500 else 'ERROR',
+                        http_status=response.status_code,
+                        error_code=error_code,
+                        requires_reauth=bool(error_data.get('requiresReauth')),
+                        permanent_failure=is_permanent_failure,
+                        refresh_fail_count=projected_fail_count,
+                        invalid_flag=invalid_flag_after_failure,
+                        grace_period_sec=1800 if invalid_flag_after_failure else 0,
+                        next_action=next_action,
+                        server_error=error
+                    )
                     return False
 
                 result = response.json()
@@ -2317,11 +2388,26 @@ class AtlassianAuthManager:
                 self._refresh_invalid_set_at = 0  # Clear grace-period timestamp
                 self._last_refresh_fail_time = 0  # Reset failure window
                 self._last_refresh_error_code = ''
+                log_auth_diagnostic(
+                    'token_refresh_succeeded',
+                    level='INFO',
+                    refresh_fail_count=0,
+                    invalid_flag=False,
+                    prior_error_code=getattr(self, '_last_refresh_error_code', '')
+                )
                 print("[OK] Access token refreshed successfully via AI Server")
                 return True
             except Exception as e:
                 print(f"[ERROR] Failed to refresh access token: {e}")
                 self._last_refresh_error_code = 'OAUTH_TEMPORARY_FAILURE'
+                log_auth_diagnostic(
+                    'token_refresh_exception',
+                    level='ERROR',
+                    error_code='OAUTH_TEMPORARY_FAILURE',
+                    exception_type=type(e).__name__,
+                    message=str(e),
+                    next_action='retry_refresh'
+                )
                 return False
 
     def is_authenticated(self):
@@ -8252,6 +8338,13 @@ class TimeTracker:
         throttle_attr = '_auth_temp_notification_last_shown' if is_temporary else '_reauth_notification_last_shown'
         last_shown = getattr(self, throttle_attr, 0)
         if now - last_shown < 900:  # 15 minutes
+            log_auth_diagnostic(
+                'auth_notification_suppressed',
+                level='INFO',
+                reason=reason or 'LEGACY',
+                notification_type='temporary_retry' if is_temporary else 'manual_reauth',
+                throttle_seconds=900
+            )
             return
         setattr(self, throttle_attr, now)
 
@@ -8260,6 +8353,12 @@ class TimeTracker:
                 print("[WARN] Temporary authentication issue (notification unavailable)")
             else:
                 print("[WARN] Re-authentication required (notification unavailable)")
+            log_auth_diagnostic(
+                'auth_notification_unavailable',
+                level='WARNING',
+                reason=reason or 'LEGACY',
+                notification_type='temporary_retry' if is_temporary else 'manual_reauth'
+            )
             return
 
         try:
@@ -8278,8 +8377,22 @@ class TimeTracker:
             )
             notification.set_audio(audio.Default, loop=False)
             notification.show()
+            log_auth_diagnostic(
+                'auth_notification_displayed',
+                level='INFO',
+                reason=reason or 'LEGACY',
+                notification_type='temporary_retry' if is_temporary else 'manual_reauth',
+                title=title
+            )
             print(f"[OK] Authentication notification shown to user (reason={reason or 'LEGACY'})")
         except Exception as e:
+            log_auth_diagnostic(
+                'auth_notification_failed',
+                level='ERROR',
+                reason=reason or 'LEGACY',
+                notification_type='temporary_retry' if is_temporary else 'manual_reauth',
+                message=str(e)
+            )
             print(f"[WARN] Failed to show reauth notification: {e}")
 
     def _show_login_reminder(self):

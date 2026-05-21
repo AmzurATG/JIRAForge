@@ -71,3 +71,23 @@ def test_default_notification_text_remains_reauth(mock_audio, mock_notification_
     kwargs = mock_notification_cls.call_args.kwargs
     assert kwargs["title"] == "Authentication Expired"
     assert "log in again" in kwargs["msg"].lower()
+
+
+@patch("desktop_app.WINOTIFY_AVAILABLE", True)
+@patch("desktop_app.Notification")
+@patch("desktop_app.audio")
+def test_notification_logging_includes_reason_code(mock_audio, mock_notification_cls):
+    tracker = _make_tracker()
+    mock_audio.Default = "default"
+    mock_notification = MagicMock()
+    mock_notification_cls.return_value = mock_notification
+    mock_logger = MagicMock()
+
+    with patch("desktop_app.APP_LOGGER_AVAILABLE", True), \
+         patch("desktop_app.get_logger", return_value=mock_logger), \
+         patch("desktop_app.time.time", return_value=1000):
+        tracker._show_reauth_notification("OAUTH_REAUTH_REQUIRED")
+
+    info_messages = [str(call.args[0]) for call in mock_logger.info.call_args_list if call.args]
+    assert any('auth_notification_displayed' in msg for msg in info_messages)
+    assert any('reason=OAUTH_REAUTH_REQUIRED' in msg for msg in info_messages)
