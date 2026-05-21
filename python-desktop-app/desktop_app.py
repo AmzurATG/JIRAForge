@@ -21,6 +21,7 @@ import secrets
 import hashlib
 import base64
 import uuid
+import platform
 from datetime import datetime, timezone, timedelta
 from io import BytesIO
 from enum import Enum
@@ -61,6 +62,18 @@ from ocr import extract_text_from_image
 
 # OCR dependency check is deferred until after AI server config is fetched
 # (so it uses the correct engines from the server, not local defaults)
+
+# Application logging module
+try:
+    from app_logger import (
+        setup_logging, get_logger, get_log_file_path, get_log_stats,
+        log_auth_event, log_tracking_event, log_network_event,
+        log_ocr_event, log_system_event, log_performance
+    )
+    APP_LOGGER_AVAILABLE = True
+except ImportError:
+    APP_LOGGER_AVAILABLE = False
+    print("[WARN] app_logger module not found - logging to file disabled")
 
 # ============================================================================
 # SECURE LOGGING (PII SANITIZATION) - Embedded for single-file bundling
@@ -2431,13 +2444,21 @@ class AtlassianAuthManager:
         """Get a valid Supabase token, refreshing if needed"""
         supabase_token = self.tokens.get('supabase_token')
         expires_at = self.tokens.get('supabase_token_expires_at', 0)
+        time_remaining = expires_at - time.time()
 
         # Check if token exists and is not expired (with 5 min buffer)
         if supabase_token and time.time() < (expires_at - 300):
+            if APP_LOGGER_AVAILABLE:
+                logger = get_logger(__name__, 'AUTH')
+                logger.debug(f"Using cached Supabase token (expires in {time_remaining:.0f}s)")
             return supabase_token
 
         # Token expired or doesn't exist, get a new one
         print("[INFO] Supabase token expired or missing, getting new one...")
+        if APP_LOGGER_AVAILABLE:
+            logger = get_logger(__name__, 'AUTH')
+            logger.info(f"Supabase token refresh required: token_exists={bool(supabase_token)}, time_remaining={time_remaining:.0f}s")
+        
         for attempt in range(3):
             try:
                 return self.get_supabase_token()
@@ -4939,10 +4960,20 @@ class TimeTracker:
 
     def __init__(self):
         print("[INFO] Initializing Time Tracker...")
+        
+        # Get logger instance
+        if APP_LOGGER_AVAILABLE:
+            self.logger = get_logger(__name__, 'TRACKER')
+            self.logger.info("TimeTracker.__init__() starting...")
+        else:
+            self.logger = None
 
         # Configuration (defaults, will be overridden by server settings)
         self.capture_interval = int(get_env_var('CAPTURE_INTERVAL', 300))
         self.web_port = int(get_env_var('WEB_PORT', 51777))
+        
+        if self.logger:
+            self.logger.info(f"Configuration: capture_interval={self.capture_interval}s, web_port={self.web_port}")
 
         # Supabase client (initialized after authentication)
         # Uses anon key + custom JWT for RLS-scoped access (no service role key)
@@ -4951,7 +4982,11 @@ class TimeTracker:
         self.supabase_initialized = False
 
         # Initialize Atlassian Auth FIRST (needed to fetch Supabase config)
+        if self.logger:
+            self.logger.info("Initializing Atlassian authentication manager...")
         self.auth_manager = AtlassianAuthManager(web_port=self.web_port)
+        if self.logger:
+            self.logger.info("Atlassian authentication manager initialized")
         
         # User state
         self.current_user = None
@@ -13490,15 +13525,58 @@ class TimeTracker:
 
 def main():
     """Main entry point"""
+    # Setup logging FIRST before anything else
+    if APP_LOGGER_AVAILABLE:
+        try:
+            setup_logging(log_level=logging.INFO)
+            logger = get_logger(__name__, 'MAIN')
+            logger.info("=" * 70)
+            logger.info(f"TimeTracker v{APP_VERSION} starting...")
+            logger.info(f"OS: {platform.system()} {platform.release()} {platform.version()}")
+            logger.info(f"Python: {sys.version}")
+            logger.info(f"Process ID: {os.getpid()}")
+            logger.info(f"Executable: {sys.executable}")
+            logger.info(f"Log file: {get_log_file_path()}")
+            logger.info(f"Screenshot monitoring: {'DISABLED' if SCREENSHOT_MONITORING_HARD_DISABLED else 'ENABLED'}")
+            logger.info("=" * 70)
+        except Exception as log_error:
+            print(f"[WARN] Failed to setup logging: {log_error}")
+            traceback.print_exc()
+    else:
+        print("[WARN] Application logging disabled - app_logger module not available")
+    
     try:
+        if APP_LOGGER_AVAILABLE:
+            logger.info("Initializing TimeTracker application...")
+        
         app = TimeTracker()
+        
+        if APP_LOGGER_AVAILABLE:
+            logger.info("TimeTracker initialized successfully")
+            logger.info("Starting main application loop...")
+        
         app.run()
+        
     except KeyboardInterrupt:
+        if APP_LOGGER_AVAILABLE:
+            logger = get_logger(__name__, 'MAIN')
+            logger.info("Application stopped by user (KeyboardInterrupt)")
         print("\n[INFO] Application stopped by user")
     except Exception as e:
+        if APP_LOGGER_AVAILABLE:
+            logger = get_logger(__name__, 'MAIN')
+            logger.error(f"Fatal application error: {e}", exc_info=True)
+            logger.error("=" * 70)
+            logger.error("Application crashed - see traceback above")
+            logger.error("=" * 70)
         print(f"[ERROR] Application error: {e}")
         traceback.print_exc()
         input("Press Enter to exit...")
+    finally:
+        if APP_LOGGER_AVAILABLE:
+            logger = get_logger(__name__, 'MAIN')
+            logger.info("TimeTracker shutting down...")
+            logger.info("=" * 70)
 
 if __name__ == '__main__':
     main()
