@@ -273,11 +273,12 @@ describe('Auth Controller', () => {
       expect(res.json).toHaveBeenCalledWith({
         success: false,
         error: expect.stringContaining('Refresh token expired'),
-        requiresReauth: true
+        requiresReauth: true,
+        errorCode: 'OAUTH_REAUTH_REQUIRED'
       });
     });
 
-    it('should handle 400 status as expired token', async () => {
+    it('should treat 400 status as temporary failure', async () => {
       req.body = {
         refresh_token: 'invalid-token'
       };
@@ -291,10 +292,29 @@ describe('Auth Controller', () => {
 
       await authController.refreshToken(req, res);
 
-      expect(res.status).toHaveBeenCalledWith(401);
+      expect(res.status).toHaveBeenCalledWith(400);
       expect(res.json).toHaveBeenCalledWith(
         expect.objectContaining({
-          requiresReauth: true
+          success: false,
+          errorCode: 'OAUTH_TEMPORARY_FAILURE'
+        })
+      );
+    });
+
+    it('should include temporary error code for 403 failures', async () => {
+      req.body = { refresh_token: 'refresh-123' };
+
+      axios.post.mockRejectedValue({
+        response: { status: 403, data: { error: 'forbidden' } }
+      });
+
+      await authController.refreshToken(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(403);
+      expect(res.json).toHaveBeenCalledWith(
+        expect.objectContaining({
+          success: false,
+          errorCode: 'OAUTH_TEMPORARY_FAILURE'
         })
       );
     });
@@ -308,7 +328,7 @@ describe('Auth Controller', () => {
       expect(res.status).toHaveBeenCalledWith(500);
       expect(res.json).toHaveBeenCalledWith({
         success: false,
-        error: 'Server configuration error'
+        error: expect.stringContaining('Server configuration error')
       });
     });
 
@@ -324,7 +344,8 @@ describe('Auth Controller', () => {
       expect(res.status).toHaveBeenCalledWith(503);
       expect(res.json).toHaveBeenCalledWith({
         success: false,
-        error: expect.stringContaining('Token refresh failed')
+        error: expect.stringContaining('Token refresh failed'),
+        errorCode: 'OAUTH_TEMPORARY_FAILURE'
       });
     });
   });
@@ -346,6 +367,7 @@ describe('Auth Controller', () => {
       const mockSupabase = {
         from: jest.fn().mockReturnThis(),
         select: jest.fn().mockReturnThis(),
+        update: jest.fn().mockReturnThis(),
         eq: jest.fn().mockReturnThis(),
         single: jest.fn().mockResolvedValue({
           data: {
@@ -369,7 +391,8 @@ describe('Auth Controller', () => {
           id: 'user-uuid',
           atlassian_account_id: 'acc-123',
           email: 'test@example.com',
-          organization_id: 'org-uuid'
+          organization_id: 'org-uuid',
+          jira_cloud_id: null
         }
       });
       expect(jwt.sign).toHaveBeenCalled();

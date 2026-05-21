@@ -547,7 +547,8 @@ exports.refreshToken = async (req, res) => {
       return res.status(401).json({
         success: false,
         error: 'Refresh token expired or invalid. User must re-authenticate.',
-        requiresReauth: true
+        requiresReauth: true,
+        errorCode: 'OAUTH_REAUTH_REQUIRED'
       });
     }
 
@@ -555,7 +556,8 @@ exports.refreshToken = async (req, res) => {
     // so the client treats them as transient/retryable failures.
     res.status(error.response?.status || 500).json({
       success: false,
-      error: `Token refresh failed: ${formatAtlassianError(error)}`
+      error: `Token refresh failed: ${formatAtlassianError(error)}`,
+      errorCode: 'OAUTH_TEMPORARY_FAILURE'
     });
   }
 };

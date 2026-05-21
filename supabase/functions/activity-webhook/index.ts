@@ -228,10 +228,13 @@ serve(async (req: Request) => {
             window_title: r.window_title,
             application_name: r.application_name,
             ocr_text: r.ocr_text,
+            ocr_confidence: r.ocr_confidence,
             total_time_seconds: r.total_time_seconds,
             start_time: r.start_time,
             end_time: r.end_time,
-            classification: r.classification
+            classification: r.classification,
+            project_key: r.project_key,
+            metadata: r.metadata
           })),
           user_assigned_issues: issuesForAnalysis,
           user_id: userId,
@@ -283,15 +286,20 @@ serve(async (req: Request) => {
       } else {
         // Permanent error — mark all records as failed
         // Only update those still in 'pending' (AI server may have already claimed some)
+        // IMPORTANT: Merge error into existing metadata rather than overwriting,
+        // so fields like tracking_mode survive if the record is later re-queued.
         const recordIds = records.map(r => r.id);
-        await supabaseClient
-          .from('activity_records')
-          .update({
-            status: 'failed',
-            metadata: { error: errorMessage }
-          })
-          .in('id', recordIds)
-          .eq('status', 'pending');
+        for (const record of records) {
+          const existingMetadata = record.metadata || {};
+          await supabaseClient
+            .from('activity_records')
+            .update({
+              status: 'failed',
+              metadata: { ...existingMetadata, error: errorMessage }
+            })
+            .eq('id', record.id)
+            .eq('status', 'pending');
+        }
 
         console.log(`Permanent error — marked ${recordIds.length} records as failed`);
       }
