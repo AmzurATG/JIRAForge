@@ -448,10 +448,12 @@ async function getRecentCorrectionPatterns(userId, limit = 5) {
 
     if (!data || data.length === 0) return [];
 
-    // Group by (final_issue_key) and count occurrences to find recurring patterns
+    // Group by (application_name + final_issue_key) to preserve diverse correction contexts.
+    // This ensures the LLM sees corrections for different apps/windows separately,
+    // rather than collapsing "VS Code → PROJ-123" and "Chrome → PROJ-123" into one example.
     const patternCounts = {};
     for (const row of data) {
-      const key = row.final_issue_key;
+      const key = `${row.application_name || ''}::${row.final_issue_key}`;
       if (!patternCounts[key]) {
         patternCounts[key] = { ...row, count: 0 };
       }

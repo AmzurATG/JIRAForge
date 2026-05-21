@@ -21,6 +21,7 @@ import secrets
 import hashlib
 import base64
 import uuid
+import platform
 from datetime import datetime, timezone, timedelta
 from io import BytesIO
 from enum import Enum
@@ -61,6 +62,18 @@ from ocr import extract_text_from_image
 
 # OCR dependency check is deferred until after AI server config is fetched
 # (so it uses the correct engines from the server, not local defaults)
+
+# Application logging module
+try:
+    from app_logger import (
+        setup_logging, get_logger, get_log_file_path, get_log_stats,
+        log_auth_event, log_tracking_event, log_network_event,
+        log_ocr_event, log_system_event, log_performance
+    )
+    APP_LOGGER_AVAILABLE = True
+except ImportError:
+    APP_LOGGER_AVAILABLE = False
+    print("[WARN] app_logger module not found - logging to file disabled")
 
 # ============================================================================
 # SECURE LOGGING (PII SANITIZATION) - Embedded for single-file bundling
@@ -336,7 +349,7 @@ load_dotenv()
 
 # Application version - IMPORTANT: Update this when releasing new versions
 # This is used for update checking and notifications
-APP_VERSION = "1.4.2"
+APP_VERSION = "1.4.3"
 
 # Hard-disable screenshot monitoring/storage in desktop app.
 # OCR text extraction for activity records still runs via event-based flow.
@@ -345,10 +358,10 @@ SCREENSHOT_MONITORING_HARD_DISABLED = True
 # Embedded credentials (for production builds - no .env file needed)
 # SECURITY: All sensitive keys moved to AI Server - fetched at runtime after authentication
 EMBEDDED_CONFIG = {
-    'ATLASSIAN_CLIENT_ID': 'Q8HT4Jn205AuTiAarj088oWNDrOqwvM5',
+    'ATLASSIAN_CLIENT_ID': 'k2Xwzy8c1g3Wk6Xpbeev0x70CXEp9lJH',
     # REMOVED: ATLASSIAN_CLIENT_SECRET - now on AI Server only (security fix)
     # REMOVED: SUPABASE_URL, SUPABASE_ANON_KEY, SUPABASE_SERVICE_ROLE_KEY - fetched from AI Server
-    'AI_SERVER_URL': 'https://forgesync.amzur.com',  # AI Server for secure token exchange & config
+    'AI_SERVER_URL': 'https://timetracker-forge.amzur.com',  # AI Server for secure token exchange & config
     'CAPTURE_INTERVAL': '300',
     'WEB_PORT': '51777',
 }
@@ -1859,7 +1872,7 @@ class AtlassianAuthManager:
         self.redirect_uri = f'http://localhost:{web_port}/auth/callback'
         self.authorization_url = 'https://auth.atlassian.com/authorize'
         # Token exchange now goes through AI Server
-        self.ai_server_url = get_env_var('AI_SERVER_URL', 'https://forgesync.amzur.com')
+        self.ai_server_url = get_env_var('AI_SERVER_URL', 'https://timetracker-forge.amzur.com')
         self.store_path = store_path or os.path.join(get_app_data_dir(), 'time_tracker_auth.json')
         self.metadata_path = os.path.join(get_app_data_dir(), 'auth_metadata.json')  # For non-sensitive data
 
@@ -2447,13 +2460,21 @@ class AtlassianAuthManager:
         """Get a valid Supabase token, refreshing if needed"""
         supabase_token = self.tokens.get('supabase_token')
         expires_at = self.tokens.get('supabase_token_expires_at', 0)
+        time_remaining = expires_at - time.time()
 
         # Check if token exists and is not expired (with 5 min buffer)
         if supabase_token and time.time() < (expires_at - 300):
+            if APP_LOGGER_AVAILABLE:
+                logger = get_logger(__name__, 'AUTH')
+                logger.debug(f"Using cached Supabase token (expires in {time_remaining:.0f}s)")
             return supabase_token
 
         # Token expired or doesn't exist, get a new one
         print("[INFO] Supabase token expired or missing, getting new one...")
+        if APP_LOGGER_AVAILABLE:
+            logger = get_logger(__name__, 'AUTH')
+            logger.info(f"Supabase token refresh required: token_exists={bool(supabase_token)}, time_remaining={time_remaining:.0f}s")
+        
         for attempt in range(3):
             try:
                 return self.get_supabase_token()
@@ -2586,7 +2607,7 @@ class AtlassianAuthManager:
             print("[ERROR] No valid Atlassian token - cannot fetch OCR config")
             return False
 
-        ai_server_url = get_env_var('AI_SERVER_URL', 'https://forgesync.amzur.com')
+        ai_server_url = get_env_var('AI_SERVER_URL', 'https://timetracker-forge.amzur.com')
         
         try:
             print("[INFO] Fetching OCR config from AI Server...")
@@ -4956,10 +4977,20 @@ class TimeTracker:
 
     def __init__(self):
         print("[INFO] Initializing Time Tracker...")
+        
+        # Get logger instance
+        if APP_LOGGER_AVAILABLE:
+            self.logger = get_logger(__name__, 'TRACKER')
+            self.logger.info("TimeTracker.__init__() starting...")
+        else:
+            self.logger = None
 
         # Configuration (defaults, will be overridden by server settings)
         self.capture_interval = int(get_env_var('CAPTURE_INTERVAL', 300))
         self.web_port = int(get_env_var('WEB_PORT', 51777))
+        
+        if self.logger:
+            self.logger.info(f"Configuration: capture_interval={self.capture_interval}s, web_port={self.web_port}")
 
         # Supabase client (initialized after authentication)
         # Uses anon key + custom JWT for RLS-scoped access (no service role key)
@@ -4968,7 +4999,11 @@ class TimeTracker:
         self.supabase_initialized = False
 
         # Initialize Atlassian Auth FIRST (needed to fetch Supabase config)
+        if self.logger:
+            self.logger.info("Initializing Atlassian authentication manager...")
         self.auth_manager = AtlassianAuthManager(web_port=self.web_port)
+        if self.logger:
+            self.logger.info("Atlassian authentication manager initialized")
         
         # User state
         self.current_user = None
@@ -5155,7 +5190,7 @@ class TimeTracker:
         self.app_version = APP_VERSION  # Use global constant
         self.latest_version_info = None  # Cached latest version info
         self.last_version_check_time = 0  # Last time we checked for updates
-        self.version_check_interval = 4 * 60 * 60  # Check every 4 hours (in seconds)
+        self.version_check_interval = 1 * 60 * 60  # Check every 1 hour (in seconds)
         self.update_available = False  # Flag for UI to show update badge
         self.update_notification_shown = False  # Track if we've shown notification for this version
         self.update_required = False
@@ -7111,7 +7146,7 @@ class TimeTracker:
             return None
         try:
             result = self.supabase.table('user_jira_issues_cache') \
-                .select('issue_key, issue_summary, project_key, status, description, labels') \
+                .select('issue_key, issue_summary, project_key, status, description, labels, updated_at') \
                 .eq('user_id', self.current_user_id) \
                 .eq('organization_id', self.organization_id) \
                 .limit(50) \
@@ -7136,7 +7171,8 @@ class TimeTracker:
                     'status': row.get('status', ''),
                     'project': row.get('project_key', ''),
                     'description': row.get('description', ''),
-                    'labels': labels
+                    'labels': labels,
+                    'updated': row.get('updated_at', '')
                 })
 
             print(f"[INFO] user_jira_issues_cache: loaded {len(formatted)} issues from Supabase")
@@ -9895,13 +9931,19 @@ class TimeTracker:
             'is_idle': True,
             'idle_start_time': self.idle_start_time.isoformat(),
             'idle_end_time': idle_end.isoformat(),
+            'ocr_text': None,  # No OCR for idle records (FIX: PGRST102 - all batch records must have same fields)
+            'ocr_method': None,  # No OCR method for idle records
+            'ocr_confidence': None,  # No OCR confidence for idle records
+            'ocr_error_message': None,  # No OCR errors for idle records
+            'total_time_seconds': idle_duration,
+            'visit_count': 1,  # Single continuous idle period (FIX: PGRST102)
             'start_time': self.idle_start_time.isoformat(),
             'end_time': idle_end.isoformat(),
             'duration_seconds': idle_duration,
-            'total_time_seconds': idle_duration,
             'work_date': _utc_ts_to_local_date(self.idle_start_time.isoformat()),
             'user_timezone': get_local_timezone_name(),
             'project_key': project_key,
+            'user_assigned_issues': json.dumps(self.user_issues) if self.user_issues else None,  # FIX: PGRST102
             'status': 'analyzed',  # No AI analysis needed for idle records
             'request_id': str(uuid.uuid4()),  # Unique request ID for idempotency
             'metadata': {
@@ -10160,6 +10202,11 @@ class TimeTracker:
                                     if self.current_user_id and not self.current_user_id.startswith('anonymous_'):
                                         try:
                                             self._update_desktop_status(logged_in=True)
+                                            # Reset the heartbeat counter so the next regular heartbeat
+                                            # fires 4h from NOW (the reinit recovery point), not 4h from
+                                            # thread start. Without this, the DB looks stale again within
+                                            # 1h of the recovery (heartbeat_counter already at ~60).
+                                            heartbeat_counter = 0
                                         except Exception as ds_err:
                                             print(f"[WARN] Could not update desktop status after re-init: {ds_err}")
                             except Exception as ri_err:
@@ -11401,12 +11448,20 @@ class TimeTracker:
                     self.current_user_id = cached_user.get('user_id')
                     self.current_user = cached_user
                     print(f"[OK] Restored organization_id from cache: {self.organization_id}")
-                    # Initialize Supabase with cached credentials
-                    try:
-                        if self.initialize_supabase():
-                            print("[OK] Supabase initialized successfully from cache")
-                    except Exception as e:
-                        print(f"[WARN] Could not initialize Supabase from cache: {e}")
+                    # Early Supabase init: only proceed if local config cache exists (FIX-6).
+                    # Without the cache, initialize_supabase() requires a live network call —
+                    # risky before check_connectivity() runs (network may not be ready on boot,
+                    # after sleep/wake, or immediately after an auto-update restart).
+                    has_supabase_cache = bool(self.auth_manager.tokens.get('cached_supabase_url'))
+                    if has_supabase_cache:
+                        try:
+                            if self.initialize_supabase():
+                                print("[OK] Supabase initialized successfully from cache")
+                        except Exception as e:
+                            print(f"[WARN] Could not initialize Supabase from cache: {e}")
+                    else:
+                        print("[INFO] Skipping early Supabase init — no local config cache. "
+                              "Will initialize after connectivity check.")
             except Exception as e:
                 print(f"[WARN] Could not load cached user info early: {e}")
 
@@ -13504,15 +13559,58 @@ class TimeTracker:
 
 def main():
     """Main entry point"""
+    # Setup logging FIRST before anything else
+    if APP_LOGGER_AVAILABLE:
+        try:
+            setup_logging(log_level=logging.INFO)
+            logger = get_logger(__name__, 'MAIN')
+            logger.info("=" * 70)
+            logger.info(f"TimeTracker v{APP_VERSION} starting...")
+            logger.info(f"OS: {platform.system()} {platform.release()} {platform.version()}")
+            logger.info(f"Python: {sys.version}")
+            logger.info(f"Process ID: {os.getpid()}")
+            logger.info(f"Executable: {sys.executable}")
+            logger.info(f"Log file: {get_log_file_path()}")
+            logger.info(f"Screenshot monitoring: {'DISABLED' if SCREENSHOT_MONITORING_HARD_DISABLED else 'ENABLED'}")
+            logger.info("=" * 70)
+        except Exception as log_error:
+            print(f"[WARN] Failed to setup logging: {log_error}")
+            traceback.print_exc()
+    else:
+        print("[WARN] Application logging disabled - app_logger module not available")
+    
     try:
+        if APP_LOGGER_AVAILABLE:
+            logger.info("Initializing TimeTracker application...")
+        
         app = TimeTracker()
+        
+        if APP_LOGGER_AVAILABLE:
+            logger.info("TimeTracker initialized successfully")
+            logger.info("Starting main application loop...")
+        
         app.run()
+        
     except KeyboardInterrupt:
+        if APP_LOGGER_AVAILABLE:
+            logger = get_logger(__name__, 'MAIN')
+            logger.info("Application stopped by user (KeyboardInterrupt)")
         print("\n[INFO] Application stopped by user")
     except Exception as e:
+        if APP_LOGGER_AVAILABLE:
+            logger = get_logger(__name__, 'MAIN')
+            logger.error(f"Fatal application error: {e}", exc_info=True)
+            logger.error("=" * 70)
+            logger.error("Application crashed - see traceback above")
+            logger.error("=" * 70)
         print(f"[ERROR] Application error: {e}")
         traceback.print_exc()
         input("Press Enter to exit...")
+    finally:
+        if APP_LOGGER_AVAILABLE:
+            logger = get_logger(__name__, 'MAIN')
+            logger.info("TimeTracker shutting down...")
+            logger.info("=" * 70)
 
 if __name__ == '__main__':
     main()
