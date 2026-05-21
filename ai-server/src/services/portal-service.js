@@ -1,0 +1,398 @@
+/**
+ * Portal Service
+ * 
+ * Business logic for portal analytics and aggregations.
+ * Queries activity_records table directly for portal analytics.
+ */
+
+'use strict';
+
+const logger = require('../utils/logger');
+const { getClient } = require('./db/supabase-client');
+
+/**
+ * Portal Service Class
+ */
+class PortalService {
+  
+  /**
+   * Get dashboard data (KPIs + daily trend).
+   * 
+   * @param {string} orgId - Organization ID
+   * @param {string} from - Start date (YYYY-MM-DD)
+   * @param {string} to - End date (YYYY-MM-DD)
+   * @returns {Promise<Object>} Dashboard data
+   */
+  async getDashboardData(orgId, from, to) {
+    const supabase = getClient();
+    if (!supabase) throw new Error('Supabase client not initialized');
+    
+    // Query activity records for the date range
+    const { data: activities, error } = await supabase
+      .from('activity_records')
+      .select('classification, duration_seconds, user_id, work_date')
+      .eq('organization_id', orgId)
+      .gte('work_date', from)
+      .lte('work_date', to)
+      .neq('is_idle', true);
+    
+    if (error) {
+      logger.error('[PortalService] Dashboard query failed', { orgId, from, to, error });
+      throw error;
+    }
+    
+    // Calculate KPIs
+    let productiveSeconds = 0;
+    let nonProductiveSeconds = 0;
+    const uniqueEmployees = new Set();
+    const dailyTrend = {};
+    
+    activities.forEach(activity => {
+      const seconds = activity.duration_seconds || 0;
+      
+      if (activity.classification === 'productive') {
+        productiveSeconds += seconds;
+      } else if (activity.classification === 'non-productive') {
+        nonProductiveSeconds += seconds;
+      }
+      
+      uniqueEmployees.add(activity.user_id);
+      
+      // Aggregate by day
+      const date = activity.work_date;
+      if (!dailyTrend[date]) {
+        dailyTrend[date] = { date, productiveSeconds: 0, nonProductiveSeconds: 0 };
+      }
+      
+      if (activity.classification === 'productive') {
+        dailyTrend[date].productiveSeconds += seconds;
+      } else if (activity.classification === 'non-productive') {
+        dailyTrend[date].nonProductiveSeconds += seconds;
+      }
+    });
+    
+    const totalSeconds = productiveSeconds + nonProductiveSeconds;
+    const productivityPercentage = totalSeconds > 0 
+      ? (productiveSeconds / totalSeconds) * 100 
+      : 0;
+    
+    return {
+      summary: {
+        totalProductiveHours: productiveSeconds / 3600,
+        totalNonProductiveHours: nonProductiveSeconds / 3600,
+        productivityPercentage: Math.round(productivityPercentage * 10) / 10,
+        employeeCount: uniqueEmployees.size
+      },
+      dailyTrend: Object.values(dailyTrend).map(day => ({
+        date: day.date,
+        productiveHours: day.productiveSeconds / 3600,
+        nonProductiveHours: day.nonProductiveSeconds / 3600
+      })).sort((a, b) => a.date.localeCompare(b.date))
+    };
+  }
+  
+  /**
+   * Get employees list with aggregated metrics.
+   * 
+   * @param {string} orgId - Organization ID
+   * @param {Object} filters - Search, productivity range, date range
+   * @param {Object} pagination - page, limit
+   * @returns {Promise<Object>} Employees list and pagination
+   */
+  async getEmployees(orgId, filters, pagination) {
+    const supabase = getClient();
+    if (!supabase) throw new Error('Supabase client not initialized');
+    
+    const { search, productivityRange, from, to } = filters;
+    const { page = 1, limit = 20 } = pagination;
+    
+    // First get activity data for the date range
+    let activityQuery = supabase
+      .from('activity_records')
+      .select('user_id, classification, duration_seconds, start_time')
+      .eq('organization_id', orgId)
+      .neq('is_idle', true);
+    
+    if (from) activityQuery = activityQuery.gte('work_date', from);
+    if (to) activityQuery = activityQuery.lte('work_date', to);
+    
+    const { data: activities, error: activityError } = await activityQuery;
+    
+    if (activityError) {
+      logger.error('[PortalService] Employees activity query failed', { orgId, error: activityError });
+      throw activityError;
+    }
+    
+    // Aggregate by user
+    const userMetrics = {};
+    activities.forEach(activity => {
+      const userId = activity.user_id;
+      if (!userMetrics[userId]) {
+        userMetrics[userId] = {
+          productiveSeconds: 0,
+          nonProductiveSeconds: 0,
+          lastActivity: activity.start_time
+        };
+      }
+      
+      if (activity.classification === 'productive') {
+        userMetrics[userId].productiveSeconds += activity.duration_seconds || 0;
+      } else if (activity.classification === 'non-productive') {
+        userMetrics[userId].nonProductiveSeconds += activity.duration_seconds || 0;
+      }
+      
+      if (activity.start_time > userMetrics[userId].lastActivity) {
+        userMetrics[userId].lastActivity = activity.start_time;
+      }
+    });
+    
+    // Get user details
+    const userIds = Object.keys(userMetrics);
+    if (userIds.length === 0) {
+      return { data: [], pagination: { page, limit, totalCount: 0 } };
+    }
+    
+    let userQuery = supabase
+      .from('users')
+      .select('id, display_name, email')
+      .eq('organization_id', orgId)
+      .in('id', userIds);
+    
+    if (search) {
+      userQuery = userQuery.or(`display_name.ilike.%${search}%,email.ilike.%${search}%`);
+    }
+    
+    const { data: users, error: userError } = await userQuery;
+    
+    if (userError) {
+      logger.error('[PortalService] Users query failed', { orgId, error: userError });
+      throw userError;
+    }
+    
+    // Combine data
+    let employees = users.map(user => {
+      const metrics = userMetrics[user.id];
+      const totalSeconds = metrics.productiveSeconds + metrics.nonProductiveSeconds;
+      const productivityPercentage = totalSeconds > 0 
+        ? (metrics.productiveSeconds / totalSeconds) * 100 
+        : 0;
+      
+      return {
+        userId: user.id,
+        name: user.display_name,
+        email: user.email,
+        productiveHours: metrics.productiveSeconds / 3600,
+        nonProductiveHours: metrics.nonProductiveSeconds / 3600,
+        productivityPercentage: Math.round(productivityPercentage * 10) / 10,
+        lastActivityAt: metrics.lastActivity
+      };
+    });
+    
+    // Filter by productivity range
+    if (productivityRange && productivityRange !== 'all') {
+      employees = employees.filter(emp => {
+        const pct = emp.productivityPercentage;
+        if (productivityRange === 'high') return pct > 80;
+        if (productivityRange === 'medium') return pct >= 40 && pct <= 80;
+        if (productivityRange === 'low') return pct < 40;
+        return true;
+      });
+    }
+    
+    // Sort by name
+    employees.sort((a, b) => a.name.localeCompare(b.name));
+    
+    // Paginate
+    const totalCount = employees.length;
+    const offset = (page - 1) * limit;
+    const paginatedEmployees = employees.slice(offset, offset + limit);
+    
+    return {
+      data: paginatedEmployees,
+      pagination: { page, limit, totalCount }
+    };
+  }
+  
+  /**
+   * Get employee detail with daily trend.
+   * 
+   * @param {string} orgId - Organization ID
+   * @param {string} userId - User ID
+   * @param {string} from - Start date
+   * @param {string} to - End date
+   * @returns {Promise<Object>} Employee detail
+   */
+  async getEmployeeDetail(orgId, userId, from, to) {
+    const supabase = getClient();
+    if (!supabase) throw new Error('Supabase client not initialized');
+    
+    // Get user info
+    const { data: user, error: userError } = await supabase
+      .from('users')
+      .select('id, display_name, email')
+      .eq('organization_id', orgId)
+      .eq('id', userId)
+      .single();
+    
+    if (userError) {
+      logger.error('[PortalService] User query failed', { orgId, userId, error: userError });
+      throw userError;
+    }
+    
+    // Get activity data
+    const { data: activities, error: activityError } = await supabase
+      .from('activity_records')
+      .select('classification, duration_seconds, work_date')
+      .eq('organization_id', orgId)
+      .eq('user_id', userId)
+      .gte('work_date', from)
+      .lte('work_date', to)
+      .neq('is_idle', true);
+    
+    if (activityError) {
+      logger.error('[PortalService] Activity query failed', { orgId, userId, error: activityError });
+      throw activityError;
+    }
+    
+    // Calculate summary
+    let productiveSeconds = 0;
+    let nonProductiveSeconds = 0;
+    const dailyTrend = {};
+    
+    activities.forEach(activity => {
+      const seconds = activity.duration_seconds || 0;
+      
+      if (activity.classification === 'productive') {
+        productiveSeconds += seconds;
+      } else if (activity.classification === 'non-productive') {
+        nonProductiveSeconds += seconds;
+      }
+      
+      // Daily aggregation
+      const date = activity.work_date;
+      if (!dailyTrend[date]) {
+        dailyTrend[date] = { date, productiveSeconds: 0, totalSeconds: 0 };
+      }
+      
+      if (activity.classification === 'productive') {
+        dailyTrend[date].productiveSeconds += seconds;
+      }
+      dailyTrend[date].totalSeconds += seconds;
+    });
+    
+    const totalSeconds = productiveSeconds + nonProductiveSeconds;
+    const productivityPercentage = totalSeconds > 0 
+      ? (productiveSeconds / totalSeconds) * 100 
+      : 0;
+    
+    return {
+      user: {
+        userId: user.id,
+        name: user.display_name,
+        email: user.email
+      },
+      summary: {
+        productiveHours: productiveSeconds / 3600,
+        nonProductiveHours: nonProductiveSeconds / 3600,
+        idleHours: 0, // Not tracked separately in v1
+        productivityPercentage: Math.round(productivityPercentage * 10) / 10
+      },
+      dailyTrend: Object.values(dailyTrend).map(day => ({
+        date: day.date,
+        productivityPercentage: day.totalSeconds > 0 
+          ? Math.round((day.productiveSeconds / day.totalSeconds) * 1000) / 10 
+          : 0,
+        productiveHours: day.productiveSeconds / 3600,
+        totalHours: day.totalSeconds / 3600
+      })).sort((a, b) => a.date.localeCompare(b.date))
+    };
+  }
+  
+  /**
+   * Get time logs with filters.
+   * 
+   * @param {string} orgId - Organization ID
+   * @param {Object} filters - Classification, employee, app, duration, etc.
+   * @param {Object} pagination - page, limit
+   * @returns {Promise<Object>} Time logs and pagination
+   */
+  async getTimeLogs(orgId, filters, pagination) {
+    const supabase = getClient();
+    if (!supabase) throw new Error('Supabase client not initialized');
+    
+    const { classification, employee, app, from, to } = filters;
+    const { page = 1, limit = 20 } = pagination;
+    
+    // Build query
+    let query = supabase
+      .from('activity_records')
+      .select(`
+        id,
+        user_id,
+        window_title,
+        application_name,
+        classification,
+        start_time,
+        end_time,
+        duration_seconds,
+        ocr_confidence,
+        users!activity_records_user_id_fkey!inner(display_name, email)
+      `, { count: 'exact' })
+      .eq('organization_id', orgId)
+      .neq('is_idle', true);
+    
+    // Apply filters
+    if (classification && classification !== 'all') {
+      query = query.eq('classification', classification);
+    }
+    
+    if (employee) {
+      query = query.eq('user_id', employee);
+    }
+    
+    if (app) {
+      query = query.ilike('application_name', `%${app}%`);
+    }
+    
+    if (from) {
+      query = query.gte('start_time', `${from}T00:00:00Z`);
+    }
+    
+    if (to) {
+      query = query.lte('end_time', `${to}T23:59:59Z`);
+    }
+    
+    // Sort and paginate
+    const offset = (page - 1) * limit;
+    query = query
+      .order('start_time', { ascending: false })
+      .range(offset, offset + limit - 1);
+    
+    const { data, error, count } = await query;
+    
+    if (error) {
+      logger.error('[PortalService] Time logs query failed', { orgId, error });
+      throw error;
+    }
+    
+    // Format response
+    const formattedData = (data || []).map(record => ({
+      recordId: record.id,
+      employeeName: record.users?.display_name || 'Unknown',
+      activitySummary: record.window_title || 'No title',
+      classification: record.classification,
+      startTime: record.start_time,
+      endTime: record.end_time,
+      durationSeconds: record.duration_seconds,
+      applicationName: record.application_name,
+      confidenceScore: record.ocr_confidence || 0
+    }));
+    
+    return {
+      data: formattedData,
+      pagination: { page, limit, totalCount: count || 0 }
+    };
+  }
+}
+
+module.exports = new PortalService();
