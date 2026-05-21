@@ -5,6 +5,7 @@
  */
 
 const supabaseService = require('./supabase-service');
+const dbService = require('./db');
 const clusteringService = require('./clustering-service');
 const logger = require('../utils/logger');
 
@@ -234,7 +235,7 @@ async function saveGroupToDatabase(userId, organizationId, group) {
 
     // Compute is_idle_only based on group sessions (Phase 2: Precomputed classification)
     const groupSessions = group.sessions || [];
-    const isIdleOnly = supabaseService.computeIsIdleOnly(groupSessions);
+    const isIdleOnly = dbService.computeIsIdleOnly(groupSessions);
 
     // 1. Create the group record
     const groupRecord = await supabaseService.createUnassignedGroup({

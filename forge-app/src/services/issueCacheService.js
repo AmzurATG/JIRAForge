@@ -10,9 +10,16 @@
 import api, { route } from '@forge/api';
 import { remoteRequest } from '../utils/remote.js';
 
-// JQL must match the one used by getAllUserAssignedIssues() in jira.js
-// so the cache and live Jira queries return the same issue set
-const CACHE_JQL = 'assignee = currentUser() AND statusCategory != Done ORDER BY updated DESC';
+// Cache ALL assigned issues except completed (Done).
+// This broad cache supports project-level status filtering done by the desktop app.
+// Different projects may have different tracked_statuses (admin-configured), so the cache
+// must be inclusive. The desktop app reads project_settings from Supabase and filters
+// the cached issues client-side based on each project's configured tracked_statuses.
+// 
+// Why not "To Do"? We exclude backlog items (statusCategory = "To Do") because they create
+// 87% error rates in AI matching (20:3 noise ratio from bug analysis). Backlog items are
+// not active work, so they should never be tracked regardless of project settings.
+const CACHE_JQL = 'assignee = currentUser() AND resolution = EMPTY AND statusCategory NOT IN ("To Do", "Done") ORDER BY updated DESC';
 const MAX_ISSUES = 50;
 
 /**
@@ -82,7 +89,7 @@ async function refreshCacheForUser(accountId) {
         body: JSON.stringify({
           jql: CACHE_JQL,
           maxResults: MAX_ISSUES,
-          fields: ['summary', 'status', 'project', 'issuetype', 'priority', 'description', 'labels']
+          fields: ['summary', 'status', 'project', 'issuetype', 'priority', 'description', 'labels', 'updated']
         })
       }
     );
