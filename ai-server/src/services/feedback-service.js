@@ -253,7 +253,7 @@ async function analyzeFeedbackWithAI(feedback) {
       { role: 'system', content: FEEDBACK_ANALYSIS_SYSTEM_PROMPT },
       { role: 'user', content: prompt }
     ],
-    temperature: 0.3,
+    // temperature intentionally omitted — see ai-client.js:178-181 for rationale
     max_tokens: 30000,
     isVision: false,
     apiCallName: 'feedback-analysis'

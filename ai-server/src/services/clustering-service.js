@@ -228,7 +228,7 @@ CRITICAL - DESCRIPTIONS MUST BE SPECIFIC:
     // Note: userId not available in clustering context, cost tracking will log without user
     const { response, provider, model } = await chatCompletionWithFallback({
       messages,
-      temperature: 0.2,
+      // temperature intentionally omitted — see ai-client.js:178-181 for rationale
       max_tokens: 30000,
       isVision: false,
       userId: null, // Clustering doesn't have user context
@@ -263,36 +263,61 @@ CRITICAL - DESCRIPTIONS MUST BE SPECIFIC:
     try {
       clusteringResult = JSON.parse(cleanedResponse);
     } catch (parseError) {
-      logger.warn('Initial JSON parse failed, attempting to fix truncated response');
-
-      // Try to fix common issues with truncated JSON
-      // 1. If truncated mid-array, try to close it
-      let fixedResponse = cleanedResponse;
-
-      // Count open brackets
-      const openBrackets = (fixedResponse.match(/\[/g) || []).length;
-      const closeBrackets = (fixedResponse.match(/\]/g) || []).length;
-      const openBraces = (fixedResponse.match(/\{/g) || []).length;
-      const closeBraces = (fixedResponse.match(/\}/g) || []).length;
-
-      // Add missing closing brackets/braces
-      for (let i = 0; i < openBrackets - closeBrackets; i++) {
-        fixedResponse += ']';
-      }
-      for (let i = 0; i < openBraces - closeBraces; i++) {
-        fixedResponse += '}';
-      }
-
-      // Remove trailing comma before closing bracket/brace
-      fixedResponse = fixedResponse.replace(/,\s*\]/g, ']').replace(/,\s*\}/g, '}');
+      logger.warn('Initial JSON parse failed (len: %d), attempting recovery', cleanedResponse.length);
 
       try {
-        clusteringResult = JSON.parse(fixedResponse);
-        logger.info('Successfully parsed fixed JSON response');
+        // Strategy 1: Find last complete object and truncate there
+        const lastClosingBrace = cleanedResponse.lastIndexOf('}');
+        const lastClosingBracket = cleanedResponse.lastIndexOf(']');
+        
+        if (lastClosingBrace > lastClosingBracket) {
+          // Truncated mid-array, close the array
+          let fixedResponse = cleanedResponse.substring(0, lastClosingBrace + 1);
+          // Count open/close brackets after the last brace
+          const afterBrace = cleanedResponse.substring(lastClosingBrace + 1);
+          const openBrackets = (afterBrace.match(/\[/g) || []).length;
+          const closeBrackets = (afterBrace.match(/\]/g) || []).length;
+          for (let i = 0; i < openBrackets - closeBrackets; i++) {
+            fixedResponse += ']';
+          }
+          clusteringResult = JSON.parse(fixedResponse);
+          logger.info('Recovered JSON by truncating to last complete object');
+        } else {
+          // Truncated mid-object, try to close it
+          let fixedResponse = cleanedResponse;
+          const openBraces = (fixedResponse.match(/\{/g) || []).length;
+          const closeBraces = (fixedResponse.match(/\}/g) || []).length;
+          const openBrackets = (fixedResponse.match(/\[/g) || []).length;
+          const closeBrackets = (fixedResponse.match(/\]/g) || []).length;
+          
+          // Remove trailing comma
+          fixedResponse = fixedResponse.replace(/,\s*$/, '');
+          
+          // Close all open structures
+          for (let i = 0; i < openBraces - closeBraces; i++) {
+            fixedResponse += '}';
+          }
+          for (let i = 0; i < openBrackets - closeBrackets; i++) {
+            fixedResponse += ']';
+          }
+          
+          clusteringResult = JSON.parse(fixedResponse);
+          logger.info('Recovered JSON by closing %d braces, %d brackets', 
+            openBraces - closeBraces, openBrackets - closeBrackets);
+        }
       } catch (secondError) {
-        logger.error('[AI] Failed to parse clustering response (len: %d)', cleanedResponse.length);
+        logger.error('[AI] Failed to recover truncated JSON (len: %d)', cleanedResponse.length);
+        logger.error('[AI] First 500 chars: %s', cleanedResponse.substring(0, 500));
+        logger.error('[AI] Last 500 chars: %s', cleanedResponse.substring(Math.max(0, cleanedResponse.length - 500)));
         throw new Error(`Invalid JSON in clustering response: ${parseError.message}`);
       }
+    }
+
+    // Check if groups were truncated (warning only, don't fail)
+    if (clusteringResult.groups && clusteringResult.groups.length < (sessions.length / 5)) {
+      logger.warn('[AI] Clustering returned fewer groups than expected (%d groups for %d sessions). ' +
+        'Response may have been truncated. Consider reducing batch size.', 
+        clusteringResult.groups.length, sessions.length);
     }
 
     // Map session indices back to actual session data and calculate totals

@@ -107,14 +107,16 @@ export async function getUnassignedWork(req) {
     // Query activity_records for unassigned work (hybrid OCR approach)
     let activityQuery = `activity_records?user_id=eq.${userId}&organization_id=eq.${organization.id}&user_assigned_issue_key=is.null&status=in.(pending,processing,analyzed)&classification=in.(productive,unknown)&clustering_dismissed=eq.false&select=id,window_title,application_name,start_time,end_time,duration_seconds,total_time_seconds,created_at&order=created_at.desc`;
     activityQuery += `&limit=${limit}&offset=${offset}`;
-    if (dateFrom && isValidDate(dateFrom)) activityQuery += `&created_at=gte.${dateFrom}`;
-    if (dateTo && isValidDate(dateTo)) activityQuery += `&created_at=lte.${dateTo}`;
+    // Filter by actual work date (start_time), not record creation time
+    if (dateFrom && isValidDate(dateFrom)) activityQuery += `&start_time=gte.${dateFrom}T00:00:00`;
+    if (dateTo && isValidDate(dateTo)) activityQuery += `&start_time=lte.${dateTo}T23:59:59`;
 
     // Also query legacy analysis_results for backwards compatibility
     let legacyQuery = `analysis_results?select=*,screenshots(id,window_title,application_name,timestamp,thumbnail_url,storage_path)&user_id=eq.${userId}&organization_id=eq.${organization.id}&active_task_key=is.null&order=created_at.desc`;
     legacyQuery += `&limit=${limit}&offset=${offset}`;
-    if (dateFrom && isValidDate(dateFrom)) legacyQuery += `&created_at=gte.${dateFrom}`;
-    if (dateTo && isValidDate(dateTo)) legacyQuery += `&created_at=lte.${dateTo}`;
+    // Legacy records: filter by screenshot timestamp (closest to actual work time)
+    if (dateFrom && isValidDate(dateFrom)) legacyQuery += `&screenshots.timestamp=gte.${dateFrom}T00:00:00`;
+    if (dateTo && isValidDate(dateTo)) legacyQuery += `&screenshots.timestamp=lte.${dateTo}T23:59:59`;
 
     const [activityResults, legacyResults] = await Promise.all([
       supabaseRequest(supabaseConfig, activityQuery),
@@ -169,7 +171,7 @@ export async function getUnassignedWork(req) {
 export async function getUnassignedGroups(req) {
   const t0 = Date.now();
   try {
-    const { limit: rawLimit = 10, offset: rawOffset = 0 } = req.payload || {};
+    const { limit: rawLimit = 10, offset: rawOffset = 0, dateFrom, dateTo } = req.payload || {};
 
     // Validate pagination parameters
     const limit = toSafeInteger(rawLimit, 10, 1, 100);
@@ -187,19 +189,69 @@ export async function getUnassignedGroups(req) {
     // only rounds up to 60s once on the final aggregated total if still < 60s.
     const viabilityFilter = `&session_count=gt.0&total_seconds=gt.0`;
 
+    // Date range filter: resolve matching group IDs via activity_records.start_time
+    // (not unassigned_work_groups.created_at, which is when the AI clustered them —
+    // often 1–3 days after the actual work occurred)
+    let groupIdFilter = '';
+    let filteredCountByGroup = null;   // null = no filter; object = per-group session counts
+    let filteredSecondsByGroup = null; // null = no filter; object = per-group seconds
+    const hasDateFrom = dateFrom && isValidDate(dateFrom);
+    const hasDateTo = dateTo && isValidDate(dateTo);
+
+    if (hasDateFrom || hasDateTo) {
+      // Step 1: Find activity records (with duration) whose start_time falls in the date range
+      let activityDateQuery = `activity_records?user_id=eq.${userId}&organization_id=eq.${organization.id}&select=id,duration_seconds`;
+      if (hasDateFrom) activityDateQuery += `&start_time=gte.${dateFrom}T00:00:00`;
+      if (hasDateTo) activityDateQuery += `&start_time=lte.${dateTo}T23:59:59`;
+
+      const matchingActivities = ensureArray(await supabaseRequest(supabaseConfig, activityDateQuery));
+
+      if (matchingActivities.length === 0) {
+        return { success: true, groups: [], total_groups: 0, has_more: false, next_offset: 0 };
+      }
+
+      // Build duration lookup by activity ID
+      const activityDurationById = {};
+      matchingActivities.forEach(a => { activityDurationById[a.id] = a.duration_seconds || 0; });
+
+      // Step 2: Find group members for those activity IDs
+      // Limit to 500 IDs to avoid URL length issues — sufficient for any practical date range
+      const activityIdList = matchingActivities.slice(0, 500).map(a => a.id).join(',');
+      const memberQuery = `unassigned_group_members?activity_record_id=in.(${activityIdList})&select=group_id,activity_record_id`;
+      const members = ensureArray(await supabaseRequest(supabaseConfig, memberQuery));
+
+      const uniqueGroupIds = [...new Set(members.map(m => m.group_id).filter(Boolean))];
+
+      if (uniqueGroupIds.length === 0) {
+        return { success: true, groups: [], total_groups: 0, has_more: false, next_offset: 0 };
+      }
+
+      // Build per-group filtered session count and total seconds
+      filteredCountByGroup = {};
+      filteredSecondsByGroup = {};
+      members.forEach(m => {
+        if (!m.group_id) return;
+        filteredCountByGroup[m.group_id] = (filteredCountByGroup[m.group_id] || 0) + 1;
+        filteredSecondsByGroup[m.group_id] = (filteredSecondsByGroup[m.group_id] || 0) + (activityDurationById[m.activity_record_id] || 0);
+      });
+
+      groupIdFilter = `&id=in.(${uniqueGroupIds.join(',')})`;
+    }
+
     // First, get total count for pagination info
     const countResult = await supabaseRequest(
       supabaseConfig,
-      `unassigned_work_groups?user_id=eq.${userId}&organization_id=eq.${organization.id}&is_assigned=eq.false&is_dismissed=eq.false${viabilityFilter}&select=id`,
+      `unassigned_work_groups?user_id=eq.${userId}&organization_id=eq.${organization.id}&is_assigned=eq.false&is_dismissed=eq.false${viabilityFilter}${groupIdFilter}&select=id`,
       { headers: { 'Prefer': 'count=exact' } }
     );
     const totalCount = ensureArray(countResult).length;
 
     // LAZY LOADING: Fetch only summary data (no members/activities) with pagination
     // Session details loaded on-demand via getGroupDetails
+    // Phase 2: is_idle_only column precomputed at group creation time
     const groups = await supabaseRequest(
       supabaseConfig,
-      `unassigned_work_groups?user_id=eq.${userId}&organization_id=eq.${organization.id}&is_assigned=eq.false&is_dismissed=eq.false${viabilityFilter}&order=created_at.desc&limit=${limit}&offset=${offset}&select=id,group_label,group_description,session_count,total_seconds,confidence_level,recommended_action,suggested_issue_key,recommendation_reason,created_at`
+      `unassigned_work_groups?user_id=eq.${userId}&organization_id=eq.${organization.id}&is_assigned=eq.false&is_dismissed=eq.false${viabilityFilter}${groupIdFilter}&order=created_at.desc&limit=${limit}&offset=${offset}&select=id,group_label,group_description,session_count,total_seconds,confidence_level,recommended_action,suggested_issue_key,recommendation_reason,created_at,is_idle_only`
     );
 
     if (!groups || groups.length === 0) {
@@ -207,61 +259,6 @@ export async function getUnassignedGroups(req) {
     }
 
     console.log(`[getUnassignedGroups] Loaded ${groups.length} groups (offset: ${offset}, total: ${totalCount})`);
-
-    // Determine whether each group is idle-only or work. We classify a group as
-    // "idle" only when all activity_record members are idle (legacy members count
-    // as work since they don't carry an is_idle flag).
-    const groupIds = groups.map(g => g.id).filter(Boolean);
-    const groupTypeById = {};
-
-    if (groupIds.length > 0) {
-      const members = await supabaseRequest(
-        supabaseConfig,
-        `unassigned_group_members?group_id=in.(${groupIds.join(',')})&select=group_id,activity_record_id,unassigned_activity_id`
-      );
-
-      const membersArray = ensureArray(members);
-      const activityRecordIds = sanitizeUUIDArray(membersArray.map(m => m.activity_record_id));
-
-      const idleRecordIds = new Set();
-      if (activityRecordIds.length > 0) {
-        const arRows = await supabaseRequest(
-          supabaseConfig,
-          `activity_records?id=in.(${activityRecordIds.join(',')})&select=id,is_idle`
-        );
-        ensureArray(arRows).forEach(row => {
-          if (row?.is_idle) idleRecordIds.add(row.id);
-        });
-      }
-
-      const statsByGroup = {};
-      groupIds.forEach(id => {
-        statsByGroup[id] = { total: 0, idle: 0 };
-      });
-
-      membersArray.forEach(member => {
-        const gid = member?.group_id;
-        if (!gid || !statsByGroup[gid]) return;
-
-        if (member.activity_record_id) {
-          statsByGroup[gid].total += 1;
-          if (idleRecordIds.has(member.activity_record_id)) {
-            statsByGroup[gid].idle += 1;
-          }
-          return;
-        }
-
-        // Legacy members are treated as work for filtering purposes.
-        if (member.unassigned_activity_id) {
-          statsByGroup[gid].total += 1;
-        }
-      });
-
-      Object.entries(statsByGroup).forEach(([gid, stats]) => {
-        const isIdleGroup = stats.total > 0 && stats.idle === stats.total;
-        groupTypeById[gid] = isIdleGroup ? 'idle' : 'work';
-      });
-    }
 
     // Transform groups with minimal processing (no additional API calls)
     const enrichedGroups = groups.map((group) => {
@@ -275,6 +272,9 @@ export async function getUnassignedGroups(req) {
         reason: group.recommendation_reason || ''
       } : null;
 
+      const filteredCount = filteredCountByGroup !== null ? (filteredCountByGroup[group.id] || 0) : null;
+      const filteredSeconds = filteredSecondsByGroup !== null ? (filteredSecondsByGroup[group.id] || 0) : null;
+
       return {
         id: group.id,
         label: group.group_label,
@@ -282,7 +282,11 @@ export async function getUnassignedGroups(req) {
         session_count: group.session_count || 0,
         total_seconds: group.total_seconds || 0,
         total_time_formatted: totalTimeFormatted,
-        group_type: groupTypeById[group.id] || 'work',
+        // Per-date-filter stats (null when no filter is active)
+        filtered_session_count: filteredCount,
+        filtered_total_seconds: filteredSeconds,
+        filtered_time_formatted: filteredSeconds !== null ? formatDuration(filteredSeconds) : null,
+        group_type: group.is_idle_only ? 'idle' : 'work',  // Phase 2: Use precomputed column
         confidence: group.confidence_level || 'medium',
         recommendation: recommendation,
         created_at: group.created_at,
@@ -510,7 +514,7 @@ export async function getGroupScreenshots(req) {
  */
 export async function getGroupWorkSessions(req) {
   try {
-    const { sessionIds } = req.payload;
+    const { sessionIds, dateFrom, dateTo } = req.payload;
 
     // Validate sessionIds as UUID array
     const validation = validateSessionIds(sessionIds, 'getGroupWorkSessions');
@@ -527,16 +531,19 @@ export async function getGroupWorkSessions(req) {
 
     const sessionIdsParam = validSessionIds.join(',');
 
+    // Build date-filtered queries (only filter when a valid date is provided)
+    let arQuery = `activity_records?id=in.(${sessionIdsParam})&user_id=eq.${userId}&select=id,window_title,application_name,start_time,end_time,duration_seconds,total_time_seconds,work_date&order=start_time.asc`;
+    if (dateFrom && isValidDate(dateFrom)) arQuery += `&start_time=gte.${dateFrom}T00:00:00`;
+    if (dateTo && isValidDate(dateTo)) arQuery += `&start_time=lte.${dateTo}T23:59:59`;
+
+    let legacyQuery = `unassigned_activity?id=in.(${sessionIdsParam})&user_id=eq.${userId}&select=id,window_title,application_name,timestamp,screenshots(id,timestamp,start_time,end_time,duration_seconds,storage_path,work_date)&order=timestamp.asc`;
+    if (dateFrom && isValidDate(dateFrom)) legacyQuery += `&screenshots.start_time=gte.${dateFrom}T00:00:00`;
+    if (dateTo && isValidDate(dateTo)) legacyQuery += `&screenshots.start_time=lte.${dateTo}T23:59:59`;
+
     // Query both tables in parallel — IDs from the wrong table simply return no rows
     const [legacyActivities, arRecords] = await Promise.all([
-      supabaseRequest(
-        supabaseConfig,
-        `unassigned_activity?id=in.(${sessionIdsParam})&user_id=eq.${userId}&select=id,window_title,application_name,timestamp,screenshots(id,timestamp,start_time,end_time,duration_seconds,storage_path,work_date)&order=timestamp.asc`
-      ),
-      supabaseRequest(
-        supabaseConfig,
-        `activity_records?id=in.(${sessionIdsParam})&user_id=eq.${userId}&select=id,window_title,application_name,start_time,end_time,duration_seconds,total_time_seconds,work_date&order=start_time.asc`
-      )
+      supabaseRequest(supabaseConfig, legacyQuery),
+      supabaseRequest(supabaseConfig, arQuery)
     ]);
 
     // Normalise legacy records to a common shape

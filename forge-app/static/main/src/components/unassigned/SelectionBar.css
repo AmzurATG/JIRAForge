@@ -72,6 +72,33 @@
   border-color: rgba(255, 255, 255, 0.3);
 }
 
+.selection-bar-delete {
+  padding: 7px 14px;
+  background: #de350b;
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.15s ease-in-out, color 0.15s ease-in-out;
+  white-space: nowrap;
+}
+
+.selection-bar-delete:hover {
+  background: #bf2600;
+}
+
+.selection-bar-delete:active {
+  background: #a32500;
+}
+
+.selection-bar-delete:disabled {
+  background: #f4f5f7;
+  color: #a5adba;
+  cursor: not-allowed;
+}
+
 .selection-bar-assign {
   display: inline-flex;
   align-items: center;

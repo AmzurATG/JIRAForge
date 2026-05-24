@@ -5,7 +5,7 @@
  */
 
 import { useState } from 'react';
-import { ChevronUp, ChevronDown, ChevronsUpDown } from 'lucide-react';
+import { ChevronUp, ChevronDown, ChevronsUpDown, ChevronLeft, ChevronRight } from 'lucide-react';
 import LoadingSpinner from './LoadingSpinner';
 
 function DataTable({ 
@@ -44,7 +44,7 @@ function DataTable({
 
   if (loading) {
     return (
-      <div className="card flex justify-center py-12">
+      <div className="flex justify-center py-16">
         <LoadingSpinner />
       </div>
     );
@@ -52,34 +52,45 @@ function DataTable({
 
   if (!data || data.length === 0) {
     return (
-      <div className="card text-center py-12 text-gray-500 dark:text-gray-400">
-        {emptyMessage}
+      <div className="text-center py-16">
+        <div className="w-16 h-16 mx-auto mb-4 bg-gray-100 dark:bg-gray-700 rounded-2xl flex items-center justify-center">
+          <svg className="w-8 h-8 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+          </svg>
+        </div>
+        <p className="text-gray-500 dark:text-gray-400">{emptyMessage}</p>
       </div>
     );
   }
 
+  const totalPages = pagination ? Math.ceil(pagination.totalCount / pagination.limit) : 1;
+
   return (
-    <div className="card">
-      <div className="overflow-x-auto">
-        <table className="w-full">
+    <div className="w-full">
+      <div className="overflow-x-auto rounded-lg border border-gray-200 dark:border-gray-700 shadow-sm">
+        <table className="w-full min-w-max">
           <thead>
-            <tr className="border-b border-gray-200 dark:border-gray-700">
+            <tr className="bg-gray-50 dark:bg-gray-800/50 border-b border-gray-200 dark:border-gray-700">
               {columns.map((col) => (
                 <th
                   key={col.key}
-                  className="text-left px-4 py-3 text-sm font-semibold text-gray-700 dark:text-gray-300"
+                  className="text-left px-3 py-2 text-[10px] font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider whitespace-nowrap"
                 >
-                  <div className="flex items-center gap-2">
+                  <div className="flex items-center gap-1">
                     <span>{col.label}</span>
                     {col.sortable && (
                       <button
                         onClick={() => handleSort(col.key)}
-                        className="hover:text-primary-600 dark:hover:text-primary-400"
+                        className="p-0.5 rounded hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors"
                       >
                         {sortColumn === col.key ? (
-                          sortDirection === 'asc' ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />
+                          sortDirection === 'asc' ? (
+                            <ChevronUp className="w-3 h-3 text-primary-600" />
+                          ) : (
+                            <ChevronDown className="w-3 h-3 text-primary-600" />
+                          )
                         ) : (
-                          <ChevronsUpDown className="w-4 h-4" />
+                          <ChevronsUpDown className="w-3 h-3 text-gray-400" />
                         )}
                       </button>
                     )}
@@ -88,17 +99,19 @@ function DataTable({
               ))}
             </tr>
           </thead>
-          <tbody>
+          <tbody className="divide-y divide-gray-100 dark:divide-gray-700/50 bg-white dark:bg-gray-800">
             {sortedData.map((row, idx) => (
               <tr
                 key={idx}
                 onClick={() => onRowClick && onRowClick(row)}
-                className={`border-b border-gray-100 dark:border-gray-800 ${
-                  onRowClick ? 'cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-800' : ''
+                className={`transition-colors ${
+                  onRowClick 
+                    ? 'cursor-pointer hover:bg-primary-50 dark:hover:bg-primary-900/10' 
+                    : 'hover:bg-gray-50 dark:hover:bg-gray-700/30'
                 }`}
               >
                 {columns.map((col) => (
-                  <td key={col.key} className="px-4 py-3 text-sm text-gray-900 dark:text-gray-100">
+                  <td key={col.key} className="px-3 py-2 text-xs text-gray-900 dark:text-gray-100">
                     {col.render ? col.render(row[col.key], row) : row[col.key]}
                   </td>
                 ))}
@@ -109,27 +122,54 @@ function DataTable({
       </div>
       
       {pagination && (
-        <div className="flex items-center justify-between px-4 py-3 border-t border-gray-200 dark:border-gray-700">
-          <div className="text-sm text-gray-600 dark:text-gray-400">
-            Showing {((pagination.page - 1) * pagination.limit) + 1} to {Math.min(pagination.page * pagination.limit, pagination.totalCount)} of {pagination.totalCount} results
-          </div>
-          <div className="flex gap-2">
+        <div className="flex flex-col sm:flex-row items-center justify-between gap-3 pt-3">
+          <p className="text-xs text-gray-500 dark:text-gray-400">
+            Showing <span className="font-medium text-gray-900 dark:text-gray-100">{((pagination.page - 1) * pagination.limit) + 1}</span> to <span className="font-medium text-gray-900 dark:text-gray-100">{Math.min(pagination.page * pagination.limit, pagination.totalCount)}</span> of <span className="font-medium text-gray-900 dark:text-gray-100">{pagination.totalCount}</span> results
+          </p>
+          <div className="flex items-center gap-1.5">
             <button
               onClick={() => pagination.onPageChange(pagination.page - 1)}
               disabled={pagination.page === 1}
-              className="px-3 py-1 rounded border border-gray-300 dark:border-gray-600 disabled:opacity-50 disabled:cursor-not-allowed hover:bg-gray-50 dark:hover:bg-gray-800"
+              className="p-1.5 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 disabled:opacity-50 disabled:cursor-not-allowed hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors"
             >
-              Previous
+              <ChevronLeft className="w-4 h-4" />
             </button>
-            <span className="px-3 py-1 text-sm text-gray-600 dark:text-gray-400">
-              Page {pagination.page} of {Math.ceil(pagination.totalCount / pagination.limit)}
-            </span>
+            
+            <div className="flex items-center gap-1">
+              {Array.from({ length: Math.min(5, totalPages) }, (_, i) => {
+                let pageNum;
+                if (totalPages <= 5) {
+                  pageNum = i + 1;
+                } else if (pagination.page <= 3) {
+                  pageNum = i + 1;
+                } else if (pagination.page >= totalPages - 2) {
+                  pageNum = totalPages - 4 + i;
+                } else {
+                  pageNum = pagination.page - 2 + i;
+                }
+                
+                return (
+                  <button
+                    key={pageNum}
+                    onClick={() => pagination.onPageChange(pageNum)}
+                    className={`w-7 h-7 rounded-lg text-xs font-medium transition-all ${
+                      pagination.page === pageNum
+                        ? 'bg-primary-600 text-white shadow-sm'
+                        : 'text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700'
+                    }`}
+                  >
+                    {pageNum}
+                  </button>
+                );
+              })}
+            </div>
+            
             <button
               onClick={() => pagination.onPageChange(pagination.page + 1)}
-              disabled={pagination.page >= Math.ceil(pagination.totalCount / pagination.limit)}
-              className="px-3 py-1 rounded border border-gray-300 dark:border-gray-600 disabled:opacity-50 disabled:cursor-not-allowed hover:bg-gray-50 dark:hover:bg-gray-800"
+              disabled={pagination.page >= totalPages}
+              className="p-1.5 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 disabled:opacity-50 disabled:cursor-not-allowed hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors"
             >
-              Next
+              <ChevronRight className="w-4 h-4" />
             </button>
           </div>
         </div>

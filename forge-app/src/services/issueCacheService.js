@@ -10,9 +10,16 @@
 import api, { route } from '@forge/api';
 import { remoteRequest } from '../utils/remote.js';
 
-// JQL must match the one used by getAllUserAssignedIssues() in jira.js
-// so the cache and live Jira queries return the same issue set
-const CACHE_JQL = 'assignee = currentUser() AND statusCategory != Done ORDER BY updated DESC';
+// Cache ALL assigned issues except completed (Done).
+// This broad cache supports project-level status filtering done by the desktop app.
+// Different projects may have different tracked_statuses (admin-configured), so the cache
+// must be inclusive. The desktop app reads project_settings from Supabase and filters
+// the cached issues client-side based on each project's configured tracked_statuses.
+// 
+// Why not "To Do"? We exclude backlog items (statusCategory = "To Do") because they create
+// 87% error rates in AI matching (20:3 noise ratio from bug analysis). Backlog items are
+// not active work, so they should never be tracked regardless of project settings.
+const CACHE_JQL = 'assignee = currentUser() AND resolution = EMPTY AND statusCategory NOT IN ("To Do", "Done") ORDER BY updated DESC';
 const MAX_ISSUES = 50;
 
 /**
@@ -82,7 +89,7 @@ async function refreshCacheForUser(accountId) {
         body: JSON.stringify({
           jql: CACHE_JQL,
           maxResults: MAX_ISSUES,
-          fields: ['summary', 'status', 'project', 'issuetype', 'priority', 'description', 'labels']
+          fields: ['summary', 'status', 'project', 'issuetype', 'priority', 'description', 'labels', 'updated']
         })
       }
     );
@@ -107,6 +114,42 @@ async function refreshCacheForUser(accountId) {
     return { success: true, issueCount: issues.length };
   } catch (error) {
     console.error(`[IssueCache] Failed to refresh cache for ${accountId}:`, error.message);
+    return { success: false, error: error.message };
+  }
+}
+
+/**
+ * Scheduled handler for periodic issue cache refresh.
+ * Fetches recently active users from the AI server, then refreshes their Jira
+ * issue caches. Runs every 30 minutes via a Forge scheduled trigger.
+ */
+export async function scheduledIssueCacheRefresh() {
+  try {
+    // Ask the AI server which users had recent activity
+    const activeData = await remoteRequest('/api/forge/issues/active-accounts?minutes=60', {
+      method: 'GET'
+    });
+
+    const accountIds = activeData?.accountIds || [];
+    if (accountIds.length === 0) {
+      console.log('[IssueCache] No recently active users — skipping scheduled refresh');
+      return { success: true, skipped: true, reason: 'no_active_users' };
+    }
+
+    console.log(`[IssueCache] Scheduled refresh: refreshing cache for ${accountIds.length} active user(s)`);
+
+    const results = [];
+    for (const accountId of accountIds) {
+      const result = await refreshCacheForUser(accountId);
+      results.push({ accountId, ...result });
+    }
+
+    const successCount = results.filter(r => r.success).length;
+    console.log(`[IssueCache] Scheduled refresh complete: ${successCount}/${results.length} succeeded`);
+
+    return { success: true, results };
+  } catch (error) {
+    console.error('[IssueCache] Scheduled cache refresh error:', error.message);
     return { success: false, error: error.message };
   }
 }

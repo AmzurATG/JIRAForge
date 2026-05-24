@@ -10,6 +10,28 @@
 const logger = require('../utils/logger');
 const { getClient } = require('./db/supabase-client');
 
+function isNonProductiveClassification(classification) {
+  return classification === 'non_productive' || classification === 'non-productive';
+}
+
+function normalizeClassificationFilter(classification) {
+  if (!classification) return classification;
+  if (classification === 'non-productive') return 'non_productive';
+  return classification;
+}
+
+function toPortalClassification(classification) {
+  if (classification === 'non_productive') return 'non-productive';
+  return classification;
+}
+
+function formatDate(date) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
 /**
  * Portal Service Class
  */
@@ -27,11 +49,10 @@ class PortalService {
     const supabase = getClient();
     if (!supabase) throw new Error('Supabase client not initialized');
     
-    // Query activity records for the date range
+    // Query activity records for the date range (all orgs)
     const { data: activities, error } = await supabase
       .from('activity_records')
       .select('classification, duration_seconds, user_id, work_date')
-      .eq('organization_id', orgId)
       .gte('work_date', from)
       .lte('work_date', to)
       .neq('is_idle', true);
@@ -52,7 +73,7 @@ class PortalService {
       
       if (activity.classification === 'productive') {
         productiveSeconds += seconds;
-      } else if (activity.classification === 'non-productive') {
+      } else if (isNonProductiveClassification(activity.classification)) {
         nonProductiveSeconds += seconds;
       }
       
@@ -66,7 +87,7 @@ class PortalService {
       
       if (activity.classification === 'productive') {
         dailyTrend[date].productiveSeconds += seconds;
-      } else if (activity.classification === 'non-productive') {
+      } else if (isNonProductiveClassification(activity.classification)) {
         dailyTrend[date].nonProductiveSeconds += seconds;
       }
     });
@@ -92,6 +113,45 @@ class PortalService {
   }
   
   /**
+   * Get lightweight employees list for dropdowns (no metrics).
+   * 
+   * @param {string} orgId - Organization ID (not used, all orgs)
+   * @param {string} search - Optional search term
+   * @returns {Promise<Array>} Simple user list [{userId, name, email}]
+   */
+  async getEmployeesList(orgId, search) {
+    const supabase = getClient();
+    if (!supabase) throw new Error('Supabase client not initialized');
+    
+    // Get all users directly (much faster than aggregating activities)
+    let userQuery = supabase
+      .from('users')
+      .select('id, display_name, email')
+      .order('display_name', { ascending: true });
+    
+    if (search) {
+      userQuery = userQuery.or(`display_name.ilike.%${search}%,email.ilike.%${search}%`);
+    }
+    
+    // Limit to reasonable number for dropdown
+    userQuery = userQuery.limit(500);
+    
+    const { data: users, error: userError } = await userQuery;
+    
+    if (userError) {
+      logger.error('[PortalService] Users query failed', { orgId, error: userError });
+      throw userError;
+    }
+    
+    // Format response
+    return (users || []).map(user => ({
+      userId: user.id,
+      name: user.display_name || user.email || 'Unknown User',
+      email: user.email
+    }));
+  }
+
+  /**
    * Get employees list with aggregated metrics.
    * 
    * @param {string} orgId - Organization ID
@@ -103,18 +163,25 @@ class PortalService {
     const supabase = getClient();
     if (!supabase) throw new Error('Supabase client not initialized');
     
-    const { search, productivityRange, from, to } = filters;
+    let { search, productivityRange, from, to } = filters;
     const { page = 1, limit = 20 } = pagination;
     
-    // First get activity data for the date range
+    // Default to last 30 days if no date range provided (prevent full table scan)
+    if (!from || !to) {
+      const toDate = new Date();
+      const fromDate = new Date();
+      fromDate.setDate(toDate.getDate() - 30);
+      from = from || formatDate(fromDate);
+      to = to || formatDate(toDate);
+    }
+    
+    // First get activity data for the date range (all orgs)
     let activityQuery = supabase
       .from('activity_records')
       .select('user_id, classification, duration_seconds, start_time')
-      .eq('organization_id', orgId)
-      .neq('is_idle', true);
-    
-    if (from) activityQuery = activityQuery.gte('work_date', from);
-    if (to) activityQuery = activityQuery.lte('work_date', to);
+      .neq('is_idle', true)
+      .gte('work_date', from)
+      .lte('work_date', to);
     
     const { data: activities, error: activityError } = await activityQuery;
     
@@ -137,7 +204,7 @@ class PortalService {
       
       if (activity.classification === 'productive') {
         userMetrics[userId].productiveSeconds += activity.duration_seconds || 0;
-      } else if (activity.classification === 'non-productive') {
+      } else if (isNonProductiveClassification(activity.classification)) {
         userMetrics[userId].nonProductiveSeconds += activity.duration_seconds || 0;
       }
       
@@ -155,7 +222,6 @@ class PortalService {
     let userQuery = supabase
       .from('users')
       .select('id, display_name, email')
-      .eq('organization_id', orgId)
       .in('id', userIds);
     
     if (search) {
@@ -170,16 +236,18 @@ class PortalService {
     }
     
     // Combine data
-    let employees = users.map(user => {
+    let employees = (users || []).map(user => {
       const metrics = userMetrics[user.id];
       const totalSeconds = metrics.productiveSeconds + metrics.nonProductiveSeconds;
       const productivityPercentage = totalSeconds > 0 
         ? (metrics.productiveSeconds / totalSeconds) * 100 
         : 0;
       
+      const displayName = user.display_name || user.email || 'Unknown User';
+
       return {
         userId: user.id,
-        name: user.display_name,
+        name: displayName,
         email: user.email,
         productiveHours: metrics.productiveSeconds / 3600,
         nonProductiveHours: metrics.nonProductiveSeconds / 3600,
@@ -188,19 +256,19 @@ class PortalService {
       };
     });
     
-    // Filter by productivity range
+    // Filter by productivity range (aligned with frontend: high >70%, medium 50-70%, low <50%)
     if (productivityRange && productivityRange !== 'all') {
       employees = employees.filter(emp => {
         const pct = emp.productivityPercentage;
-        if (productivityRange === 'high') return pct > 80;
-        if (productivityRange === 'medium') return pct >= 40 && pct <= 80;
-        if (productivityRange === 'low') return pct < 40;
+        if (productivityRange === 'high') return pct >= 70;
+        if (productivityRange === 'medium') return pct >= 50 && pct < 70;
+        if (productivityRange === 'low') return pct < 50;
         return true;
       });
     }
     
     // Sort by name
-    employees.sort((a, b) => a.name.localeCompare(b.name));
+    employees.sort((a, b) => (a.name || '').localeCompare(b.name || ''));
     
     // Paginate
     const totalCount = employees.length;
@@ -226,11 +294,10 @@ class PortalService {
     const supabase = getClient();
     if (!supabase) throw new Error('Supabase client not initialized');
     
-    // Get user info
+    // Get user info (all orgs)
     const { data: user, error: userError } = await supabase
       .from('users')
       .select('id, display_name, email')
-      .eq('organization_id', orgId)
       .eq('id', userId)
       .single();
     
@@ -239,11 +306,10 @@ class PortalService {
       throw userError;
     }
     
-    // Get activity data
+    // Get activity data (all orgs)
     const { data: activities, error: activityError } = await supabase
       .from('activity_records')
       .select('classification, duration_seconds, work_date')
-      .eq('organization_id', orgId)
       .eq('user_id', userId)
       .gte('work_date', from)
       .lte('work_date', to)
@@ -264,7 +330,7 @@ class PortalService {
       
       if (activity.classification === 'productive') {
         productiveSeconds += seconds;
-      } else if (activity.classification === 'non-productive') {
+      } else if (isNonProductiveClassification(activity.classification)) {
         nonProductiveSeconds += seconds;
       }
       
@@ -312,7 +378,7 @@ class PortalService {
    * Get time logs with filters.
    * 
    * @param {string} orgId - Organization ID
-   * @param {Object} filters - Classification, employee, app, duration, etc.
+   * @param {Object} filters - Classification, employee, app, duration, confidence, etc.
    * @param {Object} pagination - page, limit
    * @returns {Promise<Object>} Time logs and pagination
    */
@@ -320,10 +386,20 @@ class PortalService {
     const supabase = getClient();
     if (!supabase) throw new Error('Supabase client not initialized');
     
-    const { classification, employee, app, from, to } = filters;
+    let { classification, employee, app, from, to, durationMin, durationMax, confidenceMin, confidenceMax } = filters;
     const { page = 1, limit = 20 } = pagination;
+    const normalizedClassification = normalizeClassificationFilter(classification);
     
-    // Build query
+    // Default to last 7 days if no date range provided (prevent full table scan)
+    if (!from || !to) {
+      const toDate = new Date();
+      const fromDate = new Date();
+      fromDate.setDate(toDate.getDate() - 7);
+      from = from || formatDate(fromDate);
+      to = to || formatDate(toDate);
+    }
+    
+    // Build query (all orgs)
     let query = supabase
       .from('activity_records')
       .select(`
@@ -337,13 +413,12 @@ class PortalService {
         duration_seconds,
         ocr_confidence,
         users!activity_records_user_id_fkey!inner(display_name, email)
-      `, { count: 'exact' })
-      .eq('organization_id', orgId)
+      `, { count: 'estimated' })  // Use estimated count instead of exact to avoid timeout
       .neq('is_idle', true);
     
     // Apply filters
-    if (classification && classification !== 'all') {
-      query = query.eq('classification', classification);
+    if (normalizedClassification && normalizedClassification !== 'all') {
+      query = query.eq('classification', normalizedClassification);
     }
     
     if (employee) {
@@ -362,6 +437,24 @@ class PortalService {
       query = query.lte('end_time', `${to}T23:59:59Z`);
     }
     
+    // Duration filters (in seconds)
+    if (durationMin !== undefined && durationMin !== null && !isNaN(durationMin)) {
+      query = query.gte('duration_seconds', parseInt(durationMin, 10));
+    }
+    
+    if (durationMax !== undefined && durationMax !== null && !isNaN(durationMax)) {
+      query = query.lte('duration_seconds', parseInt(durationMax, 10));
+    }
+    
+    // Confidence filters (decimal 0-1)
+    if (confidenceMin !== undefined && confidenceMin !== null && !isNaN(confidenceMin)) {
+      query = query.gte('ocr_confidence', parseFloat(confidenceMin));
+    }
+    
+    if (confidenceMax !== undefined && confidenceMax !== null && !isNaN(confidenceMax)) {
+      query = query.lte('ocr_confidence', parseFloat(confidenceMax));
+    }
+    
     // Sort and paginate
     const offset = (page - 1) * limit;
     query = query
@@ -376,17 +469,28 @@ class PortalService {
     }
     
     // Format response
-    const formattedData = (data || []).map(record => ({
-      recordId: record.id,
-      employeeName: record.users?.display_name || 'Unknown',
-      activitySummary: record.window_title || 'No title',
-      classification: record.classification,
-      startTime: record.start_time,
-      endTime: record.end_time,
-      durationSeconds: record.duration_seconds,
-      applicationName: record.application_name,
-      confidenceScore: record.ocr_confidence || 0
-    }));
+    const formattedData = (data || []).map(record => {
+      const userName = record.users?.display_name || record.users?.email || 'Unknown';
+      const userEmail = record.users?.email || '';
+      const application = record.application_name || 'Unknown';
+      const windowTitle = record.window_title || 'No title';
+
+      return {
+        recordId: record.id,
+        userName,
+        userEmail,
+        windowTitle,
+        application,
+        classification: toPortalClassification(record.classification),
+        startTime: record.start_time,
+        endTime: record.end_time,
+        durationSeconds: record.duration_seconds,
+        confidenceScore: record.ocr_confidence || 0,
+        employeeName: userName,
+        activitySummary: windowTitle,
+        applicationName: application
+      };
+    });
     
     return {
       data: formattedData,

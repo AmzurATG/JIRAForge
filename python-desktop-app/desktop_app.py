@@ -7,6 +7,7 @@ import os
 import re
 import sys
 import time
+import logging
 import json
 import queue
 import atexit
@@ -19,8 +20,11 @@ import urllib.parse
 import secrets
 import hashlib
 import base64
+import uuid
+import platform
 from datetime import datetime, timezone, timedelta
 from io import BytesIO
+from enum import Enum
 
 # Fix broken TLS CA-bundle env vars before any HTTPS library is imported.
 # The PostgreSQL Windows installer (v14-17) sets CURL_CA_BUNDLE to a path
@@ -58,6 +62,18 @@ from ocr import extract_text_from_image
 
 # OCR dependency check is deferred until after AI server config is fetched
 # (so it uses the correct engines from the server, not local defaults)
+
+# Application logging module
+try:
+    from app_logger import (
+        setup_logging, get_logger, get_log_file_path, get_log_stats,
+        log_auth_event, log_tracking_event, log_network_event,
+        log_ocr_event, log_system_event, log_performance
+    )
+    APP_LOGGER_AVAILABLE = True
+except ImportError:
+    APP_LOGGER_AVAILABLE = False
+    print("[WARN] app_logger module not found - logging to file disabled")
 
 # ============================================================================
 # SECURE LOGGING (PII SANITIZATION) - Embedded for single-file bundling
@@ -186,6 +202,23 @@ def secure_log(message: str, level: str = "INFO", **kwargs) -> None:
         print(f"[{timestamp}] [{level}] {log_line}")
     else:
         print(log_line)
+
+
+def log_auth_diagnostic(event: str, level: str = "INFO", **kwargs) -> None:
+    """Write a structured auth diagnostic line to the application log."""
+    if not APP_LOGGER_AVAILABLE:
+        return
+
+    try:
+        logger = get_logger(__name__, 'AUTH')
+        sanitized_kwargs = _sanitize_dict(kwargs) if kwargs else {}
+        details = " | ".join(f"{k}={v}" for k, v in sanitized_kwargs.items())
+        message = event if not details else f"{event} | {details}"
+
+        log_method = getattr(logger, str(level).lower(), logger.info)
+        log_method(message)
+    except Exception:
+        pass
 
 # ============================================================================
 
@@ -333,7 +366,7 @@ load_dotenv()
 
 # Application version - IMPORTANT: Update this when releasing new versions
 # This is used for update checking and notifications
-APP_VERSION = "1.4.8"
+APP_VERSION = "1.4.3"
 
 # Hard-disable screenshot monitoring/storage in desktop app.
 # OCR text extraction for activity records still runs via event-based flow.
@@ -342,10 +375,10 @@ SCREENSHOT_MONITORING_HARD_DISABLED = True
 # Embedded credentials (for production builds - no .env file needed)
 # SECURITY: All sensitive keys moved to AI Server - fetched at runtime after authentication
 EMBEDDED_CONFIG = {
-    'ATLASSIAN_CLIENT_ID': 'Q8HT4Jn205AuTiAarj088oWNDrOqwvM5',
+    'ATLASSIAN_CLIENT_ID': 'k2Xwzy8c1g3Wk6Xpbeev0x70CXEp9lJH',
     # REMOVED: ATLASSIAN_CLIENT_SECRET - now on AI Server only (security fix)
     # REMOVED: SUPABASE_URL, SUPABASE_ANON_KEY, SUPABASE_SERVICE_ROLE_KEY - fetched from AI Server
-    'AI_SERVER_URL': 'https://forgesync.amzur.com',  # AI Server for secure token exchange & config
+    'AI_SERVER_URL': 'https://timetracker-forge.amzur.com',  # AI Server for secure token exchange & config
     'CAPTURE_INTERVAL': '300',
     'WEB_PORT': '51777',
 }
@@ -544,49 +577,71 @@ def check_for_updates(ai_server_url=None):
         'checksum': str (SHA256 hash for integrity verification)
     }
     """
-    try:
-        server_url = ai_server_url or get_env_var('AI_SERVER_URL')
-        if not server_url:
-            print("[WARN] AI Server URL not configured, skipping update check")
-            return None
-        
-        url = f"{server_url}/api/app-version/check?platform=windows&current={APP_VERSION}"
-        
-        response = requests.get(url, timeout=10)
-        
-        if response.status_code != 200:
-            print(f"[WARN] Update check failed: HTTP {response.status_code}")
-            return None
-        
-        data = response.json()
-        
-        if not data.get('success'):
-            print(f"[WARN] Update check failed: {data.get('error', 'Unknown error')}")
-            return None
-        
-        result = data.get('data', {})
-        
-        return {
-            'update_available': result.get('updateAvailable', False),
-            'latest_version': result.get('latestVersion'),
-            'current_version': result.get('currentVersion', APP_VERSION),
-            'download_url': result.get('downloadUrl'),
-            'release_notes': result.get('releaseNotes'),
-            'is_mandatory': result.get('isMandatory', False),
-            'can_update': result.get('canUpdate', True),
-            'checksum': result.get('checksum'),  # SHA256 for integrity verification
-            'file_size_bytes': result.get('fileSizeBytes')
-        }
+    server_url = ai_server_url or get_env_var('AI_SERVER_URL')
+    if not server_url:
+        print("[WARN] AI Server URL not configured, skipping update check")
+        return None
     
-    except requests.exceptions.Timeout:
-        print("[WARN] Update check timed out")
-        return None
-    except requests.exceptions.RequestException as e:
-        print(f"[WARN] Update check failed: {e}")
-        return None
-    except Exception as e:
-        print(f"[WARN] Unexpected error during update check: {e}")
-        return None
+    url = f"{server_url}/api/app-version/check?platform=windows&current={APP_VERSION}"
+    
+    # Retry logic with exponential backoff for transient network failures
+    max_attempts = 3
+    backoff_delays = [0, 2, 4]  # seconds between attempts
+    
+    for attempt in range(max_attempts):
+        try:
+            if attempt > 0:
+                delay = backoff_delays[attempt]
+                print(f"[INFO] Retrying update check (attempt {attempt + 1}/{max_attempts}) after {delay}s delay...")
+                time.sleep(delay)
+            
+            response = requests.get(url, timeout=10)
+            
+            if response.status_code != 200:
+                print(f"[WARN] Update check failed: HTTP {response.status_code}")
+                # Don't retry on HTTP errors (4xx/5xx) - these are not transient
+                return None
+            
+            data = response.json()
+            
+            if not data.get('success'):
+                print(f"[WARN] Update check failed: {data.get('error', 'Unknown error')}")
+                # Server returned error response - don't retry
+                return None
+            
+            result = data.get('data', {})
+            
+            return {
+                'update_available': result.get('updateAvailable', False),
+                'latest_version': result.get('latestVersion'),
+                'current_version': result.get('currentVersion', APP_VERSION),
+                'download_url': result.get('downloadUrl'),
+                'release_notes': result.get('releaseNotes'),
+                'is_mandatory': result.get('isMandatory', False),
+                'can_update': result.get('canUpdate', True),
+                'checksum': result.get('checksum'),  # SHA256 for integrity verification
+                'file_size_bytes': result.get('fileSizeBytes')
+            }
+        
+        except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
+            # Retry on timeout and connection errors (transient failures)
+            if attempt < max_attempts - 1:
+                print(f"[WARN] Update check failed (attempt {attempt + 1}/{max_attempts}): {type(e).__name__}")
+                continue  # Retry
+            else:
+                print(f"[WARN] Update check failed after {max_attempts} attempts: {e}")
+                return None
+        
+        except requests.exceptions.RequestException as e:
+            # Other request exceptions (DNS errors, SSL errors, etc.) - don't retry
+            print(f"[WARN] Update check failed: {e}")
+            return None
+        
+        except Exception as e:
+            print(f"[WARN] Unexpected error during update check: {e}")
+            return None
+    
+    return None
 
 def compute_file_checksum(file_path):
     """
@@ -1207,6 +1262,10 @@ class UpdateManager:
         self._lock = threading.Lock()
         self._on_status_change = on_status_change
         self._on_apply_update = on_apply_update
+        
+        # Automatic retry for failed downloads
+        self._last_download_attempt = 0
+        self._download_retry_interval = 30 * 60  # 30 minutes
 
     def _set_state(self, new_state, error=None):
         self.state = new_state
@@ -1293,6 +1352,10 @@ class UpdateManager:
 
             self._set_state('checking')
             self._set_state('downloading')
+            
+            # Record download attempt time for retry logic
+            self._last_download_attempt = time.time()
+            
             self._download_thread = threading.Thread(target=self._download_worker, daemon=True)
             self._download_thread.start()
             return True
@@ -1359,6 +1422,22 @@ class UpdateManager:
         except Exception as e:
             self._set_state('failed', error=str(e))
             print(f"[WARN] Update download failed: {e}")
+            
+            # Notify user about download failure
+            if WINOTIFY_AVAILABLE:
+                try:
+                    error_msg = str(e)[:100]  # Truncate to 100 chars
+                    notification = Notification(
+                        app_id="Time Tracker",
+                        title="Update Download Failed",
+                        msg=f"Failed to download update: {error_msg}\n\nWill retry automatically.",
+                        duration="long"
+                    )
+                    notification.set_audio(audio.Default, loop=False)
+                    notification.show()
+                except Exception as notify_error:
+                    # Don't let notification failure break the app
+                    print(f"[WARN] Failed to show download failure notification: {notify_error}")
         finally:
             if os.path.exists(temp_path):
                 try:
@@ -1379,6 +1458,22 @@ class UpdateManager:
             return False
         self._cancel_event.set()
         return True
+
+    def should_retry_download(self):
+        """Check if we should retry a failed download (30-minute interval)."""
+        if self.state != 'failed':
+            return False
+        
+        if self._last_download_attempt == 0:
+            return False
+        
+        time_since_last_attempt = time.time() - self._last_download_attempt
+        
+        if time_since_last_attempt >= self._download_retry_interval:
+            print(f"[INFO] Retrying failed download after {int(time_since_last_attempt / 60)} minutes")
+            return True
+        
+        return False
 
     def apply_update(self):
         """Apply a previously staged update and request app shutdown."""
@@ -1794,7 +1889,7 @@ class AtlassianAuthManager:
         self.redirect_uri = f'http://localhost:{web_port}/auth/callback'
         self.authorization_url = 'https://auth.atlassian.com/authorize'
         # Token exchange now goes through AI Server
-        self.ai_server_url = get_env_var('AI_SERVER_URL', 'https://forgesync.amzur.com')
+        self.ai_server_url = get_env_var('AI_SERVER_URL', 'https://timetracker-forge.amzur.com')
         self.store_path = store_path or os.path.join(get_app_data_dir(), 'time_tracker_auth.json')
         self.metadata_path = os.path.join(get_app_data_dir(), 'auth_metadata.json')  # For non-sensitive data
 
@@ -1809,6 +1904,8 @@ class AtlassianAuthManager:
         self._refresh_token_invalid = False
         self._refresh_fail_count = 0
         self._refresh_invalid_set_at = 0  # timestamp when _refresh_token_invalid was set
+        self._last_refresh_fail_time = 0
+        self._last_refresh_error_code = ''
 
         # Initialize secure storage
         self.secure_storage = SecureTokenStorage(get_app_data_dir())
@@ -1830,25 +1927,32 @@ class AtlassianAuthManager:
             if not os.path.exists(self.store_path):
                 return
 
-            # Use SecureTokenStorage's migration method
+            # Read the old file BEFORE calling migrate_from_plaintext(), which
+            # deletes it.  This preserves non-sensitive metadata (including
+            # supabase_token_expires_at) so it can be written to auth_metadata.json.
+            old_data = {}
+            try:
+                with open(self.store_path, 'r') as f:
+                    old_data = json.load(f)
+            except Exception as read_err:
+                print(f"[WARN] Could not read old token file before migration: {read_err}")
+
+            # Use SecureTokenStorage's migration method (deletes store_path on success)
             migrated = self.secure_storage.migrate_from_plaintext(self.store_path)
             
             if migrated:
                 print("[OK] Migrated tokens from plaintext to secure storage")
                 
-                # Extract metadata (non-sensitive data) and save separately
+                # Save non-sensitive metadata (e.g. supabase_token_expires_at, expires_at)
+                # to auth_metadata.json using the data we read before deletion.
                 try:
-                    with open(self.store_path, 'r') as f:
-                        old_data = json.load(f)
-                    
-                    # Save non-sensitive metadata separately
                     metadata = {k: v for k, v in old_data.items() if k not in SENSITIVE_TOKEN_KEYS}
                     if metadata:
                         with open(self.metadata_path, 'w') as f:
                             json.dump(metadata, f)
-                        print(f"[OK] Saved non-sensitive metadata separately")
-                except Exception:
-                    pass  # Non-critical
+                        print(f"[OK] Saved non-sensitive metadata separately (migration)")
+                except Exception as meta_err:
+                    print(f"[WARN] Could not save metadata during migration: {meta_err}")
 
         except Exception as e:
             print(f"[WARN] Migration to secure storage failed: {e}")
@@ -2046,6 +2150,7 @@ class AtlassianAuthManager:
         self._refresh_fail_count = 0  # Reset consecutive failure counter
         self._refresh_invalid_set_at = 0  # Clear grace-period timestamp
         self._last_refresh_fail_time = 0  # Reset failure window
+        self._last_refresh_error_code = ''
 
         print("[OK] OAuth tokens received via AI Server")
         return result
@@ -2122,11 +2227,31 @@ class AtlassianAuthManager:
                 self._refresh_invalid_set_at = 0
             else:
                 print("[WARN] Refresh token is marked invalid — re-authentication required")
+                grace_remaining = max(0, int(grace_period - (time.time() - invalid_since))) if invalid_since else grace_period
+                log_auth_diagnostic(
+                    'token_refresh_blocked_invalid_flag',
+                    level='WARNING',
+                    reason_code=getattr(self, '_last_refresh_error_code', '') or 'UNKNOWN',
+                    refresh_fail_count=getattr(self, '_refresh_fail_count', 0),
+                    grace_remaining_sec=grace_remaining,
+                    invalid_flag=True,
+                    next_action='show_auth_notification'
+                )
                 return False
 
         refresh_token_before = self.tokens.get('refresh_token')
         if not refresh_token_before:
             print("[ERROR] No refresh token available")
+            log_auth_diagnostic(
+                'token_refresh_failed',
+                level='ERROR',
+                reason_code='OAUTH_REAUTH_REQUIRED',
+                permanent_failure=True,
+                refresh_fail_count=getattr(self, '_refresh_fail_count', 0),
+                invalid_flag=getattr(self, '_refresh_token_invalid', False),
+                next_action='manual_reauth_required',
+                failure_reason='missing_refresh_token'
+            )
             return False
 
         with self._refresh_lock:
@@ -2153,6 +2278,17 @@ class AtlassianAuthManager:
 
             refresh_token = refresh_token_now or refresh_token_before
             if not refresh_token:
+                self._last_refresh_error_code = 'OAUTH_REAUTH_REQUIRED'
+                log_auth_diagnostic(
+                    'token_refresh_failed',
+                    level='ERROR',
+                    reason_code='OAUTH_REAUTH_REQUIRED',
+                    permanent_failure=True,
+                    refresh_fail_count=getattr(self, '_refresh_fail_count', 0),
+                    invalid_flag=getattr(self, '_refresh_token_invalid', False),
+                    next_action='manual_reauth_required',
+                    failure_reason='missing_refresh_token_after_lock'
+                )
                 return False
 
             print("[INFO] Refreshing access token via AI Server...")
@@ -2175,14 +2311,28 @@ class AtlassianAuthManager:
                     # NOT for transient errors that happen to contain the word "invalid".
                     # Atlassian returns 'invalid_grant' when the refresh token is truly revoked/expired.
                     error_lower = str(error).lower()
-                    is_permanent_failure = (
-                        error_data.get('requiresReauth') or
-                        'invalid_grant' in error_lower or
-                        'refresh token is invalid' in error_lower or
-                        'token has been revoked' in error_lower or
-                        'token has been expired' in error_lower or
-                        response.status_code == 403
-                    )
+                    error_code = str(error_data.get('errorCode', '')).upper()
+                    if error_code == 'OAUTH_REAUTH_REQUIRED':
+                        is_permanent_failure = True
+                    elif error_code == 'OAUTH_TEMPORARY_FAILURE':
+                        is_permanent_failure = False
+                    else:
+                        is_permanent_failure = (
+                            error_data.get('requiresReauth') or
+                            'invalid_grant' in error_lower or
+                            'refresh token is invalid' in error_lower or
+                            'token has been revoked' in error_lower or
+                            'token has been expired' in error_lower
+                        )
+
+                    if not error_code:
+                        error_code = 'OAUTH_REAUTH_REQUIRED' if is_permanent_failure else 'OAUTH_TEMPORARY_FAILURE'
+                    self._last_refresh_error_code = error_code
+
+                    projected_fail_count = getattr(self, '_refresh_fail_count', 0)
+                    invalid_flag_after_failure = getattr(self, '_refresh_token_invalid', False)
+                    next_action = 'retry_refresh'
+
                     if is_permanent_failure:
                         # Track consecutive permanent failures with time-windowed counting.
                         # Reset the counter if the last failure was more than 10 minutes ago
@@ -2193,12 +2343,32 @@ class AtlassianAuthManager:
                             self._refresh_fail_count = 0  # Reset — failures are not consecutive
                         self._last_refresh_fail_time = now
                         self._refresh_fail_count = getattr(self, '_refresh_fail_count', 0) + 1
+                        projected_fail_count = self._refresh_fail_count
                         if self._refresh_fail_count >= 5:
                             print(f"[WARN] Refresh token failed {self._refresh_fail_count} times within window - marking invalid (will auto-recover in 30 min)")
                             self._refresh_token_invalid = True
                             self._refresh_invalid_set_at = now  # Record when flag was set for auto-expiry
+                            invalid_flag_after_failure = True
+                            next_action = 'show_auth_notification'
                         else:
                             print(f"[WARN] Refresh token failure {self._refresh_fail_count}/5 - will retry before requiring re-auth")
+                            next_action = 'retry_refresh'
+                    else:
+                        next_action = 'retry_refresh'
+
+                    log_auth_diagnostic(
+                        'token_refresh_failed',
+                        level='WARNING' if response.status_code < 500 else 'ERROR',
+                        http_status=response.status_code,
+                        error_code=error_code,
+                        requires_reauth=bool(error_data.get('requiresReauth')),
+                        permanent_failure=is_permanent_failure,
+                        refresh_fail_count=projected_fail_count,
+                        invalid_flag=invalid_flag_after_failure,
+                        grace_period_sec=1800 if invalid_flag_after_failure else 0,
+                        next_action=next_action,
+                        server_error=error
+                    )
                     return False
 
                 result = response.json()
@@ -2217,10 +2387,27 @@ class AtlassianAuthManager:
                 self._refresh_fail_count = 0  # Reset consecutive failure counter
                 self._refresh_invalid_set_at = 0  # Clear grace-period timestamp
                 self._last_refresh_fail_time = 0  # Reset failure window
+                self._last_refresh_error_code = ''
+                log_auth_diagnostic(
+                    'token_refresh_succeeded',
+                    level='INFO',
+                    refresh_fail_count=0,
+                    invalid_flag=False,
+                    prior_error_code=getattr(self, '_last_refresh_error_code', '')
+                )
                 print("[OK] Access token refreshed successfully via AI Server")
                 return True
             except Exception as e:
                 print(f"[ERROR] Failed to refresh access token: {e}")
+                self._last_refresh_error_code = 'OAUTH_TEMPORARY_FAILURE'
+                log_auth_diagnostic(
+                    'token_refresh_exception',
+                    level='ERROR',
+                    error_code='OAUTH_TEMPORARY_FAILURE',
+                    exception_type=type(e).__name__,
+                    message=str(e),
+                    next_action='retry_refresh'
+                )
                 return False
 
     def is_authenticated(self):
@@ -2300,6 +2487,9 @@ class AtlassianAuthManager:
                             if user_data:
                                 self.tokens['exchange_user_id'] = user_data.get('id')
                                 self.tokens['exchange_organization_id'] = user_data.get('organization_id')
+                                retry_cloud_id = user_data.get('jira_cloud_id')
+                                if retry_cloud_id:
+                                    self.tokens['exchange_jira_cloud_id'] = retry_cloud_id
                             self._save_tokens()
                             print(f"[OK] Supabase token received on retry (expires in {expires_in}s)")
                             return supabase_token
@@ -2328,12 +2518,20 @@ class AtlassianAuthManager:
 
             # Store user data from exchange-token response (includes organization_id, user id)
             # The AI server creates/finds the org via service_role during token exchange,
-            # so this is the authoritative source for organization_id.
+            # so this is the authoritative source for organization_id AND jira_cloud_id.
+            # jira_cloud_id is critical: without it, get_jira_cloud_id() falls back to
+            # resources[0] which may be a different Jira site when the user has multiple
+            # instances, causing issue fetches to return tickets from the wrong org.
             user_data = result.get('user', {})
             if user_data:
                 self.tokens['exchange_user_id'] = user_data.get('id')
                 self.tokens['exchange_organization_id'] = user_data.get('organization_id')
-                print(f"[OK] Exchange-token user data: user_id={user_data.get('id')}, org_id={user_data.get('organization_id')}")
+                exchange_cloud_id = user_data.get('jira_cloud_id')
+                if exchange_cloud_id:
+                    self.tokens['exchange_jira_cloud_id'] = exchange_cloud_id
+                    print(f"[OK] Exchange-token user data: user_id={user_data.get('id')}, org_id={user_data.get('organization_id')}, jira_cloud_id={exchange_cloud_id}")
+                else:
+                    print(f"[OK] Exchange-token user data: user_id={user_data.get('id')}, org_id={user_data.get('organization_id')}")
 
             self._save_tokens()
 
@@ -2348,20 +2546,76 @@ class AtlassianAuthManager:
         """Get a valid Supabase token, refreshing if needed"""
         supabase_token = self.tokens.get('supabase_token')
         expires_at = self.tokens.get('supabase_token_expires_at', 0)
+        time_remaining = expires_at - time.time()
 
         # Check if token exists and is not expired (with 5 min buffer)
         if supabase_token and time.time() < (expires_at - 300):
+            if APP_LOGGER_AVAILABLE:
+                logger = get_logger(__name__, 'AUTH')
+                logger.debug(f"Using cached Supabase token (expires in {time_remaining:.0f}s)")
             return supabase_token
 
         # Token expired or doesn't exist, get a new one
         print("[INFO] Supabase token expired or missing, getting new one...")
-        return self.get_supabase_token()
+        if APP_LOGGER_AVAILABLE:
+            logger = get_logger(__name__, 'AUTH')
+            logger.info(f"Supabase token refresh required: token_exists={bool(supabase_token)}, time_remaining={time_remaining:.0f}s")
+        
+        for attempt in range(3):
+            try:
+                return self.get_supabase_token()
+            except (requests.exceptions.ConnectionError, requests.exceptions.Timeout, Exception) as e:
+                error_type = type(e).__name__
+                network_status = "unknown"
+                try:
+                    # Lightweight connectivity probe for diagnostics during retryable failures.
+                    socket.create_connection(("8.8.8.8", 53), timeout=2).close()
+                    network_status = "online"
+                except Exception:
+                    network_status = "offline"
+
+                warn_message = (
+                    f"[WARN] JWT exchange attempt {attempt + 1}/3 failed: {e} "
+                    f"(error_type={error_type}, network_status={network_status})"
+                )
+                print(warn_message)
+                logging.warning(warn_message)
+
+                if attempt < 2:
+                    wait_seconds = (attempt + 1) * 3
+                    print(f"[INFO] Retrying JWT exchange in {wait_seconds}s...")
+                    time.sleep(wait_seconds)
+
+        error_message = "[ERROR] Could not get Supabase token after 3 attempts"
+        print(error_message)
+        logging.error(error_message)
+        return None
 
     def get_supabase_config(self):
-        """Fetch Supabase configuration from AI Server (requires valid Atlassian token)"""
+        """Fetch Supabase configuration from AI Server (requires valid Atlassian token).
+        
+        Caches the fetched URL and anon key in auth_metadata.json (TTL: 24 hours) so that
+        brief AI server outages at startup do not permanently break Supabase initialization.
+        The cached values are non-sensitive (anon key is intentionally public-facing).
+        """
+        # --- Use local cache if fresh enough ---
+        cached_url = self.tokens.get('cached_supabase_url')
+        cached_anon_key = self.tokens.get('cached_supabase_anon_key')
+        cached_at = self.tokens.get('cached_supabase_config_at', 0)
+        CACHE_TTL = 86400  # 24 hours — refresh once a day at most
+        if cached_url and cached_anon_key and (time.time() - cached_at) < CACHE_TTL:
+            print("[INFO] Using locally cached Supabase config (last fetched <24h ago)")
+            set_runtime_supabase_config(cached_url, cached_anon_key)
+            return True
+
         access_token = self.tokens.get('access_token')
         if not access_token:
             print("[ERROR] No valid Atlassian token - cannot fetch Supabase config")
+            # Fall back to stale cache rather than failing completely
+            if cached_url and cached_anon_key:
+                print("[WARN] Using stale cached Supabase config (no access token for refresh)")
+                set_runtime_supabase_config(cached_url, cached_anon_key)
+                return True
             return False
 
         try:
@@ -2393,17 +2647,34 @@ class AtlassianAuthManager:
                 print(f"[ERROR] Failed to get Supabase config: {result.get('error', 'Unknown error')}")
                 return False
 
+            supabase_url = result.get('supabase_url')
+            supabase_anon_key = result.get('supabase_anon_key')
+
             # Store the Supabase config in runtime config
             # Only URL and anon key are needed — JWT provides identity for RLS
-            set_runtime_supabase_config(
-                result.get('supabase_url'),
-                result.get('supabase_anon_key')
-            )
+            set_runtime_supabase_config(supabase_url, supabase_anon_key)
+
+            # Cache to auth_metadata.json so next startup works even if AI server is briefly down.
+            # The anon key is intentionally public-facing (safe to store locally).
+            self.tokens['cached_supabase_url'] = supabase_url
+            self.tokens['cached_supabase_anon_key'] = supabase_anon_key
+            self.tokens['cached_supabase_config_at'] = time.time()
+            try:
+                self._save_tokens()
+            except Exception as cache_err:
+                print(f"[WARN] Could not cache Supabase config locally: {cache_err}")
+
             return True
 
         except Exception as e:
             print(f"[ERROR] Failed to fetch Supabase config: {e}")
+            # Fall back to stale cache on network errors so startup can proceed
+            if cached_url and cached_anon_key:
+                print("[WARN] Using stale cached Supabase config after network error")
+                set_runtime_supabase_config(cached_url, cached_anon_key)
+                return True
             return False
+
     
     def get_ocr_config(self):
         """
@@ -2422,7 +2693,7 @@ class AtlassianAuthManager:
             print("[ERROR] No valid Atlassian token - cannot fetch OCR config")
             return False
 
-        ai_server_url = get_env_var('AI_SERVER_URL', 'https://forgesync.amzur.com')
+        ai_server_url = get_env_var('AI_SERVER_URL', 'https://timetracker-forge.amzur.com')
         
         try:
             print("[INFO] Fetching OCR config from AI Server...")
@@ -2474,6 +2745,7 @@ class AtlassianAuthManager:
         self._refresh_fail_count = 0
         self._refresh_invalid_set_at = 0
         self._last_refresh_fail_time = 0
+        self._last_refresh_error_code = ''
 
         # Clear sensitive tokens from secure storage (keyring + encrypted fallback)
         try:
@@ -2556,7 +2828,7 @@ def send_ocr_diagnostics(auth_manager):
 
 def send_login_diagnostics(auth_manager, status: str, step: str, error: str = None, error_details: dict = None):
     """
-    Send login event diagnostics to the AI server.
+    Send login event diagnostics to the AI server and log locally.
     
     Args:
         auth_manager: AtlassianAuthManager instance
@@ -2584,6 +2856,10 @@ def send_login_diagnostics(auth_manager, status: str, step: str, error: str = No
     if error_details:
         diagnostics['error_details'] = error_details
     
+    # Log diagnostics locally in JSON format (AC8: structured diagnostic logging)
+    print(f"[DIAGNOSTIC] Login flow: {json.dumps(diagnostics, indent=2)}")
+    
+    # Send to AI server for centralized logging
     auth_manager.send_diagnostics('login', diagnostics)
 
 # ============================================================================
@@ -4761,6 +5037,24 @@ class LocalOCRProcessor:
 
 
 # ============================================================================
+# TRACKING STATE MACHINE
+# ============================================================================
+
+class TrackingState(Enum):
+    """Tracking state machine states.
+    
+    - STOPPED: App not tracking (initial state, after logout)
+    - ACTIVE: Actively capturing screenshots and tracking work
+    - IDLE: User idle (no activity, screen locked, or system sleep)
+    - PAUSED: User manually paused tracking (via tray menu)
+    """
+    STOPPED = 0
+    ACTIVE = 1
+    IDLE = 2
+    PAUSED = 3
+
+
+# ============================================================================
 # MAIN APPLICATION
 # ============================================================================
 
@@ -4769,10 +5063,20 @@ class TimeTracker:
 
     def __init__(self):
         print("[INFO] Initializing Time Tracker...")
+        
+        # Get logger instance
+        if APP_LOGGER_AVAILABLE:
+            self.logger = get_logger(__name__, 'TRACKER')
+            self.logger.info("TimeTracker.__init__() starting...")
+        else:
+            self.logger = None
 
         # Configuration (defaults, will be overridden by server settings)
         self.capture_interval = int(get_env_var('CAPTURE_INTERVAL', 300))
         self.web_port = int(get_env_var('WEB_PORT', 51777))
+        
+        if self.logger:
+            self.logger.info(f"Configuration: capture_interval={self.capture_interval}s, web_port={self.web_port}")
 
         # Supabase client (initialized after authentication)
         # Uses anon key + custom JWT for RLS-scoped access (no service role key)
@@ -4781,7 +5085,11 @@ class TimeTracker:
         self.supabase_initialized = False
 
         # Initialize Atlassian Auth FIRST (needed to fetch Supabase config)
+        if self.logger:
+            self.logger.info("Initializing Atlassian authentication manager...")
         self.auth_manager = AtlassianAuthManager(web_port=self.web_port)
+        if self.logger:
+            self.logger.info("Atlassian authentication manager initialized")
         
         # User state
         self.current_user = None
@@ -4830,7 +5138,13 @@ class TimeTracker:
         # Tracking state
         self.running = False
         self.tracking_active = False
-        self.is_idle = False  # Idle state - when no activity for idle_timeout seconds
+        self.is_idle = False  # KEEP for backward compatibility (will be phased out)
+        
+        # New state machine (replaces is_idle boolean)
+        self.state = TrackingState.STOPPED
+        self.state_lock = threading.Lock()  # Protect state transitions from race conditions
+        self.idle_start_time = None  # Timestamp when idle state was entered
+        self.idle_reason = None  # Reason for idle (e.g., 'system sleep', 'screen lock')
 
         # ============================================================================
         # PAUSE SETTINGS (stored locally on user's machine)
@@ -4962,7 +5276,7 @@ class TimeTracker:
         self.app_version = APP_VERSION  # Use global constant
         self.latest_version_info = None  # Cached latest version info
         self.last_version_check_time = 0  # Last time we checked for updates
-        self.version_check_interval = 4 * 60 * 60  # Check every 4 hours (in seconds)
+        self.version_check_interval = 1 * 60 * 60  # Check every 1 hour (in seconds)
         self.update_available = False  # Flag for UI to show update badge
         self.update_notification_shown = False  # Track if we've shown notification for this version
         self.update_required = False
@@ -5108,6 +5422,15 @@ class TimeTracker:
             dict with update info or None if no update/error
         """
         try:
+            # Check connectivity first - fail fast if offline.
+            # When force=True (manual check / startup), bypass the 30-second cache so a
+            # stale "offline" result from a previous failed probe doesn't silently block
+            # the check (common right after system boot or a brief network blip).
+            if not self.offline_manager.check_connectivity(force=force):
+                print("[INFO] Offline - skipping update check")
+                self.add_admin_log('INFO', 'Update check skipped (offline)')
+                return None
+            
             current_time = time.time()
             
             # Skip if checked recently (unless forced)
@@ -5213,7 +5536,9 @@ class TimeTracker:
 
             # Set custom JWT from AI server on the client for RLS-scoped access
             if not self._set_supabase_jwt():
-                print("[WARN] Could not set Supabase JWT — RLS operations may fail until next refresh")
+                print("[ERROR] Could not set Supabase JWT - authentication incomplete")
+                logging.error("Could not set Supabase JWT - authentication incomplete")
+                return False
 
             self.supabase_initialized = True
             self.add_admin_log('INFO', 'Supabase initialized with custom JWT (RLS-scoped)')
@@ -5245,17 +5570,23 @@ class TimeTracker:
             _ = self.supabase.storage
             self.supabase.storage.session.headers["Authorization"] = f"Bearer {supabase_token}"
 
-            # Extract organization_id and user_id from exchange-token response data.
+            # Extract organization_id, user_id, and jira_cloud_id from exchange-token response data.
             # The AI server (service_role) creates/finds the org during token exchange,
             # so this is the authoritative source — avoids RLS chicken-and-egg issues.
             exchange_org_id = self.auth_manager.tokens.get('exchange_organization_id')
             exchange_user_id = self.auth_manager.tokens.get('exchange_user_id')
+            exchange_cloud_id = self.auth_manager.tokens.get('exchange_jira_cloud_id')
             if exchange_org_id and not self.organization_id:
                 self.organization_id = exchange_org_id
                 print(f"[OK] Organization ID set from exchange-token: {self.organization_id}")
             if exchange_user_id and not self.current_user_id:
                 self.current_user_id = exchange_user_id
                 print(f"[OK] User ID set from exchange-token: {self.current_user_id}")
+            # Pre-seed jira_cloud_id so get_jira_cloud_id() picks the right site
+            # even before accessible-resources is fetched.
+            if exchange_cloud_id and not self.jira_cloud_id:
+                self.jira_cloud_id = exchange_cloud_id
+                print(f"[OK] Jira Cloud ID pre-seeded from exchange-token: {self.jira_cloud_id}")
 
             print("[OK] Supabase JWT set on client (PostgREST + Storage)")
             return True
@@ -5270,12 +5601,18 @@ class TimeTracker:
         @self.app.route('/')
         def index():
             if self.current_user:
+                user_account_id = self.current_user.get('account_id')
+                if not self.consent_manager.has_valid_consent(user_account_id):
+                    return redirect('/consent')
                 return redirect('/success')
             return redirect('/login')
 
         @self.app.route('/login')
         def login():
             if self.current_user:
+                user_account_id = self.current_user.get('account_id')
+                if not self.consent_manager.has_valid_consent(user_account_id):
+                    return redirect('/consent')
                 return redirect('/success')
             return self.render_login_page()
         
@@ -5347,13 +5684,55 @@ class TimeTracker:
                 # Check if we had anonymous tracking before login
                 had_anonymous = self.current_user_id and self.current_user_id.startswith('anonymous_')
 
-                # Create or update user in Supabase
-                self.current_user = user_info
-                self.current_user_id = self.ensure_user_exists(user_info)
+                # Create or update user in Supabase.
+                # IMPORTANT: self.current_user is set AFTER ensure_user_exists succeeds to
+                # prevent a partially-authenticated state. If ensure_user_exists raises (e.g.
+                # a transient DNS failure on first-boot), self.current_user stays None so
+                # the /login route cannot bypass the full auth flow on a "Try Again" retry.
+                # Retry up to 3 times to handle first-boot DNS/network race conditions.
+                _ensure_error = None
+                for _db_attempt in range(3):
+                    try:
+                        self.current_user_id = self.ensure_user_exists(user_info)
+                        _ensure_error = None
+                        break
+                    except Exception as _db_e:
+                        _ensure_error = _db_e
+                        _err_lower = str(_db_e).lower()
+                        if _db_attempt < 2 and (
+                            'getaddrinfo' in _err_lower
+                            or 'connect' in _err_lower
+                            or 'timeout' in _err_lower
+                        ):
+                            _wait = (_db_attempt + 1) * 3
+                            print(f"[WARN] Database connection failed (attempt {_db_attempt + 1}/3), retrying in {_wait}s...")
+                            time.sleep(_wait)
+                        else:
+                            break
+                if _ensure_error:
+                    raise _ensure_error
+                self.current_user = user_info  # Set only after successful DB user create/update
 
                 secure_log("[OK] Authenticated user", email=user_info.get('email', 'unknown'))
                 
-                # Send successful login diagnostics
+                # Reset notification timestamps on successful login
+                self._reauth_notification_last_shown = 0
+                self._login_reminder_last_shown = 0
+
+                # Update desktop app status to logged in
+                success = self._update_desktop_status(logged_in=True)
+                if not success:
+                    error_msg = "Failed to complete authentication - please try logging in again"
+                    print(f"[ERROR] {error_msg}")
+                    send_login_diagnostics(
+                        self.auth_manager, 
+                        'failed', 
+                        'desktop_status_write',
+                        error=error_msg
+                    )
+                    return error_msg, 500
+
+                # Send successful login diagnostics (after status write verified)
                 send_login_diagnostics(
                     self.auth_manager, 'success', 'complete',
                     error_details={'user_id': self.current_user_id}
@@ -5362,13 +5741,6 @@ class TimeTracker:
                 # Send OCR diagnostics now that user is authenticated
                 print("[INFO] Sending OCR diagnostics to server...")
                 send_ocr_diagnostics(self.auth_manager)
-
-                # Reset notification timestamps on successful login
-                self._reauth_notification_last_shown = 0
-                self._login_reminder_last_shown = 0
-
-                # Update desktop app status to logged in
-                self._update_desktop_status(logged_in=True)
 
                 # Sync app classifications from Supabase (all projects)
                 try:
@@ -5401,6 +5773,9 @@ class TimeTracker:
                 return redirect('/success')
                 
             except Exception as e:
+                # Clear any partial authentication state so the /login route does not
+                # bypass the full auth flow on a subsequent "Try Again" click.
+                self.current_user = None
                 print(f"[ERROR] Auth callback failed: {e}")
                 traceback.print_exc()
                 
@@ -5411,7 +5786,13 @@ class TimeTracker:
                 error_category = 'unknown'
                 if 'timeout' in error_lower or 'timed out' in error_lower:
                     error_category = 'timeout'
-                elif 'connection' in error_lower or 'connect' in error_lower:
+                elif (
+                    'connection' in error_lower
+                    or 'connect' in error_lower
+                    or 'getaddrinfo' in error_lower
+                    or 'nodename nor servname' in error_lower
+                    or 'name resolution' in error_lower
+                ):
                     error_category = 'connection'
                 elif 'token' in error_lower:
                     error_category = 'token_exchange'
@@ -6339,19 +6720,22 @@ class TimeTracker:
         return None
 
     def _update_desktop_status(self, logged_in=True):
-        """Update desktop app login status in Supabase
+        """Update desktop app login status in Supabase.
 
         Args:
             logged_in: True when logging in, False when logging out
+
+        Returns:
+            bool: True if successful, False if failed
         """
         if not self.current_user_id or self.current_user_id.startswith('anonymous_'):
-            return
+            return False
 
         try:
             client = self.supabase
             if not client:
                 print("[WARN] No Supabase client available for status update")
-                return
+                return False
 
             update_data = {
                 'desktop_logged_in': logged_in,
@@ -6362,16 +6746,28 @@ class TimeTracker:
             if logged_in:
                 update_data['desktop_app_version'] = self.app_version
 
-            client.table('users').update(update_data).eq('id', self.current_user_id).execute()
+            result = client.table('users').update(update_data).eq('id', self.current_user_id).execute()
+            if not result.data or len(result.data) == 0:
+                print("[WARN] Desktop status update returned no rows - RLS may be blocking")
+                return False
 
             status_text = "logged in" if logged_in else "logged out"
             print(f"[OK] Desktop status updated: {status_text}")
+            return True
 
         except Exception as e:
             print(f"[WARN] Failed to update desktop status: {e}")
+            traceback.print_exc()
+            return False
 
     def _send_heartbeat(self):
-        """Send heartbeat to Supabase to indicate app is still running"""
+        """Send heartbeat to Supabase to indicate app is still running.
+        
+        CRITICAL: Validates JWT before UPDATE to prevent silent failures.
+        Pattern copied from batch upload (line 8243) which includes developer
+        comment: "JWT expires after ~1 hour; without this check, all uploads
+        silently fail"
+        """
         if not self.current_user_id or self.current_user_id.startswith('anonymous_'):
             return
 
@@ -6380,15 +6776,59 @@ class TimeTracker:
             if not client:
                 return
 
-            client.table('users').update({
+            # CRITICAL: Ensure JWT is valid before sending heartbeat
+            # (JWT expires after 1 hour; without this check, updates silently fail)
+            sb_expires_at = self.auth_manager.tokens.get('supabase_token_expires_at', 0)
+            if sb_expires_at and time.time() > (sb_expires_at - 300):
+                print("[HEARTBEAT] Supabase JWT expired — refreshing before update...")
+                if not self._set_supabase_jwt():
+                    print("[HEARTBEAT] JWT refresh failed — heartbeat skipped (will retry in 4 hours)")
+                    # Log to admin panel for visibility
+                    self.add_admin_log('WARN', 'Heartbeat skipped: JWT refresh failed. Re-login may be required.')
+                    return  # Skip this heartbeat, don't proceed with expired JWT
+            elif not sb_expires_at:
+                # No expiry info stored — proactively refresh to be safe
+                print("[HEARTBEAT] No JWT expiry info — refreshing proactively...")
+                if not self._set_supabase_jwt():
+                    print("[HEARTBEAT] Proactive JWT refresh failed — proceeding with caution")
+                    # Don't return - attempt the update anyway (JWT might still be valid)
+
+            result = client.table('users').update({
                 'desktop_last_heartbeat': datetime.now(timezone.utc).isoformat(),
-                'desktop_app_version': self.app_version
+                'desktop_app_version': self.app_version,
+                'desktop_logged_in': True   # Heartbeat proves the app is running; repair stale false
             }).eq('id', self.current_user_id).execute()
 
-            print(f"[OK] Heartbeat sent (v{self.app_version})")
+            # CRITICAL: Verify the update actually affected a row
+            # Empty result.data means RLS blocked the write (expired JWT or wrong supabase_user_id)
+            if not result.data or len(result.data) == 0:
+                print(f"[WARN] Heartbeat update affected 0 rows - RLS may be blocking update")
+                print(f"[WARN] User ID: {self.current_user_id}, Version: {self.app_version}")
+                print(f"[WARN] This usually means JWT is expired or supabase_user_id is incorrect")
+                # Force a JWT refresh and retry immediately rather than waiting 4 more hours
+                if self._set_supabase_jwt():
+                    retry_result = client.table('users').update({
+                        'desktop_last_heartbeat': datetime.now(timezone.utc).isoformat(),
+                        'desktop_app_version': self.app_version,
+                        'desktop_logged_in': True
+                    }).eq('id', self.current_user_id).execute()
+                    if retry_result.data and len(retry_result.data) > 0:
+                        print(f"[OK] Heartbeat retry succeeded after JWT refresh (v{self.app_version})")
+                        return
+                # Log to admin panel with diagnostic info
+                self.add_admin_log('ERROR', 
+                    f'Heartbeat failed: UPDATE affected 0 rows (version={self.app_version}). '
+                    f'Re-login may be required. User ID: {self.current_user_id}'
+                )
+            else:
+                print(f"[OK] Heartbeat sent (v{self.app_version})")
 
         except Exception as e:
             print(f"[WARN] Failed to send heartbeat: {e}")
+            # Log exception to admin panel with full traceback
+            import traceback
+            error_detail = traceback.format_exc()
+            self.add_admin_log('ERROR', f'Heartbeat exception: {str(e)}\n{error_detail}')
 
     def _associate_offline_records(self):
         """Associate any anonymous offline records with the current user"""
@@ -6490,8 +6930,26 @@ class TimeTracker:
                         for i, r in enumerate(resources):
                             print(f"     [{i}] {r.get('name', '?')} — {r.get('url', '?')} (id: {r['id']})")
 
-                    # Use the first resource as primary (selected during OAuth)
-                    selected_resource = resources[0]
+                    # Prefer the jira_cloud_id returned by exchange-token (authoritative):
+                    # it reflects which Jira instance the Forge app is installed in and
+                    # which organization_id the user belongs to in our DB.
+                    # Falling back to resources[0] is WRONG when the user has access to
+                    # multiple Jira sites (e.g. prod + dev) because the order returned by
+                    # accessible-resources is arbitrary and may not be the production site.
+                    exchange_cloud_id = self.auth_manager.tokens.get('exchange_jira_cloud_id')
+                    if exchange_cloud_id:
+                        matched = next((r for r in resources if r['id'] == exchange_cloud_id), None)
+                        if matched:
+                            selected_resource = matched
+                            print(f"[OK] Using jira_cloud_id from exchange-token: {exchange_cloud_id}")
+                        else:
+                            # exchange-token cloud_id not in accessible-resources — fall back to first
+                            print(f"[WARN] exchange-token jira_cloud_id {exchange_cloud_id} not found in accessible-resources; falling back to resources[0]")
+                            selected_resource = resources[0]
+                    else:
+                        # No cloud_id from exchange-token yet (first run before token exchange)
+                        selected_resource = resources[0]
+
                     self.jira_cloud_id = selected_resource['id']
                     self.organization_name = selected_resource.get('name', 'Unknown Organization')
                     self.jira_instance_url = selected_resource.get('url', '')
@@ -6774,7 +7232,7 @@ class TimeTracker:
             return None
         try:
             result = self.supabase.table('user_jira_issues_cache') \
-                .select('issue_key, issue_summary, project_key, status, description, labels') \
+                .select('issue_key, issue_summary, project_key, status, description, labels, updated_at') \
                 .eq('user_id', self.current_user_id) \
                 .eq('organization_id', self.organization_id) \
                 .limit(50) \
@@ -6799,7 +7257,8 @@ class TimeTracker:
                     'status': row.get('status', ''),
                     'project': row.get('project_key', ''),
                     'description': row.get('description', ''),
-                    'labels': labels
+                    'labels': labels,
+                    'updated': row.get('updated_at', '')
                 })
 
             print(f"[INFO] user_jira_issues_cache: loaded {len(formatted)} issues from Supabase")
@@ -6841,7 +7300,7 @@ class TimeTracker:
                 json={
                     'jql': jql,
                     'maxResults': 50,
-                    'fields': ['summary', 'status', 'project', 'description', 'labels']
+                    'fields': ['summary', 'status', 'project', 'description', 'labels', 'updated']
                 },
                 headers={
                     'Authorization': f'Bearer {access_token}',
@@ -6863,7 +7322,7 @@ class TimeTracker:
                         json={
                             'jql': jql,
                             'maxResults': 50,
-                            'fields': ['summary', 'status', 'project', 'description', 'labels']
+                            'fields': ['summary', 'status', 'project', 'description', 'labels', 'updated']
                         },
                         headers={
                             'Authorization': f'Bearer {access_token}',
@@ -6892,7 +7351,7 @@ class TimeTracker:
                         json={
                             'jql': fallback_jql_open,
                             'maxResults': 50,
-                            'fields': ['summary', 'status', 'project', 'description', 'labels']
+                            'fields': ['summary', 'status', 'project', 'description', 'labels', 'updated']
                         },
                         headers={
                             'Authorization': f'Bearer {access_token}',
@@ -6930,16 +7389,22 @@ class TimeTracker:
                     description = ''
                     if fields.get('description'):
                         # Jira uses Atlassian Document Format (ADF)
-                        # Extract plain text from content
+                        # Extract plain text from content recursively
                         desc_content = fields['description']
                         if isinstance(desc_content, dict) and desc_content.get('content'):
-                            # Simple text extraction from ADF
+                            # Recursive text extraction from all ADF node types
                             text_parts = []
+
+                            def extract_text_recursive(node):
+                                if not isinstance(node, dict):
+                                    return
+                                if node.get('type') == 'text':
+                                    text_parts.append(node.get('text', ''))
+                                for child in node.get('content', []):
+                                    extract_text_recursive(child)
+
                             for content_item in desc_content.get('content', []):
-                                if content_item.get('type') == 'paragraph':
-                                    for text_node in content_item.get('content', []):
-                                        if text_node.get('type') == 'text':
-                                            text_parts.append(text_node.get('text', ''))
+                                extract_text_recursive(content_item)
                             description = ' '.join(text_parts).strip()
                         elif isinstance(desc_content, str):
                             description = desc_content
@@ -6953,7 +7418,8 @@ class TimeTracker:
                         'status': fields['status']['name'],
                         'project': fields['project']['key'],
                         'description': description,
-                        'labels': labels
+                        'labels': labels,
+                        'updated': fields.get('updated', '')
                     })
 
                 return formatted_issues
@@ -7864,29 +8330,69 @@ class TimeTracker:
         except Exception as e:
             print(f"[WARN] Failed to show notification: {e}")
 
-    def _show_reauth_notification(self):
-        """Show a periodic notification that the user needs to re-authenticate (every 15 minutes)"""
+    def _show_reauth_notification(self, reason_code=None):
+        """Show auth notification with reason-specific messaging (throttled every 15 minutes per reason)."""
         now = time.time()
-        last_shown = getattr(self, '_reauth_notification_last_shown', 0)
+        reason = str(reason_code or '').upper()
+        is_temporary = reason == 'OAUTH_TEMPORARY_FAILURE'
+        throttle_attr = '_auth_temp_notification_last_shown' if is_temporary else '_reauth_notification_last_shown'
+        last_shown = getattr(self, throttle_attr, 0)
         if now - last_shown < 900:  # 15 minutes
+            log_auth_diagnostic(
+                'auth_notification_suppressed',
+                level='INFO',
+                reason=reason or 'LEGACY',
+                notification_type='temporary_retry' if is_temporary else 'manual_reauth',
+                throttle_seconds=900
+            )
             return
-        self._reauth_notification_last_shown = now
+        setattr(self, throttle_attr, now)
 
         if not WINOTIFY_AVAILABLE:
-            print("[WARN] Re-authentication required (notification unavailable)")
+            if is_temporary:
+                print("[WARN] Temporary authentication issue (notification unavailable)")
+            else:
+                print("[WARN] Re-authentication required (notification unavailable)")
+            log_auth_diagnostic(
+                'auth_notification_unavailable',
+                level='WARNING',
+                reason=reason or 'LEGACY',
+                notification_type='temporary_retry' if is_temporary else 'manual_reauth'
+            )
             return
 
         try:
+            if is_temporary:
+                title = "Authentication Issue"
+                msg = "We could not refresh your session right now. Sync will retry automatically."
+            else:
+                title = "Authentication Expired"
+                msg = "Your session has expired. Please open Time Tracker and log in again to continue syncing with Jira."
+
             notification = Notification(
                 app_id="Time Tracker",
-                title="Authentication Expired",
-                msg="Your session has expired. Please open Time Tracker and log in again to continue syncing with Jira.",
+                title=title,
+                msg=msg,
                 duration="long"
             )
             notification.set_audio(audio.Default, loop=False)
             notification.show()
-            print("[OK] Re-authentication notification shown to user")
+            log_auth_diagnostic(
+                'auth_notification_displayed',
+                level='INFO',
+                reason=reason or 'LEGACY',
+                notification_type='temporary_retry' if is_temporary else 'manual_reauth',
+                title=title
+            )
+            print(f"[OK] Authentication notification shown to user (reason={reason or 'LEGACY'})")
         except Exception as e:
+            log_auth_diagnostic(
+                'auth_notification_failed',
+                level='ERROR',
+                reason=reason or 'LEGACY',
+                notification_type='temporary_retry' if is_temporary else 'manual_reauth',
+                message=str(e)
+            )
             print(f"[WARN] Failed to show reauth notification: {e}")
 
     def _show_login_reminder(self):
@@ -8247,6 +8753,7 @@ class TimeTracker:
                     'project_key': record_project_key,
                     'user_assigned_issues': json.dumps(self.user_issues) if self.user_issues else None,
                     'status': status,
+                    'request_id': str(uuid.uuid4()),  # Unique request ID for idempotency
                     'metadata': {
                         'tracking_mode': 'event_based',
                         'app_version': self.app_version,
@@ -9361,6 +9868,112 @@ class TimeTracker:
         except Exception as e:
             print(f"[ERROR] Error finalizing session ({reason}): {e}")
 
+    def enter_idle(self, reason):
+        """Thread-safe transition to idle state.
+        
+        Called when entering idle (timeout, system sleep, or screen lock).
+        Only transitions if currently in ACTIVE state.
+        
+        Args:
+            reason: String describing why entering idle (e.g., 'system sleep', 'idle timeout')
+            
+        Returns:
+            bool: True if transition succeeded, False if already idle/paused/stopped
+        """
+        with self.state_lock:
+            if self.state == TrackingState.IDLE:
+                # Already idle — no-op
+                return False
+                
+            print(f"[STATE] {self.state.name} → IDLE (reason: {reason})")
+            
+            # Only finalize session if we were actively tracking
+            if self.state == TrackingState.ACTIVE:
+                # Finalize current work session
+                self._finalize_active_session(reason)
+                
+                # Stop SQLite activity timer so idle time isn't counted in activity_records
+                self.session_manager.stop_current_timer()
+                
+                # Record when idle started (backdate to last activity)
+                self.idle_start_time = datetime.fromtimestamp(self.last_activity_time, tz=timezone.utc)
+                
+                # Store the project key at idle entry — this is the project the user
+                # was actually working on, not whatever project is active when they resume
+                self.idle_project_key = self.current_project_key
+            else:
+                # Entering idle from STOPPED state (e.g., system sleep before tracking starts)
+                # Just record the current time
+                self.idle_start_time = datetime.now(timezone.utc)
+            
+            # Store idle reason for logging
+            self.idle_reason = reason
+            
+            # Transition state
+            self.state = TrackingState.IDLE
+            self.is_idle = True  # Keep boolean flag in sync for backward compatibility
+            
+            # Update UI
+            self.update_tray_icon()
+            self.add_admin_log('INFO', f'Entered idle state: {reason}')
+            
+            return True
+
+    def resume_from_idle(self):
+        """Thread-safe transition from idle to active state.
+        
+        Called when user activity is detected after idle period.
+        Resets all tracking state so new session starts fresh.
+        
+        Returns:
+            bool: True if transition succeeded, False if not idle
+        """
+        with self.state_lock:
+            if self.state != TrackingState.IDLE:
+                # Not idle — no-op
+                return False
+                
+            print(f"[STATE] IDLE → ACTIVE")
+            
+            # Create an idle record for the period the user was away
+            self._create_idle_record("idle timeout")
+            
+            # Clear idle tracking variables
+            self.idle_start_time = None
+            self.idle_reason = None
+            
+            # Transition state
+            self.state = TrackingState.ACTIVE
+            self.is_idle = False  # Keep boolean flag in sync
+            self.needs_idle_resume = False
+            
+            # Start new SQLite timer for the active session
+            self.session_manager.start_new_timer()
+            
+            # Update UI
+            self.update_tray_icon()
+            self.add_admin_log('INFO', 'Resumed from idle - tracking active')
+            
+            # Reset interval timer so first capture happens after full interval
+            self.last_interval_time = time.time()
+            
+            # Reset ALL tracking state — new session starts fresh
+            # IMPORTANT: This prevents idle time from being counted as work time
+            self.current_window_start_time = None
+            self.current_window_db_start_time = None
+            self.current_window_screenshot_id = None
+            self.current_window_record_created_at = None
+            self.last_screenshot_end_time = None
+            self.previous_window_key = None
+            self.previous_window_screenshot_id = None
+            self.previous_window_start_time = None
+            self.previous_window_db_start_time = None
+            self.current_window_key = None  # Force detection as "new" window
+            self.current_project_key = None
+            self.current_window_title = None
+            
+            return True
+
     def _is_within_work_hours(self, utc_dt):
         """Check if a UTC datetime falls within configured working hours (local time).
         Supports cross-midnight schedules (e.g. 22:00–06:00 for night shifts).
@@ -9431,14 +10044,21 @@ class TimeTracker:
             'is_idle': True,
             'idle_start_time': self.idle_start_time.isoformat(),
             'idle_end_time': idle_end.isoformat(),
+            'ocr_text': None,  # No OCR for idle records (FIX: PGRST102 - all batch records must have same fields)
+            'ocr_method': None,  # No OCR method for idle records
+            'ocr_confidence': None,  # No OCR confidence for idle records
+            'ocr_error_message': None,  # No OCR errors for idle records
+            'total_time_seconds': idle_duration,
+            'visit_count': 1,  # Single continuous idle period (FIX: PGRST102)
             'start_time': self.idle_start_time.isoformat(),
             'end_time': idle_end.isoformat(),
             'duration_seconds': idle_duration,
-            'total_time_seconds': idle_duration,
             'work_date': _utc_ts_to_local_date(self.idle_start_time.isoformat()),
             'user_timezone': get_local_timezone_name(),
             'project_key': project_key,
+            'user_assigned_issues': json.dumps(self.user_issues) if self.user_issues else None,  # FIX: PGRST102
             'status': 'analyzed',  # No AI analysis needed for idle records
+            'request_id': str(uuid.uuid4()),  # Unique request ID for idempotency
             'metadata': {
                 'tracking_mode': 'idle_detection',
                 'idle_reason': reason,
@@ -9528,30 +10148,16 @@ class TimeTracker:
                 try:
                     if msg == WM_POWERBROADCAST:
                         if wparam == PBT_APMSUSPEND:
-                            print("[INFO] System sleep detected — finalizing session")
-                            if not self.is_idle:
-                                self._finalize_active_session("system sleep")
-                                self.session_manager.stop_current_timer()  # Stop SQLite activity timer so idle time isn't counted in activity_records
-                                self.idle_start_time = datetime.fromtimestamp(self.last_activity_time, tz=timezone.utc)
-                                self.idle_project_key = self.current_project_key
-                                self.is_idle = True
-                                self.update_tray_icon()
-                                self.add_admin_log('INFO', 'System sleep detected — entered idle')
+                            print("[INFO] System sleep detected — entering idle state")
+                            self.enter_idle("system sleep")
                         elif wparam == PBT_APMRESUMEAUTOMATIC:
                             print("[INFO] System wake detected — will resume tracking on activity")
                             self._create_idle_record("system sleep")
                             self.needs_idle_resume = True
                     elif msg == WM_WTSSESSION_CHANGE:
                         if wparam == WTS_SESSION_LOCK:
-                            print("[INFO] Screen lock detected — finalizing session")
-                            if not self.is_idle:
-                                self._finalize_active_session("screen lock")
-                                self.session_manager.stop_current_timer()  # Stop SQLite activity timer so idle time isn't counted in activity_records
-                                self.idle_start_time = datetime.fromtimestamp(self.last_activity_time, tz=timezone.utc)
-                                self.idle_project_key = self.current_project_key
-                                self.is_idle = True
-                                self.update_tray_icon()
-                                self.add_admin_log('INFO', 'Screen locked — entered idle')
+                            print("[INFO] Screen lock detected — entering idle state")
+                            self.enter_idle("screen lock")
                         elif wparam == WTS_SESSION_UNLOCK:
                             print("[INFO] Screen unlock detected — will resume tracking on activity")
                             self._create_idle_record("screen lock")
@@ -9681,7 +10287,9 @@ class TimeTracker:
             heartbeat_counter = 0
             heartbeat_interval = 480  # Send heartbeat every 480 iterations (4 hours at 30s interval)
             token_refresh_counter = 0
-            token_refresh_interval = 20  # Check token expiry every 20 iterations (~10 min at 30s)
+            token_refresh_interval = 10  # Check token expiry every 10 iterations (~5 min at 30s interval)
+            supabase_reinit_counter = 0
+            supabase_reinit_interval = 60  # Retry Supabase init every 30 min (60 × 30s) if it failed at startup
 
             # Send initial heartbeat immediately on thread start
             if self.current_user_id and not self.current_user_id.startswith('anonymous_'):
@@ -9692,6 +10300,33 @@ class TimeTracker:
 
             while self.running:
                 try:
+                    # Background Supabase re-initialization: if initialize_supabase() failed at
+                    # startup (e.g. AI server was briefly unavailable), retry every 30 minutes
+                    # so the session can self-heal without requiring a manual re-login or reboot.
+                    if not self.supabase_initialized and self.auth_manager.is_authenticated():
+                        supabase_reinit_counter += 1
+                        if supabase_reinit_counter >= supabase_reinit_interval:
+                            supabase_reinit_counter = 0
+                            print("[INFO] Supabase not initialized — attempting background re-initialization...")
+                            try:
+                                if self.initialize_supabase():
+                                    print("[OK] Supabase re-initialized successfully in background")
+                                    # Push version + logged-in status now that DB is reachable
+                                    if self.current_user_id and not self.current_user_id.startswith('anonymous_'):
+                                        try:
+                                            self._update_desktop_status(logged_in=True)
+                                            # Reset the heartbeat counter so the next regular heartbeat
+                                            # fires 4h from NOW (the reinit recovery point), not 4h from
+                                            # thread start. Without this, the DB looks stale again within
+                                            # 1h of the recovery (heartbeat_counter already at ~60).
+                                            heartbeat_counter = 0
+                                        except Exception as ds_err:
+                                            print(f"[WARN] Could not update desktop status after re-init: {ds_err}")
+                            except Exception as ri_err:
+                                print(f"[WARN] Background Supabase re-init failed: {ri_err}")
+                    else:
+                        supabase_reinit_counter = 0  # Reset counter once initialized
+
                     # Sync offline data only when tracking is active
                     if self.tracking_active and self.current_user_id:
                         self.sync_offline_data()
@@ -9718,6 +10353,9 @@ class TimeTracker:
                                     print("[OK] Proactive token refresh successful")
                                 else:
                                     print("[WARN] Proactive token refresh failed — will retry on next cycle")
+                                    last_error_code = getattr(self.auth_manager, '_last_refresh_error_code', '')
+                                    if str(last_error_code).upper() == 'OAUTH_TEMPORARY_FAILURE':
+                                        self._show_reauth_notification(last_error_code)
 
                             # Refresh Supabase JWT if near expiry (5-minute buffer)
                             # Uses the (possibly freshly refreshed) Atlassian token to get a new JWT
@@ -9742,9 +10380,9 @@ class TimeTracker:
                                 print("[OK] Session recovered automatically after grace period")
                             else:
                                 print("[WARN] Recovery refresh failed — will show re-auth notification")
-                                self._show_reauth_notification()
+                                self._show_reauth_notification(getattr(self.auth_manager, '_last_refresh_error_code', None))
                         else:
-                            self._show_reauth_notification()
+                            self._show_reauth_notification(getattr(self.auth_manager, '_last_refresh_error_code', None))
 
                 except Exception as e:
                     print(f"[ERROR] Sync thread error: {e}")
@@ -9826,30 +10464,17 @@ class TimeTracker:
                     # but the screen is still locked, we must stay in idle mode to avoid
                     # tracking LockApp.exe as active work time.
                     if self._is_screen_locked():
-                        print(f"[INFO] Screen still locked after suspension — staying in idle mode")
-                        self.is_idle = True
-                        self.idle_start_time = datetime.fromtimestamp(self.last_activity_time, tz=timezone.utc)
-                        self.idle_project_key = self.current_project_key
+                        print(f"[INFO] Screen still locked after suspension — entering idle state")
+                        self.enter_idle("screen still locked after suspension")
                         self.needs_idle_resume = False
                         self.current_window_key = None
-                        self.update_tray_icon()
                         last_loop_time = current_loop_time
-                        self.add_admin_log('INFO', f'System suspension detected ({int(time_since_last_loop)}s gap) — screen locked, staying idle')
                         continue
 
                     # Reset ALL tracking state — new session starts fresh
-                    self.is_idle = False
+                    if self.resume_from_idle():
+                        print(f"[INFO] Resumed from suspension — tracking state reset")
                     self.needs_idle_resume = False
-                    self.current_window_start_time = None
-                    self.current_window_db_start_time = None
-                    self.current_window_screenshot_id = None
-                    self.current_window_record_created_at = None
-                    self.last_screenshot_end_time = None
-                    self.previous_window_key = None
-                    self.previous_window_screenshot_id = None
-                    self.previous_window_start_time = None
-                    self.previous_window_db_start_time = None
-                    self.current_window_key = None
                     self.last_interval_time = current_loop_time
                     self.last_activity_time = current_loop_time
                     last_loop_time = current_loop_time
@@ -9922,11 +10547,6 @@ class TimeTracker:
                             print(f"[WARN] Periodic classification sync failed: {e}")
                         last_classification_sync = time.time()
 
-                    # Periodically check for app updates (every 4 hours by default)
-                    # This runs in the background and shows notification if update available
-                    if time.time() - self.last_version_check_time > self.version_check_interval:
-                        self.check_for_app_updates(show_notification=True)
-
                     # Periodically check for unassigned work and send notifications
                     if time.time() - last_notification_check > notification_check_interval:
                         self.check_and_notify_unassigned_work()
@@ -9936,38 +10556,36 @@ class TimeTracker:
                     if time.time() - self.last_batch_upload_time >= self.batch_upload_interval:
                         self.upload_activity_batch()
                 
+                # Check for app updates OUTSIDE idle block (every 4 hours by default, or 30 min if last download failed)
+                # Update check and download happen in background, installation waits for user to be active
+                should_check_normal = time.time() - self.last_version_check_time > self.version_check_interval
+                should_retry_download = self.update_manager and self.update_manager.should_retry_download()
+                
+                if should_check_normal:
+                    self.check_for_app_updates(show_notification=True)
+                elif should_retry_download:
+                    # force=True is required here — without it, check_for_app_updates returns
+                    # cached info early because the 4-hour cooldown hasn't elapsed yet (only 30 min has)
+                    print("[INFO] Retrying failed update download (30-minute retry interval)...")
+                    self.check_for_app_updates(show_notification=True, force=True)
+                
                 # Check for idle timeout (use configurable threshold)
                 idle_duration = time.time() - self.last_activity_time
                 current_idle_timeout = self.tracking_settings.get('idle_threshold_seconds', self.idle_timeout)
                 if idle_duration > current_idle_timeout:
-                    if not self.is_idle:
+                    if self.state == TrackingState.ACTIVE:
                         idle_start_time = datetime.now(timezone.utc)
                         last_activity = datetime.fromtimestamp(self.last_activity_time, tz=timezone.utc)
-                        print(f"[INFO] Entering idle mode at {idle_start_time.strftime('%H:%M:%S')} UTC:")
-                        print(f"     - Last activity: {last_activity.strftime('%H:%M:%S')} UTC")
-                        print(f"     - Idle duration: {int(idle_duration)}s (threshold: {current_idle_timeout}s)")
+                        print(f"[INFO] Idle timeout ({int(idle_duration)}s) — entering idle state")
                         
-                        # Finalize the current window's duration BEFORE going idle
-                        # This prevents idle time from being counted as work time
-                        self._finalize_active_session("idle timeout")
-                        self.session_manager.stop_current_timer()  # Stop SQLite activity timer so idle time isn't counted in activity_records
-
-                        # Flush accumulated sessions to database BEFORE entering idle
-                        # This prevents data sitting in SQLite for hours during long idle periods
+                        # Use state machine instead of direct assignment
+                        self.enter_idle("idle timeout")
+                        
+                        # Upload accumulated data before entering idle
                         try:
                             self.upload_activity_batch()
                         except Exception as e:
-                            print(f"[WARN] Pre-idle batch upload failed: {e} — data remains in SQLite for next cycle")
-
-                        # Record when idle started (backdate to last activity)
-                        self.idle_start_time = last_activity
-                        # Store the project key at idle entry — this is the project the user
-                        # was actually working on, not whatever project is active when they resume
-                        self.idle_project_key = self.current_project_key
-
-                        self.is_idle = True
-                        self.update_tray_icon()
-                        self.add_admin_log('INFO', f'User idle (no activity for {int(idle_duration)}s)')
+                            print(f"[WARN] Pre-idle batch upload failed: {e}")
 
                     # While idle, check every 5 seconds for activity
                     # Don't skip if needs_idle_resume is set - we need to process the resume
@@ -9978,52 +10596,27 @@ class TimeTracker:
                 # Resume from idle if activity was detected by pynput
                 if self.needs_idle_resume:
                     resume_time = datetime.now(timezone.utc)
-                    print(f"[INFO] Activity detected at {resume_time.strftime('%H:%M:%S')} UTC, resuming tracking from idle")
-                    print(f"     - All tracking state reset - new session will start fresh")
-
-                    # Create an idle record for the period the user was away
-                    self._create_idle_record("idle timeout")
-
-                    # Immediately flush idle records to database instead of waiting
-                    # for the next periodic batch upload cycle
-                    if self._pending_idle_records:
-                        try:
-                            print(f"[IDLE] Flushing {len(self._pending_idle_records)} idle record(s) to database...")
-                            self.upload_activity_batch()
-                        except Exception as e:
-                            print(f"[WARN] Immediate idle record flush failed: {e} — will retry on next batch cycle")
-
-                    self.is_idle = False
+                    print(f"[INFO] Activity detected — resuming from idle")
+                    
+                    # Use state machine instead of direct assignment
+                    if self.resume_from_idle():
+                        # Immediately flush idle records to database
+                        if self._pending_idle_records:
+                            try:
+                                print(f"[IDLE] Flushing {len(self._pending_idle_records)} idle record(s)...")
+                                self.upload_activity_batch()
+                            except Exception as e:
+                                print(f"[WARN] Idle record flush failed: {e}")
+                    
+                    # Clear the resume flag regardless of whether resume succeeded
                     self.needs_idle_resume = False
-                    self.update_tray_icon()
-                    self.add_admin_log('INFO', 'User active - resuming tracking')
-                    # Reset interval timer so first capture happens after full interval
-                    self.last_interval_time = time.time()
-                    # Start fresh - next screenshot will be the start of a new work session
-                    # IMPORTANT: Reset ALL tracking state so new session starts from "now"
-                    self.current_window_start_time = None
-                    self.current_window_db_start_time = None
-                    self.current_window_screenshot_id = None
-                    self.current_window_record_created_at = None
-                    self.last_screenshot_end_time = None  # Critical: prevents idle time from being counted
-                    self.previous_window_key = None
-                    self.previous_window_screenshot_id = None
-                    self.previous_window_start_time = None
-                    self.previous_window_db_start_time = None
-                    self.current_window_key = None  # Also reset current window so it's detected as "new"
 
                 # Guard: if screen is locked (e.g., PC woke briefly from sleep but user
                 # hasn't unlocked), re-enter idle mode instead of tracking LockApp.exe.
                 if self._is_screen_locked():
-                    if not self.is_idle:
-                        print(f"[INFO] Screen locked — entering idle mode instead of tracking")
-                        self._finalize_active_session("screen still locked")
-                        self.session_manager.stop_current_timer()
-                        self.idle_start_time = datetime.fromtimestamp(self.last_activity_time, tz=timezone.utc)
-                        self.idle_project_key = self.current_project_key
-                        self.is_idle = True
-                        self.update_tray_icon()
-                        self.add_admin_log('INFO', 'Screen locked detected in main loop — entered idle')
+                    if self.state == TrackingState.ACTIVE:
+                        print(f"[INFO] Screen locked — entering idle state")
+                        self.enter_idle("screen still locked")
                     time.sleep(5)
                     continue
 
@@ -10270,7 +10863,8 @@ class TimeTracker:
 
         self.running = True
         self.tracking_active = True
-        self.is_idle = False
+        self.state = TrackingState.ACTIVE
+        self.is_idle = False  # Keep boolean flag in sync
         self.last_activity_time = time.time()  # Reset activity time
         
         # Initialize window tracking for event-based tracking
@@ -10383,7 +10977,8 @@ class TimeTracker:
             self.pause_end_time = None  # Clear auto-resume time
             self.next_popup_show_time = None  # Clear next popup show time
             self.popup_show_count = 0  # Reset popup show count
-            self.is_idle = False
+            self.state = TrackingState.ACTIVE
+            self.is_idle = False  # Keep boolean flag in sync
             self.last_activity_time = time.time()
             self.update_tray_icon()
             self.update_tray_menu()  # Update menu to show Pause option
@@ -10664,6 +11259,92 @@ class TimeTracker:
             except Exception as e:
                 print(f"[WARN] Failed to update tray icon: {e}")
 
+    def _manual_update_trigger(self):
+        """Handle manual update trigger from tray menu"""
+        try:
+            if not self.update_manager:
+                print("[WARN] Update manager not available")
+                return
+            
+            status = self.update_manager.get_status()
+            state = status.get('state', 'idle')
+            
+            # If update is ready, install it immediately
+            if state in ('ready', 'mandatory_ready'):
+                latest = (status.get('update_info') or {}).get('latest_version', 'unknown')
+                print(f"[UPDATE] Manually triggering update installation for v{latest}")
+                self.add_admin_log('INFO', f'User manually triggered update v{latest}')
+                
+                # Show notification
+                if WINOTIFY_AVAILABLE:
+                    try:
+                        notification = Notification(
+                            app_id="Time Tracker",
+                            title="Installing Update",
+                            msg=f"Installing v{latest}. The app will restart shortly.",
+                            duration="short"
+                        )
+                        notification.set_audio(audio.Default, loop=False)
+                        notification.show()
+                    except Exception:
+                        pass
+                
+                self.update_manager.apply_update()
+            else:
+                # Otherwise, force a new update check
+                print("[UPDATE] User manually checking for updates")
+                self.add_admin_log('INFO', 'User manually triggered update check')
+                
+                # Show checking notification
+                if WINOTIFY_AVAILABLE:
+                    try:
+                        notification = Notification(
+                            app_id="Time Tracker",
+                            title="Checking for Updates",
+                            msg="Checking for available updates...",
+                            duration="short"
+                        )
+                        notification.set_audio(audio.Default, loop=False)
+                        notification.show()
+                    except Exception:
+                        pass
+                
+                # Force update check in background thread to avoid blocking tray UI
+                def check_in_background():
+                    result = self.check_for_app_updates(show_notification=True, force=True)
+                    # Show result notification — without this the user only ever sees
+                    # the "Checking for Updates" toast and gets no feedback on outcome.
+                    if WINOTIFY_AVAILABLE:
+                        try:
+                            update_state = self.update_manager.get_status().get('state', 'idle') if self.update_manager else 'idle'
+                            # Only show "up to date" if no download/install is already in progress
+                            if update_state not in ('downloading', 'ready', 'mandatory_ready', 'installing'):
+                                if result is None:
+                                    msg = "Could not reach the update server. Please check your network connection and try again."
+                                    title = "Update Check Failed"
+                                elif not (result or {}).get('update_available', False):
+                                    msg = f"You're running the latest version (v{self.app_version})."
+                                    title = "App is Up to Date"
+                                else:
+                                    # Update was found and download kicked off — download notification
+                                    # is handled by _on_update_manager_state_changed; no extra toast needed.
+                                    return
+                                notification = Notification(
+                                    app_id="Time Tracker",
+                                    title=title,
+                                    msg=msg,
+                                    duration="short"
+                                )
+                                notification.set_audio(audio.Default, loop=False)
+                                notification.show()
+                        except Exception:
+                            pass
+
+                threading.Thread(target=check_in_background, daemon=True).start()
+        
+        except Exception as e:
+            print(f"[ERROR] Manual update trigger failed: {e}")
+
     def _build_tray_menu(self):
         """Build the tray menu with current state"""
         def get_menu_label():
@@ -10697,13 +11378,18 @@ class TimeTracker:
         progress = int((status.get('progress', 0) or 0) * 100)
 
         if state == 'downloading':
-            menu_items.append(item(lambda text: f"Downloading update v{latest} ({progress}%)", lambda: None, enabled=False))
+            menu_items.append(item(lambda text: f"⬇️ Downloading v{latest} ({progress}%)", lambda: None, enabled=False))
         elif state in ('ready', 'mandatory_ready'):
-            menu_items.append(item(lambda text: f"Installing update v{latest}...", lambda: None, enabled=False))
+            # Make this clickable so users can manually trigger installation
+            menu_items.append(item(lambda text: f"✨ Update Ready v{latest} - Click to Install", self._manual_update_trigger, enabled=True))
         elif state == 'installing':
-            menu_items.append(item(lambda text: f"Restarting for update v{latest}...", lambda: None, enabled=False))
+            menu_items.append(item(lambda text: f"🔄 Installing v{latest}...", lambda: None, enabled=False))
+        elif state == 'failed':
+            # Allow retry on failure
+            menu_items.append(item(lambda text: f"❌ Update Failed - Click to Retry", self._manual_update_trigger, enabled=True))
         else:
-            menu_items.append(item(lambda text: f"Up to Date (v{self.app_version})", lambda: None, enabled=False))
+            # Show "Check for Updates" button when no update activity
+            menu_items.append(item(lambda text: f"✓ Up to Date (v{self.app_version}) - Click to Check", self._manual_update_trigger, enabled=True))
 
         return pystray.Menu(*menu_items)
 
@@ -10875,12 +11561,20 @@ class TimeTracker:
                     self.current_user_id = cached_user.get('user_id')
                     self.current_user = cached_user
                     print(f"[OK] Restored organization_id from cache: {self.organization_id}")
-                    # Initialize Supabase with cached credentials
-                    try:
-                        if self.initialize_supabase():
-                            print("[OK] Supabase initialized successfully from cache")
-                    except Exception as e:
-                        print(f"[WARN] Could not initialize Supabase from cache: {e}")
+                    # Early Supabase init: only proceed if local config cache exists (FIX-6).
+                    # Without the cache, initialize_supabase() requires a live network call —
+                    # risky before check_connectivity() runs (network may not be ready on boot,
+                    # after sleep/wake, or immediately after an auto-update restart).
+                    has_supabase_cache = bool(self.auth_manager.tokens.get('cached_supabase_url'))
+                    if has_supabase_cache:
+                        try:
+                            if self.initialize_supabase():
+                                print("[OK] Supabase initialized successfully from cache")
+                        except Exception as e:
+                            print(f"[WARN] Could not initialize Supabase from cache: {e}")
+                    else:
+                        print("[INFO] Skipping early Supabase init — no local config cache. "
+                              "Will initialize after connectivity check.")
             except Exception as e:
                 print(f"[WARN] Could not load cached user info early: {e}")
 
@@ -10952,6 +11646,14 @@ class TimeTracker:
                         self.current_user_id = cached_user.get('user_id')
                         print(f"[OK] Using cached credentials for {cached_user.get('email', 'User')}")
                         print("[INFO] Will retry authentication in the background")
+                        # If Supabase was already initialized via early init, push the new version
+                        # now rather than waiting for the background reinit cycle.
+                        if self.supabase_initialized and self.current_user_id:
+                            try:
+                                self._update_desktop_status(logged_in=True)
+                                print("[OK] Desktop status updated from cached-fallback path")
+                            except Exception as ds_err:
+                                print(f"[WARN] Could not update desktop status in fallback path: {ds_err}")
                     else:
                         # No cache AND no server response — only NOW force re-auth
                         print("[WARN] No cached credentials available, please re-authenticate")
@@ -10987,9 +11689,12 @@ class TimeTracker:
             print("[INFO] Found staged update from previous session")
         
         # Check for updates on startup (only if online)
-        if is_online:
+        # Re-check connectivity here (don't trust the is_online from startup - it may be stale after auth)
+        if self.offline_manager.check_connectivity(force=True):
             print("[INFO] Checking for app updates...")
             self.check_for_app_updates(show_notification=True, force=True)
+        else:
+            print("[INFO] Offline after authentication - will check for updates when network is available")
         
         # Determine if we should start tracking
         should_track = self.current_user is not None or self.current_user_id is not None
@@ -12967,15 +13672,58 @@ class TimeTracker:
 
 def main():
     """Main entry point"""
+    # Setup logging FIRST before anything else
+    if APP_LOGGER_AVAILABLE:
+        try:
+            setup_logging(log_level=logging.INFO)
+            logger = get_logger(__name__, 'MAIN')
+            logger.info("=" * 70)
+            logger.info(f"TimeTracker v{APP_VERSION} starting...")
+            logger.info(f"OS: {platform.system()} {platform.release()} {platform.version()}")
+            logger.info(f"Python: {sys.version}")
+            logger.info(f"Process ID: {os.getpid()}")
+            logger.info(f"Executable: {sys.executable}")
+            logger.info(f"Log file: {get_log_file_path()}")
+            logger.info(f"Screenshot monitoring: {'DISABLED' if SCREENSHOT_MONITORING_HARD_DISABLED else 'ENABLED'}")
+            logger.info("=" * 70)
+        except Exception as log_error:
+            print(f"[WARN] Failed to setup logging: {log_error}")
+            traceback.print_exc()
+    else:
+        print("[WARN] Application logging disabled - app_logger module not available")
+    
     try:
+        if APP_LOGGER_AVAILABLE:
+            logger.info("Initializing TimeTracker application...")
+        
         app = TimeTracker()
+        
+        if APP_LOGGER_AVAILABLE:
+            logger.info("TimeTracker initialized successfully")
+            logger.info("Starting main application loop...")
+        
         app.run()
+        
     except KeyboardInterrupt:
+        if APP_LOGGER_AVAILABLE:
+            logger = get_logger(__name__, 'MAIN')
+            logger.info("Application stopped by user (KeyboardInterrupt)")
         print("\n[INFO] Application stopped by user")
     except Exception as e:
+        if APP_LOGGER_AVAILABLE:
+            logger = get_logger(__name__, 'MAIN')
+            logger.error(f"Fatal application error: {e}", exc_info=True)
+            logger.error("=" * 70)
+            logger.error("Application crashed - see traceback above")
+            logger.error("=" * 70)
         print(f"[ERROR] Application error: {e}")
         traceback.print_exc()
         input("Press Enter to exit...")
+    finally:
+        if APP_LOGGER_AVAILABLE:
+            logger = get_logger(__name__, 'MAIN')
+            logger.info("TimeTracker shutting down...")
+            logger.info("=" * 70)
 
 if __name__ == '__main__':
     main()

@@ -6,6 +6,7 @@
  */
 
 const activityService = require('../services/activity-service');
+const activityDbService = require('../services/db/activity-db-service');
 const logger = require('../utils/logger');
 
 /**
@@ -34,11 +35,64 @@ async function analyzeBatch(req, res, next) {
 
     logger.info(`[ActivityController] Analyzing batch of ${records.length} records for user ${user_id}`);
 
+    // Atomically claim records (pending → processing) to prevent race with polling service.
+    // Only process records we successfully claimed. If another process already claimed them,
+    // we skip gracefully — the other process will handle them.
+    const recordIds = records.filter(r => r.id).map(r => r.id);
+    let claimedIds = new Set();
+    if (recordIds.length > 0) {
+      try {
+        const claimed = await activityDbService.claimBatchForProcessing(recordIds);
+        claimedIds = new Set(claimed.map(c => c.id));
+      } catch (claimErr) {
+        logger.warn(`[ActivityController] Claim failed (non-fatal): ${claimErr.message}`);
+        // If claim fails (e.g. DB issue), proceed with all records — worst case is a double-process
+        // which results in the same outcome (idempotent update).
+        claimedIds = new Set(recordIds);
+      }
+    }
+
+    // Filter to only claimed records (skip records another process already owns).
+    // Distinguish between "no records have IDs" (can't claim, just process all)
+    // and "records have IDs but none were claimable" (all already owned → skip).
+    let recordsToAnalyze;
+    if (recordIds.length === 0) {
+      // No records have IDs (unusual edge case) — can't claim, process all
+      recordsToAnalyze = records;
+    } else if (claimedIds.size === 0) {
+      // All records had IDs but none were claimable (already processing elsewhere)
+      recordsToAnalyze = [];
+    } else {
+      // Process only the records we successfully claimed
+      recordsToAnalyze = records.filter(r => !r.id || claimedIds.has(r.id));
+    }
+
+    if (recordsToAnalyze.length === 0) {
+      logger.info('[ActivityController] All records already claimed by polling service, skipping');
+      return res.json({ success: true, recordsProcessed: 0, alreadyClaimed: true });
+    }
+
+    // Fetch session continuity context and correction patterns (same as polling service)
+    let previousMatchContext = null;
+    let correctionPatterns = null;
+    try {
+      previousMatchContext = await activityDbService.getRecentMatchForUser(user_id);
+    } catch (ctxErr) {
+      logger.debug(`[ActivityController] Failed to fetch recent match context: ${ctxErr.message}`);
+    }
+    try {
+      correctionPatterns = await activityDbService.getRecentCorrectionPatterns(user_id);
+    } catch (cpErr) {
+      logger.debug(`[ActivityController] Failed to fetch correction patterns: ${cpErr.message}`);
+    }
+
     const result = await activityService.analyzeBatch(
-      records,
+      recordsToAnalyze,
       user_assigned_issues || [],
       user_id,
-      organization_id
+      organization_id,
+      previousMatchContext,
+      correctionPatterns
     );
 
     res.json({ success: true, ...result });
@@ -121,4 +175,71 @@ async function identifyApp(req, res, next) {
   }
 }
 
-module.exports = { analyzeBatch, classifyApp, identifyApp };
+/**
+ * POST /api/activity
+ * Create activity record with idempotency check.
+ * 
+ * AC3: Duplicate request_id returns 200 with {duplicate: true} and creates zero new records.
+ * 
+ * Security: No PII (window_title) logged at info level per copilot-instructions.md.
+ */
+async function createActivity(req, res) {
+  const { request_id, org_id, user_id, timestamp, window_title, duration_seconds } = req.body;
+  
+  // Validate request_id is present
+  if (!request_id) {
+    logger.warn('Activity submission missing request_id', { org_id, user_id });
+    return res.status(400).json({ error: 'request_id is required' });
+  }
+  
+  try {
+    // Check if already processed (idempotency)
+    const existing = await activityDbService.findByRequestId(org_id, request_id);
+    if (existing) {
+      logger.debug('Duplicate activity submission detected', { 
+        request_id, 
+        existing_id: existing.id,
+        org_id
+      });
+      return res.status(200).json({ 
+        id: existing.id, 
+        duplicate: true,
+        message: 'Activity already recorded'
+      });
+    }
+    
+    // Insert with request_id
+    const result = await activityDbService.createWithRequestId({
+      request_id,
+      org_id,
+      user_id,
+      timestamp,
+      window_title,
+      duration_seconds,
+      created_at: new Date().toISOString()
+    });
+    
+    logger.info('Activity recorded', { 
+      activity_id: result.id, 
+      org_id, 
+      user_id, 
+      duration: duration_seconds 
+    });
+    
+    return res.status(201).json({ 
+      id: result.id, 
+      duplicate: false 
+    });
+    
+  } catch (error) {
+    logger.error('Activity creation failed', { 
+      error: error.message, 
+      org_id, 
+      user_id,
+      request_id 
+    });
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+}
+
+module.exports = { analyzeBatch, classifyApp, identifyApp, createActivity };

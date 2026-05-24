@@ -83,14 +83,16 @@ describe('buildBatchAnalysisPrompt', () => {
     it('should NOT flag OCR text with confidence >= 0.4', () => {
       const records = [{ ...mockRecord, ocr_text: 'some text', ocr_confidence: 0.8 }];
       const prompt = buildBatchAnalysisPrompt(records, 'None');
-      expect(prompt).not.toContain('low confidence');
+      // The per-record label should not say "low confidence" for high-confidence OCR
+      expect(prompt).not.toContain('OCR Text (low confidence');
       expect(prompt).toContain('OCR Text:');
     });
 
     it('should NOT flag OCR text when confidence is not provided', () => {
       const records = [{ ...mockRecord, ocr_text: 'some text' }];
       const prompt = buildBatchAnalysisPrompt(records, 'None');
-      expect(prompt).not.toContain('low confidence');
+      // The per-record label should not say "low confidence" when no confidence is set
+      expect(prompt).not.toContain('OCR Text (low confidence');
       expect(prompt).toContain('OCR Text:');
     });
   });

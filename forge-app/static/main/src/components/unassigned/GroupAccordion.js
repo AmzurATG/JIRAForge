@@ -19,6 +19,8 @@ function GroupAccordion({
   loadingWorkSessions,
   loadGroupDetails,
   loadGroupWorkSessions,
+  // Date filter active flag (controls which stats to display)
+  hasDateFilter,
   // Selection (multi-select bulk assign)
   isGroupFullySelected,
   isGroupPartiallySelected,
@@ -200,7 +202,11 @@ function GroupAccordion({
                         <line x1="12" y1="17" x2="12" y2="21"></line>
                       </svg>
                     </span>
-                    <span className="stat-value">{details?.session_count || group.session_count}</span>
+                    <span className="stat-value">
+                      {hasDateFilter && group.filtered_session_count !== null
+                        ? group.filtered_session_count
+                        : (details?.session_count || group.session_count)}
+                    </span>
                   </div>
                   <div className="stat-compact">
                     <span className="stat-icon">
@@ -209,7 +215,11 @@ function GroupAccordion({
                         <polyline points="12 6 12 12 16 14"></polyline>
                       </svg>
                     </span>
-                    <span className="stat-value">{details?.total_seconds ? details.total_time_formatted : group.total_time_formatted}</span>
+                    <span className="stat-value">
+                      {hasDateFilter && group.filtered_total_seconds !== null
+                        ? group.filtered_time_formatted
+                        : (details?.total_seconds ? details.total_time_formatted : group.total_time_formatted)}
+                    </span>
                   </div>
                   <button
                     className="assign-button-compact"

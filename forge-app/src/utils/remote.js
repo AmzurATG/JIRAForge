@@ -2,6 +2,19 @@
  * Remote API Utility
  * Handles all communication with the AI server via Forge Remote
  * The AI server handles Supabase operations securely without exposing credentials
+ * 
+ * CACHING POLICY:
+ * User and Organization IDs are NOT cached to prevent staleness issues.
+ * Previous versions used KVS and in-memory cache, but these caused intermittent
+ * data visibility bugs when:
+ * - Organizations were deleted/recreated (new UUID for same cloudId)
+ * - Lambda containers were reused across invocations (warm starts)
+ * - Cache TTLs allowed stale values to persist
+ * 
+ * Request deduplication (inFlightRequests) is still used to prevent duplicate
+ * concurrent API calls within the same invocation.
+ * 
+ * See: plan/UNASSIGNED_WORK_CACHE_FIX_IMPLEMENTATION_PLAN.md
  */
 
 import api, { invokeRemote, route } from '@forge/api';
@@ -250,26 +263,21 @@ async function fetchJiraSiteInfo() {
  * @returns {Promise<Object>} Organization object
  */
 export async function getOrCreateOrganization(cloudId, orgName = null, jiraUrl = null) {
-  const cacheKey = CacheKeys.organization(cloudId);
+  // CACHE REMOVED: Always fetch fresh from AI server to prevent staleness.
+  // Keep request deduplication (inFlightRequests) to prevent duplicate concurrent
+  // requests within the same invocation, but remove TTL-based cache that persists
+  // across invocations.
 
-  // Check in-memory cache first (fastest)
-  const cached = getFromCache(cacheKey);
-  if (cached) {
-    return cached;
-  }
+  const dedupeKey = `org:${cloudId}`;
 
-  // Deduplicate concurrent requests for the same cloudId
-  if (inFlightRequests.has(cacheKey)) {
+  // Deduplicate concurrent requests for the same cloudId (same invocation only)
+  if (inFlightRequests.has(dedupeKey)) {
     console.log(`[Remote] Deduplicating org request for ${cloudId}`);
-    return inFlightRequests.get(cacheKey);
+    return inFlightRequests.get(dedupeKey);
   }
 
   const promise = (async () => {
     try {
-      // Always resolve from AI server to avoid stale KVS cache.
-      // KVS cache caused org ID mismatches when multiple orgs exist for the same cloudId.
-      // In-memory cache (checked above) still deduplicates within the same invocation.
-
       // If orgName or jiraUrl not provided, fetch from Jira API
       if (!orgName || !jiraUrl) {
         const siteInfo = await fetchJiraSiteInfo();
@@ -284,19 +292,16 @@ export async function getOrCreateOrganization(cloudId, orgName = null, jiraUrl =
         body: { orgName, jiraUrl }
       });
 
-      // Populate in-memory cache only (KVS storage cache removed to prevent staleness)
-      setInCache(cacheKey, org, TTL.ORGANIZATION);
-
-      return org;
+      return org;  // NO CACHE
     } catch (error) {
       console.error('[Remote] Error getting/creating organization:', error);
       throw error;
     } finally {
-      inFlightRequests.delete(cacheKey);
+      inFlightRequests.delete(dedupeKey);
     }
   })();
 
-  inFlightRequests.set(cacheKey, promise);
+  inFlightRequests.set(dedupeKey, promise);
   return promise;
 }
 
@@ -310,27 +315,16 @@ export async function getOrCreateOrganization(cloudId, orgName = null, jiraUrl =
  * @returns {Promise<string>} User UUID
  */
 export async function getOrCreateUser(accountId, organizationId = null, email = null, displayName = null) {
-  // Use organizationId as the tenant scope — it is a unique UUID per Supabase org,
-  // equivalent to cloudId for tenant isolation purposes.
-  const cacheKey = CacheKeys.userId(organizationId || 'default', accountId);
-
-  // Check in-memory cache first (fastest)
-  const cached = getFromCache(cacheKey);
-  if (cached?.organizationId === organizationId) {
-    return cached.userId;
-  }
+  // CACHE REMOVED: Always fetch fresh from AI server to prevent staleness.
+  // Previous fix removed KVS cache due to stale org IDs causing user ID mismatches.
+  // This completes that fix by removing in-memory cache as well.
+  // In-memory cache is unsafe because Forge Lambda containers are reused across
+  // invocations (warm starts), so cache can persist and return stale values.
 
   try {
-    // Always resolve from AI server to avoid stale KVS cache.
-    // KVS cache caused user ID mismatches when org IDs were stale.
-    // In-memory cache (checked above) still deduplicates within the same invocation.
-
     const result = await remoteRequest('/api/forge/user', {
       body: { organizationId, email, displayName }
     });
-
-    // Populate in-memory cache only (KVS storage cache removed to prevent staleness)
-    setInCache(cacheKey, { userId: result.userId, organizationId }, TTL.USER_ID);
 
     return result.userId;
   } catch (error) {
@@ -621,6 +615,68 @@ export async function getFeedbackStatus(feedbackId) {
 
   const result = await response.json();
   return result;
+}
+
+/**
+ * Get daily total work time for a user (unified aggregation service).
+ * 
+ * AC4 & AC8: Uses unified aggregation service to ensure consistency across all surfaces.
+ * 
+ * @param {string} org_id - Organization ID
+ * @param {string} user_id - User ID
+ * @param {string} date - Date in YYYY-MM-DD format
+ * @param {string} timezone - IANA timezone (default: UTC)
+ * @returns {Promise<Object>} { date, total_seconds, hours, timezone }
+ */
+export async function getDailyWorkTotal(org_id, user_id, date, timezone = 'UTC') {
+  if (!org_id || !user_id || !date) {
+    throw new Error('Missing required parameters: org_id, user_id, date');
+  }
+
+  console.log(`[Remote] getDailyWorkTotal: ${date} for user ${user_id}`);
+
+  const response = await invokeRemote(REMOTE_KEY, {
+    path: `/api/analytics/daily?org_id=${encodeURIComponent(org_id)}&user_id=${encodeURIComponent(user_id)}&date=${encodeURIComponent(date)}&timezone=${encodeURIComponent(timezone)}`,
+    method: 'GET'
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    console.error('[Remote] getDailyWorkTotal failed:', errorText);
+    throw new Error(`Failed to get daily total: ${errorText}`);
+  }
+
+  return await response.json();
+}
+
+/**
+ * Get weekly total work time for a user (unified aggregation service).
+ * 
+ * @param {string} org_id - Organization ID
+ * @param {string} user_id - User ID
+ * @param {string} week_start - Monday date in YYYY-MM-DD format
+ * @param {string} timezone - IANA timezone (default: UTC)
+ * @returns {Promise<Object>} { week_start, total_seconds, hours, timezone }
+ */
+export async function getWeeklyWorkTotal(org_id, user_id, week_start, timezone = 'UTC') {
+  if (!org_id || !user_id || !week_start) {
+    throw new Error('Missing required parameters: org_id, user_id, week_start');
+  }
+
+  console.log(`[Remote] getWeeklyWorkTotal: ${week_start} for user ${user_id}`);
+
+  const response = await invokeRemote(REMOTE_KEY, {
+    path: `/api/analytics/weekly?org_id=${encodeURIComponent(org_id)}&user_id=${encodeURIComponent(user_id)}&week_start=${encodeURIComponent(week_start)}&timezone=${encodeURIComponent(timezone)}`,
+    method: 'GET'
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    console.error('[Remote] getWeeklyWorkTotal failed:', errorText);
+    throw new Error(`Failed to get weekly total: ${errorText}`);
+  }
+
+  return await response.json();
 }
 
 // Export the remote request function for custom calls

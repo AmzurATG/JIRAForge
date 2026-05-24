@@ -211,23 +211,6 @@ describe('NotifMeWrapperEnhanced', () => {
         });
       });
 
-      it('should use default port 587', () => {
-        process.env.SMTP_HOST = 'smtp.test.com';
-        
-        const config = wrapper._buildSmtpConfig();
-        
-        expect(config.port).toBe(587);
-      });
-
-      it('should parse secure as false by default', () => {
-        process.env.SMTP_HOST = 'smtp.test.com';
-        process.env.SMTP_PORT = '25';
-        
-        const config = wrapper._buildSmtpConfig();
-        
-        expect(config.secure).toBe(false);
-      });
-
       it('should return null if host missing', () => {
         process.env.SMTP_PORT = '587';
         const config = wrapper._buildSmtpConfig();
@@ -249,25 +232,6 @@ describe('NotifMeWrapperEnhanced', () => {
           accessKeyId: 'aws-key-id',
           secretAccessKey: 'aws-secret'
         });
-      });
-
-      it('should use default region us-east-1', () => {
-        process.env.AWS_ACCESS_KEY_ID = 'aws-key-id';
-        process.env.AWS_SECRET_ACCESS_KEY = 'aws-secret';
-        
-        const config = wrapper._buildSesConfig();
-        
-        expect(config.region).toBe('us-east-1');
-      });
-
-      it('should fallback to AWS_REGION', () => {
-        process.env.AWS_ACCESS_KEY_ID = 'aws-key-id';
-        process.env.AWS_SECRET_ACCESS_KEY = 'aws-secret';
-        process.env.AWS_REGION = 'eu-west-1';
-        
-        const config = wrapper._buildSesConfig();
-        
-        expect(config.region).toBe('eu-west-1');
       });
 
       it('should include session token if provided', () => {

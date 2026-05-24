@@ -437,6 +437,65 @@ describe('supabaseQuery', () => {
     );
   });
 
+  // Transient outbound-fetch failures from supabase-js → 503 so the Forge
+  // remote.js retry path triggers. See plan/fix-forge-proxy-transient-fetch-error.md.
+  it.each([
+    ['TypeError: fetch failed'],
+    ['ECONNRESET: socket reset by peer'],
+    ['socket hang up'],
+    ['Client network socket disconnected before secure TLS connection was established (ETIMEDOUT)'],
+    ['UND_ERR_SOCKET'],
+    ['other side closed'],
+  ])('returns 503 (not 400) for transient fetch error: %s', async (message) => {
+    const { ...client } = makeSimpleClient({ data: null, error: { message } });
+    getClient.mockReturnValue(client);
+    const res = makeRes();
+    await supabaseQuery(makeQueryReq(), res);
+    expect(res.status).toHaveBeenCalledWith(503);
+    expect(res.json).toHaveBeenCalledWith(
+      expect.objectContaining({ success: false, error: message })
+    );
+  });
+
+  it('keeps 400 for genuine query errors (no transient pattern)', async () => {
+    const { ...client } = makeSimpleClient({
+      data: null,
+      error: { message: 'column organizations.jira_host does not exist' }
+    });
+    getClient.mockReturnValue(client);
+    const res = makeRes();
+    await supabaseQuery(makeQueryReq(), res);
+    expect(res.status).toHaveBeenCalledWith(400);
+  });
+
+  // Case-insensitive matching: error messages with mixed case still detected as transient.
+  it('detects transient errors regardless of message casing', async () => {
+    const { ...client } = makeSimpleClient({
+      data: null,
+      error: { message: 'TypeError: Fetch Failed during request' }
+    });
+    getClient.mockReturnValue(client);
+    const res = makeRes();
+    await supabaseQuery(makeQueryReq(), res);
+    expect(res.status).toHaveBeenCalledWith(503);
+  });
+
+  // Defensive: supabase-js error without .message field still produces a non-empty body.
+  it('returns a non-empty error body when result.error has no message', async () => {
+    const { ...client } = makeSimpleClient({
+      data: null,
+      error: { code: 'PGRST123' }
+    });
+    getClient.mockReturnValue(client);
+    const res = makeRes();
+    await supabaseQuery(makeQueryReq(), res);
+    expect(res.status).toHaveBeenCalledWith(400);
+    const body = res.json.mock.calls[0][0];
+    expect(body.success).toBe(false);
+    expect(typeof body.error).toBe('string');
+    expect(body.error.length).toBeGreaterThan(0);
+  });
+
   it('returns 500 when an unexpected exception is thrown', async () => {
     getClient.mockImplementation(() => { throw new Error('Unexpected crash'); });
     const res = makeRes();

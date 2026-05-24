@@ -10,19 +10,26 @@
  * Response shape is {success: true, data: {...}} so that Forge's
  * `remoteRequest` helper unwraps it cleanly.
  *
- * All aggregations are pushed down to Postgres via RPCs declared in migration
- * 20260422_ai_accuracy_aggregations.sql; this controller only shapes the
- * response.
+ * All aggregations are pushed down to Postgres via RPCs declared in
+ * 20260514_ai_accuracy_dashboard_redesign.sql (v2 summary/by-app) and
+ * 20260514_ai_accuracy_reassignments_add_user.sql (reassignments with user
+ * attribution); this controller only shapes the response.
+ *
+ * Bucket model used uniformly by /summary, /wrong-pairs, and /by-app:
+ *   matched     -> approved_as_is
+ *   reassigned  -> reassigned ∪ (manually_assigned WITH suggestion)
+ *   unmatched   -> manually_assigned WITHOUT suggestion
+ *
+ * match_rate is time-weighted everywhere it appears.
  *
  * Removal: delete this file, the route mounts in src/index.js, the matching
  * Forge resolver, and the frontend tab. Drop the RPCs via a follow-up migration.
  *
  * Endpoints (all GET, mounted under /api/forge/accuracy/* in src/index.js):
  *   /orgs               List orgs (for filter dropdown)
- *   /summary            Headline accuracy + counts
- *   /wrong-pairs        Top reassigned (AI guess -> user pick)
- *   /by-app             Right/wrong per application
- *   /calibration        Confidence buckets vs actual accuracy
+ *   /summary            Matched/Reassigned/Unmatched buckets + time-weighted match rate
+ *   /wrong-pairs        Reassignment pairs with total time, is_new_issue, user attribution
+ *   /by-app             Matched/Reassigned/Unmatched time + counts per application
  *   /recent-mistakes    Last N reassigned events
  *
  * Common query params:
@@ -82,19 +89,20 @@ exports.listOrgs = async (req, res) => {
 
     const orgIds = (orgRows || []).map(r => r.organization_id).filter(Boolean);
 
-    // Resolve display names from organizations table (best-effort).  Falls
-    // back to the org UUID if the name lookup fails or is missing.
+    // Resolve display names from organizations table (best-effort).  Column is
+    // `org_name` (not `name`) — see schema in 20260221_add_activity_records.sql
+    // and earlier org migrations. Falls back to jira_cloud_id, then the UUID.
     let orgs = orgIds.map(id => ({ id, name: id }));
     if (orgIds.length > 0) {
       const { data: orgNames } = await supabase
         .from('organizations')
-        .select('id, name, jira_cloud_id')
+        .select('id, org_name, jira_cloud_id')
         .in('id', orgIds);
       if (orgNames) {
         const byId = new Map(orgNames.map(o => [o.id, o]));
         orgs = orgIds.map(id => ({
           id,
-          name: byId.get(id)?.name || byId.get(id)?.jira_cloud_id || id
+          name: byId.get(id)?.org_name || byId.get(id)?.jira_cloud_id || id
         }));
       }
     }
@@ -107,7 +115,20 @@ exports.listOrgs = async (req, res) => {
 };
 
 // ---------------------------------------------------------------------------
-// Summary — headline accuracy %, totals per event type
+// Summary — three time buckets (matched / reassigned / unmatched) + time-
+// weighted match rate.  Powered by get_accuracy_summary_v2, which returns the
+// buckets as a single row already aggregated in the database.
+//
+// Bucket model (identical across all v2 endpoints — see migration
+// 20260514_ai_accuracy_dashboard_redesign.sql):
+//   matched     -> event_type = 'approved_as_is'
+//   reassigned  -> event_type = 'reassigned'
+//                  OR (event_type = 'manually_assigned' AND ai_suggested_issue_key IS NOT NULL)
+//   unmatched   -> event_type = 'manually_assigned' AND ai_suggested_issue_key IS NULL
+//
+// match_rate is TIME-WEIGHTED: matched_seconds / (matched_seconds + reassigned_seconds).
+// Unmatched time is excluded — the AI didn't make a suggestion, so it can't be
+// scored as right/wrong.
 // ---------------------------------------------------------------------------
 
 exports.getSummary = async (req, res) => {
@@ -117,56 +138,40 @@ exports.getSummary = async (req, res) => {
 
     const { days, sinceISO } = sinceTimestamp(req.query.days);
 
-    const { data, error } = await supabase.rpc('get_accuracy_summary', {
+    const { data, error } = await supabase.rpc('get_accuracy_summary_v2', {
       p_org: orgParam(req.query.org),
       p_since: sinceISO
     });
     if (error) throw error;
 
-    // RPC returns one row per (event_type, has_suggestion) bucket.  Collapse
-    // into the shape the dashboard expects.
-    const counts = {
-      approved_as_is: 0,
-      reassigned: 0,
-      manually_assigned_with_suggestion: 0,
-      manually_assigned_no_suggestion: 0
+    const row = (data && data[0]) || {};
+
+    const matched = {
+      count: Number(row.matched_count) || 0,
+      seconds: Number(row.matched_seconds) || 0
     };
-    const durations = { approved: 0, reassigned: 0, manually_assigned: 0 };
-    let totalEvents = 0;
+    const reassigned = {
+      count: Number(row.reassigned_count) || 0,
+      seconds: Number(row.reassigned_seconds) || 0,
+      new_issue_count: Number(row.reassigned_new_issue_count) || 0,
+      new_issue_seconds: Number(row.reassigned_new_issue_seconds) || 0
+    };
+    const unmatched = {
+      count: Number(row.unmatched_count) || 0,
+      seconds: Number(row.unmatched_seconds) || 0
+    };
 
-    for (const row of (data || [])) {
-      const c = Number(row.event_count) || 0;
-      const s = Number(row.total_seconds) || 0;
-      totalEvents += c;
-
-      if (row.event_type === 'approved_as_is') {
-        counts.approved_as_is += c;
-        durations.approved += s;
-      } else if (row.event_type === 'reassigned') {
-        counts.reassigned += c;
-        durations.reassigned += s;
-      } else if (row.event_type === 'manually_assigned') {
-        if (row.has_suggestion) counts.manually_assigned_with_suggestion += c;
-        else                    counts.manually_assigned_no_suggestion += c;
-        durations.manually_assigned += s;
-      }
-    }
-
-    // Accuracy rate — among events where the AI made a suggestion, the share
-    // the user accepted unchanged.  Excludes "manually_assigned with no
-    // suggestion" because the AI didn't try (different signal).
-    const decided =
-      counts.approved_as_is +
-      counts.reassigned +
-      counts.manually_assigned_with_suggestion;
-    const accuracyRate = decided > 0 ? counts.approved_as_is / decided : null;
+    const decidedSeconds = matched.seconds + reassigned.seconds;
+    const matchRate = decidedSeconds > 0 ? matched.seconds / decidedSeconds : null;
 
     return jsonOk(res, {
       days,
-      counts,
-      accuracy_rate: accuracyRate,
-      duration_seconds: durations,
-      total_events: totalEvents
+      matched,
+      reassigned,
+      unmatched,
+      match_rate: matchRate,
+      total_events: matched.count + reassigned.count + unmatched.count,
+      total_seconds: matched.seconds + reassigned.seconds + unmatched.seconds
     });
   } catch (err) {
     logger.error('[AccuracyDashboard] getSummary failed:', err.message);
@@ -175,7 +180,15 @@ exports.getSummary = async (req, res) => {
 };
 
 // ---------------------------------------------------------------------------
-// Wrong pairs — what AI suggested vs. what the user actually picked
+// Reassignments — pairs of (AI suggested, user chose) with the total time
+// involved.  Sorted by total_seconds desc so high-impact mistakes lead.
+//
+// is_new_issue is true when at least one event in the pair has
+// metadata.reassign_reason='created_new_issue' — i.e. the destination issue
+// was created from the AI's suggestion rather than chosen from existing.
+//
+// Route name preserved (/wrong-pairs) for compatibility with the resolver;
+// the response shape adds total_seconds and is_new_issue.
 // ---------------------------------------------------------------------------
 
 exports.getWrongPairs = async (req, res) => {
@@ -185,7 +198,7 @@ exports.getWrongPairs = async (req, res) => {
 
     const { days, sinceISO } = sinceTimestamp(req.query.days);
 
-    const { data, error } = await supabase.rpc('get_accuracy_wrong_pairs', {
+    const { data, error } = await supabase.rpc('get_accuracy_reassignments', {
       p_org: orgParam(req.query.org),
       p_since: sinceISO,
       p_limit: clampInt(req.query.limit, 1, 200, 25)
@@ -195,6 +208,11 @@ exports.getWrongPairs = async (req, res) => {
     const pairs = (data || []).map(r => ({
       from: r.ai_suggested_issue_key,
       to: r.final_issue_key,
+      is_new_issue: !!r.is_new_issue,
+      user_id: r.user_id || null,
+      user_display_name: r.user_display_name || null,
+      user_email: r.user_email || null,
+      seconds: Number(r.total_seconds) || 0,
       count: Number(r.pair_count) || 0
     }));
 
@@ -206,7 +224,12 @@ exports.getWrongPairs = async (req, res) => {
 };
 
 // ---------------------------------------------------------------------------
-// By-app — right/wrong rate per application_name
+// By-app — matched / reassigned / unmatched per application_name, returned
+// as both counts AND duration_seconds.  Sorted by total_seconds desc so
+// high-volume apps surface first regardless of their accuracy.
+//
+// match_rate is time-weighted, with the same denominator rule as the headline
+// (decided seconds = matched + reassigned; unmatched is reported separately).
 // ---------------------------------------------------------------------------
 
 exports.getByApp = async (req, res) => {
@@ -216,7 +239,7 @@ exports.getByApp = async (req, res) => {
 
     const { days, sinceISO } = sinceTimestamp(req.query.days);
 
-    const { data, error } = await supabase.rpc('get_accuracy_by_app', {
+    const { data, error } = await supabase.rpc('get_accuracy_by_app_v2', {
       p_org: orgParam(req.query.org),
       p_since: sinceISO,
       p_limit: clampInt(req.query.limit, 1, 200, 25)
@@ -224,70 +247,32 @@ exports.getByApp = async (req, res) => {
     if (error) throw error;
 
     const apps = (data || []).map(r => {
-      const right = Number(r.right_count) || 0;
-      const wrong = Number(r.wrong_count) || 0;
-      const manuallyAssigned = Number(r.manually_assigned_count) || 0;
-      const decided = right + wrong;
+      const matched_count      = Number(r.matched_count)      || 0;
+      const matched_seconds    = Number(r.matched_seconds)    || 0;
+      const reassigned_count   = Number(r.reassigned_count)   || 0;
+      const reassigned_seconds = Number(r.reassigned_seconds) || 0;
+      const unmatched_count    = Number(r.unmatched_count)    || 0;
+      const unmatched_seconds  = Number(r.unmatched_seconds)  || 0;
+      const total_seconds      = Number(r.total_seconds)      || 0;
+
+      const decidedSeconds = matched_seconds + reassigned_seconds;
+
       return {
         app: r.application_name,
-        right,
-        wrong,
-        manually_assigned: manuallyAssigned,
-        accuracy_rate: decided > 0 ? right / decided : null,
-        total: decided + manuallyAssigned
+        matched_count,
+        matched_seconds,
+        reassigned_count,
+        reassigned_seconds,
+        unmatched_count,
+        unmatched_seconds,
+        total_seconds,
+        match_rate: decidedSeconds > 0 ? matched_seconds / decidedSeconds : null
       };
     });
 
     return jsonOk(res, { days, apps });
   } catch (err) {
     logger.error('[AccuracyDashboard] getByApp failed:', err.message);
-    return jsonError(res, 500, err.message);
-  }
-};
-
-// ---------------------------------------------------------------------------
-// Calibration — does AI confidence predict actual accuracy?
-//
-// Includes manually_assigned events that had a non-null AI suggestion (the
-// AI tried but the user picked something different in the unassigned-work
-// flow — that's also a confidence-vs-outcome signal).  RPC returns one row
-// per non-empty bucket; we re-pad to the full 10 buckets so the dashboard
-// renders an even axis.
-// ---------------------------------------------------------------------------
-
-exports.getCalibration = async (req, res) => {
-  try {
-    const supabase = getClient();
-    if (!supabase) return jsonError(res, 500, 'Database not configured');
-
-    const { days, sinceISO } = sinceTimestamp(req.query.days);
-
-    const { data, error } = await supabase.rpc('get_accuracy_calibration', {
-      p_org: orgParam(req.query.org),
-      p_since: sinceISO
-    });
-    if (error) throw error;
-
-    const byBucket = new Map();
-    for (const r of (data || [])) {
-      byBucket.set(Number(r.bucket), {
-        sample_count: Number(r.sample_count) || 0,
-        right_count: Number(r.right_count) || 0
-      });
-    }
-
-    const series = Array.from({ length: 10 }, (_, i) => {
-      const b = byBucket.get(i) || { sample_count: 0, right_count: 0 };
-      return {
-        bucket_label: `${i * 10}-${(i + 1) * 10}%`,
-        sample_count: b.sample_count,
-        actual_accuracy: b.sample_count > 0 ? b.right_count / b.sample_count : null
-      };
-    });
-
-    return jsonOk(res, { days, series });
-  } catch (err) {
-    logger.error('[AccuracyDashboard] getCalibration failed:', err.message);
     return jsonError(res, 500, err.message);
   }
 };

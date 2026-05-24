@@ -98,6 +98,27 @@ CRITICAL RULES:
 - Return null for taskKey when there is no clear semantic connection between the activity and a specific issue
 - A match requires a meaningful content relationship, not just both being work-related
 
+WORK TYPE CLASSIFICATION — READ CAREFULLY:
+- "office" = ANY activity connected to work, regardless of whether a Jira task can be matched
+- "non-office" = ONLY genuinely personal/non-work activity (social media, entertainment, personal browsing, gaming, shopping)
+- taskKey and workType are INDEPENDENT fields. A team standup has taskKey=null AND workType="office".
+- Do NOT conflate "no Jira match" with "non-office activity".
+
+MEETING APPLICATIONS ARE ALWAYS workType="office":
+- Google Meet (meet.google.com in URL or window title, or process Hangouts/Meet)
+- Microsoft Teams (Teams.exe, teams.microsoft.com)
+- Zoom (Zoom.exe, zoom.us)
+- Webex, Slack Huddles, Discord in work context, any video conferencing tool
+- Calendar apps showing meeting blocks
+- Even if taskKey=null, meetings are ALWAYS "office"
+
+Examples:
+- Teams standup → taskKey=null, workType="office"
+- Google Meet call → taskKey=null, workType="office"
+- Zoom sprint review → taskKey=null, workType="office"
+- Facebook during work hours → taskKey=null, workType="non-office"
+- Personal YouTube video → taskKey=null, workType="non-office"
+
 PROJECT KEY: Do NOT return projectKey — it is automatically derived from the matched taskKey (e.g., PROJ-123 → PROJ). You may omit it or set it to null; it will be overwritten server-side.
 
 CONFIDENCE SCORING:
@@ -127,7 +148,7 @@ const APP_CLASSIFICATION_SYSTEM_PROMPT = `You are an expert at classifying deskt
  * @param {string} assignedIssuesText - Formatted list of user's Jira issues
  * @returns {string} Complete user prompt
  */
-function buildBatchAnalysisPrompt(records, assignedIssuesText) {
+function buildBatchAnalysisPrompt(records, assignedIssuesText, previousMatchContext, correctionPatterns) {
   const recordDescriptions = records.map((record, index) => {
     const ocrSnippet = record.ocr_text
       ? sanitizeOcrText(record.ocr_text.substring(0, 1000))
@@ -149,6 +170,12 @@ function buildBatchAnalysisPrompt(records, assignedIssuesText) {
   ${ocrLabel}${trackingMode}`;
   }).join('\n\n');
 
+  // Build previous session context hint for cross-batch continuity (RC5)
+  let previousSessionHint = '';
+  if (previousMatchContext && previousMatchContext.taskKey) {
+    previousSessionHint = `\nPrevious session context: The user's most recent activity (${previousMatchContext.minutesAgo} min ago) was matched to ${previousMatchContext.taskKey} (confidence ${previousMatchContext.confidenceScore}). Consider this when evaluating ambiguous records — the user may still be working on the same task.\n`;
+  }
+
   return `Analyze these activity records and match each to the most relevant Jira issue.
 Match based on MEANING, not just keywords. If a window title contains a Jira key, use it. If OCR text references specific features or code related to an issue, match it.
 
@@ -157,13 +184,15 @@ IMPORTANT: When OCR text shows "(no text extracted)", you must rely on:
 - The window title (which often contains file names, project names, or page titles)
 - Context from the project key and issue summaries
 
+When OCR text is marked "low confidence - may be inaccurate", ignore its content entirely and rely on window_title and application_name only.
+
 For development tools with project/file names in the title, match to relevant "In Progress" issues.
 For browsers with technical sites in the title, match based on the topic being researched.
 
 CRITICAL TASK KEY RULE: You must ONLY use task keys from the assigned issues list below. NEVER invent, fabricate, or extract issue keys from OCR text, window titles, or any other source. If no assigned issue is a clear semantic match, return taskKey as null. Generic activities (Task Manager, File Explorer, Windows Settings, system utilities, download history) should return null unless they clearly relate to a specific issue.
 
 SESSION CONTINUITY: Records are shown in chronological order. If consecutive records show the same user in the same or related application (e.g., switching between VS Code and Chrome while working), and a previous record was confidently matched to an issue, subsequent records in the same work session should inherit that match at slightly lower confidence (0.5-0.6) unless the content clearly indicates a different task. Developers typically work on one issue for extended periods, switching between IDE, browser, and terminal.
-
+${previousSessionHint}${correctionPatterns && correctionPatterns.length > 0 ? `\nUSER CORRECTION HISTORY: The user has previously corrected the following AI matches. Use these as guidance for similar future activity:\n${correctionPatterns.map(p => `- [${p.application_name}] "${p.window_title}" → AI suggested ${p.ai_suggested || 'null'}, user corrected to ${p.corrected_to}`).join('\n')}\n` : ''}
 IDLE REVIEW RECORDS: Records with tracking_mode "idle_for_llm_review" represent periods where the user had no keyboard/mouse input but an application was visible. Use the window title and application name to determine if this was likely productive activity (reading docs, attending a meeting, reviewing code) or genuine idle time (user walked away). For reading/meeting activities, match to the most relevant Jira issue. Assign LOWER confidence for longer idle durations — a 7-minute idle on Confluence is likely reading (confidence 0.5-0.6), while a 45-minute idle on Confluence is less certain (confidence 0.2-0.3). If the window title clearly indicates non-work content, classify as idle with no task match.
 
 NOTE: projectKey is derived server-side from the matched taskKey. You do not need to detect it independently.
@@ -176,7 +205,7 @@ ${recordDescriptions}
 
 For EACH record, determine:
 1. Which Jira issue is the user most likely working on? Return null if the activity has no clear connection to any specific issue.
-2. Is this office work or non-office?
+2. Is this office work or non-office? Use "office" for ANY work-related activity (coding, meetings, email, documentation, research). Use "non-office" ONLY for personal/entertainment activity (social media, gaming, personal shopping). Meetings (Google Meet, Teams, Zoom, Webex, etc.) are ALWAYS "office" even when taskKey is null.
 3. How confident are you in the match?
 
 Return ONLY valid JSON (no markdown code blocks, no extra text). Your response must be exactly one JSON array:
@@ -373,16 +402,20 @@ function validateAnalysisKeys(analyses, userAssignedIssues) {
  * Logs individual update failures without stopping the rest of the batch.
  */
 async function persistAnalysisResults(analyses, records, provider, model) {
+  // Read the same env var the DB layer uses, so the log line and the actual
+  // demotion never drift if AI_MATCH_MIN_CONFIDENCE is overridden in env.
+  const MIN_CONFIDENCE_THRESHOLD = parseFloat(process.env.AI_MATCH_MIN_CONFIDENCE || '0.4');
 
   for (const analysis of analyses) {
     const recordIndex = analysis.recordIndex;
     if (recordIndex >= 0 && recordIndex < records.length && records[recordIndex].id) {
       // Log low-confidence matches for observability (threshold enforcement is in activity-db-service)
-      if (analysis.taskKey && (analysis.confidenceScore || 0) < 0.4) {
+      if (analysis.taskKey && (analysis.confidenceScore || 0) < MIN_CONFIDENCE_THRESHOLD) {
         logger.info(
           `[ActivityService] Low-confidence match (will be demoted by DB layer) | ` +
           `record=${records[recordIndex].id} taskKey=${analysis.taskKey} ` +
-          `confidence=${analysis.confidenceScore} reasoning="${analysis.reasoning}"`
+          `confidence=${analysis.confidenceScore} threshold=${MIN_CONFIDENCE_THRESHOLD} ` +
+          `reasoning="${analysis.reasoning}"`
         );
       }
 
@@ -415,13 +448,13 @@ async function persistAnalysisResults(analyses, records, provider, model) {
  * @param {string} organizationId - Organization ID
  * @returns {Promise<Object>} Analysis results
  */
-async function analyzeBatch(records, userAssignedIssues, userId, organizationId) {
+async function analyzeBatch(records, userAssignedIssues, userId, organizationId, previousMatchContext, correctionPatterns) {
   if (!isActivityAIEnabled()) {
     throw new Error('AI client not initialized - check API keys');
   }
 
   const assignedIssuesText = formatAssignedIssues(userAssignedIssues);
-  const userPrompt = buildBatchAnalysisPrompt(records, assignedIssuesText);
+  const userPrompt = buildBatchAnalysisPrompt(records, assignedIssuesText, previousMatchContext, correctionPatterns);
   const messages = [
     { role: 'system', content: BATCH_ANALYSIS_SYSTEM_PROMPT },
     { role: 'user', content: userPrompt }
@@ -432,7 +465,7 @@ async function analyzeBatch(records, userAssignedIssues, userId, organizationId)
     // staying under Gemini 2.5 Flash's 65K cap and the bumped Portkey timeout.
     const { response, provider, model } = await chatCompletionWithFallback({
       messages,
-      temperature: 0.3,
+      // temperature intentionally omitted — see ai-client.js:178-181 for rationale
       max_tokens: 30000,
       isVision: false,
       userId,
@@ -508,7 +541,7 @@ async function classifyUnknownApp(appName, windowTitle, ocrText, userId = null, 
   try {
     const { response, provider, model } = await chatCompletionWithFallback({
       messages,
-      temperature: 0.2,
+      // temperature intentionally omitted — see ai-client.js:178-181 for rationale
       max_tokens: 30000,
       isVision: false,
       userId,
@@ -601,7 +634,7 @@ async function identifyAppByName(searchTerm) {
   try {
     const { response, provider, model } = await chatCompletionWithFallback({
       messages,
-      temperature: 0.2,
+      // temperature intentionally omitted — see ai-client.js:178-181 for rationale
       max_tokens: 30000,
       isVision: false,
       apiCallName: 'app-identification'

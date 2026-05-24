@@ -1,11 +1,11 @@
 /**
  * Reports Page
  * 
- * Generate and export activity reports as CSV.
+ * Generate and export activity reports as CSV or PDF.
  */
 
 import { useState, useEffect } from 'react';
-import { Download, FileText, Search } from 'lucide-react';
+import { FileText, FileDown, File } from 'lucide-react';
 import { reportsApi } from '../api/reports';
 import { employeesApi } from '../api/employees';
 import DataTable from '../components/common/DataTable';
@@ -13,15 +13,37 @@ import DateRangePicker from '../components/common/DateRangePicker';
 import ErrorBanner from '../components/common/ErrorBanner';
 import { formatDate, formatDuration, formatDateTime } from '../utils/formatters';
 
+const REPORT_TYPES = {
+  'activity-logs': {
+    label: 'Activity Logs',
+    description: 'Detailed log of all employee activities with timestamps and applications',
+  },
+  'daily-summary': {
+    label: 'Daily Summary',
+    description: 'Aggregated productive and non-productive hours per day',
+  },
+  'employee-summary': {
+    label: 'Employee Summary',
+    description: 'Total hours and productivity percentage per employee',
+  },
+  'application-usage': {
+    label: 'Application Usage',
+    description: 'Time spent on each application across all employees',
+  },
+};
+
 function ReportsPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [previewData, setPreviewData] = useState([]);
   const [totalCount, setTotalCount] = useState(0);
-  const [exporting, setExporting] = useState(false);
+  const [page, setPage] = useState(1);
+  const [limit] = useState(20);
+  const [exportingCSV, setExportingCSV] = useState(false);
+  const [exportingPDF, setExportingPDF] = useState(false);
   
-  // Report type (only activity-logs for now)
-  const [reportType] = useState('activity-logs');
+  // Report type
+  const [reportType, setReportType] = useState('activity-logs');
   
   // Filters
   const [classification, setClassification] = useState('');
@@ -30,11 +52,11 @@ function ReportsPage() {
   // Employee list for filter
   const [employees, setEmployees] = useState([]);
   
-  // Default to last 30 days
+  // Default to last 7 days
   const [dateRange, setDateRange] = useState(() => {
     const to = new Date();
     const from = new Date();
-    from.setDate(to.getDate() - 30);
+    from.setDate(to.getDate() - 7);
     return {
       from: formatDate(from),
       to: formatDate(to),
@@ -47,23 +69,14 @@ function ReportsPage() {
 
   const loadEmployees = async () => {
     try {
-      const to = new Date();
-      const from = new Date();
-      from.setDate(to.getDate() - 90);
-      
-      const response = await employeesApi.getList({
-        from: formatDate(from),
-        to: formatDate(to),
-        page: 1,
-        limit: 100,
-      });
+      const response = await employeesApi.getSimpleList();
       setEmployees(response.data || []);
     } catch (err) {
       console.error('Failed to load employees:', err);
     }
   };
 
-  const handleGeneratePreview = async () => {
+  const handleGeneratePreview = async (newPage = 1) => {
     setLoading(true);
     setError(null);
     
@@ -74,10 +87,13 @@ function ReportsPage() {
         employee: selectedEmployee || undefined,
         from: dateRange.from,
         to: dateRange.to,
+        page: newPage,
+        limit: limit,
       });
       
       setPreviewData(response.data || []);
       setTotalCount(response.totalCount || 0);
+      setPage(newPage);
     } catch (err) {
       console.error('Failed to generate report preview:', err);
       setError(err.response?.data?.error || 'Failed to generate report preview');
@@ -86,8 +102,12 @@ function ReportsPage() {
     }
   };
 
+  const handlePageChange = (newPage) => {
+    handleGeneratePreview(newPage);
+  };
+
   const handleExportCSV = async () => {
-    setExporting(true);
+    setExportingCSV(true);
     setError(null);
     
     try {
@@ -104,7 +124,7 @@ function ReportsPage() {
       const link = document.createElement('a');
       link.href = url;
       const timestamp = new Date().toISOString().split('T')[0];
-      link.setAttribute('download', `activity-logs-${timestamp}.csv`);
+      link.setAttribute('download', `${reportType}-${timestamp}.csv`);
       document.body.appendChild(link);
       link.click();
       link.remove();
@@ -114,69 +134,124 @@ function ReportsPage() {
       console.error('Failed to export CSV:', err);
       setError(err.response?.data?.error || 'Failed to export CSV');
     } finally {
-      setExporting(false);
+      setExportingCSV(false);
     }
   };
 
-  const columns = [
-    {
-      key: 'userName',
-      label: 'Employee',
-      sortable: true,
-    },
-    {
-      key: 'startTime',
-      label: 'Start Time',
-      sortable: true,
-      render: (value) => formatDateTime(value),
-    },
-    {
-      key: 'endTime',
-      label: 'End Time',
-      sortable: true,
-      render: (value) => formatDateTime(value),
-    },
-    {
-      key: 'application',
-      label: 'Application',
-      sortable: true,
-    },
-    {
-      key: 'durationSeconds',
-      label: 'Duration',
-      sortable: true,
-      render: (value) => formatDuration(value),
-    },
-    {
-      key: 'classification',
-      label: 'Classification',
-      sortable: true,
-      render: (value) => (
-        <span
-          className={`px-2 py-1 rounded text-xs font-semibold ${
-            value === 'productive'
-              ? 'bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200'
-              : 'bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200'
-          }`}
-        >
-          {value || 'N/A'}
-        </span>
-      ),
-    },
-  ];
+  const handleExportPDF = async () => {
+    setExportingPDF(true);
+    setError(null);
+    
+    try {
+      const blob = await reportsApi.exportPDF({
+        type: reportType,
+        classification: classification || undefined,
+        employee: selectedEmployee || undefined,
+        from: dateRange.from,
+        to: dateRange.to,
+      });
+      
+      // Create download link
+      const url = window.URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      const timestamp = new Date().toISOString().split('T')[0];
+      link.setAttribute('download', `${reportType}-${timestamp}.pdf`);
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.URL.revokeObjectURL(url);
+      
+    } catch (err) {
+      console.error('Failed to export PDF:', err);
+      setError(err.response?.data?.error || 'Failed to export PDF');
+    } finally {
+      setExportingPDF(false);
+    }
+  };
+
+  // Dynamic columns based on report type
+  const getColumns = () => {
+    switch (reportType) {
+      case 'daily-summary':
+        return [
+          { key: 'date', label: 'Date', sortable: true },
+          { key: 'productiveHours', label: 'Productive Hours', sortable: true, render: (v) => v?.toFixed(2) || '0.00' },
+          { key: 'nonProductiveHours', label: 'Non-Productive Hours', sortable: true, render: (v) => v?.toFixed(2) || '0.00' },
+          { key: 'totalHours', label: 'Total Hours', sortable: true, render: (v) => v?.toFixed(2) || '0.00' },
+          { key: 'productivityPercentage', label: 'Productivity %', sortable: true, render: (v) => `${v?.toFixed(1) || 0}%` },
+        ];
+      case 'employee-summary':
+        return [
+          { key: 'employeeName', label: 'Employee', sortable: true },
+          { key: 'employeeEmail', label: 'Email', sortable: true },
+          { key: 'productiveHours', label: 'Productive Hours', sortable: true, render: (v) => v?.toFixed(2) || '0.00' },
+          { key: 'nonProductiveHours', label: 'Non-Productive Hours', sortable: true, render: (v) => v?.toFixed(2) || '0.00' },
+          { key: 'totalHours', label: 'Total Hours', sortable: true, render: (v) => v?.toFixed(2) || '0.00' },
+          { key: 'productivityPercentage', label: 'Productivity %', sortable: true, render: (v) => `${v?.toFixed(1) || 0}%` },
+        ];
+      case 'application-usage':
+        return [
+          { key: 'application', label: 'Application', sortable: true },
+          { key: 'totalHours', label: 'Total Hours', sortable: true, render: (v) => v?.toFixed(2) || '0.00' },
+          { key: 'sessionCount', label: 'Session Count', sortable: true },
+          { key: 'employeeCount', label: 'Employees', sortable: true },
+        ];
+      default: // activity-logs
+        return [
+          { key: 'userName', label: 'Employee', sortable: true },
+          { key: 'startTime', label: 'Start Time', sortable: true, render: (value) => formatDateTime(value) },
+          { key: 'endTime', label: 'End Time', sortable: true, render: (value) => formatDateTime(value) },
+          { key: 'application', label: 'Application', sortable: true },
+          { key: 'durationSeconds', label: 'Duration', sortable: true, render: (value) => formatDuration(value) },
+          {
+            key: 'classification',
+            label: 'Classification',
+            sortable: true,
+            render: (value) => (
+              <span
+                className={`px-2 py-1 rounded text-xs font-semibold ${
+                  value === 'productive'
+                    ? 'bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200'
+                    : 'bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200'
+                }`}
+              >
+                {value || 'N/A'}
+              </span>
+            ),
+          },
+        ];
+    }
+  };
+
+  const columns = getColumns();
 
   return (
-    <div>
-      <div className="flex justify-between items-center mb-6">
-        <h1 className="text-2xl font-bold">Reports</h1>
-        <button
-          onClick={handleExportCSV}
-          disabled={exporting || previewData.length === 0}
-          className="flex items-center gap-2 px-4 py-2 rounded bg-primary-600 text-white hover:bg-primary-700 disabled:opacity-50 disabled:cursor-not-allowed"
-        >
-          <Download className="w-4 h-4" />
-          {exporting ? 'Exporting...' : 'Export CSV'}
-        </button>
+    <div className="space-y-3">
+      {/* Page Header */}
+      <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+        <div>
+          <h1 className="page-title">Reports</h1>
+          <p className="text-gray-500 dark:text-gray-400 mt-1">Generate and export productivity reports</p>
+        </div>
+        <div className="flex gap-3">
+          <button
+            onClick={handleExportCSV}
+            disabled={exportingCSV || previewData.length === 0}
+            className="btn-success flex items-center gap-2"
+          >
+            <FileDown className="w-4 h-4" />
+            {exportingCSV ? 'Exporting...' : 'Export CSV'}
+          </button>
+          <button
+            onClick={handleExportPDF}
+            disabled={exportingPDF || previewData.length === 0}
+            className="btn-danger flex items-center gap-2"
+          >
+            <File className="w-4 h-4" />
+            {exportingPDF ? 'Exporting...' : 'Export PDF'}
+          </button>
+        </div>
       </div>
 
       {error && (
@@ -184,39 +259,59 @@ function ReportsPage() {
       )}
 
       {/* Report Configuration */}
-      <div className="card mb-6">
-        <h3 className="text-lg font-semibold mb-4 flex items-center gap-2">
-          <FileText className="w-5 h-5" />
+      <div className="card-elevated">
+        <h3 className="section-title mb-6">
+          <div className="p-2 bg-primary-100 dark:bg-primary-900/30 rounded-lg">
+            <FileText className="w-5 h-5 text-primary-600 dark:text-primary-400" />
+          </div>
           Report Configuration
         </h3>
         
-        <div className="space-y-4">
-          {/* Report Type */}
+        <div className="space-y-3">
+          {/* Report Type Cards */}
           <div>
-            <label className="block text-sm font-medium mb-2">Report Type</label>
-            <select
-              value={reportType}
-              disabled
-              className="w-full px-3 py-2 rounded border border-gray-300 dark:border-gray-600 bg-gray-100 dark:bg-gray-800 cursor-not-allowed"
-            >
-              <option value="activity-logs">Activity Logs</option>
-            </select>
-            <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
-              More report types coming soon
-            </p>
+            <label className="filter-label">Report Type</label>
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+              {Object.entries(REPORT_TYPES).map(([key, { label, description }]) => (
+                <button
+                  key={key}
+                  onClick={() => {
+                    setReportType(key);
+                    setPreviewData([]);
+                    setPage(1);
+                  }}
+                  className={`p-4 rounded-xl border-2 text-left transition-all duration-200 hover:shadow-md ${
+                    reportType === key
+                      ? 'border-primary-500 bg-primary-50 dark:bg-primary-900/20 shadow-lg shadow-primary-500/10'
+                      : 'border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 hover:border-gray-300 dark:hover:border-gray-600'
+                  }`}
+                >
+                  <p className={`font-semibold text-sm ${
+                    reportType === key 
+                      ? 'text-primary-700 dark:text-primary-300' 
+                      : 'text-gray-900 dark:text-gray-100'
+                  }`}>
+                    {label}
+                  </p>
+                  <p className="text-xs text-gray-500 dark:text-gray-400 mt-1 line-clamp-2">
+                    {description}
+                  </p>
+                </button>
+              ))}
+            </div>
           </div>
 
           {/* Filters */}
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             {/* Classification Filter */}
             <div>
-              <label className="block text-sm font-medium mb-2">Classification</label>
+              <label className="filter-label">Classification</label>
               <select
                 value={classification}
                 onChange={(e) => setClassification(e.target.value)}
-                className="w-full px-3 py-2 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900"
+                className="select-field"
               >
-                <option value="">All</option>
+                <option value="">All Classifications</option>
                 <option value="productive">Productive</option>
                 <option value="non-productive">Non-Productive</option>
               </select>
@@ -224,11 +319,11 @@ function ReportsPage() {
 
             {/* Employee Filter */}
             <div>
-              <label className="block text-sm font-medium mb-2">Employee</label>
+              <label className="filter-label">Employee</label>
               <select
                 value={selectedEmployee}
                 onChange={(e) => setSelectedEmployee(e.target.value)}
-                className="w-full px-3 py-2 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900"
+                className="select-field"
               >
                 <option value="">All Employees</option>
                 {employees.map((emp) => (
@@ -242,7 +337,7 @@ function ReportsPage() {
 
           {/* Date Range */}
           <div>
-            <label className="block text-sm font-medium mb-2">Date Range</label>
+            <label className="filter-label">Date Range</label>
             <DateRangePicker
               from={dateRange.from}
               to={dateRange.to}
@@ -254,22 +349,32 @@ function ReportsPage() {
           <button
             onClick={handleGeneratePreview}
             disabled={loading}
-            className="w-full px-4 py-2 rounded bg-primary-600 text-white hover:bg-primary-700 disabled:opacity-50 disabled:cursor-not-allowed"
+            className="btn-primary w-full flex items-center justify-center gap-2"
           >
-            {loading ? 'Generating Preview...' : 'Generate Preview'}
+            {loading ? (
+              <>
+                <svg className="animate-spin w-5 h-5" fill="none" viewBox="0 0 24 24">
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+                </svg>
+                Generating Preview...
+              </>
+            ) : (
+              'Generate Preview'
+            )}
           </button>
         </div>
       </div>
 
       {/* Preview */}
       {previewData.length > 0 && (
-        <div>
-          <div className="mb-4 flex items-center justify-between">
+        <div className="card">
+          <div className="mb-3 flex items-center justify-between">
             <div>
-              <h3 className="text-lg font-semibold">Report Preview</h3>
-              <p className="text-sm text-gray-600 dark:text-gray-400">
-                Showing first 20 rows of {totalCount} total records
-              </p>
+              <h3 className="section-title">Report Preview</h3>
+            </div>
+            <div className="badge-info">
+              {REPORT_TYPES[reportType]?.label}
             </div>
           </div>
           
@@ -278,15 +383,26 @@ function ReportsPage() {
             data={previewData}
             loading={loading}
             emptyMessage="No data available for the selected filters"
+            pagination={{
+              page: page,
+              limit: limit,
+              totalCount: totalCount,
+              onPageChange: handlePageChange,
+            }}
           />
         </div>
       )}
 
       {!loading && previewData.length === 0 && (
-        <div className="card text-center py-12">
-          <FileText className="w-12 h-12 mx-auto mb-4 text-gray-400" />
-          <p className="text-gray-600 dark:text-gray-400">
-            Configure your report filters and click "Generate Preview" to see the data
+        <div className="card text-center py-16">
+          <div className="w-20 h-20 mx-auto mb-6 bg-gradient-to-br from-gray-100 to-gray-200 dark:from-gray-700 dark:to-gray-800 rounded-2xl flex items-center justify-center">
+            <FileText className="w-10 h-10 text-gray-400 dark:text-gray-500" />
+          </div>
+          <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100 mb-2">
+            No Preview Generated
+          </h3>
+          <p className="text-gray-500 dark:text-gray-400 max-w-md mx-auto">
+            Configure your report filters above and click "Generate Preview" to see the data before exporting.
           </p>
         </div>
       )}

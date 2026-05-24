@@ -18,6 +18,9 @@ modules:
       timeoutSeconds: 900
     - key: issueCacheSync
       handler: index.issueCacheSyncHandler
+    - key: issueCacheRefresh
+      handler: index.scheduledIssueCacheRefreshHandler
+      timeoutSeconds: 900
     - key: personalDataHandler
       handler: index.personalDataHandler
     - key: lifecycleHandler
@@ -49,6 +52,9 @@ modules:
   scheduledTrigger:
     - key: worklog-sync-trigger
       function: scheduledWorklogSync
+      interval: hour
+    - key: issue-cache-refresh-trigger
+      function: issueCacheRefresh
       interval: hour
 
   trigger:

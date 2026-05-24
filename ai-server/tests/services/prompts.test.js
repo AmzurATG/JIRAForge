@@ -69,8 +69,8 @@ describe('formatAssignedIssues', () => {
   });
 
   // Fix 7: Issue list limit 30, sorted by recency
-  it('should return up to 30 issues', () => {
-    const issues = Array.from({ length: 40 }, (_, i) => ({
+  it('should return up to 50 issues', () => {
+    const issues = Array.from({ length: 60 }, (_, i) => ({
       key: `PROJ-${i}`,
       summary: `Task ${i}`,
       status: 'In Progress',
@@ -78,7 +78,7 @@ describe('formatAssignedIssues', () => {
     }));
     const result = formatAssignedIssues(issues);
     const keys = result.match(/PROJ-\d+/g);
-    expect(keys.length).toBe(30);
+    expect(keys.length).toBe(50);
   });
 
   it('should sort issues by recency (newest first)', () => {

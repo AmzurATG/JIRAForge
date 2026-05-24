@@ -59,12 +59,12 @@ function buildWorklogComment(displayName) {
 
 /**
  * Get user's assigned issues from Jira
- * @param {Array<string>} statuses - Issue statuses to filter (default: In Progress)
+ * @param {string} statusFilter - JQL status condition (default: statusCategory = "In Progress")
  * @param {number} maxResults - Maximum number of results
  * @returns {Promise<Object>} Jira search response
  */
-export async function getUserAssignedIssues(statuses = JQL_ACTIVE_STATUSES, maxResults = MAX_JIRA_SEARCH_RESULTS) {
-  const jql = `assignee = currentUser() AND (status = "${statuses.join('" OR status = "')}")ORDER BY updated DESC`;
+export async function getUserAssignedIssues(statusFilter = JQL_ACTIVE_STATUSES, maxResults = MAX_JIRA_SEARCH_RESULTS) {
+  const jql = `assignee = currentUser() AND (${statusFilter}) ORDER BY updated DESC`;
 
   const response = await api.asUser().requestJira(
     route`/rest/api/3/search/jql`,

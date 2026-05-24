@@ -210,13 +210,6 @@ export function registerAccuracyDashboardResolvers(resolver) {
     })
   );
 
-  resolver.define('getAccuracyCalibration', async (req) =>
-    callAiServer(req, '/api/forge/accuracy/calibration', {
-      days: req.payload?.days,
-      org: req.payload?.org
-    })
-  );
-
   resolver.define('getAccuracyRecentMistakes', async (req) =>
     callAiServer(req, '/api/forge/accuracy/recent-mistakes', {
       org: req.payload?.org,

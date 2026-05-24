@@ -34,6 +34,7 @@
     "jsonwebtoken": "^9.0.2",
     "notifme-sdk": "^1.11.0",
     "openai": "^4.20.0",
+    "pdfkit": "^0.15.2",
     "winston": "^3.11.0"
   },
   "devDependencies": {

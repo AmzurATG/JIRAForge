@@ -28,11 +28,11 @@ function EmployeeDetailPage() {
   const [logsPage, setLogsPage] = useState(1);
   const [logsTotalCount, setLogsTotalCount] = useState(0);
   
-  // Default to last 30 days
+  // Default to last 7 days
   const [dateRange, setDateRange] = useState(() => {
     const to = new Date();
     const from = new Date();
-    from.setDate(to.getDate() - 30);
+    from.setDate(to.getDate() - 7);
     return {
       from: formatDate(from),
       to: formatDate(to),
@@ -74,7 +74,7 @@ function EmployeeDetailPage() {
         from: dateRange.from,
         to: dateRange.to,
         page: logsPage,
-        limit: 20,
+        limit: 10,
       });
       
       setLogs(response.data || []);
@@ -157,18 +157,18 @@ function EmployeeDetailPage() {
   }
 
   return (
-    <div>
+    <div className="space-y-3">
       {/* Header */}
-      <div className="flex items-center gap-4 mb-6">
+      <div className="flex items-center gap-4">
         <button
           onClick={() => navigate('/employees')}
-          className="p-2 hover:bg-gray-100 dark:hover:bg-gray-800 rounded"
+          className="p-2.5 bg-white dark:bg-gray-800 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-xl border border-gray-200 dark:border-gray-700 transition-all duration-200 shadow-sm hover:shadow-md"
         >
           <ArrowLeft className="w-5 h-5" />
         </button>
         <div>
-          <h1 className="text-2xl font-bold">{employeeDetail?.user?.name || 'Employee Detail'}</h1>
-          <p className="text-sm text-gray-600 dark:text-gray-400">{employeeDetail?.user?.email}</p>
+          <h1 className="page-title">{employeeDetail?.user?.name || 'Employee Detail'}</h1>
+          <p className="text-gray-500 dark:text-gray-400 mt-0.5">{employeeDetail?.user?.email}</p>
         </div>
       </div>
 
@@ -177,7 +177,8 @@ function EmployeeDetailPage() {
       )}
 
       {/* Date Range Filter */}
-      <div className="mb-6">
+      <div className="card">
+        <label className="filter-label">Date Range</label>
         <DateRangePicker
           from={dateRange.from}
           to={dateRange.to}
@@ -186,69 +187,75 @@ function EmployeeDetailPage() {
       </div>
 
       {/* KPI Cards */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-6">
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
         <KPICard
           title="Productive Hours"
           value={employeeDetail?.summary?.productiveHours?.toFixed(1) || '0.0'}
-          subtitle="Hours"
+          subtitle="Hours tracked"
           icon={Clock}
+          variant="success"
         />
         <KPICard
           title="Non-Productive Hours"
           value={employeeDetail?.summary?.nonProductiveHours?.toFixed(1) || '0.0'}
-          subtitle="Hours"
+          subtitle="Hours tracked"
           icon={Activity}
+          variant="danger"
         />
         <KPICard
-          title="Productivity Percentage"
+          title="Productivity Rate"
           value={`${employeeDetail?.summary?.productivityPercentage?.toFixed(1) || '0.0'}%`}
+          subtitle="Overall efficiency"
           icon={TrendingUp}
+          variant="info"
         />
         <KPICard
           title="Total Hours"
           value={((employeeDetail?.summary?.productiveHours || 0) + (employeeDetail?.summary?.nonProductiveHours || 0)).toFixed(1)}
-          subtitle="Hours"
+          subtitle="Combined time"
           icon={BarChart3}
+          variant="default"
         />
       </div>
 
       {/* Daily Trend Chart */}
-      <div className="mb-6">
+      <div className="card">
+        <h3 className="section-title mb-4">Daily Productivity Trend</h3>
         <DailyLineChart data={employeeDetail?.dailyTrend || []} />
       </div>
 
       {/* Activity Logs */}
-      <div className="card mb-6">
-        <h2 className="text-xl font-semibold mb-4">Activity Logs</h2>
+      <div className="card">
+        <h3 className="section-title mb-4">Activity Logs</h3>
         
         {/* Tabs */}
-        <div className="flex gap-2 mb-4 border-b border-gray-200 dark:border-gray-700">
+        <div className="flex gap-1 mb-6 p-1 bg-gray-100 dark:bg-gray-800 rounded-xl w-fit">
           <button
             onClick={() => handleTabChange('all')}
-            className={`px-4 py-2 font-medium border-b-2 transition-colors ${
+            className={`px-4 py-2 rounded-lg text-sm font-medium transition-all ${
               activeTab === 'all'
-                ? 'border-primary-600 text-primary-600 dark:text-primary-400'
-                : 'border-transparent text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-200'
+                ? 'bg-white dark:bg-gray-700 text-primary-600 dark:text-primary-400 shadow-md'
+                : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-200'
             }`}
           >
             All Activities
           </button>
           <button
             onClick={() => handleTabChange('productive')}
-            className={`px-4 py-2 font-medium border-b-2 transition-colors ${
+            className={`px-4 py-2 rounded-lg text-sm font-medium transition-all ${
               activeTab === 'productive'
-                ? 'border-primary-600 text-primary-600 dark:text-primary-400'
-                : 'border-transparent text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-200'
+                ? 'bg-white dark:bg-gray-700 text-emerald-600 dark:text-emerald-400 shadow-md'
+                : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-200'
             }`}
           >
             Productive
           </button>
           <button
             onClick={() => handleTabChange('non-productive')}
-            className={`px-4 py-2 font-medium border-b-2 transition-colors ${
+            className={`px-4 py-2 rounded-lg text-sm font-medium transition-all ${
               activeTab === 'non-productive'
-                ? 'border-primary-600 text-primary-600 dark:text-primary-400'
-                : 'border-transparent text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-200'
+                ? 'bg-white dark:bg-gray-700 text-red-600 dark:text-red-400 shadow-md'
+                : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-200'
             }`}
           >
             Non-Productive
@@ -263,7 +270,7 @@ function EmployeeDetailPage() {
           emptyMessage="No activity logs found"
           pagination={{
             page: logsPage,
-            limit: 20,
+            limit: 10,
             totalCount: logsTotalCount,
             onPageChange: setLogsPage,
           }}

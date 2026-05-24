@@ -301,6 +301,181 @@ async function resetStuckFailedRecords(minutesThreshold = 30) {
   }
 }
 
+/**
+ * Find activity by request_id (for idempotency check).
+ * 
+ * @param {string} org_id - Organization ID (RLS enforcement)
+ * @param {string} request_id - Unique request identifier
+ * @returns {Promise<object|null>} Activity record or null if not found
+ */
+async function findByRequestId(org_id, request_id) {
+  if (!org_id) {
+    throw new Error('org_id is required (RLS enforcement)');
+  }
+  
+  if (!request_id) {
+    throw new Error('request_id is required');
+  }
+  
+  const supabase = getClient();
+  if (!supabase) throw new Error('Supabase client not initialized');
+  
+  const { data, error } = await supabase
+    .from('activity_records')
+    .select('id, created_at')
+    .eq('org_id', org_id)
+    .eq('request_id', request_id)
+    .single();
+    
+  if (error) {
+    if (error.code === 'PGRST116') {
+      // Not found — expected for new submissions
+      return null;
+    }
+    logger.error('findByRequestId query failed', { org_id, request_id, error });
+    throw error;
+  }
+  
+  return data;
+}
+
+/**
+ * Create activity with request_id (for idempotency).
+ * 
+ * @param {object} activity - Activity data including request_id
+ * @returns {Promise<object>} Created activity record
+ */
+async function createWithRequestId(activity) {
+  const { org_id, request_id } = activity;
+  
+  if (!org_id) {
+    throw new Error('org_id is required (RLS enforcement)');
+  }
+  
+  if (!request_id) {
+    throw new Error('request_id is required');
+  }
+  
+  const supabase = getClient();
+  if (!supabase) throw new Error('Supabase client not initialized');
+  
+  const { data, error } = await supabase
+    .from('activity_records')
+    .insert(activity)
+    .select()
+    .single();
+    
+  if (error) {
+    logger.error('createWithRequestId failed', { org_id, request_id, error });
+    throw error;
+  }
+  
+  return data;
+}
+
+/**
+ * Fetch the most recent successful match for a user within a time window.
+ * Used for cross-batch session continuity: if the user was recently matched
+ * to an issue, the next batch's prompt can hint at that context so the LLM
+ * doesn't start from zero on ambiguous records.
+ *
+ * @param {string} userId - User ID
+ * @param {number} withinMinutes - Look-back window in minutes (default 30)
+ * @returns {Promise<Object|null>} { taskKey, confidenceScore, minutesAgo } or null
+ */
+async function getRecentMatchForUser(userId, withinMinutes = 30) {
+  const supabase = getClient();
+  if (!supabase) return null;
+
+  try {
+    const since = new Date(Date.now() - withinMinutes * 60000).toISOString();
+    const { data, error } = await supabase
+      .from('activity_records')
+      .select('user_assigned_issue_key, metadata, analyzed_at')
+      .eq('user_id', userId)
+      .not('user_assigned_issue_key', 'is', null)
+      .gte('analyzed_at', since)
+      .order('analyzed_at', { ascending: false })
+      .limit(1);
+
+    if (error) {
+      logger.warn('[ActivityDB] getRecentMatchForUser query failed:', error.message);
+      return null;
+    }
+
+    const row = data?.[0];
+    if (!row) return null;
+
+    const minutesAgo = Math.round((Date.now() - new Date(row.analyzed_at).getTime()) / 60000);
+    return {
+      taskKey: row.user_assigned_issue_key,
+      confidenceScore: row.metadata?.confidenceScore ?? null,
+      minutesAgo
+    };
+  } catch (err) {
+    logger.warn('[ActivityDB] getRecentMatchForUser failed:', err.message);
+    return null;
+  }
+}
+
+/**
+ * Fetch top recurring correction patterns from ai_accuracy_events.
+ * Returns the most common (application_name, window_title) → corrected_issue_key
+ * overrides so they can be injected as few-shot examples in the LLM prompt.
+ *
+ * @param {string} userId - User ID
+ * @param {number} limit - Max number of correction patterns to return (default 5)
+ * @returns {Promise<Array<{application_name: string, window_title: string, ai_suggested: string, corrected_to: string}>>}
+ */
+async function getRecentCorrectionPatterns(userId, limit = 5) {
+  const supabase = getClient();
+  if (!supabase) return [];
+
+  try {
+    const { data, error } = await supabase
+      .from('ai_accuracy_events')
+      .select('application_name, window_title, ai_suggested_issue_key, final_issue_key')
+      .eq('user_id', userId)
+      .in('event_type', ['reassigned', 'manually_assigned'])
+      .not('final_issue_key', 'is', null)
+      .order('created_at', { ascending: false })
+      .limit(50);
+
+    if (error) {
+      logger.warn('[ActivityDB] getRecentCorrectionPatterns query failed:', error.message);
+      return [];
+    }
+
+    if (!data || data.length === 0) return [];
+
+    // Group by (application_name + final_issue_key) to preserve diverse correction contexts.
+    // This ensures the LLM sees corrections for different apps/windows separately,
+    // rather than collapsing "VS Code → PROJ-123" and "Chrome → PROJ-123" into one example.
+    const patternCounts = {};
+    for (const row of data) {
+      const key = `${row.application_name || ''}::${row.final_issue_key}`;
+      if (!patternCounts[key]) {
+        patternCounts[key] = { ...row, count: 0 };
+      }
+      patternCounts[key].count++;
+    }
+
+    // Return top N most frequent corrections
+    return Object.values(patternCounts)
+      .sort((a, b) => b.count - a.count)
+      .slice(0, limit)
+      .map(p => ({
+        application_name: p.application_name,
+        window_title: p.window_title,
+        ai_suggested: p.ai_suggested_issue_key,
+        corrected_to: p.final_issue_key
+      }));
+  } catch (err) {
+    logger.warn('[ActivityDB] getRecentCorrectionPatterns failed:', err.message);
+    return [];
+  }
+}
+
 module.exports = {
   getPendingActivityBatches,
   claimBatchForProcessing,
@@ -310,5 +485,9 @@ module.exports = {
   releaseRecordsToPending,
   resetStuckProcessingRecords,
   resetStuckFailedRecords,
-  isTransientError
+  isTransientError,
+  findByRequestId,
+  createWithRequestId,
+  getRecentMatchForUser,
+  getRecentCorrectionPatterns
 };

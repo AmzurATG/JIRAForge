@@ -12,6 +12,7 @@ import DataTable from '../components/common/DataTable';
 import DateRangePicker from '../components/common/DateRangePicker';
 import ErrorBanner from '../components/common/ErrorBanner';
 import { formatDate } from '../utils/formatters';
+import { useDebounce } from '../hooks/useDebounce';
 
 function EmployeesPage() {
   const navigate = useNavigate();
@@ -21,13 +22,14 @@ function EmployeesPage() {
   const [totalCount, setTotalCount] = useState(0);
   const [page, setPage] = useState(1);
   const [search, setSearch] = useState('');
+  const debouncedSearch = useDebounce(search, 500);
   const [productivityRange, setProductivityRange] = useState('');
   
-  // Default to last 30 days
+  // Default to last 7 days
   const [dateRange, setDateRange] = useState(() => {
     const to = new Date();
     const from = new Date();
-    from.setDate(to.getDate() - 30);
+    from.setDate(to.getDate() - 7);
     return {
       from: formatDate(from),
       to: formatDate(to),
@@ -36,7 +38,7 @@ function EmployeesPage() {
 
   useEffect(() => {
     loadEmployees();
-  }, [page, search, productivityRange, dateRange]);
+  }, [page, debouncedSearch, productivityRange, dateRange]);
 
   const loadEmployees = async () => {
     setLoading(true);
@@ -44,12 +46,12 @@ function EmployeesPage() {
     
     try {
       const response = await employeesApi.getList({
-        search,
+        search: debouncedSearch,
         productivityRange: productivityRange || undefined,
         from: dateRange.from,
         to: dateRange.to,
         page,
-        limit: 20,
+        limit: 10,
       });
       
       setEmployees(response.data || []);
@@ -131,9 +133,11 @@ function EmployeesPage() {
   ];
 
   return (
-    <div>
-      <div className="flex justify-between items-center mb-6">
-        <h1 className="text-2xl font-bold">Employees</h1>
+    <div className="space-y-3">
+      {/* Page Header */}
+      <div>
+        <h1 className="page-title">Employees</h1>
+        <p className="text-gray-500 dark:text-gray-400 mt-1">View and manage employee productivity metrics</p>
       </div>
 
       {error && (
@@ -141,88 +145,114 @@ function EmployeesPage() {
       )}
 
       {/* Filters */}
-      <div className="mb-6 space-y-4">
-        {/* Search */}
-        <div className="flex gap-4">
-          <div className="flex-1 relative">
-            <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 w-4 h-4 text-gray-400" />
-            <input
-              type="text"
-              placeholder="Search by name or email..."
-              value={search}
-              onChange={handleSearchChange}
-              className="w-full pl-10 pr-4 py-2 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900"
-            />
+      <div className="card">
+        <div className="space-y-4">
+          {/* Search */}
+          <div>
+            <label className="filter-label">Search</label>
+            <div className="relative">
+              <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 w-4 h-4 text-gray-400" />
+              <input
+                type="text"
+                placeholder="Search by name or email..."
+                value={search}
+                onChange={handleSearchChange}
+                className="input-field pl-10"
+              />
+            </div>
           </div>
-        </div>
 
         {/* Productivity Range Filter */}
-        <div className="flex gap-2 items-center">
-          <span className="text-sm text-gray-600 dark:text-gray-400">Productivity:</span>
+        <div>
+          <label className="filter-label mb-2 block">Productivity Range</label>
+          <div className="flex gap-2 items-center flex-wrap">
           <button
             onClick={() => handleProductivityFilterChange('')}
-            className={`px-3 py-1.5 rounded text-sm ${
+            className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-all ${
               productivityRange === ''
-                ? 'bg-primary-600 text-white'
-                : 'border border-gray-300 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-800'
+                ? 'bg-primary-600 text-white shadow-md'
+                : 'bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 hover:border-primary-300 hover:bg-primary-50 dark:hover:bg-primary-900/20'
             }`}
           >
             All
           </button>
           <button
             onClick={() => handleProductivityFilterChange('high')}
-            className={`px-3 py-1.5 rounded text-sm ${
+            className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-all ${
               productivityRange === 'high'
-                ? 'bg-primary-600 text-white'
-                : 'border border-gray-300 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-800'
+                ? 'bg-emerald-500 text-white shadow-md'
+                : 'bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 hover:border-emerald-300 hover:bg-emerald-50 dark:hover:bg-emerald-900/20'
             }`}
           >
-            High (≥70%)
+            <span className="flex items-center gap-1.5">
+              <span className="w-2 h-2 rounded-full bg-emerald-400"></span>
+              High (≥70%)
+            </span>
           </button>
           <button
             onClick={() => handleProductivityFilterChange('medium')}
-            className={`px-3 py-1.5 rounded text-sm ${
+            className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-all ${
               productivityRange === 'medium'
-                ? 'bg-primary-600 text-white'
-                : 'border border-gray-300 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-800'
+                ? 'bg-amber-500 text-white shadow-md'
+                : 'bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 hover:border-amber-300 hover:bg-amber-50 dark:hover:bg-amber-900/20'
             }`}
           >
-            Medium (50-70%)
+            <span className="flex items-center gap-1.5">
+              <span className="w-2 h-2 rounded-full bg-amber-400"></span>
+              Medium (50-70%)
+            </span>
           </button>
           <button
             onClick={() => handleProductivityFilterChange('low')}
-            className={`px-3 py-1.5 rounded text-sm ${
+            className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-all ${
               productivityRange === 'low'
-                ? 'bg-primary-600 text-white'
-                : 'border border-gray-300 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-800'
+                ? 'bg-red-500 text-white shadow-md'
+                : 'bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 hover:border-red-300 hover:bg-red-50 dark:hover:bg-red-900/20'
             }`}
           >
-            Low (&lt;50%)
+            <span className="flex items-center gap-1.5">
+              <span className="w-2 h-2 rounded-full bg-red-400"></span>
+              Low (&lt;50%)
+            </span>
           </button>
+          </div>
         </div>
 
         {/* Date Range */}
-        <DateRangePicker
-          from={dateRange.from}
-          to={dateRange.to}
-          onChange={handleDateRangeChange}
-        />
+        <div>
+          <label className="filter-label">Date Range</label>
+          <DateRangePicker
+            from={dateRange.from}
+            to={dateRange.to}
+            onChange={handleDateRangeChange}
+          />
+        </div>
+        </div>
+      </div>
+
+      {/* Results Summary */}
+      <div className="flex items-center justify-between">
+        <p className="text-sm text-gray-600 dark:text-gray-400">
+          Showing <span className="font-semibold text-gray-900 dark:text-gray-100">{employees.length}</span> of <span className="font-semibold text-gray-900 dark:text-gray-100">{totalCount}</span> employees
+        </p>
       </div>
 
       {/* Employees Table */}
-      <DataTable
-        columns={columns}
-        data={employees}
-        loading={loading}
-        emptyMessage="No employees found"
-        onRowClick={handleRowClick}
-        pagination={{
-          page,
-          limit: 20,
-          totalCount,
-          onPageChange: setPage,
-        }}
-      />
+      <div className="card p-0 overflow-hidden">
+        <DataTable
+          columns={columns}
+          data={employees}
+          loading={loading}
+          emptyMessage="No employees found"
+          onRowClick={handleRowClick}
+          pagination={{
+            page,
+            limit: 10,
+            totalCount,
+            onPageChange: setPage,
+          }}
+        />
+      </div>
     </div>
   );
 }

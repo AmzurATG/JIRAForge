@@ -158,9 +158,10 @@ function getShortModelName(model) {
  * @param {Array} params.messages - Messages array
  * @param {number} [params.max_tokens=800] - Max tokens (sent as max_completion_tokens)
  * @param {boolean} [params.isVision=false] - Whether this is a vision request
+ * @param {number} [params.temperature] - Temperature for sampling (omitted for GPT-5/o-series)
  * @returns {Promise<{response: Object, provider: string, model: string}>}
  */
-async function chatCompletionWithFallback({ messages, max_tokens = 800, isVision = false }) {
+async function chatCompletionWithFallback({ messages, max_tokens = 800, isVision = false, temperature }) {
   const requestType = isVision ? 'vision' : 'text';
   const client = getPortkeyClient();
   const model = getPortkeyModel();
@@ -175,18 +176,43 @@ async function chatCompletionWithFallback({ messages, max_tokens = 800, isVision
   const startTime = Date.now();
 
   try {
-    // GPT-5 / o-series reject the legacy `max_tokens` field; Gemini via
-    // Portkey accepts `max_completion_tokens` too. `temperature` is omitted
-    // because GPT-5 family only accepts the default (1) and rejects any
-    // other value with a 400.
-    const response = await client.chat.completions.create({
+    // GPT-5 / o-series reject non-default temperature with a 400.
+    // Only pass temperature for models that support it (Gemini, GPT-4, etc.)
+    const requiresDefaultTemp = 
+      model.includes('gpt-5') || 
+      model.includes('o1') || 
+      model.includes('o3') ||
+      model.includes('o-mini') ||
+      model.includes('reasoning') ||
+      model.match(/^o\d/); // Matches o1, o3, o4, etc.
+      
+    const requestParams = {
       model,
       messages,
       max_completion_tokens: max_tokens
-    });
+    };
+    
+    if (!requiresDefaultTemp) {
+      requestParams.temperature = temperature !== undefined ? temperature : 0.1;
+    }
+    
+    const response = await client.chat.completions.create(requestParams);
     logger.info('[AI] %s request completed | Portkey | %dms', requestType, Date.now() - startTime);
     return { response, provider: 'portkey', model };
   } catch (error) {
+    // If error is temperature-related, retry without temperature
+    if (error.message && error.message.toLowerCase().includes('temperature')) {
+      logger.warn('[AI] Temperature rejected by model, retrying without it | model: %s', model);
+      const requestParams = {
+        model,
+        messages,
+        max_completion_tokens: max_tokens
+      };
+      const response = await client.chat.completions.create(requestParams);
+      logger.info('[AI] %s request completed (retry) | Portkey | %dms', requestType, Date.now() - startTime);
+      return { response, provider: 'portkey', model };
+    }
+    
     logger.error('[AI] Portkey request failed: %s', error.message);
     throw error;
   }

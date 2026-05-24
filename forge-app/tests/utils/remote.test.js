@@ -32,8 +32,8 @@ jest.mock('../../src/utils/cache.js', () => ({
     GROUPS: 30000,
   },
   CacheKeys: {
-    userId: (id) => `user:${id}`,
-    organization: (id) => `org:${id}`,
+    userId: (cloudId, accountId) => `user:${cloudId}:${accountId}`,
+    organization: (cloudId) => `org:${cloudId}`,
     supabaseConfig: (id) => `config:${id}`,
     membership: (uid, oid) => `membership:${uid}:${oid}`,
     unassignedGroups: (uid, oid) => `groups:${uid}:${oid}`,
@@ -412,22 +412,30 @@ describe('fetchDashboardData', () => {
 // getOrCreateOrganization
 // ============================================================================
 describe('getOrCreateOrganization', () => {
-  it('returns cached org without a network call', async () => {
-    const cachedOrg = { id: 'org-1', name: 'Test' };
-    getFromCache.mockReturnValue(cachedOrg);
-    const result = await getOrCreateOrganization('cloud-1');
-    expect(result).toBe(cachedOrg);
-    expect(invokeRemote).not.toHaveBeenCalled();
+  it('always fetches fresh organization from AI server (no cache)', async () => {
+    invokeRemote.mockResolvedValue(makeOkResponse({ id: 'org-uuid', jira_cloud_id: 'cloud-1' }));
+    
+    const result1 = await getOrCreateOrganization('cloud-1');
+    expect(result1.id).toBe('org-uuid');
+    expect(invokeRemote).toHaveBeenCalledTimes(1);
+    
+    const result2 = await getOrCreateOrganization('cloud-1');
+    expect(result2.id).toBe('org-uuid');
+    expect(invokeRemote).toHaveBeenCalledTimes(2);  // Called again
   });
 
-  it('deduplicates concurrent requests for the same cloudId', async () => {
-    invokeRemote.mockResolvedValue(makeOkResponse({ id: 'org-1' }));
-    const [r1, r2] = await Promise.all([
-      getOrCreateOrganization('cloud-dup', 'Org', 'https://example.com'),
-      getOrCreateOrganization('cloud-dup', 'Org', 'https://example.com'),
+  it('still deduplicates concurrent requests for same cloudId', async () => {
+    invokeRemote.mockResolvedValue(makeOkResponse({ id: 'org-uuid', jira_cloud_id: 'cloud-1' }));
+    
+    // Fire two requests simultaneously
+    const [result1, result2] = await Promise.all([
+      getOrCreateOrganization('cloud-1'),
+      getOrCreateOrganization('cloud-1')
     ]);
-    expect(invokeRemote).toHaveBeenCalledTimes(1);
-    expect(r1).toEqual(r2);
+    
+    expect(result1.id).toBe('org-uuid');
+    expect(result2.id).toBe('org-uuid');
+    expect(invokeRemote).toHaveBeenCalledTimes(1);  // Only called once (deduplicated)
   });
 
   it('skips Jira API fetch when both orgName and jiraUrl are provided', async () => {
@@ -501,11 +509,11 @@ describe('getOrCreateOrganization', () => {
     expect(invokeRemote).toHaveBeenCalledTimes(1);
   });
 
-  it('caches the org with ORGANIZATION TTL', async () => {
+  it('does not call setInCache after fetching', async () => {
     const org = { id: 'org-1' };
     invokeRemote.mockResolvedValue(makeOkResponse(org));
     await getOrCreateOrganization('cloud-1', 'Org', 'https://example.com');
-    expect(setInCache).toHaveBeenCalledWith('org:cloud-1', org, 600000);
+    expect(setInCache).not.toHaveBeenCalled();  // No caching
   });
 
   it('throws when the remote request fails', async () => {
@@ -520,24 +528,25 @@ describe('getOrCreateOrganization', () => {
 // getOrCreateUser
 // ============================================================================
 describe('getOrCreateUser', () => {
-  it('returns cached userId when organizationId matches', async () => {
-    getFromCache.mockReturnValue({ userId: 'user-uuid', organizationId: 'org-1' });
-    const result = await getOrCreateUser('acc-1', 'org-1');
-    expect(result).toBe('user-uuid');
-    expect(invokeRemote).not.toHaveBeenCalled();
+  it('always fetches fresh userId from AI server (no cache)', async () => {
+    invokeRemote.mockResolvedValue(makeOkResponse({ userId: 'user-uuid' }));
+    
+    const result1 = await getOrCreateUser('acc-1', 'org-1');
+    expect(result1).toBe('user-uuid');
+    expect(invokeRemote).toHaveBeenCalledTimes(1);
+    
+    const result2 = await getOrCreateUser('acc-1', 'org-1');
+    expect(result2).toBe('user-uuid');
+    expect(invokeRemote).toHaveBeenCalledTimes(2);  // Called again, not cached
   });
 
-  it('fetches when cached organizationId does not match', async () => {
-    getFromCache.mockReturnValue({ userId: 'old-uuid', organizationId: 'org-OLD' });
-    invokeRemote.mockResolvedValue(makeOkResponse({ userId: 'new-uuid' }));
-    const result = await getOrCreateUser('acc-1', 'org-NEW');
-    expect(result).toBe('new-uuid');
-  });
-
-  it('fetches when cache is null', async () => {
-    invokeRemote.mockResolvedValue(makeOkResponse({ userId: 'user-abc' }));
+  it('does not use cache even if getFromCache returns a value', async () => {
+    getFromCache.mockReturnValue({ userId: 'cached-uuid', organizationId: 'org-1' });
+    invokeRemote.mockResolvedValue(makeOkResponse({ userId: 'fresh-uuid' }));
+    
     const result = await getOrCreateUser('acc-1', 'org-1');
-    expect(result).toBe('user-abc');
+    expect(result).toBe('fresh-uuid');  // Uses fresh value, not cached
+    expect(invokeRemote).toHaveBeenCalled();
   });
 
   it('sends organizationId, email, and displayName in the request body', async () => {
@@ -551,14 +560,10 @@ describe('getOrCreateUser', () => {
     });
   });
 
-  it('caches the userId with USER_ID TTL', async () => {
+  it('does not call setInCache after fetching', async () => {
     invokeRemote.mockResolvedValue(makeOkResponse({ userId: 'u1' }));
     await getOrCreateUser('acc-1', 'org-1');
-    expect(setInCache).toHaveBeenCalledWith(
-      'user:org-1',
-      { userId: 'u1', organizationId: 'org-1' },
-      300000
-    );
+    expect(setInCache).not.toHaveBeenCalled();  // No caching
   });
 
   it('throws when remoteRequest fails', async () => {

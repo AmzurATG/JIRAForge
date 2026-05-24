@@ -28,6 +28,62 @@ import { initializeRequestContext, handleResolverError, ensureArray } from '../u
 import { recordAccuracyEvents, isAccuracyTrackingEnabled } from '../../services/accuracy/accuracyTracking.js';
 
 // ============================================================================
+// Internal helpers
+// ============================================================================
+
+// supabase-js puts `id=in.(uuid,uuid,...)` straight into the URL query
+// string. Supabase Cloud's edge proxy (Cloudflare/Kong) caps URLs at ~8 KB
+// and returns a bare 400 "Bad Request" when exceeded — see
+// supabase/postgrest-js#393 (still open) and supabase-js PR #2078 which added
+// a runtime warning at 8000 chars.  Multiple users report `.in()` failing
+// above ~200 UUIDs; we chunk much smaller to keep a comfortable margin.
+//
+// 100 UUIDs * (36 + 1) = ~3.7 KB of ids + ~400 chars of other query params
+// = ~4.1 KB total per URL — safely under any layer's limit.
+const SUPABASE_IN_CHUNK_SIZE = 100;
+
+// Max simultaneous in-flight chunk requests. Bounded so a 5,000-id approval
+// (50 chunks) finishes in ~10 batches × ~0.5s ≈ 5s — comfortably inside the
+// Forge resolver 25s ceiling — without firing 50 parallel sockets at
+// Supabase and risking rate limits or pool exhaustion on the AI server.
+const SUPABASE_IN_CHUNK_CONCURRENCY = 5;
+
+/**
+ * Split `ids` into chunks of SUPABASE_IN_CHUNK_SIZE, run `fn(chunk)` for each
+ * with bounded parallelism, and concatenate the (array) results in the same
+ * order as the input. `fn` must return an array (or null/undefined, which is
+ * skipped). If any `fn` rejects, the whole call rejects (matches sequential
+ * await behaviour — no silent partial success).
+ */
+async function runInIdChunks(ids, fn) {
+  const chunks = [];
+  for (let i = 0; i < ids.length; i += SUPABASE_IN_CHUNK_SIZE) {
+    chunks.push(ids.slice(i, i + SUPABASE_IN_CHUNK_SIZE));
+  }
+  if (chunks.length === 0) return [];
+
+  const results = new Array(chunks.length);
+  let cursor = 0;
+  const worker = async () => {
+    while (true) {
+      const i = cursor++;
+      if (i >= chunks.length) return;
+      const part = await fn(chunks[i]);
+      if (Array.isArray(part)) {
+        results[i] = part;
+      } else if (part != null) {
+        results[i] = [part];
+      } else {
+        results[i] = [];
+      }
+    }
+  };
+  const workerCount = Math.min(SUPABASE_IN_CHUNK_CONCURRENCY, chunks.length);
+  await Promise.all(Array.from({ length: workerCount }, worker));
+  return results.flat();
+}
+
+// ============================================================================
 // Resolvers
 // ============================================================================
 
@@ -56,12 +112,12 @@ export async function approveRecords(req) {
     let priorRows = [];
     if (isAccuracyTrackingEnabled()) {
       try {
-        priorRows = ensureArray(await supabaseRequest(
+        priorRows = await runInIdChunks(ids, async (chunk) => ensureArray(await supabaseRequest(
           supabaseConfig,
-          `activity_records?id=in.(${ids.join(',')})&user_id=eq.${userId}` +
+          `activity_records?id=in.(${chunk.join(',')})&user_id=eq.${userId}` +
           `&approval_status=eq.pending_approval` +
           `&select=id,user_assigned_issue_key,duration_seconds,total_time_seconds,window_title,application_name,classification,metadata`
-        ));
+        )));
       } catch (trackingPrefetchError) {
         console.warn('[approveRecords] accuracy-tracking prefetch failed; continuing without tracking', {
           error: trackingPrefetchError?.message || trackingPrefetchError,
@@ -72,9 +128,9 @@ export async function approveRecords(req) {
     }
 
     const now = new Date().toISOString();
-    const updated = ensureArray(await supabaseRequest(
+    const updated = await runInIdChunks(ids, async (chunk) => ensureArray(await supabaseRequest(
       supabaseConfig,
-      `activity_records?id=in.(${ids.join(',')})&user_id=eq.${userId}` +
+      `activity_records?id=in.(${chunk.join(',')})&user_id=eq.${userId}` +
       `&approval_status=eq.pending_approval`,
       {
         method: 'PATCH',
@@ -86,7 +142,7 @@ export async function approveRecords(req) {
           updated_at: now
         }
       }
-    ));
+    )));
 
     // REMOVABLE: emit one accuracy event per approved record.  AI was right
     // here — same key in/out.
@@ -150,12 +206,12 @@ export async function reassignAndApproveRecords(req) {
     // duration) are pulled in only when accuracy tracking is enabled, but
     // querying them unconditionally keeps the SQL simple — the cost is one
     // extra column per row, which is negligible.
-    const existing = ensureArray(await supabaseRequest(
+    const existing = await runInIdChunks(ids, async (chunk) => ensureArray(await supabaseRequest(
       supabaseConfig,
-      `activity_records?id=in.(${ids.join(',')})&user_id=eq.${userId}` +
+      `activity_records?id=in.(${chunk.join(',')})&user_id=eq.${userId}` +
       `&approval_status=eq.pending_approval` +
       `&select=id,user_assigned_issue_key,duration_seconds,total_time_seconds,window_title,application_name,classification,metadata`
-    ));
+    )));
 
     if (existing.length === 0) {
       // Nothing to do — either already approved elsewhere or IDs don't belong
@@ -177,9 +233,9 @@ export async function reassignAndApproveRecords(req) {
     const successfullyUpdatedIds = new Set();
 
     for (const [originalKey, originalIds] of byOrigin.entries()) {
-      const updated = ensureArray(await supabaseRequest(
+      const updated = await runInIdChunks(originalIds, async (chunk) => ensureArray(await supabaseRequest(
         supabaseConfig,
-        `activity_records?id=in.(${originalIds.join(',')})&user_id=eq.${userId}` +
+        `activity_records?id=in.(${chunk.join(',')})&user_id=eq.${userId}` +
         `&approval_status=eq.pending_approval`,
         {
           method: 'PATCH',
@@ -196,7 +252,7 @@ export async function reassignAndApproveRecords(req) {
             updated_at: now
           }
         }
-      ));
+      )));
       totalUpdated += updated.length;
       for (const row of updated) successfullyUpdatedIds.add(row.id);
     }
@@ -277,12 +333,12 @@ export async function createIssueAndApproveRecords(req) {
     // Extra columns (window_title, application_name, classification, metadata,
     // user_assigned_issue_key) feed the AI accuracy event log; query is a
     // simple SELECT either way, so we always pull them.
-    const rows = ensureArray(await supabaseRequest(
+    const rows = await runInIdChunks(ids, async (chunk) => ensureArray(await supabaseRequest(
       supabaseConfig,
-      `activity_records?id=in.(${ids.join(',')})&user_id=eq.${userId}` +
+      `activity_records?id=in.(${chunk.join(',')})&user_id=eq.${userId}` +
       `&approval_status=eq.pending_approval` +
       `&select=id,user_assigned_issue_key,duration_seconds,total_time_seconds,window_title,application_name,classification,metadata`
-    ));
+    )));
 
     if (rows.length === 0) {
       return { success: true, updated: 0, message: 'No pending records to approve' };
@@ -359,9 +415,11 @@ export async function createIssueAndApproveRecords(req) {
     const now = new Date().toISOString();
 
     // Point the records at the new issue AND approve them in one PATCH.
-    const updated = ensureArray(await supabaseRequest(
+    // Chunked via runInIdChunks to keep each Supabase URL under the ~8 KB
+    // Cloudflare/Kong edge ceiling — see SUPABASE_IN_CHUNK_SIZE comment.
+    const updated = await runInIdChunks(ids, async (chunk) => ensureArray(await supabaseRequest(
       supabaseConfig,
-      `activity_records?id=in.(${ids.join(',')})&user_id=eq.${userId}` +
+      `activity_records?id=in.(${chunk.join(',')})&user_id=eq.${userId}` +
       `&approval_status=eq.pending_approval`,
       {
         method: 'PATCH',
@@ -377,7 +435,7 @@ export async function createIssueAndApproveRecords(req) {
           updated_at: now
         }
       }
-    ));
+    )));
 
     // Cache upsert so the new issue appears in pickers immediately.
     await supabaseRequest(
@@ -472,13 +530,17 @@ export async function getPendingApprovalRecords(req) {
     if (!ctx.success) return ctx;
     const { config: supabaseConfig, userId } = ctx;
 
-    const rows = ensureArray(await supabaseRequest(
+    const rows = await runInIdChunks(ids, async (chunk) => ensureArray(await supabaseRequest(
       supabaseConfig,
-      `activity_records?id=in.(${ids.join(',')})&user_id=eq.${userId}` +
+      `activity_records?id=in.(${chunk.join(',')})&user_id=eq.${userId}` +
       `&approval_status=eq.pending_approval` +
       `&select=id,start_time,end_time,duration_seconds,window_title,application_name,user_assigned_issue_key` +
       `&order=start_time.asc`
-    ));
+    )));
+
+    // Re-sort across chunks so the final list is still globally ordered by
+    // start_time, since each chunk was sorted independently.
+    rows.sort((a, b) => String(a.start_time || '').localeCompare(String(b.start_time || '')));
 
     return { success: true, records: rows };
   } catch (error) {

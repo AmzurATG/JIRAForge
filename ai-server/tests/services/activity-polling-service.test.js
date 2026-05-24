@@ -4,11 +4,13 @@
 
 const activityService = require('../../src/services/activity-service');
 const activityDbService = require('../../src/services/db/activity-db-service');
+const userDbService = require('../../src/services/db/user-db-service');
 const logger = require('../../src/utils/logger');
 
 // Mock all dependencies
 jest.mock('../../src/services/activity-service');
 jest.mock('../../src/services/db/activity-db-service');
+jest.mock('../../src/services/db/user-db-service');
 jest.mock('../../src/utils/logger');
 
 // Import service after mocks
@@ -65,11 +67,13 @@ describe('Activity Polling Service', () => {
 
     it('should trigger initial processing on start', async () => {
       activityDbService.resetStuckProcessingRecords.mockResolvedValue();
+      activityDbService.resetStuckFailedRecords.mockResolvedValue();
       activityDbService.getPendingActivityBatches.mockResolvedValue([]);
 
       activityPollingService.start();
 
-      await Promise.resolve();
+      // Flush the microtask queue so the async processPendingRecords() chain completes
+      for (let i = 0; i < 10; i++) await Promise.resolve();
 
       expect(activityDbService.getPendingActivityBatches).toHaveBeenCalled();
     });
@@ -137,6 +141,9 @@ describe('Activity Polling Service', () => {
     beforeEach(() => {
       activityDbService.resetStuckProcessingRecords.mockResolvedValue();
       activityDbService.claimBatchForProcessing.mockResolvedValue(['record1', 'record2']);
+      activityDbService.getRecentMatchForUser.mockResolvedValue(null);
+      activityDbService.getRecentCorrectionPatterns.mockResolvedValue([]);
+      userDbService.getUserCachedIssues.mockResolvedValue([]);
       // Default: pretend the LLM analyzed every record sent in. Tests that
       // need partial results / truncation override this with mockResolvedValueOnce.
       activityService.analyzeBatch.mockImplementation(async (records) => ({
@@ -205,7 +212,9 @@ describe('Activity Polling Service', () => {
         expect.any(Array),
         [{key: 'PROJ-1', summary: 'Task 1'}],
         'user1',
-        'org1'
+        'org1',
+        null,
+        []
       );
     });
 
@@ -231,7 +240,9 @@ describe('Activity Polling Service', () => {
         expect.any(Array),
         [],
         'user1',
-        'org1'
+        'org1',
+        null,
+        []
       );
     });
 
@@ -250,7 +261,9 @@ describe('Activity Polling Service', () => {
         expect.any(Array),
         [],
         'user1',
-        'org1'
+        'org1',
+        null,
+        []
       );
     });
 
@@ -286,6 +299,122 @@ describe('Activity Polling Service', () => {
       expect(activityDbService.releaseRecordsToPending).toHaveBeenCalledWith(['record2']);
       expect(logger.warn).toHaveBeenCalledWith(
         expect.stringContaining('1 analyzed, 1 re-queued')
+      );
+    });
+
+    // ---------------------------------------------------------------------
+    // D3 — cache fallback BEHAVIORAL tests (replacing the prior
+    // source-inspection-only coverage in audit-defects.test.js).
+    // ---------------------------------------------------------------------
+    it('should call getUserCachedIssues and forward mapped cache to analyzeBatch when records have no embedded issues', async () => {
+      const recordsWithoutIssues = [{
+        ...mockRecords[0],
+        user_assigned_issues: null,
+      }];
+      activityDbService.getPendingActivityBatches.mockResolvedValue(recordsWithoutIssues);
+      activityDbService.claimBatchForProcessing.mockResolvedValue([{ id: 'record1' }]);
+      userDbService.getUserCachedIssues.mockResolvedValue([
+        {
+          issue_key: 'PROJ-1',
+          issue_summary: 'Cached issue summary',
+          status: 'In Progress',
+          project_key: 'PROJ',
+          issue_type: 'Story',
+          description: 'cached desc',
+          labels: ['cache'],
+          priority: 'High',
+          updated_at: '2026-04-30T10:00:00Z',
+        },
+      ]);
+
+      await activityPollingService.processPendingRecords();
+
+      // The cache helper was actually invoked (with the right userId/orgId)
+      expect(userDbService.getUserCachedIssues).toHaveBeenCalledWith('user1', 'org1');
+
+      // The mapped result was forwarded to analyzeBatch in the SHAPE the AI expects
+      expect(activityService.analyzeBatch).toHaveBeenCalledWith(
+        expect.any(Array),
+        [
+          expect.objectContaining({
+            key: 'PROJ-1',
+            summary: 'Cached issue summary',
+            status: 'In Progress',
+            project: 'PROJ',
+            issueType: 'Story',
+            description: 'cached desc',
+            labels: ['cache'],
+            priority: 'High',
+            updated: '2026-04-30T10:00:00Z',
+          }),
+        ],
+        'user1',
+        'org1',
+        null,
+        []
+      );
+    });
+
+    it('should always call getUserCachedIssues for freshness comparison', async () => {
+      // Default mockRecords[0] already carries user_assigned_issues
+      // but cache is now always fetched for freshness comparison
+      activityDbService.getPendingActivityBatches.mockResolvedValue([mockRecords[0]]);
+      activityDbService.claimBatchForProcessing.mockResolvedValue([{ id: 'record1' }]);
+
+      await activityPollingService.processPendingRecords();
+
+      expect(userDbService.getUserCachedIssues).toHaveBeenCalledWith('user1', 'org1');
+    });
+
+    it('should swallow cache errors and still call analyzeBatch with empty issues array', async () => {
+      const recordsWithoutIssues = [{
+        ...mockRecords[0],
+        user_assigned_issues: null,
+      }];
+      activityDbService.getPendingActivityBatches.mockResolvedValue(recordsWithoutIssues);
+      activityDbService.claimBatchForProcessing.mockResolvedValue([{ id: 'record1' }]);
+      userDbService.getUserCachedIssues.mockRejectedValue(new Error('Cache DB down'));
+
+      await activityPollingService.processPendingRecords();
+
+      // The cache helper was tried, the error was swallowed (no throw),
+      // and analyzeBatch was still invoked so the polling cycle didn't abort.
+      expect(userDbService.getUserCachedIssues).toHaveBeenCalled();
+      expect(logger.warn).toHaveBeenCalledWith(
+        expect.stringContaining('Failed to fetch cached issues'),
+        'Cache DB down'
+      );
+      expect(activityService.analyzeBatch).toHaveBeenCalledWith(
+        expect.any(Array),
+        [], // Empty issues array — cache failed, embedded issues were empty
+        'user1',
+        'org1',
+        null,
+        []
+      );
+    });
+
+    it('should still proceed with empty issues when cache returns an empty array', async () => {
+      const recordsWithoutIssues = [{
+        ...mockRecords[0],
+        user_assigned_issues: null,
+      }];
+      activityDbService.getPendingActivityBatches.mockResolvedValue(recordsWithoutIssues);
+      activityDbService.claimBatchForProcessing.mockResolvedValue([{ id: 'record1' }]);
+      userDbService.getUserCachedIssues.mockResolvedValue([]);
+
+      await activityPollingService.processPendingRecords();
+
+      // Cache was tried (returned empty), so issuesForAnalysis stays as the
+      // original empty array — but analyzeBatch is still invoked.
+      expect(userDbService.getUserCachedIssues).toHaveBeenCalledWith('user1', 'org1');
+      expect(activityService.analyzeBatch).toHaveBeenCalledWith(
+        expect.any(Array),
+        [],
+        'user1',
+        'org1',
+        null,
+        []
       );
     });
 
@@ -447,19 +576,20 @@ describe('Activity Polling Service', () => {
       await activityPollingService.processPendingRecords();
 
       expect(activityService.analyzeBatch).toHaveBeenCalledWith(
-        [{
+        [expect.objectContaining({
           id: 'record1',
           window_title: 'VS Code',
           application_name: 'Code',
           ocr_text: 'test code',
           total_time_seconds: 600,
           start_time: '2024-01-01T10:00:00Z',
-          end_time: '2024-01-01T10:10:00Z',
-          classification: undefined
-        }],
+          end_time: '2024-01-01T10:10:00Z'
+        })],
         expect.any(Array),
         'user1',
-        'org1'
+        'org1',
+        null,
+        []
       );
     });
 
@@ -504,7 +634,9 @@ describe('Activity Polling Service', () => {
         expect.any(Array),
         [{key: 'PROJ-2', summary: 'Task 2'}],
         'user1',
-        'org1'
+        'org1',
+        null,
+        []
       );
     });
 
@@ -523,7 +655,9 @@ describe('Activity Polling Service', () => {
         expect.any(Array),
         [],
         'user1',
-        'org1'
+        'org1',
+        null,
+        []
       );
     });
 
@@ -542,7 +676,9 @@ describe('Activity Polling Service', () => {
         expect.any(Array),
         [{key: 'PROJ-1', summary: 'Task 1'}],
         'user1',
-        'org1'
+        'org1',
+        null,
+        []
       );
     });
 
@@ -561,7 +697,9 @@ describe('Activity Polling Service', () => {
         expect.any(Array),
         [],
         'user1',
-        'org1'
+        'org1',
+        null,
+        []
       );
     });
 
@@ -580,7 +718,9 @@ describe('Activity Polling Service', () => {
         expect.any(Array),
         [{key: 'PROJ-1'}],
         'user1',
-        'org1'
+        'org1',
+        null,
+        []
       );
     });
 
@@ -659,7 +799,9 @@ describe('Activity Polling Service', () => {
         expect.any(Array),
         expect.any(Array),
         'user1',
-        null
+        null,
+        null,
+        []
       );
     });
 
@@ -706,14 +848,19 @@ describe('Activity Polling Service', () => {
 
     it('should handle interval execution', async () => {
       activityDbService.resetStuckProcessingRecords.mockResolvedValue();
+      activityDbService.resetStuckFailedRecords.mockResolvedValue();
       activityDbService.getPendingActivityBatches.mockResolvedValue([]);
 
       activityPollingService.start();
 
+      // Wait for initial processing to complete
+      for (let i = 0; i < 10; i++) await Promise.resolve();
+
       // Fast-forward time by poll interval
       jest.advanceTimersByTime(activityPollingService.pollInterval);
 
-      await Promise.resolve();
+      // Flush microtask queue for the interval callback
+      for (let i = 0; i < 10; i++) await Promise.resolve();
 
       expect(activityDbService.getPendingActivityBatches).toHaveBeenCalled();
     });

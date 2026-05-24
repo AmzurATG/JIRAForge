@@ -18,7 +18,7 @@ import { registerAdminUserStatusResolvers } from './resolvers/adminUserStatusRes
 import { registerApprovalResolvers } from './resolvers/approval/approvalResolvers.js';
 import { registerAccuracyDashboardResolvers } from './resolvers/accuracyDashboardResolvers.js';
 import { runScheduledWorklogSync } from './services/scheduledWorklogSync.js';
-import { handleIssueUpdateEvent } from './services/issueCacheService.js';
+import { handleIssueUpdateEvent, scheduledIssueCacheRefresh } from './services/issueCacheService.js';
 import { handleAppInstalled, handleAppUninstalled } from './services/lifecycleService.js';
 import { handlePersonalDataRequest } from './services/personalDataService.js';
 
@@ -51,6 +51,11 @@ export const scheduledWorklogSyncHandler = async () => {
 // Export issue cache trigger handler — fires on avi:jira:updated:issue
 export const issueCacheSyncHandler = async (event, context) => {
   return await handleIssueUpdateEvent(event, context);
+};
+
+// Export scheduled issue cache refresh handler — refreshes caches for active users
+export const scheduledIssueCacheRefreshHandler = async () => {
+  return await scheduledIssueCacheRefresh();
 };
 
 // Export lifecycle handler — fires on app install/uninstall events

@@ -6,6 +6,18 @@ import apiClient from './client';
 
 export const employeesApi = {
   /**
+   * Get simple employees list for dropdowns (lightweight, no metrics).
+   * 
+   * @param {string} search - Optional search term
+   * @returns {Promise<Array>} [{userId, name, email}]
+   */
+  async getSimpleList(search) {
+    const params = search ? { search } : {};
+    const response = await apiClient.get('/api/portal/employees/list', { params });
+    return response.data;
+  },
+
+  /**
    * Get employees list.
    * 
    * @param {Object} params - { search, productivityRange, from, to, page, limit }

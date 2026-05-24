@@ -47,8 +47,13 @@ function SettingsPage() {
   });
 
   useEffect(() => {
-    loadAdmins();
-  }, [page]);
+    // Only load admins if user is superadmin
+    if (user?.role === 'superadmin') {
+      loadAdmins();
+    } else {
+      setLoading(false);
+    }
+  }, [page, user?.role]);
 
   const loadAdmins = async () => {
     setLoading(true);

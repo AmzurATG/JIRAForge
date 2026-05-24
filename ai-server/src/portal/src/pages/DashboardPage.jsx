@@ -20,11 +20,11 @@ function DashboardPage() {
   const [error, setError] = useState(null);
   const [dashboardData, setDashboardData] = useState(null);
   
-  // Default to last 30 days
+  // Default to last 7 days
   const [dateRange, setDateRange] = useState(() => {
     const to = new Date();
     const from = new Date();
-    from.setDate(to.getDate() - 30);
+    from.setDate(to.getDate() - 7);
     return {
       from: formatDate(from),
       to: formatDate(to),
@@ -63,9 +63,13 @@ function DashboardPage() {
   }
 
   return (
-    <div>
-      <div className="flex justify-between items-center mb-6">
-        <h1 className="text-2xl font-bold">Dashboard</h1>
+    <div className="space-y-3">
+      {/* Page Header */}
+      <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+        <div>
+          <h1 className="page-title">Dashboard</h1>
+          <p className="text-gray-500 dark:text-gray-400 mt-1">Overview of team productivity metrics</p>
+        </div>
       </div>
 
       {error && (
@@ -73,7 +77,8 @@ function DashboardPage() {
       )}
 
       {/* Date Range Filter */}
-      <div className="mb-6">
+      <div className="card">
+        <label className="filter-label">Date Range</label>
         <DateRangePicker
           from={dateRange.from}
           to={dateRange.to}
@@ -82,38 +87,50 @@ function DashboardPage() {
       </div>
 
       {/* KPI Cards */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-6">
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
         <KPICard
           title="Total Productive Hours"
           value={dashboardData?.summary?.totalProductiveHours?.toFixed(1) || '0.0'}
-          subtitle="Hours"
+          subtitle="Hours tracked"
           icon={Clock}
+          variant="success"
         />
         <KPICard
           title="Total Non-Productive Hours"
           value={dashboardData?.summary?.totalNonProductiveHours?.toFixed(1) || '0.0'}
-          subtitle="Hours"
+          subtitle="Hours tracked"
           icon={Activity}
+          variant="danger"
         />
         <KPICard
-          title="Productivity Percentage"
+          title="Productivity Rate"
           value={`${dashboardData?.summary?.productivityPercentage?.toFixed(1) || '0.0'}%`}
+          subtitle="Overall efficiency"
           icon={TrendingUp}
+          variant="info"
         />
         <KPICard
           title="Active Employees"
           value={dashboardData?.summary?.employeeCount || '0'}
+          subtitle="In selected period"
           icon={Users}
+          variant="default"
         />
       </div>
 
       {/* Charts */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        <ProductivityTrendChart data={dashboardData?.dailyTrend || []} />
-        <ProductivityDonutChart
-          productivePercentage={dashboardData?.summary?.productivityPercentage || 0}
-          nonProductivePercentage={100 - (dashboardData?.summary?.productivityPercentage || 0)}
-        />
+        <div className="card">
+          <h3 className="section-title mb-4">Productivity Trend</h3>
+          <ProductivityTrendChart data={dashboardData?.dailyTrend || []} />
+        </div>
+        <div className="card">
+          <h3 className="section-title mb-4">Productivity Distribution</h3>
+          <ProductivityDonutChart
+            productivePercentage={dashboardData?.summary?.productivityPercentage || 0}
+            nonProductivePercentage={100 - (dashboardData?.summary?.productivityPercentage || 0)}
+          />
+        </div>
       </div>
     </div>
   );

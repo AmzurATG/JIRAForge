@@ -45,6 +45,32 @@ async function getDashboard(req, res) {
 }
 
 /**
+ * Get simple employees list for dropdowns (no metrics, fast).
+ * 
+ * GET /api/portal/employees/list?search=
+ */
+async function getEmployeesList(req, res) {
+  try {
+    const { orgId } = req.portalUser;
+    const { search } = req.query;
+    
+    const employees = await portalService.getEmployeesList(orgId, search);
+    
+    return res.json({ 
+      success: true, 
+      data: employees
+    });
+    
+  } catch (error) {
+    logger.error('[Portal] Get employees list failed', error);
+    return res.status(500).json({ 
+      success: false, 
+      error: error.message 
+    });
+  }
+}
+
+/**
  * Get employees list with filters and pagination.
  * 
  * GET /api/portal/employees?search=&productivityRange=&from=&to=&page=&limit=
@@ -155,14 +181,14 @@ async function getEmployeeLogs(req, res) {
 /**
  * Get time logs for all employees with filters.
  * 
- * GET /api/portal/time-logs?classification=&employee=&app=&from=&to=&page=&limit=
+ * GET /api/portal/time-logs?classification=&employee=&app=&from=&to=&durationMin=&durationMax=&confidenceMin=&confidenceMax=&page=&limit=
  */
 async function getTimeLogs(req, res) {
   try {
     const { orgId } = req.portalUser;
-    const { classification, employee, app, from, to, page = 1, limit = 20 } = req.query;
+    const { classification, employee, app, from, to, durationMin, durationMax, confidenceMin, confidenceMax, page = 1, limit = 20 } = req.query;
     
-    const filters = { classification, employee, app, from, to };
+    const filters = { classification, employee, app, from, to, durationMin, durationMax, confidenceMin, confidenceMax };
     const pagination = { page: parseInt(page), limit: parseInt(limit) };
     
     const result = await portalService.getTimeLogs(orgId, filters, pagination);
@@ -184,6 +210,7 @@ async function getTimeLogs(req, res) {
 module.exports = {
   getDashboard,
   getEmployees,
+  getEmployeesList,
   getEmployeeDetail,
   getEmployeeLogs,
   getTimeLogs

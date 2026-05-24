@@ -25,6 +25,7 @@ const clusteringPollingService = require('./services/clustering-polling-service'
 const notificationPollingService = require('./services/notifications/notification-polling');
 const aiService = require('./services/ai');
 const activityController = require('./controllers/activity-controller');
+const analyticsController = require('./controllers/analytics-controller');
 const adminDashboardController = require('./controllers/admin-dashboard-controller');
 const activityPollingService = require('./services/activity-polling-service');
 // REMOVABLE: AI accuracy tracking dashboard. Surfaced inside the Forge app
@@ -199,13 +200,13 @@ app.get('/admin-dashboard/api/stats', adminDashboardController.requireSession, a
 // remove the layer entirely. See plan/AI_ACCURACY_TRACKING_IMPLEMENTATION_PLAN.md.
 // =============================================================================
 
-// Dedicated limiter (200/min) — each dashboard refresh fires ~6 parallel
-// requests (orgs + 5 panels), and changing a filter retriggers all of them.
+// Dedicated limiter (200/min) — each dashboard refresh fires several parallel
+// requests (orgs + summary/wrong-pairs/by-app/recent-mistakes), and changing
+// a filter retriggers all of them.
 app.get('/api/forge/accuracy/orgs',             accuracyDashboardLimiter, forgeAuthMiddleware, accuracyDashboardController.listOrgs);
 app.get('/api/forge/accuracy/summary',          accuracyDashboardLimiter, forgeAuthMiddleware, accuracyDashboardController.getSummary);
 app.get('/api/forge/accuracy/wrong-pairs',      accuracyDashboardLimiter, forgeAuthMiddleware, accuracyDashboardController.getWrongPairs);
 app.get('/api/forge/accuracy/by-app',           accuracyDashboardLimiter, forgeAuthMiddleware, accuracyDashboardController.getByApp);
-app.get('/api/forge/accuracy/calibration',      accuracyDashboardLimiter, forgeAuthMiddleware, accuracyDashboardController.getCalibration);
 app.get('/api/forge/accuracy/recent-mistakes',  accuracyDashboardLimiter, forgeAuthMiddleware, accuracyDashboardController.getRecentMistakes);
 
 // =============================================================================
@@ -403,6 +404,9 @@ app.post('/api/forge/feedback/session', ...forgeMiddleware, forgeProxyController
 // Issue cache — called by the avi:jira:updated:issue trigger to keep user_jira_issues_cache fresh
 app.post('/api/forge/issues/cache', ...forgeMiddleware, forgeProxyController.cacheUserIssues);
 
+// Recently active accounts — called by the scheduled Forge cache refresh trigger
+app.get('/api/forge/issues/active-accounts', ...forgeMiddleware, forgeProxyController.getRecentlyActiveAccounts);
+
 // Uninstall handler — called when app is uninstalled from Jira site (Forge-authenticated)
 // Marks organization for deletion with 30-day grace period
 const uninstallController = require('./controllers/uninstall-controller');
@@ -442,6 +446,10 @@ app.post('/api/analyze-batch', express.json({ limit: '10mb' }), authMiddleware, 
 app.post('/api/classify-app', atlassianAuthMiddleware, activityController.classifyApp);
 // identify-app uses Forge auth (called from Forge app for admin app classification)
 app.post('/api/identify-app', ...forgeMiddleware, activityController.identifyApp);
+
+// Analytics endpoints (unified aggregation service)
+app.get('/api/analytics/daily', authMiddleware, analyticsController.getDailyTotal);
+app.get('/api/analytics/weekly', authMiddleware, analyticsController.getWeeklyTotal);
 
 // Manual trigger for clustering - called by organization admins from Forge app
 app.post('/api/trigger-clustering', authMiddleware, async (req, res, next) => {
@@ -594,6 +602,7 @@ app.post('/api/portal/auth/change-password', portalAuthMiddleware.verifyPortalTo
 
 // Portal analytics endpoints (authenticated)
 app.get('/api/portal/dashboard', portalAuthMiddleware.verifyPortalToken, portalController.getDashboard);
+app.get('/api/portal/employees/list', portalAuthMiddleware.verifyPortalToken, portalController.getEmployeesList);
 app.get('/api/portal/employees', portalAuthMiddleware.verifyPortalToken, portalController.getEmployees);
 app.get('/api/portal/employees/:userId', portalAuthMiddleware.verifyPortalToken, portalController.getEmployeeDetail);
 app.get('/api/portal/employees/:userId/logs', portalAuthMiddleware.verifyPortalToken, portalController.getEmployeeLogs);

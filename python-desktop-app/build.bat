@@ -14,15 +14,6 @@ echo NOTE: Credentials are embedded in desktop_app.py
 echo       No .env file needed for distribution!
 echo.
 
-REM Check if Python is available
-python --version >nul 2>&1
-if errorlevel 1 (
-    echo [ERROR] Python is not installed or not in PATH
-    echo Please install Python 3.8+ and try again
-    pause
-    exit /b 1
-)
-
 REM Check if we're in the right directory
 if not exist "desktop_app.py" (
     echo [ERROR] desktop_app.py not found
@@ -34,13 +25,29 @@ if not exist "desktop_app.py" (
 REM Check for virtual environment and set Python/pip paths
 set "VENV_PYTHON=python"
 set "VENV_PIP=pip"
-if exist "venv\Scripts\activate.bat" (
-    echo [INFO] Activating virtual environment...
-    call venv\Scripts\activate.bat
-    set "VENV_PYTHON=%~dp0venv\Scripts\python.exe"
-    set "VENV_PIP=%~dp0venv\Scripts\pip.exe"
+if exist ".venv\Scripts\activate.bat" (
+    echo [INFO] Activating virtual environment .venv...
+    call .venv\Scripts\activate.bat
+    set "VENV_PYTHON=%~dp0.venv\Scripts\python.exe"
+    set "VENV_PIP=%~dp0.venv\Scripts\pip.exe"
 ) else (
-    echo [INFO] No virtual environment found, using system Python
+    if exist "venv\Scripts\activate.bat" (
+        echo [INFO] Activating virtual environment venv...
+        call venv\Scripts\activate.bat
+        set "VENV_PYTHON=%~dp0venv\Scripts\python.exe"
+        set "VENV_PIP=%~dp0venv\Scripts\pip.exe"
+    ) else (
+        echo [INFO] No virtual environment found, using system Python
+    )
+)
+
+REM Check if Python is available (using venv if available, otherwise system)
+"%VENV_PYTHON%" --version >nul 2>&1
+if errorlevel 1 (
+    echo [ERROR] Python is not available
+    echo Please ensure Python 3.8+ is installed or virtual environment is properly configured
+    pause
+    exit /b 1
 )
 
 REM Install/update dependencies

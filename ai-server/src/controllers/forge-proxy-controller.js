@@ -21,6 +21,39 @@ const SENSITIVE_TABLES = new Set([
 // Reserved PostgREST query parameters that should not be used as column names
 const RESERVED_PARAMS = new Set(['order', 'limit', 'offset', 'select', 'on_conflict']);
 
+// Substrings that identify a transient outbound-fetch failure from supabase-js
+// (Node/undici socket-level errors). When matched, the proxy returns 503 so the
+// Forge app's existing retry logic in remote.js kicks in. See
+// plan/fix-forge-proxy-transient-fetch-error.md for context.
+// Lowercased for case-insensitive matching against the supabase-js error.
+const TRANSIENT_FETCH_ERROR_PATTERNS = [
+  'fetch failed',
+  'econnreset',
+  'etimedout',
+  'socket hang up',
+  'und_err_socket',
+  'other side closed'
+];
+
+function isTransientNetworkError(message) {
+  if (!message || typeof message !== 'string') return false;
+  const normalized = message.toLowerCase();
+  return TRANSIENT_FETCH_ERROR_PATTERNS.some(p => normalized.includes(p));
+}
+
+// Extract a usable string from supabase-js's result.error, which may be a plain
+// Error, a PostgrestError, or in rare cases an object without `.message`.
+function extractErrorMessage(err) {
+  if (err == null) return 'unknown supabase error';
+  if (typeof err === 'string') return err;
+  if (typeof err.message === 'string' && err.message.length > 0) return err.message;
+  try {
+    return JSON.stringify(err);
+  } catch {
+    return String(err);
+  }
+}
+
 /**
  * Log security warnings for sensitive table access without org filter
  */
@@ -305,8 +338,12 @@ exports.supabaseQuery = async (req, res) => {
     }
 
     if (result.error) {
-      logger.error('[ForgeProxy] Supabase error', { table, error: result.error.message });
-      return res.status(400).json({ success: false, error: result.error.message });
+      const message = extractErrorMessage(result.error);
+      // Transient outbound-fetch failures (undici socket errors) → 503 so the
+      // Forge app's remote.js retries. Real query errors stay 400.
+      const status = isTransientNetworkError(message) ? 503 : 400;
+      logger.error('[ForgeProxy] Supabase error', { table, error: message, status });
+      return res.status(status).json({ success: false, error: message });
     }
 
     res.json({ success: true, data: result.data });
@@ -1396,4 +1433,22 @@ function extractDescriptionText(description) {
   }
   return null;
 }
+
+/**
+ * GET /api/forge/issues/active-accounts
+ * Returns Atlassian account IDs of users with recent activity.
+ * Called by the scheduled Forge cache refresh trigger to know which users
+ * need their Jira issues cache updated.
+ */
+exports.getRecentlyActiveAccounts = async (req, res) => {
+  try {
+    const userDbService = require('../services/db/user-db-service');
+    const withinMinutes = Math.min(parseInt(req.query.minutes || '60', 10), 1440);
+    const accountIds = await userDbService.getRecentlyActiveAccountIds(withinMinutes);
+    res.json({ success: true, data: { accountIds } });
+  } catch (error) {
+    logger.error('[ForgeProxy] getRecentlyActiveAccounts error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+};
 

@@ -269,7 +269,7 @@ describe('chatCompletionWithFallback', () => {
     expect(sentBody.max_tokens).toBeUndefined();
   });
 
-  test('does not send temperature to the SDK', async () => {
+  test('sends default temperature 0.1 for non-GPT-5 models', async () => {
     process.env.USE_PORTKEY = 'true';
     process.env.PORTKEY_API_KEY = 'pk-test';
     const client = require('../../src/services/ai/ai-client');
@@ -277,7 +277,7 @@ describe('chatCompletionWithFallback', () => {
       messages: [{ role: 'user', content: 'hi' }],
     });
     const sentBody = mockCreate.mock.calls[0][0];
-    expect(sentBody.temperature).toBeUndefined();
+    expect(sentBody.temperature).toBe(0.1);
   });
 
   test('default max_tokens is 800', async () => {
