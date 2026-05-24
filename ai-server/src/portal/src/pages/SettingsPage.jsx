@@ -320,7 +320,7 @@ function SettingsPage() {
             <h3 className="text-lg font-semibold mb-4">
               {modalMode === 'create' ? 'Add Admin User' : 'Edit Admin User'}
             </h3>
-            <form onSubmit={handleSubmit} className="space-y-4">
+            <form onSubmit={handleSubmit} className="space-y-4" autoComplete="off">
               <div>
                 <label className="block text-sm font-medium mb-2">Email</label>
                 <input
@@ -329,6 +329,7 @@ function SettingsPage() {
                   onChange={(e) => setFormData({ ...formData, email: e.target.value })}
                   disabled={modalMode === 'edit'}
                   className="w-full px-3 py-2 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 disabled:bg-gray-100 dark:disabled:bg-gray-800"
+                  autoComplete="off"
                   required
                 />
               </div>
@@ -341,6 +342,7 @@ function SettingsPage() {
                     value={formData.password}
                     onChange={(e) => setFormData({ ...formData, password: e.target.value })}
                     className="w-full px-3 py-2 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900"
+                    autoComplete="new-password"
                     required
                     minLength={8}
                   />
@@ -354,6 +356,7 @@ function SettingsPage() {
                   value={formData.displayName}
                   onChange={(e) => setFormData({ ...formData, displayName: e.target.value })}
                   className="w-full px-3 py-2 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900"
+                  autoComplete="off"
                   required
                 />
               </div>

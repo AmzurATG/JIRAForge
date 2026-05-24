@@ -34,8 +34,8 @@ export const AuthProvider = ({ children }) => {
     setLoading(false);
   }, []);
 
-  const login = async (email, password, orgId) => {
-    const response = await authApi.login(email, password, orgId);
+  const login = async (email, password) => {
+    const response = await authApi.login(email, password);
     
     localStorage.setItem('portal_token', response.token);
     localStorage.setItem('portal_user', JSON.stringify(response.user));

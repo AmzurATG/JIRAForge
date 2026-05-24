@@ -89,7 +89,7 @@ async function createAdminUser(req, res) {
     }
     
     // Check if admin with this email already exists
-    const existingAdmin = await portalDbService.getAdminByEmail(orgId, email);
+    const existingAdmin = await portalDbService.getAdminByEmail(email);
     if (existingAdmin) {
       return res.status(409).json({ 
         success: false, 

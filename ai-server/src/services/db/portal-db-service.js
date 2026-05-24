@@ -10,13 +10,12 @@ const { getClient } = require('./supabase-client');
 const logger = require('../../utils/logger');
 
 /**
- * Get portal admin by email and orgId.
+ * Get portal admin by email.
  * 
- * @param {string} orgId - Organization ID
  * @param {string} email - Admin email
  * @returns {Promise<Object|null>} Admin user or null
  */
-async function getAdminByEmail(orgId, email) {
+async function getAdminByEmail(email) {
   const supabase = getClient();
   if (!supabase) {
     throw new Error('Supabase client not initialized');
@@ -25,7 +24,6 @@ async function getAdminByEmail(orgId, email) {
   const { data, error } = await supabase
     .from('portal_admin_users')
     .select('*')
-    .eq('org_id', orgId)
     .eq('email', email)
     .single();
     
@@ -34,7 +32,7 @@ async function getAdminByEmail(orgId, email) {
       // No rows returned
       return null;
     }
-    logger.error('[PortalDB] Get admin by email failed', { orgId, email, error });
+    logger.error('[PortalDB] Get admin by email failed', { email, error });
     throw error;
   }
   

@@ -6,7 +6,6 @@ function LoginPage() {
   const { login } = useAuth();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
-  const [orgId, setOrgId] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
@@ -16,7 +15,7 @@ function LoginPage() {
     setLoading(true);
 
     try {
-      await login(email, password, orgId);
+      await login(email, password);
     } catch (err) {
       setError(err.response?.data?.error || 'Login failed');
     } finally {
@@ -34,7 +33,7 @@ function LoginPage() {
           
           <ErrorBanner message={error} onDismiss={() => setError('')} />
           
-          <form onSubmit={handleSubmit} className="space-y-4">
+          <form onSubmit={handleSubmit} className="space-y-4" autoComplete="off">
             <div>
               <label className="block text-sm font-medium mb-1">Email</label>
               <input
@@ -42,6 +41,7 @@ function LoginPage() {
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
                 className="input-field"
+                autoComplete="off"
                 required
               />
             </div>
@@ -53,17 +53,7 @@ function LoginPage() {
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
                 className="input-field"
-                required
-              />
-            </div>
-            
-            <div>
-              <label className="block text-sm font-medium mb-1">Organization ID</label>
-              <input
-                type="text"
-                value={orgId}
-                onChange={(e) => setOrgId(e.target.value)}
-                className="input-field"
+                autoComplete="off"
                 required
               />
             </div>

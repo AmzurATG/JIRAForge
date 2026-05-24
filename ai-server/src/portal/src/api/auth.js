@@ -10,14 +10,12 @@ export const authApi = {
    * 
    * @param {string} email 
    * @param {string} password 
-   * @param {string} orgId 
    * @returns {Promise<Object>} { token, user }
    */
-  async login(email, password, orgId) {
+  async login(email, password) {
     const response = await apiClient.post('/api/portal/auth/login', {
       email,
       password,
-      orgId,
     });
     return response.data;
   },

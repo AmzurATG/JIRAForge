@@ -18,25 +18,25 @@ const TOKEN_EXPIRY = '24h';
  * Login endpoint for portal admins.
  * 
  * POST /api/portal/auth/login
- * Body: { email, password, orgId }
+ * Body: { email, password }
  */
 async function login(req, res) {
   try {
-    const { email, password, orgId } = req.body;
+    const { email, password } = req.body;
     
     // Validation
-    if (!email || !password || !orgId) {
+    if (!email || !password) {
       return res.status(400).json({ 
         success: false, 
-        error: 'Email, password, and orgId are required' 
+        error: 'Email and password are required' 
       });
     }
     
-    // Query portal admin user
-    const admin = await portalDbService.getAdminByEmail(orgId, email.toLowerCase());
+    // Query portal admin user by email only
+    const admin = await portalDbService.getAdminByEmail(email.toLowerCase());
     
     if (!admin) {
-      logger.warn('[PortalAuth] Login attempt with invalid email', { email, orgId });
+      logger.warn('[PortalAuth] Login attempt with invalid email', { email });
       return res.status(401).json({ 
         success: false, 
         error: 'Invalid email or password' 
@@ -77,7 +77,7 @@ async function login(req, res) {
     const token = jwt.sign(tokenPayload, secret, { expiresIn: TOKEN_EXPIRY });
     
     // Update last login timestamp
-    await portalDbService.updateLastLogin(orgId, admin.id);
+    await portalDbService.updateLastLogin(admin.org_id, admin.id);
     
     // Return token and user info (exclude password_hash)
     const userInfo = {
