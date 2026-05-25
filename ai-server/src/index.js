@@ -12,9 +12,14 @@ const appVersionController = require('./controllers/app-version-controller');
 const feedbackController = require('./controllers/feedback-controller');
 const notificationController = require('./controllers/notification-controller');
 const userDataController = require('./controllers/user-data-controller');
+const portalAuthController = require('./controllers/portal-auth-controller');
+const portalController = require('./controllers/portal-controller');
+const portalReportsController = require('./controllers/portal-reports-controller');
+const portalAdminUsersController = require('./controllers/portal-admin-users-controller');
 const authMiddleware = require('./middleware/auth');
 const forgeAuthMiddleware = require('./middleware/forge-auth');
 const atlassianAuthMiddleware = require('./middleware/atlassian-auth');
+const portalAuthMiddleware = require('./middleware/portal-auth');
 const logger = require('./utils/logger');
 const clusteringPollingService = require('./services/clustering-polling-service');
 const notificationPollingService = require('./services/notifications/notification-polling');
@@ -43,8 +48,10 @@ const allowedOrigins = [
   // Development
   'http://localhost:3000',
   'http://localhost:3001',
+  'http://localhost:3002', // Portal frontend
   'http://127.0.0.1:3000',
   'http://127.0.0.1:3001',
+  'http://127.0.0.1:3002', // Portal frontend
 ].filter(Boolean); // Remove undefined values
 
 const corsOptions = {
@@ -579,6 +586,37 @@ app.post('/api/cluster-unassigned-work', authMiddleware, async (req, res, next) 
     next(error);
   }
 });
+
+// =============================================================================
+// WEB PRODUCTIVITY PORTAL ROUTES (JWT-authenticated)
+// Standalone portal for HR/management to view employee analytics
+// No Jira integration — uses email/password auth
+// =============================================================================
+
+// Portal authentication (public - no auth required)
+app.post('/api/portal/auth/login', authLimiter, portalAuthController.login);
+app.post('/api/portal/auth/logout', portalAuthController.logout);
+
+// Portal password management (authenticated)
+app.post('/api/portal/auth/change-password', portalAuthMiddleware.verifyPortalToken, portalAuthController.changePassword);
+
+// Portal analytics endpoints (authenticated)
+app.get('/api/portal/dashboard', portalAuthMiddleware.verifyPortalToken, portalController.getDashboard);
+app.get('/api/portal/employees/list', portalAuthMiddleware.verifyPortalToken, portalController.getEmployeesList);
+app.get('/api/portal/employees', portalAuthMiddleware.verifyPortalToken, portalController.getEmployees);
+app.get('/api/portal/employees/:userId', portalAuthMiddleware.verifyPortalToken, portalController.getEmployeeDetail);
+app.get('/api/portal/employees/:userId/logs', portalAuthMiddleware.verifyPortalToken, portalController.getEmployeeLogs);
+app.get('/api/portal/time-logs', portalAuthMiddleware.verifyPortalToken, portalController.getTimeLogs);
+
+// Portal reports endpoints (authenticated)
+app.get('/api/portal/reports/data', portalAuthMiddleware.verifyPortalToken, portalReportsController.getReportData);
+app.get('/api/portal/reports/export/csv', portalAuthMiddleware.verifyPortalToken, portalReportsController.exportCSV);
+
+// Portal admin users endpoints (authenticated - superadmin only)
+app.get('/api/portal/admin-users', portalAuthMiddleware.verifyPortalToken, portalAdminUsersController.getAdminUsers);
+app.post('/api/portal/admin-users', portalAuthMiddleware.verifyPortalToken, portalAdminUsersController.createAdminUser);
+app.put('/api/portal/admin-users/:userId', portalAuthMiddleware.verifyPortalToken, portalAdminUsersController.updateAdminUser);
+app.delete('/api/portal/admin-users/:userId', portalAuthMiddleware.verifyPortalToken, portalAdminUsersController.deleteAdminUser);
 
 // Error handling middleware
 app.use((err, req, res, next) => {

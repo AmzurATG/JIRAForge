@@ -1,0 +1,454 @@
+/**
+ * Time Logs Page
+ * 
+ * Displays all employee activity logs with comprehensive filtering.
+ */
+
+import { useState, useEffect } from 'react';
+import { Search, Filter, Columns } from 'lucide-react';
+import { timeLogsApi } from '../api/timeLogs';
+import { employeesApi } from '../api/employees';
+import DataTable from '../components/common/DataTable';
+import DateRangePicker from '../components/common/DateRangePicker';
+import ErrorBanner from '../components/common/ErrorBanner';
+import { formatDate, formatDuration, formatDateTime } from '../utils/formatters';
+import { useDebounce } from '../hooks/useDebounce';
+
+function TimeLogsPage() {
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+  const [logs, setLogs] = useState([]);
+  const [totalCount, setTotalCount] = useState(0);
+  const [page, setPage] = useState(1);
+  const [showFilters, setShowFilters] = useState(true);
+  const [showColumnSelector, setShowColumnSelector] = useState(false);
+  
+  // Filters
+  const [classification, setClassification] = useState('');
+  const [selectedEmployee, setSelectedEmployee] = useState('');
+  const [appFilter, setAppFilter] = useState('');
+  const debouncedAppFilter = useDebounce(appFilter, 500);
+  const [durationMin, setDurationMin] = useState('');
+  const [durationMax, setDurationMax] = useState('');
+  const [confidenceMin, setConfidenceMin] = useState('');
+  const [confidenceMax, setConfidenceMax] = useState('');
+  
+  // Column visibility
+  const [visibleColumns, setVisibleColumns] = useState({
+    userName: true,
+    startTime: true,
+    endTime: true,
+    application: true,
+    windowTitle: true,
+    durationSeconds: true,
+    classification: true,
+    confidenceScore: true,
+  });
+  
+  // Employee list for filter
+  const [employees, setEmployees] = useState([]);
+  
+  // Default to last 7 days
+  const [dateRange, setDateRange] = useState(() => {
+    const to = new Date();
+    const from = new Date();
+    from.setDate(to.getDate() - 7);
+    return {
+      from: formatDate(from),
+      to: formatDate(to),
+    };
+  });
+
+  useEffect(() => {
+    loadEmployees();
+  }, []);
+
+  useEffect(() => {
+    loadTimeLogs();
+  }, [page, classification, selectedEmployee, debouncedAppFilter, durationMin, durationMax, confidenceMin, confidenceMax, dateRange]);
+
+  const loadEmployees = async () => {
+    try {
+      const response = await employeesApi.getSimpleList();
+      setEmployees(response.data || []);
+    } catch (err) {
+      console.error('Failed to load employees:', err);
+    }
+  };
+
+  const loadTimeLogs = async () => {
+    setLoading(true);
+    setError(null);
+    
+    try {
+      const response = await timeLogsApi.getList({
+        classification: classification || undefined,
+        employee: selectedEmployee || undefined,
+        app: debouncedAppFilter || undefined,
+        durationMin: durationMin ? parseInt(durationMin, 10) * 60 : undefined, // Convert minutes to seconds
+        durationMax: durationMax ? parseInt(durationMax, 10) * 60 : undefined,
+        confidenceMin: confidenceMin ? parseFloat(confidenceMin) / 100 : undefined, // Convert percentage to decimal
+        confidenceMax: confidenceMax ? parseFloat(confidenceMax) / 100 : undefined,
+        from: dateRange.from,
+        to: dateRange.to,
+        page,
+        limit: 10,
+      });
+      
+      setLogs(response.data || []);
+      setTotalCount(response.pagination?.totalCount || 0);
+    } catch (err) {
+      console.error('Failed to load time logs:', err);
+      setError(err.response?.data?.error || 'Failed to load time logs');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleDateRangeChange = (newRange) => {
+    setDateRange(newRange);
+    setPage(1);
+  };
+
+  const handleFilterChange = () => {
+    setPage(1);
+  };
+
+  const handleClearFilters = () => {
+    setClassification('');
+    setSelectedEmployee('');
+    setAppFilter('');
+    setDurationMin('');
+    setDurationMax('');
+    setConfidenceMin('');
+    setConfidenceMax('');
+    setPage(1);
+  };
+
+  const toggleColumnVisibility = (columnKey) => {
+    setVisibleColumns(prev => ({
+      ...prev,
+      [columnKey]: !prev[columnKey]
+    }));
+  };
+
+  const columnLabels = {
+    userName: 'Employee',
+    startTime: 'Start Time',
+    endTime: 'End Time',
+    application: 'Application',
+    windowTitle: 'Window Title',
+    durationSeconds: 'Duration',
+    classification: 'Classification',
+    confidenceScore: 'Confidence Score',
+  };
+
+  const columns = [
+    {
+      key: 'userName',
+      label: 'Employee',
+      sortable: true,
+    },
+    {
+      key: 'startTime',
+      label: 'Start Time',
+      sortable: true,
+      render: (value) => formatDateTime(value),
+    },
+    {
+      key: 'endTime',
+      label: 'End Time',
+      sortable: true,
+      render: (value) => formatDateTime(value),
+    },
+    {
+      key: 'application',
+      label: 'Application',
+      sortable: true,
+    },
+    {
+      key: 'windowTitle',
+      label: 'Window Title',
+      sortable: false,
+      render: (value) => (
+        <span className="truncate max-w-md block" title={value}>
+          {value || 'N/A'}
+        </span>
+      ),
+    },
+    {
+      key: 'durationSeconds',
+      label: 'Duration',
+      sortable: true,
+      render: (value) => formatDuration(value),
+    },
+    {
+      key: 'classification',
+      label: 'Classification',
+      sortable: true,
+      render: (value) => (
+        <span
+          className={`px-2 py-1 rounded text-xs font-semibold ${
+            value === 'productive'
+              ? 'bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200'
+              : 'bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200'
+          }`}
+        >
+          {value || 'N/A'}
+        </span>
+      ),
+    },
+    {
+      key: 'confidenceScore',
+      label: 'Confidence',
+      sortable: true,
+      render: (value) => {
+        const percentage = Math.round((value || 0) * 100);
+        const colorClass = percentage >= 80 
+          ? 'text-green-600 dark:text-green-400'
+          : percentage >= 50 
+            ? 'text-yellow-600 dark:text-yellow-400'
+            : 'text-red-600 dark:text-red-400';
+        return (
+          <span className={`font-medium ${colorClass}`}>
+            {percentage}%
+          </span>
+        );
+      },
+    },
+  ].filter(col => visibleColumns[col.key]);
+
+  return (
+    <div className="space-y-3">
+      {/* Page Header */}
+      <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2">
+        <div>
+          <h1 className="page-title">Time Logs</h1>
+          <p className="text-gray-500 dark:text-gray-400 text-xs">View and filter employee activity logs</p>
+        </div>
+        <div className="flex gap-2">
+          {/* Column Visibility Toggle */}
+          <div className="relative">
+            <button
+              onClick={() => setShowColumnSelector(!showColumnSelector)}
+              className="btn-secondary flex items-center gap-1.5"
+            >
+              <Columns className="w-3.5 h-3.5" />
+              Columns
+            </button>
+            {showColumnSelector && (
+              <div className="absolute right-0 mt-2 w-48 bg-white dark:bg-gray-800 rounded-lg shadow-xl border border-gray-200 dark:border-gray-700 z-20 overflow-hidden">
+                <div className="p-2 border-b border-gray-100 dark:border-gray-700">
+                  <h4 className="text-xs font-semibold text-gray-900 dark:text-gray-100">Show/Hide Columns</h4>
+                </div>
+                <div className="p-1 max-h-48 overflow-y-auto">
+                  {Object.keys(columnLabels).map((key) => (
+                    <label key={key} className="flex items-center gap-2 px-2 py-1.5 cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-700/50 rounded transition-colors">
+                      <input
+                        type="checkbox"
+                        checked={visibleColumns[key]}
+                        onChange={() => toggleColumnVisibility(key)}
+                        className="w-3.5 h-3.5 rounded border-gray-300 dark:border-gray-600 text-primary-600 focus:ring-primary-500"
+                      />
+                      <span className="text-xs text-gray-700 dark:text-gray-300">{columnLabels[key]}</span>
+                    </label>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+          <button
+            onClick={() => setShowFilters(!showFilters)}
+            className={`btn-secondary flex items-center gap-1.5 ${showFilters ? 'bg-primary-50 dark:bg-primary-900/20 border-primary-200 dark:border-primary-800' : ''}`}
+          >
+            <Filter className="w-3.5 h-3.5" />
+            {showFilters ? 'Hide Filters' : 'Show Filters'}
+          </button>
+        </div>
+      </div>
+
+      {error && (
+        <ErrorBanner message={error} onClose={() => setError(null)} />
+      )}
+
+      {/* Filters Panel */}
+      {showFilters && (
+        <div className="card-elevated">
+          <div className="flex items-center justify-between mb-3">
+            <h3 className="section-title">
+              <div className="p-1 bg-primary-100 dark:bg-primary-900/30 rounded">
+                <Filter className="w-3 h-3 text-primary-600 dark:text-primary-400" />
+              </div>
+              Filters
+            </h3>
+            <button
+              onClick={handleClearFilters}
+              className="text-xs text-primary-600 dark:text-primary-400 hover:text-primary-700 dark:hover:text-primary-300 font-medium"
+            >
+              Clear All
+            </button>
+          </div>
+          
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3 mb-3">
+            {/* Classification Filter */}
+            <div>
+              <label className="filter-label">Classification</label>
+              <select
+                value={classification}
+                onChange={(e) => {
+                  setClassification(e.target.value);
+                  handleFilterChange();
+                }}
+                className="select-field"
+              >
+                <option value="">All Classifications</option>
+                <option value="productive">Productive</option>
+                <option value="non-productive">Non-Productive</option>
+              </select>
+            </div>
+
+            {/* Employee Filter */}
+            <div>
+              <label className="filter-label">Employee</label>
+              <select
+                value={selectedEmployee}
+                onChange={(e) => {
+                  setSelectedEmployee(e.target.value);
+                  handleFilterChange();
+                }}
+                className="select-field"
+              >
+                <option value="">All Employees</option>
+                {employees.map((emp) => (
+                  <option key={emp.userId} value={emp.userId}>
+                    {emp.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            {/* Application Filter */}
+            <div>
+              <label className="filter-label">Application</label>
+              <div className="relative">
+                <Search className="absolute left-3.5 top-1/2 transform -translate-y-1/2 w-4 h-4 text-gray-400" />
+                <input
+                  type="text"
+                  placeholder="Search applications..."
+                  value={appFilter}
+                  onChange={(e) => setAppFilter(e.target.value)}
+                  onKeyUp={handleFilterChange}
+                  className="input-field pl-10"
+                />
+              </div>
+            </div>
+
+            {/* Date Range */}
+            <div>
+              <label className="filter-label">Date Range</label>
+              <DateRangePicker
+                from={dateRange.from}
+                to={dateRange.to}
+                onChange={handleDateRangeChange}
+              />
+            </div>
+          </div>
+
+          {/* Advanced Filters */}
+          <div className="pt-3 border-t border-gray-100 dark:border-gray-700/50">
+            <p className="text-[10px] font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-2">Advanced Filters</p>
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3">
+              {/* Duration Min */}
+              <div>
+                <label className="filter-label">Min Duration (min)</label>
+                <input
+                  type="number"
+                  min="0"
+                  placeholder="0"
+                  value={durationMin}
+                  onChange={(e) => setDurationMin(e.target.value)}
+                  onBlur={handleFilterChange}
+                  onKeyUp={(e) => e.key === 'Enter' && handleFilterChange()}
+                  className="input-field"
+                />
+              </div>
+
+              {/* Duration Max */}
+              <div>
+                <label className="filter-label">Max Duration (min)</label>
+                <input
+                  type="number"
+                  min="0"
+                  placeholder="No limit"
+                  value={durationMax}
+                  onChange={(e) => setDurationMax(e.target.value)}
+                  onBlur={handleFilterChange}
+                  onKeyUp={(e) => e.key === 'Enter' && handleFilterChange()}
+                  className="input-field"
+                />
+              </div>
+
+              {/* Confidence Min */}
+              <div>
+                <label className="filter-label">Min Confidence (%)</label>
+                <input
+                  type="number"
+                  min="0"
+                  max="100"
+                  placeholder="0"
+                  value={confidenceMin}
+                  onChange={(e) => setConfidenceMin(e.target.value)}
+                  onBlur={handleFilterChange}
+                  onKeyUp={(e) => e.key === 'Enter' && handleFilterChange()}
+                  className="input-field"
+                />
+              </div>
+
+              {/* Confidence Max */}
+              <div>
+                <label className="filter-label">Max Confidence (%)</label>
+                <input
+                  type="number"
+                  min="0"
+                  max="100"
+                  placeholder="100"
+                  value={confidenceMax}
+                  onChange={(e) => setConfidenceMax(e.target.value)}
+                  onBlur={handleFilterChange}
+                  onKeyUp={(e) => e.key === 'Enter' && handleFilterChange()}
+                  className="input-field"
+                />
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Results Summary */}
+      <div className="card">
+        <div className="flex items-center justify-between mb-2">
+          <div className="flex items-center gap-2">
+            <h3 className="section-title">Activity Records</h3>
+            <span className="badge-info">{totalCount} total</span>
+          </div>
+        </div>
+
+        {/* Time Logs Table */}
+        <DataTable
+          columns={columns}
+          data={logs}
+          loading={loading}
+          emptyMessage="No time logs found"
+          pagination={{
+            page,
+            limit: 10,
+            totalCount,
+            onPageChange: setPage,
+          }}
+        />
+      </div>
+    </div>
+  );
+}
+
+export default TimeLogsPage;
