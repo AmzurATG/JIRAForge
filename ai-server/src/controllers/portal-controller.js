@@ -54,12 +54,11 @@ async function getEmployeesList(req, res) {
     const { orgId } = req.portalUser;
     const { search } = req.query;
     
+    logger.info('[Portal] getEmployeesList called', { orgId, search });
+    
     const employees = await portalService.getEmployeesList(orgId, search);
     
-    return res.json({ 
-      success: true, 
-      data: employees
-    });
+    logger.info('[Portal] getEmployeesList success', { orgId, count: employees.length });
     
   } catch (error) {
     logger.error('[Portal] Get employees list failed', error);
@@ -188,10 +187,14 @@ async function getTimeLogs(req, res) {
     const { orgId } = req.portalUser;
     const { classification, employee, app, from, to, durationMin, durationMax, confidenceMin, confidenceMax, page = 1, limit = 20 } = req.query;
     
+    logger.info('[Portal] getTimeLogs called', { orgId, from, to, page, limit });
+    
     const filters = { classification, employee, app, from, to, durationMin, durationMax, confidenceMin, confidenceMax };
     const pagination = { page: parseInt(page), limit: parseInt(limit) };
     
     const result = await portalService.getTimeLogs(orgId, filters, pagination);
+    
+    logger.info('[Portal] getTimeLogs success', { orgId, count: result.data?.length });
     
     return res.json({ 
       success: true, 

@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { Link } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import ErrorBanner from '../components/common/ErrorBanner';
 
@@ -56,6 +57,15 @@ function LoginPage() {
                 autoComplete="off"
                 required
               />
+            </div>
+            
+            <div className="text-right">
+              <Link
+                to="/forgot-password"
+                className="text-sm text-primary-600 hover:text-primary-700 dark:text-primary-400 dark:hover:text-primary-300"
+              >
+                Forgot password?
+              </Link>
             </div>
             
             <button

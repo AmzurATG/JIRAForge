@@ -46,6 +46,12 @@ function SettingsPage() {
     confirmPassword: ''
   });
 
+  // Admin reset password (for other users)
+  const [showAdminResetModal, setShowAdminResetModal] = useState(false);
+  const [resetTargetUser, setResetTargetUser] = useState(null);
+  const [adminResetPassword, setAdminResetPassword] = useState('');
+  const [adminResetConfirm, setAdminResetConfirm] = useState('');
+
   useEffect(() => {
     // Only load admins if user is superadmin
     if (user?.role === 'superadmin') {
@@ -88,6 +94,40 @@ function SettingsPage() {
       role: admin.role
     });
     setShowModal(true);
+  };
+
+  const handleResetPassword = (admin) => {
+    setResetTargetUser(admin);
+    setAdminResetPassword('');
+    setAdminResetConfirm('');
+    setShowAdminResetModal(true);
+  };
+
+  const handleAdminResetSubmit = async (e) => {
+    e.preventDefault();
+    setError(null);
+    
+    if (adminResetPassword !== adminResetConfirm) {
+      setError('Passwords do not match');
+      return;
+    }
+    
+    if (adminResetPassword.length < 8) {
+      setError('Password must be at least 8 characters');
+      return;
+    }
+    
+    try {
+      await authApi.adminResetPassword(resetTargetUser.id, adminResetPassword);
+      setSuccess(`Password reset successfully for ${resetTargetUser.display_name}`);
+      setShowAdminResetModal(false);
+      setResetTargetUser(null);
+      setAdminResetPassword('');
+      setAdminResetConfirm('');
+    } catch (err) {
+      console.error('Failed to reset password:', err);
+      setError(err.response?.data?.error || 'Failed to reset password');
+    }
   };
 
   const handleDelete = (admin) => {
@@ -221,6 +261,16 @@ function SettingsPage() {
             title="Edit"
           >
             <Edit2 className="w-4 h-4" />
+          </button>
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              handleResetPassword(admin);
+            }}
+            className="p-1 hover:bg-blue-100 dark:hover:bg-blue-900 rounded text-blue-600"
+            title="Reset Password"
+          >
+            <Key className="w-4 h-4" />
           </button>
           <button
             onClick={(e) => {
@@ -448,6 +498,75 @@ function SettingsPage() {
                   className="px-4 py-2 rounded bg-primary-600 text-white hover:bg-primary-700"
                 >
                   Change Password
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Admin Reset Password Modal */}
+      {showAdminResetModal && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+          <div className="bg-white dark:bg-gray-800 rounded-lg p-6 max-w-md w-full mx-4">
+            <h2 className="text-xl font-semibold mb-4">Reset Password</h2>
+            <p className="text-sm text-gray-600 dark:text-gray-400 mb-4">
+              Set a new password for <strong>{resetTargetUser?.display_name}</strong> ({resetTargetUser?.email})
+            </p>
+            
+            {error && (
+              <div className="mb-4 p-3 bg-red-100 dark:bg-red-900/50 text-red-800 dark:text-red-200 rounded">
+                {error}
+              </div>
+            )}
+            
+            <form onSubmit={handleAdminResetSubmit} className="space-y-4">
+              <div>
+                <label className="block text-sm font-medium mb-2">New Password</label>
+                <input
+                  type="password"
+                  value={adminResetPassword}
+                  onChange={(e) => setAdminResetPassword(e.target.value)}
+                  className="w-full px-3 py-2 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900"
+                  placeholder="At least 8 characters"
+                  autoComplete="new-password"
+                  required
+                  minLength={8}
+                />
+              </div>
+              
+              <div>
+                <label className="block text-sm font-medium mb-2">Confirm New Password</label>
+                <input
+                  type="password"
+                  value={adminResetConfirm}
+                  onChange={(e) => setAdminResetConfirm(e.target.value)}
+                  className="w-full px-3 py-2 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900"
+                  placeholder="Re-enter password"
+                  autoComplete="new-password"
+                  required
+                  minLength={8}
+                />
+              </div>
+              
+              <div className="flex gap-2 justify-end">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowAdminResetModal(false);
+                    setResetTargetUser(null);
+                    setAdminResetPassword('');
+                    setAdminResetConfirm('');
+                  }}
+                  className="px-4 py-2 rounded border border-gray-300 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-800"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="px-4 py-2 rounded bg-blue-600 text-white hover:bg-blue-700"
+                >
+                  Reset Password
                 </button>
               </div>
             </form>

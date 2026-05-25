@@ -88,25 +88,39 @@ async function createAdminUser(req, res) {
       });
     }
     
-    // Check if admin with this email already exists
-    const existingAdmin = await portalDbService.getAdminByEmail(email);
-    if (existingAdmin) {
-      return res.status(409).json({ 
-        success: false, 
-        error: 'Admin user with this email already exists' 
-      });
-    }
+    // SECURITY FIX: Remove duplicate check - let database handle it
+    // This prevents TOCTOU race conditions on concurrent user creation
     
     // Hash password
     const passwordHash = await bcrypt.hash(password, 10);
     
-    // Create admin
-    const newAdmin = await portalDbService.createAdmin(orgId, {
-      email,
-      passwordHash,
-      displayName,
-      role: newUserRole
-    });
+    // Create admin - wrap in try-catch to handle unique constraint violations gracefully
+    let newAdmin;
+    try {
+      newAdmin = await portalDbService.createAdmin(orgId, {
+        email: email.toLowerCase().trim(),
+        passwordHash,
+        displayName,
+        role: newUserRole
+      });
+    } catch (dbError) {
+      // Check if it's a unique constraint violation (PostgreSQL error code 23505)
+      if (dbError.code === '23505' || 
+          dbError.message?.includes('duplicate key') ||
+          dbError.message?.includes('unique constraint')) {
+        logger.warn('[PortalAdminUsers] Duplicate email on create', { 
+          email, 
+          orgId,
+          error: dbError.message 
+        });
+        return res.status(409).json({ 
+          success: false, 
+          error: 'Admin user with this email already exists' 
+        });
+      }
+      // Re-throw if it's a different error
+      throw dbError;
+    }
     
     // Don't return password hash
     const { password_hash, ...adminWithoutPassword } = newAdmin;

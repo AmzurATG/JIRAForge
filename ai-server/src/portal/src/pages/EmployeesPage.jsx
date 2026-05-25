@@ -98,13 +98,13 @@ function EmployeesPage() {
       key: 'productiveHours',
       label: 'Productive Hours',
       sortable: true,
-      render: (value) => value?.toFixed(1) || '0.0',
+      render: (value) => value?.toFixed(2) || '0.00',
     },
     {
       key: 'nonProductiveHours',
       label: 'Non-Productive Hours',
       sortable: true,
-      render: (value) => value?.toFixed(1) || '0.0',
+      render: (value) => value?.toFixed(2) || '0.00',
     },
     {
       key: 'productivityPercentage',

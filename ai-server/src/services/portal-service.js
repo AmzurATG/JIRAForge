@@ -49,10 +49,11 @@ class PortalService {
     const supabase = getClient();
     if (!supabase) throw new Error('Supabase client not initialized');
     
-    // Query activity records for the date range (all orgs)
+    // Query activity records for the date range with organization_id filter
     const { data: activities, error } = await supabase
       .from('activity_records')
       .select('classification, duration_seconds, user_id, work_date')
+      .eq('organization_id', orgId)
       .gte('work_date', from)
       .lte('work_date', to)
       .neq('is_idle', true);
@@ -123,10 +124,11 @@ class PortalService {
     const supabase = getClient();
     if (!supabase) throw new Error('Supabase client not initialized');
     
-    // Get all users directly (much faster than aggregating activities)
+    // Get all users for this org
     let userQuery = supabase
       .from('users')
       .select('id, display_name, email')
+      .eq('organization_id', orgId)
       .order('display_name', { ascending: true });
     
     if (search) {
@@ -175,10 +177,11 @@ class PortalService {
       to = to || formatDate(toDate);
     }
     
-    // First get activity data for the date range (all orgs)
+    // First get activity data for the date range with organization_id filter
     let activityQuery = supabase
       .from('activity_records')
       .select('user_id, classification, duration_seconds, start_time')
+      .eq('organization_id', orgId)
       .neq('is_idle', true)
       .gte('work_date', from)
       .lte('work_date', to);
@@ -222,6 +225,7 @@ class PortalService {
     let userQuery = supabase
       .from('users')
       .select('id, display_name, email')
+      .eq('organization_id', orgId)
       .in('id', userIds);
     
     if (search) {
@@ -294,10 +298,11 @@ class PortalService {
     const supabase = getClient();
     if (!supabase) throw new Error('Supabase client not initialized');
     
-    // Get user info (all orgs)
+    // Get user info with organization_id filter
     const { data: user, error: userError } = await supabase
       .from('users')
       .select('id, display_name, email')
+      .eq('organization_id', orgId)
       .eq('id', userId)
       .single();
     
@@ -306,10 +311,11 @@ class PortalService {
       throw userError;
     }
     
-    // Get activity data (all orgs)
+    // Get activity data with organization_id filter
     const { data: activities, error: activityError } = await supabase
       .from('activity_records')
       .select('classification, duration_seconds, work_date')
+      .eq('organization_id', orgId)
       .eq('user_id', userId)
       .gte('work_date', from)
       .lte('work_date', to)
@@ -399,7 +405,7 @@ class PortalService {
       to = to || formatDate(toDate);
     }
     
-    // Build query (all orgs)
+    // Build query with organization_id filter
     let query = supabase
       .from('activity_records')
       .select(`
@@ -414,6 +420,7 @@ class PortalService {
         ocr_confidence,
         users!activity_records_user_id_fkey!inner(display_name, email)
       `, { count: 'estimated' })  // Use estimated count instead of exact to avoid timeout
+      .eq('organization_id', orgId)
       .neq('is_idle', true);
     
     // Apply filters

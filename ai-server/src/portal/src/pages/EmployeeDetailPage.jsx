@@ -190,14 +190,14 @@ function EmployeeDetailPage() {
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
         <KPICard
           title="Productive Hours"
-          value={employeeDetail?.summary?.productiveHours?.toFixed(1) || '0.0'}
+          value={employeeDetail?.summary?.productiveHours?.toFixed(2) || '0.00'}
           subtitle="Hours tracked"
           icon={Clock}
           variant="success"
         />
         <KPICard
           title="Non-Productive Hours"
-          value={employeeDetail?.summary?.nonProductiveHours?.toFixed(1) || '0.0'}
+          value={employeeDetail?.summary?.nonProductiveHours?.toFixed(2) || '0.00'}
           subtitle="Hours tracked"
           icon={Activity}
           variant="danger"
@@ -211,7 +211,7 @@ function EmployeeDetailPage() {
         />
         <KPICard
           title="Total Hours"
-          value={((employeeDetail?.summary?.productiveHours || 0) + (employeeDetail?.summary?.nonProductiveHours || 0)).toFixed(1)}
+          value={((employeeDetail?.summary?.productiveHours || 0) + (employeeDetail?.summary?.nonProductiveHours || 0)).toFixed(2)}
           subtitle="Combined time"
           icon={BarChart3}
           variant="default"

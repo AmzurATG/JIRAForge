@@ -4,6 +4,8 @@ import { AuthProvider } from './contexts/AuthContext';
 
 // Pages - Lazy loaded with prefetch hints
 const LoginPage = lazy(() => import('./pages/LoginPage'));
+const ForgotPasswordPage = lazy(() => import('./pages/ForgotPasswordPage'));
+const ResetPasswordPage = lazy(() => import('./pages/ResetPasswordPage'));
 const DashboardPage = lazy(() => import('./pages/DashboardPage'));
 const EmployeesPage = lazy(() => import('./pages/EmployeesPage'));
 const EmployeeDetailPage = lazy(() => import('./pages/EmployeeDetailPage'));
@@ -29,6 +31,18 @@ function App() {
           <Route path="/login" element={
             <Suspense fallback={<PageLoader />}>
               <LoginPage />
+            </Suspense>
+          } />
+          
+          <Route path="/forgot-password" element={
+            <Suspense fallback={<PageLoader />}>
+              <ForgotPasswordPage />
+            </Suspense>
+          } />
+          
+          <Route path="/reset-password" element={
+            <Suspense fallback={<PageLoader />}>
+              <ResetPasswordPage />
             </Suspense>
           } />
           

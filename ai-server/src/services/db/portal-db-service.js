@@ -232,6 +232,127 @@ async function updateLastLogin(orgId, userId) {
   }
 }
 
+/**
+ * Set password reset token on user.
+ * SECURITY: Token should be hashed with bcrypt before passing to this function.
+ * 
+ * @param {string} orgId - Organization ID
+ * @param {string} userId - User ID
+ * @param {string} tokenHash - Hashed reset token (bcrypt)
+ * @param {Date} expiresAt - Expiration timestamp
+ * @returns {Promise<void>}
+ */
+async function setPasswordResetToken(orgId, userId, tokenHash, expiresAt) {
+  const supabase = getClient();
+  if (!supabase) {
+    throw new Error('Supabase client not initialized');
+  }
+  
+  if (!orgId || !userId || !tokenHash) {
+    throw new Error('org_id, user_id, and tokenHash are required');
+  }
+  
+  const { error } = await supabase
+    .from('portal_admin_users')
+    .update({
+      reset_token: tokenHash,  // Store bcrypt hash, not plaintext
+      reset_token_expires_at: expiresAt.toISOString()
+    })
+    .eq('org_id', orgId)
+    .eq('id', userId);
+    
+  if (error) {
+    logger.error('[PortalDB] Set password reset token failed', { orgId, userId, error });
+    throw error;
+  }
+}
+
+/**
+ * Get all admins with active (non-expired) reset tokens.
+ * SECURITY: Tokens are hashed, so we can't query by token directly.
+ * Caller must iterate through results and use bcrypt.compare() to find match.
+ * 
+ * @returns {Promise<Array>} Array of admin users with active reset tokens
+ */
+async function getAdminsWithActiveResetToken() {
+  const supabase = getClient();
+  if (!supabase) {
+    throw new Error('Supabase client not initialized');
+  }
+  
+  const now = new Date().toISOString();
+  const { data, error } = await supabase
+    .from('portal_admin_users')
+    .select('*')
+    .not('reset_token', 'is', null)
+    .gt('reset_token_expires_at', now);  // Only non-expired tokens
+    
+  if (error) {
+    logger.error('[PortalDB] Get admins with active reset tokens failed', { error });
+    throw error;
+  }
+  
+  return data || [];
+}
+
+/**
+ * @deprecated Use getAdminsWithActiveResetToken() instead.
+ * Get admin by password reset token.
+ * 
+ * @param {string} token - Reset token
+ * @returns {Promise<Object|null>} Admin user or null
+ */
+async function getAdminByResetToken(token) {
+  const supabase = getClient();
+  if (!supabase) {
+    throw new Error('Supabase client not initialized');
+  }
+  
+  const { data, error } = await supabase
+    .from('portal_admin_users')
+    .select('*')
+    .eq('reset_token', token)
+    .single();
+    
+  if (error) {
+    if (error.code === 'PGRST116') {
+      return null;
+    }
+    logger.error('[PortalDB] Get admin by reset token failed', { error });
+    throw error;
+  }
+  
+  return data;
+}
+
+/**
+ * Clear password reset token after use.
+ * 
+ * @param {string} orgId - Organization ID
+ * @param {string} userId - User ID
+ * @returns {Promise<void>}
+ */
+async function clearPasswordResetToken(orgId, userId) {
+  const supabase = getClient();
+  if (!supabase) {
+    throw new Error('Supabase client not initialized');
+  }
+  
+  const { error } = await supabase
+    .from('portal_admin_users')
+    .update({
+      reset_token: null,
+      reset_token_expires_at: null
+    })
+    .eq('org_id', orgId)
+    .eq('id', userId);
+    
+  if (error) {
+    logger.error('[PortalDB] Clear password reset token failed', { orgId, userId, error });
+    throw error;
+  }
+}
+
 module.exports = {
   getAdminByEmail,
   getAdminById,
@@ -239,5 +360,9 @@ module.exports = {
   createAdmin,
   updateAdmin,
   deleteAdmin,
-  updateLastLogin
+  updateLastLogin,
+  setPasswordResetToken,
+  getAdminsWithActiveResetToken,  // New: for hashed token lookup
+  getAdminByResetToken,  // Deprecated: kept for backward compatibility
+  clearPasswordResetToken
 };
