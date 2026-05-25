@@ -60,6 +60,14 @@ import fnmatch
 # OCR for text extraction
 from ocr import extract_text_from_image
 
+# Multi-monitor focused capture (addresses multi-display OCR mismatch)
+from monitor_capture import (
+    capture_focused_monitor,
+    get_focused_monitor_work_rect,
+    log_display_environment,
+    get_capture_stats,
+)
+
 # OCR dependency check is deferred until after AI server config is fetched
 # (so it uses the correct engines from the server, not local defaults)
 
@@ -3607,10 +3615,17 @@ class PausePopupWindow:
             window_width = 340  # Slightly wider for better visibility
             # Selection mode has smaller height (no clock display)
             window_height = 280 if self.selection_mode else 420
-            screen_width = self.window.winfo_screenwidth()
-            screen_height = self.window.winfo_screenheight()
-            x = screen_width - window_width - 20
-            y = screen_height - window_height - 60  # Above taskbar
+            # Position popup on the focused monitor's work area (P2-14)
+            default_fallback = (
+                0, 0,
+                self.window.winfo_screenwidth(),
+                self.window.winfo_screenheight()
+            )
+            left, top, right, bottom = get_focused_monitor_work_rect(
+                fallback=default_fallback
+            )
+            x = right - window_width - 20
+            y = bottom - window_height - 20  # Work rect excludes taskbar
             self.window.geometry(f"{window_width}x{window_height}+{x}+{y}")
 
             # Colors
@@ -4842,18 +4857,13 @@ class LocalOCRProcessor:
         """
         now = time.time()
         if not force and (now - self._last_ocr_time) < self._min_interval:
-            try:
-                screenshot = ImageGrab.grab()
-            except Exception:
-                screenshot = None
+            screenshot = capture_focused_monitor()
             return {'screenshot': screenshot, 'throttled': True}
 
-        try:
-            screenshot = ImageGrab.grab()
-            return {'screenshot': screenshot, 'throttled': False}
-        except Exception as e:
-            print(f"[OCR] Screenshot capture failed: {e}")
-            return {'screenshot': None, 'throttled': False}
+        screenshot = capture_focused_monitor()
+        if screenshot is None:
+            print("[OCR] Screenshot capture skipped (no valid monitor target)")
+        return {'screenshot': screenshot, 'throttled': False}
 
     def shutdown(self):
         """Stop the OCR worker thread gracefully."""
@@ -4889,10 +4899,7 @@ class LocalOCRProcessor:
         if not force and (now - self._last_ocr_time) < self._min_interval:
             # Throttled: still capture the screenshot so the caller can save it
             # for later backfill with the ORIGINAL image, not a new one
-            try:
-                screenshot = ImageGrab.grab()
-            except Exception:
-                screenshot = None
+            screenshot = capture_focused_monitor()
             return {
                 'text': None, 'method': None, 'confidence': 0.0,
                 'error_message': None, 'throttled': True,
@@ -4900,7 +4907,13 @@ class LocalOCRProcessor:
             }
 
         try:
-            screenshot = ImageGrab.grab()
+            screenshot = capture_focused_monitor()
+            if screenshot is None:
+                return {
+                    'text': None, 'method': None, 'confidence': 0.0,
+                    'error_message': 'No valid monitor target (minimized/cloaked)',
+                    'throttled': False, 'screenshot': None
+                }
             ocr_start = time.perf_counter()
 
             ocr_result = extract_text_from_image(
@@ -9377,9 +9390,11 @@ class TimeTracker:
         return headers
 
     def capture_screenshot(self):
-        """Capture screenshot and return PIL Image"""
+        """Capture screenshot and return PIL Image (focused monitor aware)"""
         try:
-            screenshot = ImageGrab.grab()
+            screenshot = capture_focused_monitor()
+            if screenshot is None:
+                return None
             screenshot_bytes = screenshot.tobytes()
             current_hash = hashlib.md5(screenshot_bytes).hexdigest()
             
@@ -13727,6 +13742,9 @@ def main():
     try:
         if APP_LOGGER_AVAILABLE:
             logger.info("Initializing TimeTracker application...")
+        
+        # Log display/monitor environment at startup (P1-6, P1-7 diagnostics)
+        log_display_environment()
         
         app = TimeTracker()
         
