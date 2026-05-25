@@ -383,10 +383,10 @@ SCREENSHOT_MONITORING_HARD_DISABLED = True
 # Embedded credentials (for production builds - no .env file needed)
 # SECURITY: All sensitive keys moved to AI Server - fetched at runtime after authentication
 EMBEDDED_CONFIG = {
-    'ATLASSIAN_CLIENT_ID': 'k2Xwzy8c1g3Wk6Xpbeev0x70CXEp9lJH',
+    'ATLASSIAN_CLIENT_ID': 'Q8HT4Jn205AuTiAarj088oWNDrOqwvM5',
     # REMOVED: ATLASSIAN_CLIENT_SECRET - now on AI Server only (security fix)
     # REMOVED: SUPABASE_URL, SUPABASE_ANON_KEY, SUPABASE_SERVICE_ROLE_KEY - fetched from AI Server
-    'AI_SERVER_URL': 'https://timetracker-forge.amzur.com',  # AI Server for secure token exchange & config
+    'AI_SERVER_URL': 'https://forgesync.amzur.com',  # AI Server for secure token exchange & config
     'CAPTURE_INTERVAL': '300',
     'WEB_PORT': '51777',
 }
@@ -1897,7 +1897,7 @@ class AtlassianAuthManager:
         self.redirect_uri = f'http://localhost:{web_port}/auth/callback'
         self.authorization_url = 'https://auth.atlassian.com/authorize'
         # Token exchange now goes through AI Server
-        self.ai_server_url = get_env_var('AI_SERVER_URL', 'https://timetracker-forge.amzur.com')
+        self.ai_server_url = get_env_var('AI_SERVER_URL', 'https://forgesync.amzur.com')
         self.store_path = store_path or os.path.join(get_app_data_dir(), 'time_tracker_auth.json')
         self.metadata_path = os.path.join(get_app_data_dir(), 'auth_metadata.json')  # For non-sensitive data
 
@@ -2701,7 +2701,7 @@ class AtlassianAuthManager:
             print("[ERROR] No valid Atlassian token - cannot fetch OCR config")
             return False
 
-        ai_server_url = get_env_var('AI_SERVER_URL', 'https://timetracker-forge.amzur.com')
+        ai_server_url = get_env_var('AI_SERVER_URL', 'https://forgesync.amzur.com')
         
         try:
             print("[INFO] Fetching OCR config from AI Server...")
@@ -7245,7 +7245,7 @@ class TimeTracker:
             return None
         try:
             result = self.supabase.table('user_jira_issues_cache') \
-                .select('issue_key, issue_summary, project_key, status, description, labels, updated_at') \
+                .select('issue_key, issue_summary, project_key, status, description, labels, updated_at, priority') \
                 .eq('user_id', self.current_user_id) \
                 .eq('organization_id', self.organization_id) \
                 .limit(50) \
@@ -7271,7 +7271,8 @@ class TimeTracker:
                     'project': row.get('project_key', ''),
                     'description': row.get('description', ''),
                     'labels': labels,
-                    'updated': row.get('updated_at', '')
+                    'updated': row.get('updated_at', ''),
+                    'priority': row.get('priority', '')
                 })
 
             print(f"[INFO] user_jira_issues_cache: loaded {len(formatted)} issues from Supabase")
@@ -7313,7 +7314,7 @@ class TimeTracker:
                 json={
                     'jql': jql,
                     'maxResults': 50,
-                    'fields': ['summary', 'status', 'project', 'description', 'labels', 'updated']
+                    'fields': ['summary', 'status', 'project', 'description', 'labels', 'updated', 'priority']
                 },
                 headers={
                     'Authorization': f'Bearer {access_token}',
@@ -7335,7 +7336,7 @@ class TimeTracker:
                         json={
                             'jql': jql,
                             'maxResults': 50,
-                            'fields': ['summary', 'status', 'project', 'description', 'labels', 'updated']
+                            'fields': ['summary', 'status', 'project', 'description', 'labels', 'updated', 'priority']
                         },
                         headers={
                             'Authorization': f'Bearer {access_token}',
@@ -7364,7 +7365,7 @@ class TimeTracker:
                         json={
                             'jql': fallback_jql_open,
                             'maxResults': 50,
-                            'fields': ['summary', 'status', 'project', 'description', 'labels', 'updated']
+                            'fields': ['summary', 'status', 'project', 'description', 'labels', 'updated', 'priority']
                         },
                         headers={
                             'Authorization': f'Bearer {access_token}',
@@ -7432,7 +7433,8 @@ class TimeTracker:
                         'project': fields['project']['key'],
                         'description': description,
                         'labels': labels,
-                        'updated': fields.get('updated', '')
+                        'updated': fields.get('updated', ''),
+                        'priority': fields.get('priority', {}).get('name', '')
                     })
 
                 return formatted_issues
@@ -11242,7 +11244,34 @@ class TimeTracker:
         return icon
     
     def get_tray_icon_state(self):
-        """Determine the current state for tray icon color"""
+        """Determine the current state for tray icon color
+        
+        This method evaluates multiple state conditions in priority order:
+        1. Not logged in → RED
+        2. Anonymous mode → ORANGE (tracking) or RED (not tracking)
+        3. Manually paused → YELLOW
+        4. System idle → ORANGE
+        5. Tracking active → Check auth:
+           - Auth valid → GREEN (syncing normally)
+           - Auth failed → ORANGE (queuing locally)
+        6. Logged in but not tracking → BLUE
+        
+        Color meanings:
+        - 🔴 RED: Not logged in / Not tracking
+        - 🔵 BLUE: Logged in but tracking not started
+        - 🟢 GREEN: Tracking AND authenticated AND syncing normally
+        - 🟠 ORANGE: Tracking locally but cannot sync to server
+          (due to: auth failure, offline mode, idle state, or anonymous mode)
+        - 🟡 YELLOW: Manually paused by user
+        
+        Returns:
+            str: Color state ('red', 'blue', 'green', 'orange', or 'yellow')
+        
+        Note:
+            - GREEN now guarantees both tracking AND sync capability
+            - ORANGE indicates data is being queued locally for later upload
+            - Auth check may trigger automatic token refresh (< 6s in worst case)
+        """
         if not self.current_user and not (self.current_user_id and self.current_user_id.startswith('anonymous_')):
             return 'red'  # Not logged in and not in anonymous mode
         elif self.current_user_id and self.current_user_id.startswith('anonymous_'):
@@ -11255,6 +11284,9 @@ class TimeTracker:
         elif self.is_idle:
             return 'orange'  # Logged in, tracking enabled, but idle (no activity)
         elif self.tracking_active:
+            # Check authentication health before showing green
+            if not self.auth_manager.is_authenticated():
+                return 'orange'  # Tracking locally but cannot sync (auth issue)
             return 'green'  # Logged in and actively tracking
         else:
             return 'blue'  # Logged in but tracking not started

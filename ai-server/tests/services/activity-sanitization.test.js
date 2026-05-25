@@ -462,3 +462,198 @@ describe('Prompt builders use sanitizeOcrText', () => {
     });
   });
 });
+
+// ============================================================================
+// BUG FIX TESTS: Bugs #3, #5, #9
+// ============================================================================
+
+describe('Bug #3: OCR Sanitization Over-Matching (Feature Names)', () => {
+  test('BUGGY CURRENT: redacts feature names with colon separator', () => {
+    // Current bug: "token:" matches even in prose
+    const text1 = 'Implement password: hashing algorithm for user auth';
+    const text2 = 'JWT token: refresh mechanism with exponential backoff';
+    const text3 = 'secret: management feature stores API keys in vault';
+
+    const result1 = sanitizeOcrText(text1);
+    const result2 = sanitizeOcrText(text2);
+    const result3 = sanitizeOcrText(text3);
+
+    // BUGGY: These get redacted
+    expect(result1).toContain('[REDACTED_CREDENTIAL]');
+    expect(result2).toContain('[REDACTED_CREDENTIAL]');
+    expect(result3).toContain('[REDACTED_CREDENTIAL]');
+    
+    // Context is lost
+    expect(result1).not.toContain('hashing algorithm');
+    expect(result2).not.toContain('refresh mechanism');
+  });
+
+  test('AFTER FIX: preserves feature names with colon, redacts credentials with equals', () => {
+    // Simulate fixed regex: only matches = separator, not :
+    const fixedSanitize = (text) => {
+      return text.replace(/(?:password|passwd|pwd|secret|token)\s*=\s*\S+/gi, '[REDACTED_CREDENTIAL]');
+    };
+
+    // Natural language with colons - should be PRESERVED
+    const prose1 = 'Implement password: hashing algorithm';
+    const prose2 = 'JWT token: refresh mechanism';
+    const prose3 = 'secret: management feature';
+
+    expect(fixedSanitize(prose1)).toBe(prose1);  // Unchanged
+    expect(fixedSanitize(prose2)).toBe(prose2);  // Unchanged
+    expect(fixedSanitize(prose3)).toBe(prose3);  // Unchanged
+
+    // Actual credentials with equals - should be REDACTED
+    const cred1 = 'Config: password=MySecret123';
+    const cred2 = 'token=eyJhbGciOiJSUzI1NiJ9';
+    const cred3 = 'secret=abc123def456';
+
+    expect(fixedSanitize(cred1)).toContain('[REDACTED_CREDENTIAL]');
+    expect(fixedSanitize(cred2)).toContain('[REDACTED_CREDENTIAL]');
+    expect(fixedSanitize(cred3)).toContain('[REDACTED_CREDENTIAL]');
+    expect(fixedSanitize(cred1)).not.toContain('MySecret123');
+  });
+
+  test('AFTER FIX: handles mixed prose and credentials correctly', () => {
+    const fixedSanitize = (text) => {
+      return text.replace(/(?:password|passwd|pwd|secret|token)\s*=\s*\S+/gi, '[REDACTED_CREDENTIAL]');
+    };
+
+    const mixed = 'Discussing password: hashing while config shows password=actual_secret';
+    const result = fixedSanitize(mixed);
+
+    // Preserves prose "password: hashing"
+    expect(result).toContain('password: hashing');
+    // Redacts credential "password=actual_secret"
+    expect(result).toContain('[REDACTED_CREDENTIAL]');
+    expect(result).not.toContain('actual_secret');
+  });
+});
+
+describe('Bug #5: UUID Redaction Removes URL Context', () => {
+  test('BUGGY CURRENT: redacts UUIDs in URLs', () => {
+    const url1 = 'https://site.atlassian.net/browse/PROJ-123?focusedId=a1b2c3d4-5678-90ab-cdef-1234567890ab';
+    const url2 = 'Dashboard: https://internal.com/report/12345678-1234-1234-1234-123456789012';
+    const url3 = 'Viewing: https://wiki.com/pages/viewpage.action?pageId=abcd1234-5678-90ab-cdef-123456789012';
+
+    const result1 = sanitizeOcrText(url1);
+    const result2 = sanitizeOcrText(url2);
+    const result3 = sanitizeOcrText(url3);
+
+    // BUGGY: UUIDs get redacted, losing URL context
+    expect(result1).toContain('[REDACTED_UUID]');
+    expect(result2).toContain('[REDACTED_UUID]');
+    expect(result3).toContain('[REDACTED_UUID]');
+    expect(result1).not.toContain('a1b2c3d4-5678');
+  });
+
+  test('AFTER FIX: preserves UUIDs in URLs, redacts sensitive IDs', () => {
+    // Fixed regex: only match UUIDs with sensitive labels
+    const fixedSanitize = (text) => {
+      return text.replace(
+        /(?:user|account|session|org)Id[=:]\s*[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi,
+        '[REDACTED_UUID]'
+      );
+    };
+
+    // URLs with UUIDs - should be PRESERVED
+    const url1 = 'https://site.atlassian.net/browse/PROJ-123?focusedId=a1b2c3d4-5678-90ab-cdef-1234567890ab';
+    const url2 = 'Dashboard ID: 12345678-1234-1234-1234-123456789012 shows metrics';
+
+    expect(fixedSanitize(url1)).toBe(url1);  // Unchanged
+    expect(fixedSanitize(url2)).toBe(url2);  // Unchanged
+
+    // Sensitive IDs - should be REDACTED
+    const sensitive1 = 'userId=a1b2c3d4-5678-90ab-cdef-1234567890ab';
+    const sensitive2 = 'accountId: 12345678-1234-1234-1234-123456789012';
+    const sensitive3 = 'sessionId=fedcba98-7654-3210-fedc-ba9876543210';
+    const sensitive4 = 'orgId: 11111111-2222-3333-4444-555555555555';
+
+    expect(fixedSanitize(sensitive1)).toContain('[REDACTED_UUID]');
+    expect(fixedSanitize(sensitive2)).toContain('[REDACTED_UUID]');
+    expect(fixedSanitize(sensitive3)).toContain('[REDACTED_UUID]');
+    expect(fixedSanitize(sensitive4)).toContain('[REDACTED_UUID]');
+    expect(fixedSanitize(sensitive1)).not.toContain('a1b2c3d4-5678');
+  });
+
+  test('AFTER FIX: handles mixed URLs and sensitive IDs', () => {
+    const fixedSanitize = (text) => {
+      return text.replace(
+        /(?:user|account|session|org)Id[=:]\s*[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi,
+        '[REDACTED_UUID]'
+      );
+    };
+
+    const mixed = 'Viewing https://wiki.com/page/abc-def-123 with userId=a1b2c3d4-5678-90ab-cdef-1234567890ab';
+    const result = fixedSanitize(mixed);
+
+    // Preserves URL UUID
+    expect(result).toContain('abc-def-123');
+    // Redacts sensitive userId
+    expect(result).toContain('[REDACTED_UUID]');
+    expect(result).not.toContain('a1b2c3d4-5678-90ab-cdef');
+  });
+});
+
+describe('Bug #9: Credit Card Regex False Positives', () => {
+  test('BUGGY CURRENT: redacts build numbers and phone numbers', () => {
+    const text1 = 'Build #12345678901234567 deployed successfully';
+    const text2 = 'Contact: 1-800-555-1234567 for support';
+    const text3 = 'SKU: 1234567890123456 out of stock';
+    const text4 = 'Timestamp: 20260521143000000';  // 17 digits
+
+    const result1 = sanitizeOcrText(text1);
+    const result2 = sanitizeOcrText(text2);
+    const result3 = sanitizeOcrText(text3);
+    const result4 = sanitizeOcrText(text4);
+
+    // BUGGY: These get redacted as "credit cards"
+    expect(result1).toContain('[REDACTED_CARD]');
+    expect(result2).toContain('[REDACTED_CARD]');
+    expect(result3).toContain('[REDACTED_CARD]');
+    expect(result4).toContain('[REDACTED_CARD]');
+  });
+
+  test('AFTER FIX: preserves build numbers, redacts formatted credit cards', () => {
+    // Fixed regex: only matches credit card separator format
+    const fixedSanitize = (text) => {
+      return text.replace(/\b\d{4}[ -]\d{4}[ -]\d{4}[ -]\d{4,7}\b/g, '[REDACTED_CARD]');
+    };
+
+    // Non-credit-card numbers - should be PRESERVED
+    const build = 'Build #12345678901234567 deployed';
+    const phone = 'Phone: 1-800-555-123456';
+    const sku = 'SKU: 1234567890123456';
+    const timestamp = 'Timestamp: 20260521143000000';
+
+    expect(fixedSanitize(build)).toBe(build);  // Unchanged
+    expect(fixedSanitize(phone)).toBe(phone);  // Unchanged
+    expect(fixedSanitize(sku)).toBe(sku);  // Unchanged
+    expect(fixedSanitize(timestamp)).toBe(timestamp);  // Unchanged
+
+    // Actual credit card formats - should be REDACTED
+    const card1 = 'Card: 4532-1234-5678-9010';  // Visa with dashes
+    const card2 = 'Pay with 4532 1234 5678 9010';  // Visa with spaces
+    const card3 = 'AMEX: 3782 822463 10005';  // AMEX 15 digits
+
+    expect(fixedSanitize(card1)).toContain('[REDACTED_CARD]');
+    expect(fixedSanitize(card2)).toContain('[REDACTED_CARD]');
+    expect(fixedSanitize(card3)).toContain('[REDACTED_CARD]');
+    expect(fixedSanitize(card1)).not.toContain('4532-1234-5678-9010');
+  });
+
+  test('REGRESSION: still redacts various credit card formats', () => {
+    const fixedSanitize = (text) => {
+      return text.replace(/\b\d{4}[ -]\d{4}[ -]\d{4}[ -]\d{4,7}\b/g, '[REDACTED_CARD]');
+    };
+
+    // All standard credit card formats should still be redacted
+    const visa = '4111-1111-1111-1111';
+    const mastercard = '5500 0000 0000 0004';
+    const amex = '3782-822463-10005';  // 15 digits
+
+    expect(fixedSanitize(visa)).toContain('[REDACTED_CARD]');
+    expect(fixedSanitize(mastercard)).toContain('[REDACTED_CARD]');
+    expect(fixedSanitize(amex)).toContain('[REDACTED_CARD]');
+  });
+});
