@@ -25,7 +25,8 @@ const logger = require('../utils/logger');
  */
 const SANITIZATION_PATTERNS = [
   // Passwords in URLs or config strings: password=xxx, pwd=xxx, passwd=xxx
-  { pattern: /(?:password|passwd|pwd|secret|token)\s*[=:]\s*\S+/gi, replacement: '[REDACTED_CREDENTIAL]' },
+  // Bug #3 FIX: Only match = separator (not : which appears in prose)
+  { pattern: /(?:password|passwd|pwd|secret|token)\s*=\s*\S+/gi, replacement: '[REDACTED_CREDENTIAL]' },
   // AWS access keys (AKIA...)
   { pattern: /\bAKIA[0-9A-Z]{16}\b/g, replacement: '[REDACTED_AWS_KEY]' },
   // AWS secret keys (40 char base64)
@@ -36,8 +37,9 @@ const SANITIZATION_PATTERNS = [
   { pattern: /(?:api[_-]?key|apikey)\s*[=:]\s*\S+/gi, replacement: '[REDACTED_API_KEY]' },
   // Bearer tokens
   { pattern: /\bBearer\s+[A-Za-z0-9\-._~+/]+=*\b/gi, replacement: 'Bearer [REDACTED_TOKEN]' },
-  // Credit card numbers (13-19 digits, optionally separated by spaces/dashes)
-  { pattern: /\b(?:\d[ -]*?){13,19}\b/g, replacement: '[REDACTED_CARD]' },
+  // Credit card numbers in standard format (XXXX-XXXX-XXXX-XXXX or XXXX XXXX XXXX XXXX)
+  // Bug #9 FIX: Only match separator format, not arbitrary 13-19 digit sequences
+  { pattern: /\b\d{4}[ -]\d{4}[ -]\d{4}[ -]\d{4,7}\b/g, replacement: '[REDACTED_CARD]' },
   // SSN (US format: XXX-XX-XXXX)
   { pattern: /\b\d{3}-\d{2}-\d{4}\b/g, replacement: '[REDACTED_SSN]' },
   // Private keys
@@ -50,8 +52,9 @@ const SANITIZATION_PATTERNS = [
   { pattern: /\b\d{6}:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi, replacement: '[REDACTED_ATLASSIAN_ID]' },
   // Atlassian ARIs (ari:cloud:<product>::<resource>/<uuid>)
   { pattern: /ari:cloud:[a-z]+::[a-z]+\/[a-f0-9-]+/gi, replacement: '[REDACTED_ARI]' },
-  // UUIDs (user IDs, cloud IDs, org IDs)
-  { pattern: /\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi, replacement: '[REDACTED_UUID]' },
+  // UUIDs in sensitive contexts only (userId, accountId, sessionId, orgId)
+  // Bug #5 FIX: Only redact when preceded by sensitive labels, preserve UUIDs in URLs
+  { pattern: /(?:user|account|session|org)Id[=:]\s*[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi, replacement: '[REDACTED_UUID]' },
 ];
 
 /**
@@ -154,10 +157,10 @@ function buildBatchAnalysisPrompt(records, assignedIssuesText, previousMatchCont
       ? sanitizeOcrText(record.ocr_text.substring(0, 1000))
       : '(no text extracted)';
 
-    // Flag low-confidence OCR so LLM doesn't trust garbage text
+    // Flag low-confidence OCR - Bug #7 FIX: Exclude entirely when <0.4
     const ocrLabel = !record.ocr_text ? '(no text extracted)'
       : record.ocr_confidence && record.ocr_confidence < 0.4
-        ? `OCR Text (low confidence - may be inaccurate): ${ocrSnippet}`
+        ? '(low-confidence OCR omitted - rely on window title and app name)'
         : `OCR Text: ${ocrSnippet}`;
 
     // Include tracking_mode if present (for idle records sent to LLM)
@@ -171,9 +174,64 @@ function buildBatchAnalysisPrompt(records, assignedIssuesText, previousMatchCont
   }).join('\n\n');
 
   // Build previous session context hint for cross-batch continuity (RC5)
+  // Bug #4 FIX: Add guards for confidence, staleness, and relevance
   let previousSessionHint = '';
   if (previousMatchContext && previousMatchContext.taskKey) {
+    // Guard 1: Confidence threshold - only use high-confidence previous matches
+    if (previousMatchContext.confidenceScore < 0.7) {
+      logger.debug('[Activity] Skipping low-confidence previous match (confidence=%s)', 
+        previousMatchContext.confidenceScore);
+      previousMatchContext = null;
+    }
+    
+    // Guard 2: Staleness check - only use recent previous matches
+    if (previousMatchContext && previousMatchContext.minutesAgo > 15) {
+      logger.debug('[Activity] Previous match too stale (%d min ago), skipping', 
+        previousMatchContext.minutesAgo);
+      previousMatchContext = null;
+    }
+    
+    // Guard 3: Relevance to current batch - only apply if current batch mentions same project
+    if (previousMatchContext) {
+      const currentBatchProjects = records
+        .map(r => r.window_title?.match(/([A-Z]+)-\d+/)?.[1])
+        .filter(Boolean);
+      
+      const previousProject = previousMatchContext.taskKey.split('-')[0];
+      const isRelevant = currentBatchProjects.some(p => p === previousProject);
+      
+      if (!isRelevant && currentBatchProjects.length > 0) {
+        logger.debug('[Activity] Previous match not relevant to current batch (prev=%s, current=%s)', 
+          previousProject, currentBatchProjects.join(','));
+        previousMatchContext = null;
+      }
+    }
+  }
+  
+  // Only add hint if previousMatchContext survived all guards
+  if (previousMatchContext && previousMatchContext.taskKey) {
     previousSessionHint = `\nPrevious session context: The user's most recent activity (${previousMatchContext.minutesAgo} min ago) was matched to ${previousMatchContext.taskKey} (confidence ${previousMatchContext.confidenceScore}). Consider this when evaluating ambiguous records — the user may still be working on the same task.\n`;
+  }
+  
+  // Bug #8 FIX: Filter correction patterns to only include currently assigned issues
+  let validCorrectionPatterns = correctionPatterns;
+  if (validCorrectionPatterns && validCorrectionPatterns.length > 0) {
+    // Extract issue keys from assignedIssuesText (format: "PROJ-123: Summary\n")
+    const issueKeyMatches = assignedIssuesText.match(/([A-Z][A-Z0-9]+-\d+):/g);
+    const validKeys = new Set(issueKeyMatches ? issueKeyMatches.map(k => k.replace(':', '')) : []);
+    
+    const filtered = validCorrectionPatterns.filter(p => validKeys.has(p.corrected_to));
+    
+    if (filtered.length === 0) {
+      logger.debug('[Activity] All %d correction patterns reference stale issues, skipping', 
+        validCorrectionPatterns.length);
+      validCorrectionPatterns = null;
+    } else if (filtered.length < validCorrectionPatterns.length) {
+      logger.info('[Activity] Filtered %d stale correction patterns (kept %d valid)', 
+        validCorrectionPatterns.length - filtered.length, 
+        filtered.length);
+      validCorrectionPatterns = filtered;
+    }
   }
 
   return `Analyze these activity records and match each to the most relevant Jira issue.
@@ -192,7 +250,7 @@ For browsers with technical sites in the title, match based on the topic being r
 CRITICAL TASK KEY RULE: You must ONLY use task keys from the assigned issues list below. NEVER invent, fabricate, or extract issue keys from OCR text, window titles, or any other source. If no assigned issue is a clear semantic match, return taskKey as null. Generic activities (Task Manager, File Explorer, Windows Settings, system utilities, download history) should return null unless they clearly relate to a specific issue.
 
 SESSION CONTINUITY: Records are shown in chronological order. If consecutive records show the same user in the same or related application (e.g., switching between VS Code and Chrome while working), and a previous record was confidently matched to an issue, subsequent records in the same work session should inherit that match at slightly lower confidence (0.5-0.6) unless the content clearly indicates a different task. Developers typically work on one issue for extended periods, switching between IDE, browser, and terminal.
-${previousSessionHint}${correctionPatterns && correctionPatterns.length > 0 ? `\nUSER CORRECTION HISTORY: The user has previously corrected the following AI matches. Use these as guidance for similar future activity:\n${correctionPatterns.map(p => `- [${p.application_name}] "${p.window_title}" → AI suggested ${p.ai_suggested || 'null'}, user corrected to ${p.corrected_to}`).join('\n')}\n` : ''}
+${previousSessionHint}${validCorrectionPatterns && validCorrectionPatterns.length > 0 ? `\nUSER CORRECTION HISTORY: The user has previously corrected the following AI matches. Use these as guidance for similar future activity:\n${validCorrectionPatterns.map(p => `- [${p.application_name}] "${p.window_title}" → AI suggested ${p.ai_suggested || 'null'}, user corrected to ${p.corrected_to}`).join('\n')}\n` : ''}
 IDLE REVIEW RECORDS: Records with tracking_mode "idle_for_llm_review" represent periods where the user had no keyboard/mouse input but an application was visible. Use the window title and application name to determine if this was likely productive activity (reading docs, attending a meeting, reviewing code) or genuine idle time (user walked away). For reading/meeting activities, match to the most relevant Jira issue. Assign LOWER confidence for longer idle durations — a 7-minute idle on Confluence is likely reading (confidence 0.5-0.6), while a 45-minute idle on Confluence is less certain (confidence 0.2-0.3). If the window title clearly indicates non-work content, classify as idle with no task match.
 
 NOTE: projectKey is derived server-side from the matched taskKey. You do not need to detect it independently.

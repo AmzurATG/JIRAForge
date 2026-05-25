@@ -8,6 +8,7 @@ const logger = require('../utils/logger');
 const { getClient } = require('../services/db/supabase-client');
 const { getUTCISOString } = require('../utils/datetime');
 const sessionStore = require('../services/feedback-session-store');
+const { extractDescriptionText } = require('../utils/adfToText');
 
 // SECURITY: Tables that require organization_id filtering for multi-tenancy
 const SENSITIVE_TABLES = new Set([
@@ -1381,7 +1382,7 @@ exports.cacheUserIssues = async (req, res) => {
         priority: fields.priority?.name || null,
         description: description || null,
         labels: fields.labels || [],
-        updated_at: getUTCISOString()
+        updated_at: fields.updated || getUTCISOString()
       };
     });
 
@@ -1413,26 +1414,8 @@ exports.cacheUserIssues = async (req, res) => {
   }
 };
 
-/**
- * Extract plain text from a Jira ADF (Atlassian Document Format) description.
- * Returns null if no description is present.
- * @param {Object|string|null} description
- */
-function extractDescriptionText(description) {
-  if (!description) return null;
-  if (typeof description === 'string') return description;
-  // ADF format: { type: 'doc', content: [{ type: 'paragraph', content: [{ type: 'text', text: '...' }] }] }
-  if (description.content) {
-    const parts = [];
-    for (const block of description.content) {
-      for (const node of (block.content || [])) {
-        if (node.type === 'text' && node.text) parts.push(node.text);
-      }
-    }
-    return parts.join(' ').trim() || null;
-  }
-  return null;
-}
+// Bug #1 FIX: Removed buggy 2-level ADF extractor.
+// Now using recursive implementation from ../utils/adfToText.js (imported above).
 
 /**
  * GET /api/forge/issues/active-accounts
