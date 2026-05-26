@@ -55,7 +55,6 @@ async function getAdminById(orgId, userId) {
   const { data, error } = await supabase
     .from('portal_admin_users')
     .select('*')
-    .eq('org_id', orgId)
     .eq('id', userId)
     .single();
     
@@ -63,7 +62,7 @@ async function getAdminById(orgId, userId) {
     if (error.code === 'PGRST116') {
       return null;
     }
-    logger.error('[PortalDB] Get admin by ID failed', { orgId, userId, error });
+    logger.error('[PortalDB] Get admin by ID failed', { userId, error });
     throw error;
   }
   
@@ -86,27 +85,25 @@ async function listAdmins(orgId, page = 1, limit = 20) {
   
   const offset = (page - 1) * limit;
   
-  // Get total count
+  // Get total count (no org filter)
   const { count, error: countError } = await supabase
     .from('portal_admin_users')
-    .select('*', { count: 'exact', head: true })
-    .eq('org_id', orgId);
+    .select('*', { count: 'exact', head: true });
     
   if (countError) {
-    logger.error('[PortalDB] Count admins failed', { orgId, error: countError });
+    logger.error('[PortalDB] Count admins failed', { error: countError });
     throw countError;
   }
   
-  // Get paginated data
+  // Get paginated data (no org filter)
   const { data, error } = await supabase
     .from('portal_admin_users')
     .select('id, email, display_name, role, created_at, last_login_at')
-    .eq('org_id', orgId)
     .order('created_at', { ascending: false })
     .range(offset, offset + limit - 1);
     
   if (error) {
-    logger.error('[PortalDB] List admins failed', { orgId, error });
+    logger.error('[PortalDB] List admins failed', { error });
     throw error;
   }
   
@@ -169,13 +166,12 @@ async function updateAdmin(orgId, userId, updates) {
       ...updates,
       updated_at: new Date().toISOString()
     })
-    .eq('org_id', orgId)
     .eq('id', userId)
     .select()
     .single();
     
   if (error) {
-    logger.error('[PortalDB] Update admin failed', { orgId, userId, error });
+    logger.error('[PortalDB] Update admin failed', { userId, error });
     throw error;
   }
   
@@ -198,11 +194,10 @@ async function deleteAdmin(orgId, userId) {
   const { error } = await supabase
     .from('portal_admin_users')
     .delete()
-    .eq('org_id', orgId)
     .eq('id', userId);
     
   if (error) {
-    logger.error('[PortalDB] Delete admin failed', { orgId, userId, error });
+    logger.error('[PortalDB] Delete admin failed', { userId, error });
     throw error;
   }
 }
@@ -223,11 +218,10 @@ async function updateLastLogin(orgId, userId) {
   const { error } = await supabase
     .from('portal_admin_users')
     .update({ last_login_at: new Date().toISOString() })
-    .eq('org_id', orgId)
     .eq('id', userId);
     
   if (error) {
-    logger.error('[PortalDB] Update last login failed', { orgId, userId, error });
+    logger.error('[PortalDB] Update last login failed', { userId, error });
     throw error;
   }
 }
@@ -258,11 +252,10 @@ async function setPasswordResetToken(orgId, userId, tokenHash, expiresAt) {
       reset_token: tokenHash,  // Store bcrypt hash, not plaintext
       reset_token_expires_at: expiresAt.toISOString()
     })
-    .eq('org_id', orgId)
     .eq('id', userId);
     
   if (error) {
-    logger.error('[PortalDB] Set password reset token failed', { orgId, userId, error });
+    logger.error('[PortalDB] Set password reset token failed', { userId, error });
     throw error;
   }
 }

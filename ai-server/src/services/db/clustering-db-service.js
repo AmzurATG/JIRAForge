@@ -139,6 +139,7 @@ async function getUnassignedActivities(userId, organizationId) {
     // Step 2a: Get legacy unassigned_activity records with screenshot data
     // IMPORTANT: JOIN with screenshots to get duration_seconds (source of truth)
     // instead of using unassigned_activity.time_spent_seconds (stale)
+    // Limit to most recent 2000 to prevent timeout on large datasets
     let legacyQuery = supabase
       .from('unassigned_activity')
       .select(`
@@ -158,7 +159,8 @@ async function getUnassignedActivities(userId, organizationId) {
       .eq('user_id', userId)
       .eq('manually_assigned', false)
       .eq('clustering_dismissed', false)
-      .order('timestamp', { ascending: false });
+      .order('timestamp', { ascending: false })
+      .limit(2000);
 
     if (organizationId) {
       legacyQuery = legacyQuery.eq('organization_id', organizationId);
@@ -193,6 +195,7 @@ async function getUnassignedActivities(userId, organizationId) {
     );
 
     // Step 2b: Get new-pipeline activity_records that have no assigned issue
+    // Limit to most recent 2000 to prevent timeout on large datasets
     let arQuery = supabase
       .from('activity_records')
       .select('id, window_title, application_name, ocr_text, duration_seconds, total_time_seconds, organization_id, start_time, is_idle')
@@ -201,7 +204,8 @@ async function getUnassignedActivities(userId, organizationId) {
       .in('status', ['pending', 'processing', 'analyzed'])
       .in('classification', ['productive', 'unknown'])
       .eq('clustering_dismissed', false)
-      .order('start_time', { ascending: false });
+      .order('start_time', { ascending: false })
+      .limit(2000);
 
     if (organizationId) {
       arQuery = arQuery.eq('organization_id', organizationId);

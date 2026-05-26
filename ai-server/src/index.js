@@ -611,6 +611,10 @@ app.post('/api/portal/auth/logout', portalAuthController.logout);
 app.post('/api/portal/auth/forgot-password', authLimiter, portalAuthController.requestPasswordReset);
 app.post('/api/portal/auth/reset-password', authLimiter, portalAuthController.resetPassword);
 
+// Google OAuth for Portal SSO
+app.get('/api/portal/auth/google/url', portalAuthController.getGoogleAuthUrl);
+app.post('/api/portal/auth/google/callback', authLimiter, portalAuthController.googleCallback);
+
 // Portal password management (authenticated)
 app.post('/api/portal/auth/change-password', portalAuthMiddleware.verifyPortalToken, portalAuthController.changePassword);
 app.post('/api/portal/auth/admin-reset-password', portalAuthMiddleware.verifyPortalToken, portalAuthController.adminResetPassword);
@@ -626,6 +630,7 @@ app.get('/api/portal/time-logs', portalAuthMiddleware.verifyPortalToken, portalC
 // Portal reports endpoints (authenticated)
 app.get('/api/portal/reports/data', portalAuthMiddleware.verifyPortalToken, portalReportsController.getReportData);
 app.get('/api/portal/reports/export/csv', portalAuthMiddleware.verifyPortalToken, portalReportsController.exportCSV);
+app.get('/api/portal/reports/export/pdf', portalAuthMiddleware.verifyPortalToken, portalReportsController.exportPDF);
 
 // Portal admin users endpoints (authenticated - superadmin only)
 app.get('/api/portal/admin-users', portalAuthMiddleware.verifyPortalToken, portalAdminUsersController.getAdminUsers);

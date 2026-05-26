@@ -60,6 +60,11 @@ async function getEmployeesList(req, res) {
     
     logger.info('[Portal] getEmployeesList success', { orgId, count: employees.length });
     
+    return res.json({ 
+      success: true, 
+      data: employees
+    });
+    
   } catch (error) {
     logger.error('[Portal] Get employees list failed', error);
     return res.status(500).json({ 
@@ -75,6 +80,7 @@ async function getEmployeesList(req, res) {
  * GET /api/portal/employees?search=&productivityRange=&from=&to=&page=&limit=
  */
 async function getEmployees(req, res) {
+  const startTime = Date.now();
   try {
     const { orgId } = req.portalUser;
     const { search, productivityRange, from, to, page = 1, limit = 20 } = req.query;
@@ -82,7 +88,12 @@ async function getEmployees(req, res) {
     const filters = { search, productivityRange, from, to };
     const pagination = { page: parseInt(page), limit: parseInt(limit) };
     
+    logger.info('[Portal] getEmployees called', { orgId, filters, pagination });
+    
     const result = await portalService.getEmployees(orgId, filters, pagination);
+    
+    const duration = Date.now() - startTime;
+    logger.info('[Portal] getEmployees success', { orgId, count: result.data?.length, duration: `${duration}ms` });
     
     return res.json({ 
       success: true, 
@@ -90,7 +101,8 @@ async function getEmployees(req, res) {
     });
     
   } catch (error) {
-    logger.error('[Portal] Get employees failed', error);
+    const duration = Date.now() - startTime;
+    logger.error('[Portal] Get employees failed', { error: error.message, duration: `${duration}ms` });
     return res.status(500).json({ 
       success: false, 
       error: error.message 

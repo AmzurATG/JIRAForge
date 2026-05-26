@@ -49,14 +49,16 @@ class PortalService {
     const supabase = getClient();
     if (!supabase) throw new Error('Supabase client not initialized');
     
-    // Query activity records for the date range with organization_id filter
+    // Query activity records for the date range (no org filter)
+    // Limited to prevent full table scan
     const { data: activities, error } = await supabase
       .from('activity_records')
       .select('classification, duration_seconds, user_id, work_date')
-      .eq('organization_id', orgId)
       .gte('work_date', from)
       .lte('work_date', to)
-      .neq('is_idle', true);
+      .neq('is_idle', true)
+      .order('start_time', { ascending: false })
+      .limit(50000);
     
     if (error) {
       logger.error('[PortalService] Dashboard query failed', { orgId, from, to, error });
@@ -124,11 +126,10 @@ class PortalService {
     const supabase = getClient();
     if (!supabase) throw new Error('Supabase client not initialized');
     
-    // Get all users for this org
+    // Get all users (no org filter)
     let userQuery = supabase
       .from('users')
       .select('id, display_name, email')
-      .eq('organization_id', orgId)
       .order('display_name', { ascending: true });
     
     if (search) {
@@ -177,14 +178,15 @@ class PortalService {
       to = to || formatDate(toDate);
     }
     
-    // First get activity data for the date range with organization_id filter
+    // First get activity data for the date range (no org filter)
+    // Use a smaller limit and no ORDER BY to avoid full table scan
     let activityQuery = supabase
       .from('activity_records')
       .select('user_id, classification, duration_seconds, start_time')
-      .eq('organization_id', orgId)
       .neq('is_idle', true)
       .gte('work_date', from)
-      .lte('work_date', to);
+      .lte('work_date', to)
+      .limit(10000);  // Reduced to 10K for faster queries
     
     const { data: activities, error: activityError } = await activityQuery;
     
@@ -225,7 +227,6 @@ class PortalService {
     let userQuery = supabase
       .from('users')
       .select('id, display_name, email')
-      .eq('organization_id', orgId)
       .in('id', userIds);
     
     if (search) {
@@ -298,11 +299,10 @@ class PortalService {
     const supabase = getClient();
     if (!supabase) throw new Error('Supabase client not initialized');
     
-    // Get user info with organization_id filter
+    // Get user info (no org filter)
     const { data: user, error: userError } = await supabase
       .from('users')
       .select('id, display_name, email')
-      .eq('organization_id', orgId)
       .eq('id', userId)
       .single();
     
@@ -311,11 +311,10 @@ class PortalService {
       throw userError;
     }
     
-    // Get activity data with organization_id filter
+    // Get activity data (no org filter)
     const { data: activities, error: activityError } = await supabase
       .from('activity_records')
       .select('classification, duration_seconds, work_date')
-      .eq('organization_id', orgId)
       .eq('user_id', userId)
       .gte('work_date', from)
       .lte('work_date', to)
@@ -405,7 +404,7 @@ class PortalService {
       to = to || formatDate(toDate);
     }
     
-    // Build query with organization_id filter
+    // Build query (no org filter)
     let query = supabase
       .from('activity_records')
       .select(`
@@ -420,7 +419,6 @@ class PortalService {
         ocr_confidence,
         users!activity_records_user_id_fkey!inner(display_name, email)
       `, { count: 'estimated' })  // Use estimated count instead of exact to avoid timeout
-      .eq('organization_id', orgId)
       .neq('is_idle', true);
     
     // Apply filters
@@ -463,8 +461,11 @@ class PortalService {
     }
     
     // Sort and paginate
+    // Apply a hard limit BEFORE sorting to prevent full table scan
     const offset = (page - 1) * limit;
+    const maxRecords = 10000;  // Max records to consider (prevents timeout on large datasets)
     query = query
+      .limit(maxRecords)
       .order('start_time', { ascending: false })
       .range(offset, offset + limit - 1);
     

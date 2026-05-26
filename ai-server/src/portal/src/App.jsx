@@ -4,8 +4,7 @@ import { AuthProvider } from './contexts/AuthContext';
 
 // Pages - Lazy loaded with prefetch hints
 const LoginPage = lazy(() => import('./pages/LoginPage'));
-const ForgotPasswordPage = lazy(() => import('./pages/ForgotPasswordPage'));
-const ResetPasswordPage = lazy(() => import('./pages/ResetPasswordPage'));
+const GoogleCallbackPage = lazy(() => import('./pages/GoogleCallbackPage'));
 const DashboardPage = lazy(() => import('./pages/DashboardPage'));
 const EmployeesPage = lazy(() => import('./pages/EmployeesPage'));
 const EmployeeDetailPage = lazy(() => import('./pages/EmployeeDetailPage'));
@@ -15,11 +14,12 @@ const SettingsPage = lazy(() => import('./pages/SettingsPage'));
 
 // Layout
 import PageWrapper from './components/layout/PageWrapper';
+import LoadingSpinner from './components/common/LoadingSpinner';
 
-// Loading fallback - minimal to prevent flash
+// Loading fallback for lazy-loaded pages
 const PageLoader = () => (
   <div className="flex items-center justify-center h-full py-8">
-    <div className="inline-block animate-spin rounded-full h-6 w-6 border-b-2 border-primary-600"></div>
+    <LoadingSpinner size="sm" />
   </div>
 );
 
@@ -34,15 +34,9 @@ function App() {
             </Suspense>
           } />
           
-          <Route path="/forgot-password" element={
+          <Route path="/auth/google/callback" element={
             <Suspense fallback={<PageLoader />}>
-              <ForgotPasswordPage />
-            </Suspense>
-          } />
-          
-          <Route path="/reset-password" element={
-            <Suspense fallback={<PageLoader />}>
-              <ResetPasswordPage />
+              <GoogleCallbackPage />
             </Suspense>
           } />
           

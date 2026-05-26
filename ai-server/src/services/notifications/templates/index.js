@@ -12,6 +12,7 @@ const adminInactivityDigest = require('./admin-inactivity-digest');
 const adminDownloadDigest = require('./admin-download-digest');
 const defaultPasswordReminder = require('./default-password-reminder');
 const approvalPendingDigest = require('./approval-pending-digest');
+const adminInvite = require('./admin-invite');
 
 module.exports = {
     loginReminder,
@@ -22,6 +23,7 @@ module.exports = {
     adminDownloadDigest,
     defaultPasswordReminder,
     approvalPendingDigest,
+    adminInvite,
 
     // Map by type for easy lookup
     byType: {
@@ -32,7 +34,8 @@ module.exports = {
         'admin_inactivity_digest': adminInactivityDigest,
         'admin_download_digest': adminDownloadDigest,
         'default_password_reminder': defaultPasswordReminder,
-        'approval_pending_digest': approvalPendingDigest
+        'approval_pending_digest': approvalPendingDigest,
+        'admin_invite': adminInvite
     },
     
     // Get template by type

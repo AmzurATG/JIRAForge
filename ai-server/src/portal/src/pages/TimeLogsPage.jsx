@@ -29,9 +29,6 @@ function TimeLogsPage() {
   const [appFilter, setAppFilter] = useState('');
   const debouncedAppFilter = useDebounce(appFilter, 500);
   const [durationMin, setDurationMin] = useState('');
-  const [durationMax, setDurationMax] = useState('');
-  const [confidenceMin, setConfidenceMin] = useState('');
-  const [confidenceMax, setConfidenceMax] = useState('');
   
   // Column visibility
   const [visibleColumns, setVisibleColumns] = useState({
@@ -42,7 +39,6 @@ function TimeLogsPage() {
     windowTitle: true,
     durationSeconds: true,
     classification: true,
-    confidenceScore: true,
   });
   
   // Employee list for filter
@@ -65,7 +61,7 @@ function TimeLogsPage() {
 
   useEffect(() => {
     loadTimeLogs();
-  }, [page, classification, selectedEmployee, debouncedAppFilter, durationMin, durationMax, confidenceMin, confidenceMax, dateRange]);
+  }, [page, classification, selectedEmployee, debouncedAppFilter, durationMin, dateRange]);
 
   const loadEmployees = async () => {
     try {
@@ -86,9 +82,6 @@ function TimeLogsPage() {
         employee: selectedEmployee || undefined,
         app: debouncedAppFilter || undefined,
         durationMin: durationMin ? parseInt(durationMin, 10) * 60 : undefined, // Convert minutes to seconds
-        durationMax: durationMax ? parseInt(durationMax, 10) * 60 : undefined,
-        confidenceMin: confidenceMin ? parseFloat(confidenceMin) / 100 : undefined, // Convert percentage to decimal
-        confidenceMax: confidenceMax ? parseFloat(confidenceMax) / 100 : undefined,
         from: dateRange.from,
         to: dateRange.to,
         page,
@@ -119,9 +112,6 @@ function TimeLogsPage() {
     setSelectedEmployee('');
     setAppFilter('');
     setDurationMin('');
-    setDurationMax('');
-    setConfidenceMin('');
-    setConfidenceMax('');
     setPage(1);
   };
 
@@ -140,7 +130,6 @@ function TimeLogsPage() {
     windowTitle: 'Window Title',
     durationSeconds: 'Duration',
     classification: 'Classification',
-    confidenceScore: 'Confidence Score',
   };
 
   const columns = [
@@ -197,24 +186,6 @@ function TimeLogsPage() {
           {value || 'N/A'}
         </span>
       ),
-    },
-    {
-      key: 'confidenceScore',
-      label: 'Confidence',
-      sortable: true,
-      render: (value) => {
-        const percentage = Math.round((value || 0) * 100);
-        const colorClass = percentage >= 80 
-          ? 'text-green-600 dark:text-green-400'
-          : percentage >= 50 
-            ? 'text-yellow-600 dark:text-yellow-400'
-            : 'text-red-600 dark:text-red-400';
-        return (
-          <span className={`font-medium ${colorClass}`}>
-            {percentage}%
-          </span>
-        );
-      },
     },
   ].filter(col => visibleColumns[col.key]);
 
@@ -357,7 +328,7 @@ function TimeLogsPage() {
           {/* Advanced Filters */}
           <div className="pt-3 border-t border-gray-100 dark:border-gray-700/50">
             <p className="text-[10px] font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-2">Advanced Filters</p>
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3">
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-2 gap-3">
               {/* Duration Min */}
               <div>
                 <label className="filter-label">Min Duration (min)</label>
@@ -367,53 +338,6 @@ function TimeLogsPage() {
                   placeholder="0"
                   value={durationMin}
                   onChange={(e) => setDurationMin(e.target.value)}
-                  onBlur={handleFilterChange}
-                  onKeyUp={(e) => e.key === 'Enter' && handleFilterChange()}
-                  className="input-field"
-                />
-              </div>
-
-              {/* Duration Max */}
-              <div>
-                <label className="filter-label">Max Duration (min)</label>
-                <input
-                  type="number"
-                  min="0"
-                  placeholder="No limit"
-                  value={durationMax}
-                  onChange={(e) => setDurationMax(e.target.value)}
-                  onBlur={handleFilterChange}
-                  onKeyUp={(e) => e.key === 'Enter' && handleFilterChange()}
-                  className="input-field"
-                />
-              </div>
-
-              {/* Confidence Min */}
-              <div>
-                <label className="filter-label">Min Confidence (%)</label>
-                <input
-                  type="number"
-                  min="0"
-                  max="100"
-                  placeholder="0"
-                  value={confidenceMin}
-                  onChange={(e) => setConfidenceMin(e.target.value)}
-                  onBlur={handleFilterChange}
-                  onKeyUp={(e) => e.key === 'Enter' && handleFilterChange()}
-                  className="input-field"
-                />
-              </div>
-
-              {/* Confidence Max */}
-              <div>
-                <label className="filter-label">Max Confidence (%)</label>
-                <input
-                  type="number"
-                  min="0"
-                  max="100"
-                  placeholder="100"
-                  value={confidenceMax}
-                  onChange={(e) => setConfidenceMax(e.target.value)}
                   onBlur={handleFilterChange}
                   onKeyUp={(e) => e.key === 'Enter' && handleFilterChange()}
                   className="input-field"

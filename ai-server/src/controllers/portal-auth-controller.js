@@ -483,11 +483,188 @@ async function adminResetPassword(req, res) {
   }
 }
 
+/**
+ * Get Google OAuth URL for frontend to redirect to
+ * 
+ * GET /api/portal/auth/google/url
+ */
+async function getGoogleAuthUrl(req, res) {
+  try {
+    const clientId = process.env.GOOGLE_CLIENT_ID;
+    const redirectUri = process.env.GOOGLE_CALLBACK_URL || 'http://localhost:3002/auth/google/callback';
+    
+    if (!clientId) {
+      return res.status(500).json({
+        success: false,
+        error: 'Google OAuth not configured'
+      });
+    }
+    
+    const googleAuthUrl = `https://accounts.google.com/o/oauth2/v2/auth?` +
+      `client_id=${encodeURIComponent(clientId)}&` +
+      `redirect_uri=${encodeURIComponent(redirectUri)}&` +
+      `response_type=code&` +
+      `scope=${encodeURIComponent('openid email profile')}&` +
+      `access_type=offline&` +
+      `prompt=consent`;
+    
+    return res.json({
+      success: true,
+      url: googleAuthUrl
+    });
+  } catch (error) {
+    logger.error('[PortalAuth] Failed to generate Google OAuth URL', error);
+    return res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+}
+
+/**
+ * Handle Google OAuth callback
+ * 
+ * POST /api/portal/auth/google/callback
+ * Body: { code }
+ */
+async function googleCallback(req, res) {
+  try {
+    const { code } = req.body;
+    
+    if (!code) {
+      return res.status(400).json({
+        success: false,
+        error: 'Authorization code is required'
+      });
+    }
+    
+    const clientId = process.env.GOOGLE_CLIENT_ID;
+    const clientSecret = process.env.GOOGLE_CLIENT_SECRET;
+    const redirectUri = process.env.GOOGLE_CALLBACK_URL || 'http://localhost:3002/auth/google/callback';
+    
+    if (!clientId || !clientSecret) {
+      return res.status(500).json({
+        success: false,
+        error: 'Google OAuth not configured'
+      });
+    }
+    
+    logger.info('[PortalAuth] Exchanging Google OAuth code', { 
+      clientId: clientId.substring(0, 20) + '...', 
+      redirectUri 
+    });
+    
+    // Exchange code for tokens
+    const tokenResponse = await fetch('https://oauth2.googleapis.com/token', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded'
+      },
+      body: new URLSearchParams({
+        code,
+        client_id: clientId,
+        client_secret: clientSecret,
+        redirect_uri: redirectUri,
+        grant_type: 'authorization_code'
+      })
+    });
+    
+    if (!tokenResponse.ok) {
+      const errorData = await tokenResponse.json();
+      logger.error('[PortalAuth] Google token exchange failed', { 
+        error: errorData,
+        redirectUri,
+        statusCode: tokenResponse.status
+      });
+      return res.status(400).json({
+        success: false,
+        error: errorData.error_description || 'Failed to exchange authorization code. Please ensure the redirect URI in Google Cloud Console matches: ' + redirectUri
+      });
+    }
+    
+    const tokens = await tokenResponse.json();
+    
+    // Get user info from Google
+    const userInfoResponse = await fetch('https://www.googleapis.com/oauth2/v2/userinfo', {
+      headers: {
+        'Authorization': `Bearer ${tokens.access_token}`
+      }
+    });
+    
+    if (!userInfoResponse.ok) {
+      logger.error('[PortalAuth] Failed to get Google user info');
+      return res.status(400).json({
+        success: false,
+        error: 'Failed to get user information'
+      });
+    }
+    
+    const googleUser = await userInfoResponse.json();
+    const normalizedEmail = googleUser.email.toLowerCase().trim();
+    
+    // Check if user exists in portal_admin_users
+    const admin = await portalDbService.getAdminByEmail(normalizedEmail);
+    
+    if (!admin) {
+      logger.warn('[PortalAuth] Google SSO login attempt by unregistered user', { email: normalizedEmail });
+      return res.status(403).json({
+        success: false,
+        error: 'Email not authorized for portal access'
+      });
+    }
+    
+    // Generate JWT token
+    const jwtSecret = process.env.PORTAL_JWT_SECRET;
+    if (!jwtSecret) {
+      throw new Error('PORTAL_JWT_SECRET not configured');
+    }
+    
+    const token = jwt.sign(
+      { 
+        userId: admin.id,
+        email: admin.email,
+        orgId: admin.org_id,
+        role: admin.role
+      },
+      jwtSecret,
+      { expiresIn: TOKEN_EXPIRY }
+    );
+    
+    logger.info('[PortalAuth] Google SSO login successful', { 
+      userId: admin.id, 
+      email: admin.email, 
+      role: admin.role,
+      googleEmail: googleUser.email
+    });
+    
+    return res.json({
+      success: true,
+      token,
+      user: {
+        id: admin.id,
+        email: admin.email,
+        displayName: admin.display_name || googleUser.name,
+        role: admin.role,
+        orgId: admin.org_id
+      }
+    });
+    
+  } catch (error) {
+    logger.error('[PortalAuth] Google OAuth callback failed', error);
+    return res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+}
+
 module.exports = {
   login,
   changePassword,
   logout,
   requestPasswordReset,
   resetPassword,
-  adminResetPassword
+  adminResetPassword,
+  getGoogleAuthUrl,
+  googleCallback
 };
