@@ -57,9 +57,9 @@ function createClusteringInput(session) {
   // Extract useful context from extracted_text (file paths, URLs, etc.)
   let additionalContext = '';
   if (extractedText && extractedText.length > 0) {
-    // Limit to first 200 chars to avoid token bloat
-    const truncatedText = extractedText.substring(0, 200);
-    additionalContext = `\nScreen Content: ${truncatedText}${extractedText.length > 200 ? '...' : ''}`;
+    // Bug #10 FIX: Use 1000 chars to match batch analysis standard (was 200)
+    const truncatedText = extractedText.substring(0, 1000);
+    additionalContext = `\nScreen Content: ${truncatedText}${extractedText.length > 1000 ? '...' : ''}`;
   }
 
   return `

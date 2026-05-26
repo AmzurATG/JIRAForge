@@ -90,7 +90,7 @@ app.use(express.json({ limit: '1mb' }));
 
 // Rate limiting
 const limiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
+  windowMs: 10 * 60 * 1000, // 10 minutes
   max: 100, // Limit each IP to 100 requests per windowMs
   message: 'Too many requests from this IP, please try again later.',
   standardHeaders: true,
@@ -101,11 +101,13 @@ const limiter = rateLimit({
   }
 });
 
-// Apply general rate limiter to all /api/ routes EXCEPT /api/forge/*
+// Apply general rate limiter to all /api/ routes EXCEPT /api/forge/* and /api/auth/*
 // Forge routes have their own forgeLimiter. All Forge calls come from Atlassian's
 // shared infrastructure IPs so a shared IP-based bucket would block all tenants.
+// Auth routes have their own authLimiter to prevent background ops from starving login attempts.
 app.use('/api/', (req, res, next) => {
   if (req.path.startsWith('/forge/')) return next();
+  if (req.path.startsWith('/auth/'))  return next();
   return limiter(req, res, next);
 });
 
@@ -123,8 +125,8 @@ const publicLimiter = rateLimit({
 
 // Rate limiter specifically for auth endpoints (stricter to prevent abuse)
 const authLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 30, // 30 requests per 15 minutes per IP
+  windowMs: 10 * 60 * 1000, // 10 minutes
+  max: 100, // 100 requests per 10 minutes per IP
   message: 'Too many authentication attempts, please try again later.',
   standardHeaders: true,
   legacyHeaders: false,
