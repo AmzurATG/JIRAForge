@@ -4,7 +4,7 @@
  */
 
 import api, { route } from '@forge/api';
-import { getUserAssignedIssues, getAllUserAssignedIssues, formatIssuesData } from '../../utils/jira.js';
+import { getUserAssignedIssues, getAllUserAssignedIssues, formatIssuesData, getNonSprintProjectKeys } from '../../utils/jira.js';
 import { getSupabaseConfig, getOrCreateUser, getOrCreateOrganization, supabaseRequest } from '../../utils/supabase.js';
 import { JQL_ACTIVE_STATUSES } from '../../config/constants.js';
 
@@ -25,6 +25,50 @@ export async function getAssignedIssues(accountId) {
   };
 }
 
+// Cap on the number of non-sprint project keys embedded in the `project in (...)`
+// clause, to keep the JQL within Jira's practical length limits.
+const MAX_NON_SPRINT_PROJECT_KEYS = 500;
+
+/**
+ * Build the My Focus JQL filter.
+ *
+ * My Focus shows:
+ *   - software (sprint-based) projects → only issues in an OPEN SPRINT, and
+ *   - service_desk / business (non-sprint) projects → all unresolved, non-Done issues.
+ *
+ * `sprint in openSprints()` is self-limiting: it only matches issues actually in an
+ * open sprint, so software-project backlog (sprint unset) can never leak in via that
+ * clause. The non-sprint clause is scoped to an explicit list of project keys, so
+ * software-project backlog cannot leak in via that clause either. (This replaces the
+ * old `sprint is EMPTY` predicate, which could not distinguish a genuinely sprint-less
+ * project from a not-yet-sprinted software backlog item — the cause of the leak.)
+ *
+ * When there are no non-sprint projects (or the lookup failed and returned []), the
+ * filter collapses to `(sprint in openSprints())`.
+ *
+ * The whole filter is wrapped in outer parens so the caller can safely AND it with
+ * `assignee = currentUser()` without the OR detaching the assignee from one branch.
+ *
+ * @param {Array<string>} nonSprintProjectKeys - JSM/business project keys
+ * @returns {string} JQL filter string
+ */
+export function buildMyFocusJql(nonSprintProjectKeys) {
+  const sprintClause = '(sprint in openSprints())';
+
+  const allKeys = nonSprintProjectKeys || [];
+  const keys = allKeys.slice(0, MAX_NON_SPRINT_PROJECT_KEYS);
+  if (keys.length === 0) {
+    return sprintClause;
+  }
+  if (allKeys.length > MAX_NON_SPRINT_PROJECT_KEYS) {
+    console.warn(`[buildMyFocusJql] Non-sprint project count (${allKeys.length}) exceeds cap; using first ${MAX_NON_SPRINT_PROJECT_KEYS}`);
+  }
+
+  const keyList = keys.map(k => `"${k}"`).join(',');
+  const nonSprintClause = `(project in (${keyList}) AND resolution = EMPTY AND statusCategory != Done)`;
+  return `(${sprintClause} OR ${nonSprintClause})`;
+}
+
 /**
  * Get user's active issues with time tracking data
  * Fetches assigned issues from Jira and enriches with time tracking from Supabase
@@ -33,16 +77,21 @@ export async function getAssignedIssues(accountId) {
  * @returns {Promise<Object>} Issues with time tracking data
  */
 export async function getActiveIssuesWithTime(accountId, cloudId) {
-  // Fetch Jira issues and Supabase config in parallel (independent calls)
-  // My Focus shows active sprint issues AND unresolved issues with no sprint assignment.
-  // Sprint-based projects: active sprint issues appear, and sprint-less backlog issues can also match.
-  // Non-sprint projects (JSM queues, Kanban boards) also contribute unresolved active issues via `sprint is EMPTY`.
-  const [jiraData, supabaseConfig] = await Promise.all([
-    getAllUserAssignedIssues({
-      jqlFilter: '((sprint in openSprints()) OR (sprint is EMPTY AND resolution = EMPTY AND statusCategory != Done))'
-    }),
+  // My Focus shows the user's current-sprint work plus active work from non-sprint
+  // projects (JSM / business). We classify projects by type rather than using
+  // `sprint is EMPTY`, because that predicate cannot tell a genuinely sprint-less
+  // project's issue apart from a software-project backlog item not yet in a sprint —
+  // which caused backlog items to leak into My Focus (and receive matched time).
+  //
+  // Resolve the non-sprint project keys and the Supabase config in parallel (both
+  // independent), then build the JQL from the resolved keys.
+  const [nonSprintProjectKeys, supabaseConfig] = await Promise.all([
+    getNonSprintProjectKeys(),
     getSupabaseConfig(accountId)
   ]);
+  const jiraData = await getAllUserAssignedIssues({
+    jqlFilter: buildMyFocusJql(nonSprintProjectKeys)
+  });
   console.log('[BACKEND] Jira returned issues:', jiraData.issues?.length || 0);
   const issues = jiraData.issues || [];
   if (!supabaseConfig) {
