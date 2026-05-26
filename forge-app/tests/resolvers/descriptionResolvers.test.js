@@ -1,0 +1,285 @@
+'use strict';
+
+/**
+ * Tests for descriptionResolvers.
+ *
+ * Mocks @forge/api so requestJira and route can be controlled, and mocks the
+ * remoteRequest helper so the AI-server call shape can be asserted directly.
+ */
+
+const mockRequestJira = jest.fn();
+const mockRemoteRequest = jest.fn();
+
+jest.mock('@forge/api', () => {
+  // route is used as a tagged template; return a simple stringified version
+  // so the resolver can pass it to the fake requestJira mock.
+  const route = (strings, ...values) =>
+    strings.reduce((acc, str, i) => acc + str + (values[i] !== undefined ? String(values[i]) : ''), '');
+  return {
+    __esModule: true,
+    default: {
+      asUser: () => ({ requestJira: (...args) => mockRequestJira(...args) })
+    },
+    route
+  };
+});
+
+jest.mock('../../src/utils/remote.js', () => ({
+  remoteRequest: (...args) => mockRemoteRequest(...args)
+}));
+
+const { registerDescriptionResolvers } = require('../../src/resolvers/descriptionResolvers.js');
+
+function makeResolver() {
+  const map = new Map();
+  return {
+    define(name, handler) { map.set(name, handler); },
+    invoke(name, req) {
+      const h = map.get(name);
+      if (!h) throw new Error(`no resolver ${name}`);
+      return h(req);
+    }
+  };
+}
+
+function jsonResponse(payload, ok = true, status = 200) {
+  return Promise.resolve({
+    ok,
+    status,
+    json: async () => payload,
+    text: async () => JSON.stringify(payload)
+  });
+}
+
+beforeEach(() => {
+  jest.clearAllMocks();
+});
+
+describe('analyzeDescription resolver', () => {
+  test('rejects an invalid issue key', async () => {
+    const r = makeResolver();
+    registerDescriptionResolvers(r);
+    const result = await r.invoke('analyzeDescription', { payload: { issueKey: 'bad' }, context: {} });
+    expect(result.success).toBe(false);
+    expect(mockRequestJira).not.toHaveBeenCalled();
+  });
+
+  test('fetches the issue and forwards a normalized payload to the AI server', async () => {
+    const r = makeResolver();
+    registerDescriptionResolvers(r);
+
+    mockRequestJira.mockReturnValue(jsonResponse({
+      fields: {
+        summary: 'Login broken',
+        description: {
+          type: 'doc', version: 1,
+          content: [{ type: 'paragraph', content: [{ type: 'text', text: 'It does not work' }] }]
+        },
+        issuetype: { name: 'Bug' },
+        project: { key: 'PROJ' }
+      }
+    }));
+
+    mockRemoteRequest.mockResolvedValue({
+      score: 45,
+      source: 'llm',
+      issues: ['too vague'],
+      suggestions: ['add steps'],
+      improved_title: 'Login: tap unresponsive on iOS',
+      improved_description: '## Summary\n...'
+    });
+
+    const result = await r.invoke('analyzeDescription', {
+      payload: { issueKey: 'PROJ-1', requestImprovement: true },
+      context: {}
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.score).toBe(45);
+    expect(result.improved_title).toContain('Login');
+    expect(mockRemoteRequest).toHaveBeenCalledWith('/api/forge/description/analyze',
+      expect.objectContaining({
+        method: 'POST',
+        body: expect.objectContaining({
+          issueKey: 'PROJ-1',
+          title: 'Login broken',
+          issueType: 'Bug',
+          projectKey: 'PROJ',
+          requestImprovement: true
+        })
+      })
+    );
+    // ADF was extracted to plain text
+    const body = mockRemoteRequest.mock.calls[0][1].body;
+    expect(body.description).toContain('It does not work');
+  });
+
+  test('normalizes unknown issue types to Task', async () => {
+    const r = makeResolver();
+    registerDescriptionResolvers(r);
+
+    mockRequestJira.mockReturnValue(jsonResponse({
+      fields: {
+        summary: 'X',
+        description: { type: 'doc', version: 1, content: [{ type: 'paragraph', content: [{ type: 'text', text: 'd' }] }] },
+        issuetype: { name: 'CustomType' },
+        project: { key: 'PROJ' }
+      }
+    }));
+    mockRemoteRequest.mockResolvedValue({ score: 90, source: 'deterministic', issues: [], suggestions: [], improved_title: null, improved_description: null });
+
+    await r.invoke('analyzeDescription', { payload: { issueKey: 'PROJ-2' }, context: {} });
+    expect(mockRemoteRequest.mock.calls[0][1].body.issueType).toBe('Task');
+  });
+
+  test('returns failure if Jira responds non-OK', async () => {
+    const r = makeResolver();
+    registerDescriptionResolvers(r);
+    mockRequestJira.mockReturnValue(Promise.resolve({
+      ok: false, status: 404, text: async () => 'not found', json: async () => ({})
+    }));
+    const result = await r.invoke('analyzeDescription', { payload: { issueKey: 'PROJ-3' }, context: {} });
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/Jira/);
+  });
+});
+
+describe('updateDescription resolver', () => {
+  test('rejects invalid issue key', async () => {
+    const r = makeResolver();
+    registerDescriptionResolvers(r);
+    const result = await r.invoke('updateDescription', {
+      payload: { issueKey: 'bad', improvedTitle: 't', improvedDescription: 'd' }
+    });
+    expect(result.success).toBe(false);
+  });
+
+  test('rejects when nothing is to be updated', async () => {
+    const r = makeResolver();
+    registerDescriptionResolvers(r);
+    const result = await r.invoke('updateDescription', {
+      payload: { issueKey: 'PROJ-1', updateTitle: false, updateDescription: false }
+    });
+    expect(result.success).toBe(false);
+  });
+
+  test('PUTs ADF description + summary when both are requested', async () => {
+    const r = makeResolver();
+    registerDescriptionResolvers(r);
+    mockRequestJira.mockReturnValue(Promise.resolve({ ok: true, status: 204, text: async () => '', json: async () => ({}) }));
+
+    const result = await r.invoke('updateDescription', {
+      payload: {
+        issueKey: 'PROJ-9',
+        improvedTitle: 'New title',
+        improvedDescription: '## Summary\n\nBetter content here',
+        updateTitle: true,
+        updateDescription: true
+      }
+    });
+
+    expect(result.success).toBe(true);
+    expect(mockRequestJira).toHaveBeenCalled();
+    const [routeArg, opts] = mockRequestJira.mock.calls[0];
+    expect(routeArg).toContain('/rest/api/3/issue/PROJ-9');
+    expect(opts.method).toBe('PUT');
+    const body = JSON.parse(opts.body);
+    expect(body.fields.summary).toBe('New title');
+    expect(body.fields.description.type).toBe('doc');
+    expect(body.fields.description.version).toBe(1);
+    expect(Array.isArray(body.fields.description.content)).toBe(true);
+  });
+
+  test('rejects empty improved title when title update requested', async () => {
+    const r = makeResolver();
+    registerDescriptionResolvers(r);
+    const result = await r.invoke('updateDescription', {
+      payload: { issueKey: 'PROJ-1', improvedTitle: '   ', updateTitle: true, updateDescription: false }
+    });
+    expect(result.success).toBe(false);
+  });
+
+  test('rejects oversize title', async () => {
+    const r = makeResolver();
+    registerDescriptionResolvers(r);
+    const result = await r.invoke('updateDescription', {
+      payload: { issueKey: 'PROJ-1', improvedTitle: 'x'.repeat(300), updateTitle: true, updateDescription: false }
+    });
+    expect(result.success).toBe(false);
+  });
+
+  test('returns failure when Jira rejects', async () => {
+    const r = makeResolver();
+    registerDescriptionResolvers(r);
+    mockRequestJira.mockReturnValue(Promise.resolve({ ok: false, status: 400, text: async () => 'bad', json: async () => ({}) }));
+    const result = await r.invoke('updateDescription', {
+      payload: { issueKey: 'PROJ-1', improvedTitle: 't', improvedDescription: 'd' }
+    });
+    expect(result.success).toBe(false);
+  });
+});
+
+describe('wasDescriptionChanged resolver', () => {
+  test('returns true when recent history changed description', async () => {
+    const r = makeResolver();
+    registerDescriptionResolvers(r);
+    mockRequestJira.mockReturnValue(jsonResponse({
+      values: [{ items: [{ field: 'description' }] }]
+    }));
+    const result = await r.invoke('wasDescriptionChanged', { payload: { issueKey: 'PROJ-1' } });
+    expect(result.success).toBe(true);
+    expect(result.changed).toBe(true);
+  });
+
+  test('returns false when no description history exists', async () => {
+    const r = makeResolver();
+    registerDescriptionResolvers(r);
+    mockRequestJira.mockReturnValue(jsonResponse({
+      values: [{ items: [{ field: 'summary' }] }]
+    }));
+    const result = await r.invoke('wasDescriptionChanged', { payload: { issueKey: 'PROJ-1' } });
+    expect(result.changed).toBe(false);
+  });
+
+  test('returns changed=false on Jira error (best-effort)', async () => {
+    const r = makeResolver();
+    registerDescriptionResolvers(r);
+    mockRequestJira.mockReturnValue(Promise.resolve({ ok: false, status: 500, text: async () => '', json: async () => ({}) }));
+    const result = await r.invoke('wasDescriptionChanged', { payload: { issueKey: 'PROJ-1' } });
+    expect(result.success).toBe(true);
+    expect(result.changed).toBe(false);
+  });
+});
+
+describe('recordDescriptionEvent resolver', () => {
+  test('forwards event payload to AI server', async () => {
+    const r = makeResolver();
+    registerDescriptionResolvers(r);
+    mockRemoteRequest.mockResolvedValue({});
+    const result = await r.invoke('recordDescriptionEvent', {
+      payload: { issueKey: 'PROJ-1', eventType: 'accept', scoreBefore: 40, scoreAfter: 85, source: 'llm' }
+    });
+    expect(result.success).toBe(true);
+    expect(mockRemoteRequest).toHaveBeenCalledWith('/api/forge/description/event',
+      expect.objectContaining({ body: expect.objectContaining({ eventType: 'accept' }) }));
+  });
+
+  test('rejects invalid eventType', async () => {
+    const r = makeResolver();
+    registerDescriptionResolvers(r);
+    const result = await r.invoke('recordDescriptionEvent', {
+      payload: { issueKey: 'PROJ-1', eventType: 'destroy' }
+    });
+    expect(result.success).toBe(false);
+  });
+
+  test('swallows remote errors (returns success)', async () => {
+    const r = makeResolver();
+    registerDescriptionResolvers(r);
+    mockRemoteRequest.mockRejectedValue(new Error('boom'));
+    const result = await r.invoke('recordDescriptionEvent', {
+      payload: { issueKey: 'PROJ-1', eventType: 'reject' }
+    });
+    expect(result.success).toBe(true);
+  });
+});

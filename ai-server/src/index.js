@@ -33,7 +33,8 @@ const activityPollingService = require('./services/activity-polling-service');
 // and the per-user email allowlist is enforced inside the Forge resolver
 // before it calls these routes.
 const accuracyDashboardController = require('./controllers/accuracy-dashboard-controller');
-
+// AI-assisted Jira ticket description quality analysis. Forge-authenticated.
+const descriptionController = require('./controllers/description-controller');
 const app = express();
 const PORT = process.env.PORT || 3001;
 
@@ -406,6 +407,10 @@ app.post('/api/forge/issues/cache', ...forgeMiddleware, forgeProxyController.cac
 
 // Recently active accounts — called by the scheduled Forge cache refresh trigger
 app.get('/api/forge/issues/active-accounts', ...forgeMiddleware, forgeProxyController.getRecentlyActiveAccounts);
+
+// Description quality (AI-assisted ticket description enhancement)
+app.post('/api/forge/description/analyze', ...forgeMiddleware, descriptionController.analyze);
+app.post('/api/forge/description/event', ...forgeMiddleware, descriptionController.recordEvent);
 
 // Uninstall handler — called when app is uninstalled from Jira site (Forge-authenticated)
 // Marks organization for deletion with 30-day grace period

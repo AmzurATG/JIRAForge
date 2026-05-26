@@ -159,9 +159,12 @@ function getShortModelName(model) {
  * @param {number} [params.max_tokens=800] - Max tokens (sent as max_completion_tokens)
  * @param {boolean} [params.isVision=false] - Whether this is a vision request
  * @param {number} [params.temperature] - Temperature for sampling (omitted for GPT-5/o-series)
+ * @param {Object} [params.response_format] - Optional OpenAI-style response_format
+ *   (e.g. `{ type: 'json_object' }`). Passed through to providers that support
+ *   it; silently dropped on retry if a provider rejects it.
  * @returns {Promise<{response: Object, provider: string, model: string}>}
  */
-async function chatCompletionWithFallback({ messages, max_tokens = 800, isVision = false, temperature }) {
+async function chatCompletionWithFallback({ messages, max_tokens = 800, isVision = false, temperature, response_format }) {
   const requestType = isVision ? 'vision' : 'text';
   const client = getPortkeyClient();
   const model = getPortkeyModel();
@@ -195,6 +198,10 @@ async function chatCompletionWithFallback({ messages, max_tokens = 800, isVision
     if (!requiresDefaultTemp) {
       requestParams.temperature = temperature !== undefined ? temperature : 0.1;
     }
+
+    if (response_format) {
+      requestParams.response_format = response_format;
+    }
     
     const response = await client.chat.completions.create(requestParams);
     logger.info('[AI] %s request completed | Portkey | %dms', requestType, Date.now() - startTime);
@@ -208,6 +215,9 @@ async function chatCompletionWithFallback({ messages, max_tokens = 800, isVision
         messages,
         max_completion_tokens: max_tokens
       };
+      if (response_format) {
+        requestParams.response_format = response_format;
+      }
       const response = await client.chat.completions.create(requestParams);
       logger.info('[AI] %s request completed (retry) | Portkey | %dms', requestType, Date.now() - startTime);
       return { response, provider: 'portkey', model };

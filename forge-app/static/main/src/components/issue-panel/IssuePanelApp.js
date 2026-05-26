@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { invoke } from '@forge/bridge';
 import { triggerWorklogSyncIfDue } from '../../utils/worklogSync';
+import DescriptionQuality from './DescriptionQuality';
 import './IssuePanelApp.css';
 
 function formatDuration(seconds) {
@@ -195,6 +196,7 @@ export default function IssuePanelApp({ issueKey }) {
             AI-assigned time on this issue is up to date.
           </div>
         </div>
+        <DescriptionQuality issueKey={issueKey} />
       </div>
     );
   }
@@ -241,6 +243,8 @@ export default function IssuePanelApp({ issueKey }) {
       <div className="ip-footer">
         Need to reassign or split? Open this issue in My Focus for more options.
       </div>
+
+      <DescriptionQuality issueKey={issueKey} />
     </div>
   );
 }
