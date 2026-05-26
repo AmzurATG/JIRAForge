@@ -7,11 +7,13 @@
 const mockGetAllUserAssignedIssues = jest.fn();
 const mockGetUserAssignedIssues = jest.fn();
 const mockFormatIssuesData = jest.fn();
+const mockGetNonSprintProjectKeys = jest.fn();
 
 jest.mock('../../src/utils/jira.js', () => ({
   getAllUserAssignedIssues: mockGetAllUserAssignedIssues,
   getUserAssignedIssues: mockGetUserAssignedIssues,
   formatIssuesData: mockFormatIssuesData,
+  getNonSprintProjectKeys: mockGetNonSprintProjectKeys,
 }));
 
 const mockGetSupabaseConfig = jest.fn();
@@ -33,7 +35,7 @@ jest.mock('../../src/config/constants.js', () => ({
 // ---------------------------------------------------------------------------
 // Import the module under test
 // ---------------------------------------------------------------------------
-const { getActiveIssuesWithTime } = require('../../src/services/issue/issueQueryService.js');
+const { getActiveIssuesWithTime, buildMyFocusJql } = require('../../src/services/issue/issueQueryService.js');
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -43,9 +45,6 @@ const CLOUD_ID = 'cloud-id-1';
 const FAKE_SUPABASE_CONFIG = { url: 'https://test.supabase.co', key: 'test-key' };
 const ORG_ID = 'org-uuid-1';
 const USER_ID = 'user-uuid-1';
-
-// Expected JQL filter that includes both sprint and non-sprint issues
-const EXPECTED_JQL_FILTER = '((sprint in openSprints()) OR (sprint is EMPTY AND resolution = EMPTY AND statusCategory != Done))';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -70,6 +69,8 @@ function makeJiraIssue(key, { status = 'In Progress', statusCategory = 'indeterm
 // ---------------------------------------------------------------------------
 beforeEach(() => {
   jest.clearAllMocks();
+  // Default: user has no non-sprint projects unless a test overrides this.
+  mockGetNonSprintProjectKeys.mockResolvedValue([]);
 });
 
 // ---------------------------------------------------------------------------
@@ -78,7 +79,8 @@ beforeEach(() => {
 
 describe('getActiveIssuesWithTime', () => {
   describe('JQL filter', () => {
-    it('should call getAllUserAssignedIssues with the JQL filter that includes sprint and non-sprint issues', async () => {
+    it('scopes the non-sprint clause to project keys when the user has JSM/business projects', async () => {
+      mockGetNonSprintProjectKeys.mockResolvedValue(['JSM', 'HELP']);
       mockGetAllUserAssignedIssues.mockResolvedValue({ issues: [], total: 0 });
       mockGetSupabaseConfig.mockResolvedValue(null);
 
@@ -86,11 +88,34 @@ describe('getActiveIssuesWithTime', () => {
 
       expect(mockGetAllUserAssignedIssues).toHaveBeenCalledTimes(1);
       expect(mockGetAllUserAssignedIssues).toHaveBeenCalledWith({
-        jqlFilter: EXPECTED_JQL_FILTER,
+        jqlFilter: '((sprint in openSprints()) OR (project in ("JSM","HELP") AND resolution = EMPTY AND statusCategory != Done))',
       });
     });
 
-    it('should include sprint in openSprints() for Scrum project issues', async () => {
+    it('collapses to (sprint in openSprints()) when the user has no non-sprint projects', async () => {
+      mockGetNonSprintProjectKeys.mockResolvedValue([]);
+      mockGetAllUserAssignedIssues.mockResolvedValue({ issues: [], total: 0 });
+      mockGetSupabaseConfig.mockResolvedValue(null);
+
+      await getActiveIssuesWithTime(ACCOUNT_ID, CLOUD_ID);
+
+      const calledFilter = mockGetAllUserAssignedIssues.mock.calls[0][0].jqlFilter;
+      expect(calledFilter).toBe('(sprint in openSprints())');
+    });
+
+    it('never emits the sprint is EMPTY clause (the source of the backlog leak)', async () => {
+      mockGetNonSprintProjectKeys.mockResolvedValue(['JSM']);
+      mockGetAllUserAssignedIssues.mockResolvedValue({ issues: [], total: 0 });
+      mockGetSupabaseConfig.mockResolvedValue(null);
+
+      await getActiveIssuesWithTime(ACCOUNT_ID, CLOUD_ID);
+
+      const calledFilter = mockGetAllUserAssignedIssues.mock.calls[0][0].jqlFilter;
+      expect(calledFilter).not.toContain('sprint is EMPTY');
+    });
+
+    it('always includes the open-sprint clause for software issues', async () => {
+      mockGetNonSprintProjectKeys.mockResolvedValue(['JSM']);
       mockGetAllUserAssignedIssues.mockResolvedValue({ issues: [], total: 0 });
       mockGetSupabaseConfig.mockResolvedValue(null);
 
@@ -100,17 +125,8 @@ describe('getActiveIssuesWithTime', () => {
       expect(calledFilter).toContain('sprint in openSprints()');
     });
 
-    it('should include sprint is EMPTY clause for JSM/Kanban issues', async () => {
-      mockGetAllUserAssignedIssues.mockResolvedValue({ issues: [], total: 0 });
-      mockGetSupabaseConfig.mockResolvedValue(null);
-
-      await getActiveIssuesWithTime(ACCOUNT_ID, CLOUD_ID);
-
-      const calledFilter = mockGetAllUserAssignedIssues.mock.calls[0][0].jqlFilter;
-      expect(calledFilter).toContain('sprint is EMPTY');
-    });
-
-    it('should filter non-sprint issues by resolution = EMPTY AND statusCategory != Done', async () => {
+    it('scopes the non-sprint clause by resolution = EMPTY AND statusCategory != Done', async () => {
+      mockGetNonSprintProjectKeys.mockResolvedValue(['JSM']);
       mockGetAllUserAssignedIssues.mockResolvedValue({ issues: [], total: 0 });
       mockGetSupabaseConfig.mockResolvedValue(null);
 
@@ -121,14 +137,40 @@ describe('getActiveIssuesWithTime', () => {
       expect(calledFilter).toContain('statusCategory != Done');
     });
 
-    it('should use OR to combine sprint and non-sprint conditions', async () => {
+    it('degrades to sprint-only when the project lookup returns [] (failure path)', async () => {
+      mockGetNonSprintProjectKeys.mockResolvedValue([]);
       mockGetAllUserAssignedIssues.mockResolvedValue({ issues: [], total: 0 });
       mockGetSupabaseConfig.mockResolvedValue(null);
 
       await getActiveIssuesWithTime(ACCOUNT_ID, CLOUD_ID);
 
       const calledFilter = mockGetAllUserAssignedIssues.mock.calls[0][0].jqlFilter;
-      expect(calledFilter).toMatch(/openSprints\(\)\) OR \(sprint is EMPTY/);
+      expect(calledFilter).toBe('(sprint in openSprints())');
+    });
+  });
+
+  describe('buildMyFocusJql', () => {
+    it('returns the sprint-only filter for empty / null / undefined input', () => {
+      expect(buildMyFocusJql([])).toBe('(sprint in openSprints())');
+      expect(buildMyFocusJql(null)).toBe('(sprint in openSprints())');
+      expect(buildMyFocusJql(undefined)).toBe('(sprint in openSprints())');
+    });
+
+    it('builds the scoped, parenthesized filter for given project keys', () => {
+      expect(buildMyFocusJql(['JSM', 'HELP'])).toBe(
+        '((sprint in openSprints()) OR (project in ("JSM","HELP") AND resolution = EMPTY AND statusCategory != Done))'
+      );
+    });
+
+    it('never emits sprint is EMPTY', () => {
+      expect(buildMyFocusJql(['JSM'])).not.toContain('sprint is EMPTY');
+    });
+
+    it('caps the project list at 500 keys', () => {
+      const keys = Array.from({ length: 600 }, (_, i) => `P${i}`);
+      const jql = buildMyFocusJql(keys);
+      const count = (jql.match(/"P\d+"/g) || []).length;
+      expect(count).toBe(500);
     });
   });
 
