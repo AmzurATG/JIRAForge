@@ -437,7 +437,9 @@ async function generateSingleProjectExcelReport(data, filename) {
   });
 
   const totalR = issueWs.getRow(icr);
-  totalR.values = ['TOTAL', Math.round(grandTotalSec / 60), formatDuration(grandTotalSec), '100.0%'];
+  // % column intentionally blank on the TOTAL row — a total is, by definition,
+  // 100% of itself, so labelling it "100%" adds no information and reads as noise.
+  totalR.values = ['TOTAL', Math.round(grandTotalSec / 60), formatDuration(grandTotalSec), ''];
   styleTotalRow(totalR, IC);
   totalR.getCell(2).alignment = { vertical: 'middle', horizontal: 'right' };
   totalR.getCell(3).alignment = { vertical: 'middle', horizontal: 'right' };
@@ -508,7 +510,8 @@ async function generateSingleProjectExcelReport(data, filename) {
     });
 
     const stRow = summaryWs.getRow(scr);
-    stRow.values = ['TOTAL', formatDuration(totalPeriodSec), formatDuration(totalProdSec), formatDuration(totalNpSec), '100%'];
+    // % column intentionally blank — see TOTAL-row comment above.
+    stRow.values = ['TOTAL', formatDuration(totalPeriodSec), formatDuration(totalProdSec), formatDuration(totalNpSec), ''];
     styleTotalRow(stRow, SC);
     stRow.getCell(2).alignment = { vertical: 'middle', horizontal: 'right' };
     stRow.getCell(3).alignment = { vertical: 'middle', horizontal: 'right' };
@@ -708,7 +711,8 @@ async function generateMultiProjectExcelReport(data, filename) {
 
     const projMin = Math.round(projTotalSec / 60);
     const stRow = issueWs.getRow(icr);
-    stRow.values = [`${projData.projectKey} subtotal`, '', projMin, formatDuration(projTotalSec), '100.0%'];
+    // % column intentionally blank on the subtotal row — see TOTAL-row comment.
+    stRow.values = [`${projData.projectKey} subtotal`, '', projMin, formatDuration(projTotalSec), ''];
     styleTotalRow(stRow, IC);
     stRow.getCell(3).alignment = { vertical: 'middle', horizontal: 'right' };
     stRow.getCell(4).alignment = { vertical: 'middle', horizontal: 'right' };
@@ -804,13 +808,14 @@ async function generateMultiProjectExcelReport(data, filename) {
     }
 
     const stRow = summaryWs.getRow(scr);
+    // % column intentionally blank on the subtotal row — see TOTAL-row comment.
     stRow.values = [
       '',
       `${projData.projectKey} subtotal`,
       formatDuration(projPeriodSec),
       formatDuration(projProdSec),
       formatDuration(projNpSec),
-      '100%'
+      ''
     ];
     styleTotalRow(stRow, SC);
     stRow.getCell(3).alignment = { vertical: 'middle', horizontal: 'right' };

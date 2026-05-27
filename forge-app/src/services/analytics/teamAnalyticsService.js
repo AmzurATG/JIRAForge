@@ -2395,7 +2395,8 @@ export async function generateTeamExportData(accountId, cloudId, projectKey, sta
     const pct = grandTotalSec > 0 ? ((issue.totalSeconds / grandTotalSec) * 100).toFixed(1) : '0.0';
     lines.push(`${issue.issueKey},${totalMin},${fmtDur(issue.totalSeconds)},${pct}%`);
   });
-  lines.push(`TOTAL,${Math.round(grandTotalSec / 60)},${fmtDur(grandTotalSec)},100.0%`);
+  // Trailing % column blank: a TOTAL is by definition 100% of itself.
+  lines.push(`TOTAL,${Math.round(grandTotalSec / 60)},${fmtDur(grandTotalSec)},`);
   lines.push('');
  
   // For modes that break out Unassigned into its own section, suppress the
@@ -2437,7 +2438,8 @@ export async function generateTeamExportData(accountId, cloudId, projectKey, sta
   const todayUnassignedTotal = members.reduce((s, m) => s + zero(m.todayUnassignedSeconds), 0);
   const weekUnassignedTotal = members.reduce((s, m) => s + zero(m.weekUnassignedSeconds), 0);
   const monthUnassignedTotal = members.reduce((s, m) => s + zero(m.monthUnassignedSeconds), 0);
-  lines.push(`"TOTAL",${fmtDur(todayTotalSec)},${fmtDur(todayUnassignedTotal)},${fmtDur(todayNpTotal)},${fmtDur(weekTotalSec)},${fmtDur(weekUnassignedTotal)},${fmtDur(weekNpTotal)},${fmtDur(monthTotalSec)},${fmtDur(monthUnassignedTotal)},${fmtDur(monthNpTotal)},100%`);
+  // Trailing % column blank — see TOTAL-row note above.
+  lines.push(`"TOTAL",${fmtDur(todayTotalSec)},${fmtDur(todayUnassignedTotal)},${fmtDur(todayNpTotal)},${fmtDur(weekTotalSec)},${fmtDur(weekUnassignedTotal)},${fmtDur(weekNpTotal)},${fmtDur(monthTotalSec)},${fmtDur(monthUnassignedTotal)},${fmtDur(monthNpTotal)},`);
 
   return lines.join('\n');
 }
