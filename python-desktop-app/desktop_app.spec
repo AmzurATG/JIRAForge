@@ -285,6 +285,20 @@ except Exception:
 # Runtime data files needed by some dependencies
 runtime_datas = []
 runtime_datas += collect_data_files('certifi')
+# Belt-and-suspenders: explicitly copy cacert.pem so PyInstaller always
+# places it at <_MEIPASS>/certifi/cacert.pem even when collect_data_files
+# resolves to an unexpected location on this build machine.
+try:
+    import certifi as _certifi_spec
+    _cacert_src = _certifi_spec.where()
+    if os.path.isfile(_cacert_src):
+        runtime_datas.append((_cacert_src, 'certifi'))
+        print(f"[INFO] Explicitly bundled certifi cacert.pem from: {_cacert_src}")
+    else:
+        print(f"[WARN] certifi.where() returned non-existent path: {_cacert_src}")
+    del _certifi_spec, _cacert_src
+except Exception as _e:
+    print(f"[WARN] Could not explicitly bundle certifi cacert.pem: {_e}")
 runtime_datas += collect_data_files('tzdata')
 # NumPy data files and binary dependencies - critical for C-extension imports
 try:
