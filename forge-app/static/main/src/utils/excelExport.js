@@ -829,16 +829,12 @@ async function generateMultiProjectExcelReport(data, filename) {
     scr++;
   }
 
-  // Grand Totals banner + KPIs
-  scr = addBannerRow(summaryWs, 'Grand Totals (All Sections)', SC, scr);
-  const grandKpis = [
-    ['Total Projects', String(realProjectKeys.length)],
-    ['Active Members (unique)', String(uniqueMemberCount)],
-    ['Total Time', formatDuration(teamPeriodSeconds)],
-    ['Productive', formatDuration(grandProdSec)],
-    ['Non-Productive / Private', formatDuration(grandNpSec)],
-  ];
-  for (const [k, v] of grandKpis) scr = addKeyValueRow(summaryWs, k, v, scr);
+  // The previous "Grand Totals (All Sections)" block was removed: it reported
+  // the exact same Total Projects / Active Members / Total Time / Productive /
+  // Non-Productive numbers as the headline KPI block at the top of the sheet,
+  // making the report read as if the totals were stated twice. The headline
+  // block is the executive TL;DR; the per-project subtotals above are the
+  // breakdown; no separate bottom block is needed.
 
   // Notify which projects were dropped for emptiness (footer breadcrumb)
   const skippedProjectKeys = (data.projects || [])
