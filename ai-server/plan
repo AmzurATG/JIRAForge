@@ -1,0 +1,126 @@
+# Mail Service Adapter Architecture Spec
+
+**Date:** 2026-05-27  
+**Component:** Portal (ai-server/src/portal)  
+**Feature:** Scalable Mail Service Adapter with Multi-Provider Support
+
+---
+
+## Problem
+
+The Productivity Portal currently lacks a centralized, provider-agnostic email service. Business modules need to send transactional emails (password resets, notifications, reports) but should not be tightly coupled to specific provider SDKs. Additionally, there's no fallback mechanism if a primary email provider fails.
+
+---
+
+## Root Cause / Context
+
+1. **No abstraction layer**: Direct dependency on email providers creates tight coupling
+2. **No resilience**: Single point of failure if the email provider has issues
+3. **Poor scalability**: Adding new providers requires changes across multiple modules
+4. **Vendor lock-in**: Difficult to switch providers or support multiple simultaneously
+
+The system needs an extensible adapter architecture following SOLID principles, particularly:
+- **Single Responsibility**: Each adapter handles one provider
+- **Open/Closed**: New providers can be added without modifying existing code
+- **Dependency Inversion**: Business logic depends on abstractions, not concrete implementations
+
+---
+
+## Proposed Solution
+
+Implement the **Adapter Pattern** with the following components:
+
+### 1. Base Mail Adapter Interface (`IMailAdapter`)
+Abstract interface defining the contract all adapters must implement:
+- `send(mailOptions)` - Send a single email
+- `sendBatch(mailOptions[])` - Send multiple emails
+- `verifyConnection()` - Health check
+- `getProviderName()` - Identifier for logging
+
+### 2. Concrete Adapters
+- **SendGridAdapter** - Implements IMailAdapter using @sendgrid/mail
+- **ResendAdapter** - Implements IMailAdapter using resend SDK
+
+### 3. Mail Service Manager
+Central orchestrator that:
+- Maintains a prioritized list of adapters
+- Selects primary provider based on configuration
+- Implements automatic fallback on failure
+- Provides unified API for business modules
+- Logs provider usage and failures
+
+### 4. Configuration System
+Environment-based provider selection:
+```env
+MAIL_PRIMARY_PROVIDER=sendgrid
+MAIL_FALLBACK_PROVIDER=resend
+SENDGRID_API_KEY=...
+RESEND_API_KEY=...
+MAIL_FROM_ADDRESS=noreply@example.com
+MAIL_FROM_NAME=Productivity Portal
+```
+
+### 5. Usage Pattern
+Business modules use a simple interface:
+```javascript
+await mailService.send({
+  to: 'user@example.com',
+  subject: 'Welcome',
+  html: '<p>Hello!</p>',
+  text: 'Hello!'
+});
+```
+
+---
+
+## Acceptance Criteria
+
+1. **AC1**: Base `IMailAdapter` interface is defined with all required methods documented
+2. **AC2**: `SendGridAdapter` successfully sends emails using SendGrid API
+3. **AC3**: `ResendAdapter` successfully sends emails using Resend API
+4. **AC4**: `MailService` manager selects primary provider from env configuration
+5. **AC5**: Automatic fallback occurs when primary provider fails (network, API error, or rate limit)
+6. **AC6**: All provider operations are logged with provider name and status
+7. **AC7**: Business modules can send emails without knowing which provider is used
+8. **AC8**: Configuration validates required API keys are present for enabled providers
+9. **AC9**: `verifyConnection()` health check works for all adapters
+10. **AC10**: Comprehensive tests cover adapter implementations, fallback logic, and error scenarios
+
+---
+
+## Architecture
+
+```
+Business Module (Portal Auth, Reports, etc.)
+           ↓
+    MailService (Facade)
+           ↓
+   [IMailAdapter Interface]
+      ↙          ↘
+SendGridAdapter  ResendAdapter
+      ↓              ↓
+  SendGrid SDK   Resend SDK
+```
+
+---
+
+## Out of Scope
+
+- Email templating engine (use simple HTML strings for now)
+- Email queue system (direct sending only)
+- Email tracking/analytics integration
+- Attachment support in first iteration
+- SMTP adapter (focus on API-based providers)
+- Email scheduling/delayed sending
+
+---
+
+## Implementation Notes
+
+1. Place all mail adapters in `src/portal/src/services/mail/`
+2. Use factory pattern for adapter instantiation
+3. Implement circuit breaker pattern for provider health
+4. Log all email operations for audit trail
+5. Handle rate limiting gracefully with retry logic
+6. Validate email addresses before sending
+7. Support both HTML and plain text content

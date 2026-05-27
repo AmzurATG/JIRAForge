@@ -4,7 +4,7 @@
  * Displays all employee activity logs with comprehensive filtering.
  */
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { Search, Filter, Columns } from 'lucide-react';
 import { timeLogsApi } from '../api/timeLogs';
 import { employeesApi } from '../api/employees';
@@ -23,12 +23,15 @@ function TimeLogsPage() {
   const [showFilters, setShowFilters] = useState(true);
   const [showColumnSelector, setShowColumnSelector] = useState(false);
   
+  // Ref for click-outside detection
+  const columnSelectorRef = useRef(null);
+  
   // Filters
   const [classification, setClassification] = useState('');
   const [selectedEmployee, setSelectedEmployee] = useState('');
   const [appFilter, setAppFilter] = useState('');
   const debouncedAppFilter = useDebounce(appFilter, 500);
-  const [durationMin, setDurationMin] = useState('');
+  const [durationMax, setDurationMax] = useState('');
   
   // Column visibility
   const [visibleColumns, setVisibleColumns] = useState({
@@ -61,7 +64,23 @@ function TimeLogsPage() {
 
   useEffect(() => {
     loadTimeLogs();
-  }, [page, classification, selectedEmployee, debouncedAppFilter, durationMin, dateRange]);
+  }, [page, classification, selectedEmployee, debouncedAppFilter, durationMax, dateRange]);
+
+  // Close column selector when clicking outside
+  useEffect(() => {
+    function handleClickOutside(event) {
+      if (columnSelectorRef.current && !columnSelectorRef.current.contains(event.target)) {
+        setShowColumnSelector(false);
+      }
+    }
+
+    if (showColumnSelector) {
+      document.addEventListener('mousedown', handleClickOutside);
+      return () => {
+        document.removeEventListener('mousedown', handleClickOutside);
+      };
+    }
+  }, [showColumnSelector]);
 
   const loadEmployees = async () => {
     try {
@@ -81,7 +100,7 @@ function TimeLogsPage() {
         classification: classification || undefined,
         employee: selectedEmployee || undefined,
         app: debouncedAppFilter || undefined,
-        durationMin: durationMin ? parseInt(durationMin, 10) * 60 : undefined, // Convert minutes to seconds
+        durationMax: durationMax ? parseInt(durationMax, 10) * 60 : undefined, // Convert minutes to seconds
         from: dateRange.from,
         to: dateRange.to,
         page,
@@ -111,7 +130,7 @@ function TimeLogsPage() {
     setClassification('');
     setSelectedEmployee('');
     setAppFilter('');
-    setDurationMin('');
+    setDurationMax('');
     setPage(1);
   };
 
@@ -199,7 +218,7 @@ function TimeLogsPage() {
         </div>
         <div className="flex gap-2">
           {/* Column Visibility Toggle */}
-          <div className="relative">
+          <div className="relative" ref={columnSelectorRef}>
             <button
               onClick={() => setShowColumnSelector(!showColumnSelector)}
               className="btn-secondary flex items-center gap-1.5"
@@ -260,10 +279,10 @@ function TimeLogsPage() {
             </button>
           </div>
           
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3 mb-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-2">
             {/* Classification Filter */}
             <div>
-              <label className="filter-label">Classification</label>
+              <label className="filter-label text-xs">Classification</label>
               <select
                 value={classification}
                 onChange={(e) => {
@@ -280,7 +299,7 @@ function TimeLogsPage() {
 
             {/* Employee Filter */}
             <div>
-              <label className="filter-label">Employee</label>
+              <label className="filter-label text-xs">Employee</label>
               <select
                 value={selectedEmployee}
                 onChange={(e) => {
@@ -300,7 +319,7 @@ function TimeLogsPage() {
 
             {/* Application Filter */}
             <div>
-              <label className="filter-label">Application</label>
+              <label className="filter-label text-xs">Application</label>
               <div className="relative">
                 <Search className="absolute left-3.5 top-1/2 transform -translate-y-1/2 w-4 h-4 text-gray-400" />
                 <input
@@ -314,35 +333,36 @@ function TimeLogsPage() {
               </div>
             </div>
 
+            {/* Duration Filter */}
+            <div>
+              <label className="filter-label text-xs">Duration</label>
+              <select
+                value={durationMax}
+                onChange={(e) => {
+                  setDurationMax(e.target.value);
+                  handleFilterChange();
+                }}
+                className="select-field"
+              >
+                <option value="">All Durations</option>
+                <option value="5">5 mins</option>
+                <option value="10">10 mins</option>
+                <option value="15">15 mins</option>
+                <option value="30">30 mins</option>
+                <option value="60">1 hr</option>
+                <option value="120">2 hrs</option>
+                <option value="300">5 hrs</option>
+              </select>
+            </div>
+
             {/* Date Range */}
             <div>
-              <label className="filter-label">Date Range</label>
+              <label className="filter-label text-xs">Date Range</label>
               <DateRangePicker
                 from={dateRange.from}
                 to={dateRange.to}
                 onChange={handleDateRangeChange}
               />
-            </div>
-          </div>
-
-          {/* Advanced Filters */}
-          <div className="pt-3 border-t border-gray-100 dark:border-gray-700/50">
-            <p className="text-[10px] font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-2">Advanced Filters</p>
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-2 gap-3">
-              {/* Duration Min */}
-              <div>
-                <label className="filter-label">Min Duration (min)</label>
-                <input
-                  type="number"
-                  min="0"
-                  placeholder="0"
-                  value={durationMin}
-                  onChange={(e) => setDurationMin(e.target.value)}
-                  onBlur={handleFilterChange}
-                  onKeyUp={(e) => e.key === 'Enter' && handleFilterChange()}
-                  className="input-field"
-                />
-              </div>
             </div>
           </div>
         </div>
