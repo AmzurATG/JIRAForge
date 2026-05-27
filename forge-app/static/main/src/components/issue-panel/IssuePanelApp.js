@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { invoke } from '@forge/bridge';
 import { triggerWorklogSyncIfDue } from '../../utils/worklogSync';
+import DescriptionQuality from './DescriptionQuality';
 import './IssuePanelApp.css';
 
 function formatDuration(seconds) {
@@ -195,6 +196,7 @@ export default function IssuePanelApp({ issueKey }) {
             AI-assigned time on this issue is up to date.
           </div>
         </div>
+        <DescriptionQuality issueKey={issueKey} />
       </div>
     );
   }
@@ -220,6 +222,8 @@ export default function IssuePanelApp({ issueKey }) {
           {bulkApproving ? 'Approving…' : `Approve all (${formatDuration(totalSeconds)})`}
         </button>
       </div>
+
+      <DescriptionQuality issueKey={issueKey} />
 
       {grouped.map(([dateKey, daySessions]) => (
         <section key={dateKey} className="ip-day">
