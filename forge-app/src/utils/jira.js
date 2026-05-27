@@ -499,7 +499,10 @@ export async function getAllJiraProjects() {
     console.log(`[getAllJiraProjects] Fetched ${allProjects.length} total projects`);
     return allProjects.map(p => ({
       key: p.key,
-      name: p.name
+      name: p.name,
+      // projectTypeKey is 'software', 'service_desk', 'business', or 'product_discovery'.
+      // Used by getNonSprintProjectKeys() to tell sprint-based projects apart from non-sprint ones.
+      typeKey: p.projectTypeKey
     }));
   } catch (error) {
     console.error('Error fetching Jira projects:', error);
@@ -514,6 +517,31 @@ export async function getAllJiraProjects() {
 export async function getAllJiraProjectKeys() {
   const projects = await getAllJiraProjects();
   return new Set(projects.map(p => p.key));
+}
+
+/**
+ * Project type keys that have no sprint concept. Issues in these projects must be
+ * surfaced in My Focus by explicit project scoping, because `sprint in openSprints()`
+ * never matches them.
+ *
+ * Note: 'product_discovery' (Jira Product Discovery) is intentionally NOT included —
+ * its ideas are not tracked work, so JPD issues are excluded from My Focus. Revisit
+ * if product teams need their JPD work tracked.
+ */
+const NON_SPRINT_PROJECT_TYPE_KEYS = new Set(['service_desk', 'business']);
+
+/**
+ * Get the project keys for the user's non-sprint projects (JSM + business).
+ * These scope the My Focus JQL so that software-project backlog items cannot leak in.
+ * Returns [] on any failure — getAllJiraProjects() already degrades gracefully — which
+ * collapses the My Focus JQL to `(sprint in openSprints())`.
+ * @returns {Promise<Array<string>>} Array of non-sprint project keys
+ */
+export async function getNonSprintProjectKeys() {
+  const projects = await getAllJiraProjects();
+  return projects
+    .filter(p => NON_SPRINT_PROJECT_TYPE_KEYS.has(p.typeKey))
+    .map(p => p.key);
 }
 
 /**
