@@ -1,0 +1,272 @@
+/* Description Quality panel — narrow issue-panel UI */
+
+.dq-root {
+  padding: 12px;
+  border-top: 1px solid var(--ds-border, #DFE1E6);
+  margin-top: 12px;
+  font-size: 13px;
+  color: var(--ds-text, #172B4D);
+}
+
+.dq-header {
+  margin-bottom: 8px;
+}
+
+.dq-title {
+  margin: 0 0 4px 0;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ds-text, #172B4D);
+}
+
+.dq-sub {
+  margin: 0;
+  font-size: 12px;
+  color: var(--ds-text-subtle, #6B778C);
+}
+
+.dq-summary {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 8px 0 12px 0;
+}
+
+.dq-summary-text {
+  flex: 1;
+  min-width: 0;
+}
+
+.dq-source-line {
+  font-size: 12px;
+  color: var(--ds-text-subtle, #6B778C);
+}
+
+.dq-good-msg {
+  color: var(--ds-text-success, #006644);
+  font-size: 12px;
+  margin-top: 2px;
+}
+
+/* Score badge */
+
+.dq-score-badge {
+  width: 64px;
+  height: 64px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  border-radius: 8px;
+  font-weight: 600;
+  flex-shrink: 0;
+}
+
+.dq-score-value {
+  font-size: 22px;
+  line-height: 1;
+}
+
+.dq-score-label {
+  font-size: 10px;
+  text-transform: uppercase;
+  margin-top: 2px;
+}
+
+.dq-score--green {
+  background: #E3FCEF;
+  color: #006644;
+}
+
+.dq-score--yellow {
+  background: #FFFAE6;
+  color: #974F0C;
+}
+
+.dq-score--red {
+  background: #FFEBE6;
+  color: #BF2600;
+}
+
+.dq-score--unknown {
+  background: #F4F5F7;
+  color: #6B778C;
+}
+
+/* Lists */
+
+.dq-section {
+  margin: 12px 0;
+}
+
+.dq-section-title {
+  margin: 0 0 4px 0;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ds-text-subtle, #6B778C);
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+}
+
+.dq-list {
+  margin: 0;
+  padding-left: 18px;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.dq-list--issues li::marker {
+  color: #BF2600;
+}
+
+.dq-list--suggestions li::marker {
+  color: #0052CC;
+}
+
+/* Improved title + description */
+
+.dq-improved-title {
+  font-weight: 600;
+  background: var(--ds-background-input, #F4F5F7);
+  border: 1px solid var(--ds-border, #DFE1E6);
+  border-radius: 4px;
+  padding: 8px;
+  font-size: 13px;
+}
+
+.dq-improved-desc {
+  margin: 0;
+  background: var(--ds-background-input, #F4F5F7);
+  border: 1px solid var(--ds-border, #DFE1E6);
+  border-radius: 4px;
+  padding: 8px;
+  font-size: 12px;
+  white-space: pre-wrap;
+  font-family: inherit;
+  max-height: 360px;
+  overflow: auto;
+}
+
+.dq-input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 6px 8px;
+  font-size: 13px;
+  border: 1px solid var(--ds-border, #DFE1E6);
+  border-radius: 4px;
+}
+
+.dq-textarea {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 8px;
+  font-size: 12px;
+  border: 1px solid var(--ds-border, #DFE1E6);
+  border-radius: 4px;
+  font-family: inherit;
+  resize: vertical;
+  min-height: 200px;
+}
+
+/* Actions */
+
+.dq-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 12px;
+}
+
+.dq-btn {
+  border: 1px solid var(--ds-border, #DFE1E6);
+  background: var(--ds-background-input, #FFFFFF);
+  color: var(--ds-text, #172B4D);
+  border-radius: 3px;
+  padding: 6px 10px;
+  font-size: 12px;
+  cursor: pointer;
+  line-height: 1.2;
+}
+
+.dq-btn:hover:not(:disabled) {
+  background: #F4F5F7;
+}
+
+.dq-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.dq-btn--primary {
+  background: #0052CC;
+  color: #FFFFFF;
+  border-color: #0052CC;
+}
+
+.dq-btn--primary:hover:not(:disabled) {
+  background: #0747A6;
+}
+
+.dq-btn--secondary {
+  background: #FFFFFF;
+  color: #0052CC;
+  border-color: #DFE1E6;
+}
+
+.dq-btn--link {
+  background: transparent;
+  border-color: transparent;
+  color: #0052CC;
+  padding: 6px 4px;
+}
+
+/* States */
+
+.dq-loading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--ds-text-subtle, #6B778C);
+}
+
+.dq-spinner {
+  width: 14px;
+  height: 14px;
+  border: 2px solid var(--ds-border, #DFE1E6);
+  border-top-color: #0052CC;
+  border-radius: 50%;
+  animation: dq-spin 0.8s linear infinite;
+}
+
+@keyframes dq-spin {
+  to { transform: rotate(360deg); }
+}
+
+.dq-error {
+  background: #FFEBE6;
+  color: #BF2600;
+  border: 1px solid #FFBDAD;
+  border-radius: 4px;
+  padding: 8px 10px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.dq-success {
+  background: #E3FCEF;
+  color: #006644;
+  border: 1px solid #ABF5D1;
+  border-radius: 4px;
+  padding: 8px 10px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+}
+
+.dq-success-icon {
+  font-weight: 700;
+}

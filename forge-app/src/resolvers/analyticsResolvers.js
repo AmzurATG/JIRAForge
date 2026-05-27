@@ -482,6 +482,108 @@ export function registerAnalyticsResolvers(resolver) {
   });
 
   /**
+   * Authorize an export request: caller must be a global Jira admin OR
+   * a project admin on EVERY selected project. Returns null if authorized,
+   * or an error response object if denied.
+   */
+  async function authorizeExport(keys) {
+    if (!keys || keys.length === 0) {
+      return { success: false, error: 'At least one project must be selected' };
+    }
+    // First, check global admin once (cheap) — if true, no per-project checks needed.
+    const globalCheck = await checkUserPermissions(['ADMINISTER'], keys[0]);
+    if (globalCheck.permissions?.ADMINISTER?.havePermission) {
+      return null;
+    }
+    // Otherwise require ADMINISTER_PROJECTS on every selected project (parallel).
+    const projectChecks = await Promise.all(
+      keys.map(k => checkUserPermissions(['ADMINISTER_PROJECTS'], k))
+    );
+    const hasAdminOnAll = projectChecks.every(p =>
+      p.permissions?.ADMINISTER_PROJECTS?.havePermission || false
+    );
+    if (!hasAdminOnAll) {
+      return { success: false, error: 'Access denied: Project Admin or Jira Administrator required on every selected project' };
+    }
+    return null;
+  }
+
+  /**
+   * Build the synthetic "Unassigned (All Projects)" member list by unioning
+   * teamMemberActivity across the selected projects. A user active in N projects
+   * contributes one entry.
+   *
+   * Unassigned seconds (today/week/month) come from `project_key IS NULL` queries,
+   * which are user-org-wide — every project's copy carries the same value, so
+   * picking any project's row is fine.
+   *
+   * The returned member shape uses `monthSeconds = monthUnassignedSeconds` etc.
+   * so the export generator's "This Month" column reflects the unassigned total,
+   * and so the `member.monthHours > 0` activeMembers filter inside the generator
+   * works correctly.
+   */
+  function unionMembersForUnassignedSection(teamMembersByProject, filterUserIds) {
+    const memberMap = new Map();
+    for (const memberList of teamMembersByProject) {
+      for (const m of (memberList || [])) {
+        if (!m.userId || memberMap.has(m.userId)) continue;
+        if (filterUserIds && filterUserIds.length > 0 && !filterUserIds.includes(m.userId)) continue;
+        memberMap.set(m.userId, {
+          userId: m.userId,
+          displayName: m.displayName,
+          todayHours: Math.round((m.todayUnassignedSeconds || 0) / 3600 * 10) / 10,
+          weekHours: Math.round((m.weekUnassignedSeconds || 0) / 3600 * 10) / 10,
+          monthHours: Math.round((m.monthUnassignedSeconds || 0) / 3600 * 10) / 10,
+          todaySeconds: m.todayUnassignedSeconds || 0,
+          weekSeconds: m.weekUnassignedSeconds || 0,
+          monthSeconds: m.monthUnassignedSeconds || 0,
+          todayUnassignedSeconds: m.todayUnassignedSeconds || 0,
+          weekUnassignedSeconds: m.weekUnassignedSeconds || 0,
+          monthUnassignedSeconds: m.monthUnassignedSeconds || 0,
+          todayNonProductiveSeconds: 0,
+          weekNonProductiveSeconds: 0,
+          monthNonProductiveSeconds: 0,
+        });
+      }
+    }
+    return Array.from(memberMap.values());
+  }
+
+  /**
+   * For a multi-project export, run per-project generators in parallel AND collect
+   * the team-member rosters needed to build the synthetic Unassigned section.
+   *
+   * The per-project call inside `runProject` invokes `fetchProjectTeamAnalytics`
+   * internally (which caches under `cloudId:projectKey:endDate`). The pre-fetch
+   * below hits the same cache key so it's effectively free after the first call,
+   * but it gives the resolver direct access to the un-stripped member rows.
+   *
+   * @param {string} accountId
+   * @param {string} cloudId
+   * @param {string[]} keys
+   * @param {string} endDate
+   * @param {(pk: string, mode: string) => Promise<any>} runProject
+   * @returns {Promise<{projectsData: any[], teamMembersByProject: any[][]}>}
+   */
+  async function buildMultiProjectExport(accountId, cloudId, keys, endDate, runProject) {
+    // Fire per-project generators and a parallel cache-warming/membership read.
+    // Both depend on fetchProjectTeamAnalytics with the same key, so only one
+    // network round trip is paid per project.
+    const [projectsData, teamMembersByProject] = await Promise.all([
+      Promise.all(keys.map(pk => runProject(pk, 'projectOnly'))),
+      Promise.all(keys.map(pk =>
+        fetchProjectTeamAnalytics(accountId, cloudId, pk, endDate)
+          .then(t => t.teamMemberActivity || [])
+          .catch(err => {
+            console.warn(`[ExportUnassignedUnion] fetchProjectTeamAnalytics failed for ${pk}:`, err.message);
+            return [];
+          })
+      )),
+    ]);
+    return { projectsData, teamMembersByProject };
+  }
+
+  /**
    * Resolver for exporting team analytics
    * Generates CSV data for download - supports multiple projects
    */
@@ -495,37 +597,50 @@ export function registerAnalyticsResolvers(resolver) {
     const keys = projectKeys && projectKeys.length > 0 ? projectKeys : (projectKey ? [projectKey] : []);
 
     try {
-      // Verify admin permissions (check against first project, Jira admins have global access)
-      const perms = await checkUserPermissions(['ADMINISTER', 'ADMINISTER_PROJECTS'], keys[0] || null);
-      const adminCheck = perms.permissions?.ADMINISTER?.havePermission || false;
-      const isProjectAdmin = perms.permissions?.ADMINISTER_PROJECTS?.havePermission || false;
+      const denied = await authorizeExport(keys);
+      if (denied) return denied;
 
-      if (!adminCheck && !isProjectAdmin) {
-        return { success: false, error: 'Access denied: Project Admin or Jira Administrator required' };
-      }
-
-      if (keys.length <= 1) {
-        // Single project - original behavior
-        const data = await generateTeamExportData(accountId, cloudId, keys[0] || null, startDate, endDate, filterUserIds || null);
-        return { 
-          success: true, 
+      if (keys.length === 1) {
+        const data = await generateTeamExportData(accountId, cloudId, keys[0], startDate, endDate, filterUserIds || null);
+        return {
+          success: true,
           data,
           format: format || 'csv',
-          filename: `team-analytics-${keys[0] || 'all'}-${endDate}.csv`
+          filename: `team-analytics-${keys[0]}-${endDate}.csv`
         };
       }
 
-      // Multi-project: generate CSV with project sections
-      let allCsvData = '';
-      for (const pk of keys) {
-        const data = await generateTeamExportData(accountId, cloudId, pk, startDate, endDate, filterUserIds || null);
-        if (allCsvData) allCsvData += '\n\n';
-        allCsvData += data;
+      // Multi-project: per-project sections exclude NULL-project_key records, and we
+      // append one synthetic "Unassigned (All Projects)" section so the same record
+      // is never counted in multiple project sections (fixes Bug 1 — Grand Totals
+      // inflation from duplicated Unassigned).
+      const runProject = (pk, mode) =>
+        generateTeamExportData(accountId, cloudId, pk, startDate, endDate, filterUserIds || null, { mode });
+
+      const { projectsData, teamMembersByProject } = await buildMultiProjectExport(
+        accountId, cloudId, keys, endDate, runProject
+      );
+
+      const unassignedMembers = unionMembersForUnassignedSection(teamMembersByProject, filterUserIds)
+        .filter(m => m.monthHours > 0);
+
+      let allCsvData = projectsData.join('\n\n');
+
+      if (unassignedMembers.length > 0) {
+        const unassignedCsv = await generateTeamExportData(
+          accountId, cloudId, null, startDate, endDate, filterUserIds || null,
+          {
+            mode: 'unassignedOnly',
+            presetMembers: unassignedMembers,
+            displayProjectKey: 'Unassigned (All Projects)'
+          }
+        );
+        allCsvData += '\n\n' + unassignedCsv;
       }
 
-      const projectLabel = keys.length > 1 ? `${keys.length}-projects` : keys[0];
-      return { 
-        success: true, 
+      const projectLabel = `${keys.length}-projects`;
+      return {
+        success: true,
         data: allCsvData,
         format: format || 'csv',
         filename: `team-analytics-${projectLabel}-${endDate}.csv`
@@ -546,32 +661,46 @@ export function registerAnalyticsResolvers(resolver) {
     const keys = projectKeys && projectKeys.length > 0 ? projectKeys : (projectKey ? [projectKey] : []);
 
     try {
-      const perms = await checkUserPermissions(['ADMINISTER', 'ADMINISTER_PROJECTS'], keys[0] || null);
-      const adminCheck = perms.permissions?.ADMINISTER?.havePermission || false;
-      const isProjectAdmin = perms.permissions?.ADMINISTER_PROJECTS?.havePermission || false;
+      const denied = await authorizeExport(keys);
+      if (denied) return denied;
 
-      if (!adminCheck && !isProjectAdmin) {
-        return { success: false, error: 'Access denied: Project Admin or Jira Administrator required' };
-      }
-
-      if (keys.length <= 1) {
-        // Single project - original behavior
-        const data = await generateTeamExportDataStructured(accountId, cloudId, keys[0] || null, startDate, endDate, filterUserIds || null);
+      if (keys.length === 1) {
+        const data = await generateTeamExportDataStructured(accountId, cloudId, keys[0], startDate, endDate, filterUserIds || null);
         return { success: true, data };
       }
 
-      // Multi-project: gather data for each project
-      const projectsData = [];
-      for (const pk of keys) {
-        const data = await generateTeamExportDataStructured(accountId, cloudId, pk, startDate, endDate, filterUserIds || null);
-        projectsData.push(data);
+      // Multi-project: per-project sections exclude NULL-project_key records, and we
+      // append one synthetic "Unassigned (All Projects)" section so the same record
+      // is never counted in multiple project sections (fixes Bug 1 — Grand Totals
+      // inflation from duplicated Unassigned).
+      const runProject = (pk, mode) =>
+        generateTeamExportDataStructured(accountId, cloudId, pk, startDate, endDate, filterUserIds || null, { mode });
+
+      const { projectsData, teamMembersByProject } = await buildMultiProjectExport(
+        accountId, cloudId, keys, endDate, runProject
+      );
+
+      const unassignedMembers = unionMembersForUnassignedSection(teamMembersByProject, filterUserIds)
+        .filter(m => m.monthHours > 0);
+
+      const allProjects = [...projectsData];
+      if (unassignedMembers.length > 0) {
+        const unassignedData = await generateTeamExportDataStructured(
+          accountId, cloudId, null, startDate, endDate, filterUserIds || null,
+          {
+            mode: 'unassignedOnly',
+            presetMembers: unassignedMembers,
+            displayProjectKey: 'Unassigned (All Projects)'
+          }
+        );
+        allProjects.push(unassignedData);
       }
 
-      return { 
-        success: true, 
+      return {
+        success: true,
         data: {
           isMultiProject: true,
-          projects: projectsData
+          projects: allProjects
         }
       };
     } catch (error) {
