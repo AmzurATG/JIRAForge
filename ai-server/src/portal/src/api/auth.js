@@ -47,4 +47,47 @@ export const authApi = {
     });
     return response.data;
   },
+
+  /**
+   * Request password reset (forgot password).
+   * 
+   * @param {string} email 
+   * @returns {Promise<Object>}
+   */
+  async forgotPassword(email) {
+    const response = await apiClient.post('/api/portal/auth/forgot-password', {
+      email,
+    });
+    return response.data;
+  },
+
+  /**
+   * Reset password with token.
+   * 
+   * @param {string} token 
+   * @param {string} newPassword 
+   * @returns {Promise<Object>}
+   */
+  async resetPassword(token, newPassword) {
+    const response = await apiClient.post('/api/portal/auth/reset-password', {
+      token,
+      newPassword,
+    });
+    return response.data;
+  },
+
+  /**
+   * Admin reset password for another user (superadmin only).
+   * 
+   * @param {string} targetUserId 
+   * @param {string} newPassword 
+   * @returns {Promise<Object>}
+   */
+  async adminResetPassword(targetUserId, newPassword) {
+    const response = await apiClient.post('/api/portal/auth/admin-reset-password', {
+      targetUserId,
+      newPassword,
+    });
+    return response.data;
+  },
 };

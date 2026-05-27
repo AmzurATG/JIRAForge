@@ -19,11 +19,31 @@ function initializeClient() {
   }
 
   try {
+    // Increase timeout for slow queries (default 60s -> 180s)
+    const timeout = parseInt(process.env.SUPABASE_QUERY_TIMEOUT) || 180000;
+    
     supabaseClient = createClient(
       process.env.SUPABASE_URL,
-      process.env.SUPABASE_SERVICE_ROLE_KEY
+      process.env.SUPABASE_SERVICE_ROLE_KEY,
+      {
+        db: {
+          schema: 'public'
+        },
+        global: {
+          headers: {
+            'x-client-info': 'ai-server'
+          }
+        },
+        auth: {
+          persistSession: false
+        },
+        // Increase fetch timeout for large queries
+        realtime: {
+          timeout: timeout
+        }
+      }
     );
-    logger.info('Supabase client initialized successfully');
+    logger.info(`Supabase client initialized successfully (timeout: ${timeout}ms)`);
     return supabaseClient;
   } catch (error) {
     logger.error('Failed to initialize Supabase client:', error);

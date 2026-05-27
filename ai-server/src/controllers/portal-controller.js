@@ -54,7 +54,11 @@ async function getEmployeesList(req, res) {
     const { orgId } = req.portalUser;
     const { search } = req.query;
     
+    logger.info('[Portal] getEmployeesList called', { orgId, search });
+    
     const employees = await portalService.getEmployeesList(orgId, search);
+    
+    logger.info('[Portal] getEmployeesList success', { orgId, count: employees.length });
     
     return res.json({ 
       success: true, 
@@ -76,6 +80,7 @@ async function getEmployeesList(req, res) {
  * GET /api/portal/employees?search=&productivityRange=&from=&to=&page=&limit=
  */
 async function getEmployees(req, res) {
+  const startTime = Date.now();
   try {
     const { orgId } = req.portalUser;
     const { search, productivityRange, from, to, page = 1, limit = 20 } = req.query;
@@ -83,7 +88,12 @@ async function getEmployees(req, res) {
     const filters = { search, productivityRange, from, to };
     const pagination = { page: parseInt(page), limit: parseInt(limit) };
     
+    logger.info('[Portal] getEmployees called', { orgId, filters, pagination });
+    
     const result = await portalService.getEmployees(orgId, filters, pagination);
+    
+    const duration = Date.now() - startTime;
+    logger.info('[Portal] getEmployees success', { orgId, count: result.data?.length, duration: `${duration}ms` });
     
     return res.json({ 
       success: true, 
@@ -91,7 +101,8 @@ async function getEmployees(req, res) {
     });
     
   } catch (error) {
-    logger.error('[Portal] Get employees failed', error);
+    const duration = Date.now() - startTime;
+    logger.error('[Portal] Get employees failed', { error: error.message, duration: `${duration}ms` });
     return res.status(500).json({ 
       success: false, 
       error: error.message 
@@ -188,10 +199,14 @@ async function getTimeLogs(req, res) {
     const { orgId } = req.portalUser;
     const { classification, employee, app, from, to, durationMin, durationMax, confidenceMin, confidenceMax, page = 1, limit = 20 } = req.query;
     
+    logger.info('[Portal] getTimeLogs called', { orgId, from, to, page, limit });
+    
     const filters = { classification, employee, app, from, to, durationMin, durationMax, confidenceMin, confidenceMax };
     const pagination = { page: parseInt(page), limit: parseInt(limit) };
     
     const result = await portalService.getTimeLogs(orgId, filters, pagination);
+    
+    logger.info('[Portal] getTimeLogs success', { orgId, count: result.data?.length });
     
     return res.json({ 
       success: true, 

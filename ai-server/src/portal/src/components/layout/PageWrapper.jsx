@@ -41,7 +41,7 @@ function PageWrapper() {
         <main className="flex-1 overflow-x-hidden overflow-y-auto mt-12 p-4">
           <Suspense fallback={
             <div className="flex items-center justify-center h-full py-8">
-              <div className="inline-block animate-spin rounded-full h-6 w-6 border-b-2 border-primary-600"></div>
+              <LoadingSpinner size="sm" />
             </div>
           }>
             <div className="animate-fade-in max-w-full">

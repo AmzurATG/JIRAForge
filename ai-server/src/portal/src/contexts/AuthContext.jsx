@@ -44,6 +44,12 @@ export const AuthProvider = ({ children }) => {
     navigate('/dashboard');
   };
 
+  const loginWithToken = (token, userData) => {
+    localStorage.setItem('portal_token', token);
+    localStorage.setItem('portal_user', JSON.stringify(userData));
+    setUser(userData);
+  };
+
   const logout = async () => {
     await authApi.logout();
     setUser(null);
@@ -54,6 +60,7 @@ export const AuthProvider = ({ children }) => {
     user,
     loading,
     login,
+    loginWithToken,
     logout,
     isAuthenticated: !!user,
   };

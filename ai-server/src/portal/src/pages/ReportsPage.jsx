@@ -268,44 +268,31 @@ function ReportsPage() {
         </h3>
         
         <div className="space-y-3">
-          {/* Report Type Cards */}
-          <div>
-            <label className="filter-label">Report Type</label>
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
-              {Object.entries(REPORT_TYPES).map(([key, { label, description }]) => (
-                <button
-                  key={key}
-                  onClick={() => {
-                    setReportType(key);
-                    setPreviewData([]);
-                    setPage(1);
-                  }}
-                  className={`p-4 rounded-xl border-2 text-left transition-all duration-200 hover:shadow-md ${
-                    reportType === key
-                      ? 'border-primary-500 bg-primary-50 dark:bg-primary-900/20 shadow-lg shadow-primary-500/10'
-                      : 'border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 hover:border-gray-300 dark:hover:border-gray-600'
-                  }`}
-                >
-                  <p className={`font-semibold text-sm ${
-                    reportType === key 
-                      ? 'text-primary-700 dark:text-primary-300' 
-                      : 'text-gray-900 dark:text-gray-100'
-                  }`}>
-                    {label}
-                  </p>
-                  <p className="text-xs text-gray-500 dark:text-gray-400 mt-1 line-clamp-2">
-                    {description}
-                  </p>
-                </button>
-              ))}
-            </div>
-          </div>
-
           {/* Filters */}
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-2">
+            {/* Report Type Filter */}
+            <div>
+              <label className="filter-label text-xs">Report Type</label>
+              <select
+                value={reportType}
+                onChange={(e) => {
+                  setReportType(e.target.value);
+                  setPreviewData([]);
+                  setPage(1);
+                }}
+                className="select-field"
+              >
+                {Object.entries(REPORT_TYPES).map(([key, { label }]) => (
+                  <option key={key} value={key}>
+                    {label}
+                  </option>
+                ))}
+              </select>
+            </div>
+
             {/* Classification Filter */}
             <div>
-              <label className="filter-label">Classification</label>
+              <label className="filter-label text-xs">Classification</label>
               <select
                 value={classification}
                 onChange={(e) => setClassification(e.target.value)}
@@ -319,7 +306,7 @@ function ReportsPage() {
 
             {/* Employee Filter */}
             <div>
-              <label className="filter-label">Employee</label>
+              <label className="filter-label text-xs">Employee</label>
               <select
                 value={selectedEmployee}
                 onChange={(e) => setSelectedEmployee(e.target.value)}
@@ -333,16 +320,16 @@ function ReportsPage() {
                 ))}
               </select>
             </div>
-          </div>
 
-          {/* Date Range */}
-          <div>
-            <label className="filter-label">Date Range</label>
-            <DateRangePicker
-              from={dateRange.from}
-              to={dateRange.to}
-              onChange={setDateRange}
-            />
+            {/* Date Range */}
+            <div>
+              <label className="filter-label text-xs">Date Range</label>
+              <DateRangePicker
+                from={dateRange.from}
+                to={dateRange.to}
+                onChange={setDateRange}
+              />
+            </div>
           </div>
 
           {/* Generate Button */}

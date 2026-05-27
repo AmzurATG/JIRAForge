@@ -24,8 +24,16 @@ export const employeesApi = {
    * @returns {Promise<Object>}
    */
   async getList(params) {
-    const response = await apiClient.get('/api/portal/employees', { params });
-    return response.data;
+    try {
+      const response = await apiClient.get('/api/portal/employees', { params });
+      return response.data;
+    } catch (error) {
+      // If timeout, provide more helpful error message
+      if (error.code === 'ECONNABORTED' || error.message?.includes('timeout')) {
+        throw new Error('Query timeout: The database is taking longer than expected. Please try narrowing your date range or filters.');
+      }
+      throw error;
+    }
   },
 
   /**
