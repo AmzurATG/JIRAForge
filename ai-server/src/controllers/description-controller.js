@@ -100,7 +100,7 @@ async function analyze(req, res) {
 
     return res.json({
       success: true,
-      ...result
+      data: result
     });
   } catch (err) {
     logger.error('[DescQuality] analyze failed for %s: %s', issueKey, err.message);

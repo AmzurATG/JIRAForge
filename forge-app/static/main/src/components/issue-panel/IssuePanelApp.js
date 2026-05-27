@@ -223,6 +223,8 @@ export default function IssuePanelApp({ issueKey }) {
         </button>
       </div>
 
+      <DescriptionQuality issueKey={issueKey} />
+
       {grouped.map(([dateKey, daySessions]) => (
         <section key={dateKey} className="ip-day">
           <h3 className="ip-day-title">{dateLabel(dateKey)}</h3>
@@ -243,8 +245,6 @@ export default function IssuePanelApp({ issueKey }) {
       <div className="ip-footer">
         Need to reassign or split? Open this issue in My Focus for more options.
       </div>
-
-      <DescriptionQuality issueKey={issueKey} />
     </div>
   );
 }

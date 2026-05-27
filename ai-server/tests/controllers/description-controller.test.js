@@ -41,7 +41,10 @@ describe('description-controller.analyze validation', () => {
     });
     const res = makeRes();
     await controller.analyze(makeReq(validBody), res);
-    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ success: true, score: 80 }));
+    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({
+      success: true,
+      data: expect.objectContaining({ score: 80 })
+    }));
   });
 
   test('rejects missing issueKey', async () => {
