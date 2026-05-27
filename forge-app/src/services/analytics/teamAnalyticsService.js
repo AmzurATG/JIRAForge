@@ -43,6 +43,103 @@ async function supabaseRequestPaginated(supabaseConfig, baseEndpoint, maxRecords
   return allRecords;
 }
 
+// Chunk the user_id IN-list so a single query never grows unbounded with team
+// size. The forge-app → ai-server hop is body-encoded (no URL limit), but the
+// downstream Supabase/PostgREST request still imposes practical limits on the
+// IN-list size and request payload. 100 UUIDs (~3.7KB) keeps us comfortably
+// under those limits and bounds Forge runtime memory per chunk.
+const EXPORT_USER_CHUNK_SIZE = 100;
+
+/**
+ * CSV-side equivalent of the renderer's formatSessionRange helper. Sessions in
+ * the CSV are already pre-formatted as "9:54 AM" strings (no ISO timestamps),
+ * so we only need to read the first/last and append the session count when
+ * multiple sessions collapse into one (date, issue) row — otherwise the
+ * "9:54 AM - 11:15 PM (2m total)" line looks wrong on its face.
+ */
+function formatCsvSessionRange(sessions) {
+  if (!sessions || sessions.length === 0) return '';
+  const firstStart = sessions[0].startTime;
+  const lastEnd = sessions[sessions.length - 1].endTime;
+  if (!firstStart || !lastEnd) return '';
+  const range = `${firstStart} - ${lastEnd}`;
+  return sessions.length > 1 ? `${range} (${sessions.length} sessions)` : range;
+}
+
+/**
+ * Fetch activity_records for many users at once, returning a Map keyed by
+ * user_id. Replaces the legacy one-query-per-member pattern that caused
+ * Forge's 25s timeout to fire on multi-project / large-team exports.
+ *
+ * Chunks the user_id list and runs chunks in parallel; an empty userIds array
+ * returns an empty Map without making any network calls.
+ *
+ * @param {Object} supabaseConfig
+ * @param {string} organizationId
+ * @param {string[]} userIds
+ * @param {string|null} projectKey - Project key (ignored when mode is 'unassignedOnly')
+ * @param {string} startDate - YYYY-MM-DD
+ * @param {string} endDate - YYYY-MM-DD
+ * @param {string} [mode='projectWithUnassigned']
+ *   - 'projectWithUnassigned': match project_key=projectKey OR project_key IS NULL (default;
+ *      makes single-project export totals match the Member Summary).
+ *   - 'projectOnly': match only project_key=projectKey (used in multi-project export so
+ *      NULL-project records aren't duplicated into every project section).
+ *   - 'unassignedOnly': match only project_key IS NULL (used to render the synthetic
+ *      "Unassigned (All Projects)" section exactly once in multi-project export).
+ * @returns {Promise<Map<string, Array>>}
+ */
+async function fetchActivityRecordsBatched(supabaseConfig, organizationId, userIds, projectKey, startDate, endDate, mode = 'projectWithUnassigned') {
+  const recordsByUser = new Map();
+  if (!userIds || userIds.length === 0) return recordsByUser;
+
+  const chunkPromises = [];
+  for (let i = 0; i < userIds.length; i += EXPORT_USER_CHUNK_SIZE) {
+    const chunk = userIds.slice(i, i + EXPORT_USER_CHUNK_SIZE);
+    let chunkQuery =
+      `activity_records?organization_id=eq.${organizationId}` +
+      `&user_id=in.(${chunk.join(',')})` +
+      `&work_date=gte.${startDate}&work_date=lte.${endDate}` +
+      `&status=in.(pending,processing,analyzed)` +
+      `&select=user_id,user_assigned_issue_key,work_date,start_time,end_time,duration_seconds,classification` +
+      `&order=user_id.asc,work_date.asc,start_time.asc,id.asc`;
+
+    if (mode === 'unassignedOnly') {
+      chunkQuery += `&project_key=is.null`;
+    } else if (mode === 'projectOnly') {
+      if (projectKey && projectKey !== 'null') {
+        chunkQuery += `&project_key=eq.${projectKey}`;
+      }
+    } else {
+      // 'projectWithUnassigned' (default): legacy single-project behavior
+      if (projectKey && projectKey !== 'null') {
+        chunkQuery += `&or=(project_key.eq.${projectKey},project_key.is.null)`;
+      }
+    }
+
+    chunkPromises.push(
+      supabaseRequestPaginated(supabaseConfig, chunkQuery).catch(err => {
+        console.error(`[TeamExport] Batched activity_records fetch failed (chunk size ${chunk.length}):`, err.message);
+        return [];
+      })
+    );
+  }
+
+  const chunkResults = await Promise.all(chunkPromises);
+  for (const records of chunkResults) {
+    for (const r of records) {
+      const bucket = recordsByUser.get(r.user_id);
+      if (bucket) {
+        bucket.push(r);
+      } else {
+        recordsByUser.set(r.user_id, [r]);
+      }
+    }
+  }
+
+  return recordsByUser;
+}
+
 // ============================================================================
 // HELPER FUNCTIONS
 // ============================================================================
@@ -2128,26 +2225,34 @@ export async function fetchMemberMonthDetails(accountId, cloudId, projectKey, us
  * @param {string} endDate - End date (YYYY-MM-DD)
  * @returns {Promise<string>} CSV formatted string
  */
-export async function generateTeamExportData(accountId, cloudId, projectKey, startDate, endDate, filterUserIds) {
+export async function generateTeamExportData(accountId, cloudId, projectKey, startDate, endDate, filterUserIds, options = {}) {
   validateDateFormat(startDate);
   validateDateFormat(endDate);
- 
-  if (projectKey && !isValidProjectKey(projectKey)) {
+
+  const mode = options.mode || 'projectWithUnassigned';
+  const isUnassignedSection = mode === 'unassignedOnly';
+
+  if (!isUnassignedSection && projectKey && !isValidProjectKey(projectKey)) {
     throw new Error('Invalid project key format');
   }
- 
+
   const { supabaseConfig, organization } = await initializeContext(accountId, cloudId);
- 
-  // Fetch team analytics for the period
-  const teamAnalytics = await fetchProjectTeamAnalytics(accountId, cloudId, projectKey, endDate);
- 
-  // Filter members if specific users requested
-  let members = teamAnalytics.teamMemberActivity || [];
+
+  let members;
+  let teamAnalytics;
+  if (isUnassignedSection) {
+    members = options.presetMembers || [];
+  } else {
+    teamAnalytics = await fetchProjectTeamAnalytics(accountId, cloudId, projectKey, endDate);
+    members = teamAnalytics.teamMemberActivity || [];
+  }
+
   if (filterUserIds && filterUserIds.length > 0) {
     members = members.filter(m => filterUserIds.includes(m.userId));
   }
- 
-  const isSingleUser = members.length === 1;
+
+  const displayProjectKey = options.displayProjectKey || projectKey;
+
   const lines = [];
  
   // Helper: format seconds to show exact seconds
@@ -2176,110 +2281,103 @@ export async function generateTeamExportData(accountId, cloudId, projectKey, sta
   };
 
   const memberNames = members.map(m => m.displayName).join(', ');
- 
+
   // === HEADER ===
-  lines.push(`Team Analytics - ${projectKey || 'All Projects'} | ${startDate} to ${endDate} | ${memberNames}`);
+  lines.push(`Team Analytics - ${displayProjectKey || 'All Projects'} | ${startDate} to ${endDate} | ${memberNames}`);
   lines.push(`Generated,${new Date().toLocaleString()}`);
   lines.push('');
- 
+
   // === DETAILED ACTIVITY PER MEMBER ===
   // All entries collected for Time by Issue section
   const allIssueSeconds = {};
- 
-  for (const member of members) {
-    if (member.monthHours === 0) continue;
-   
+
+  // Only members with recorded work get a detailed-activity block.
+  const activeMembers = members.filter(m => m.monthHours > 0);
+
+  // Single batched fetch (chunked, parallel) for all active members at once,
+  // so total Supabase round trips scale with chunk count instead of team size.
+  // `mode` controls whether NULL-project-key records are included (default), excluded
+  // (multi-project per-project section), or are the only thing returned (synthetic
+  // "Unassigned (All Projects)" section).
+  const recordsByUser = await fetchActivityRecordsBatched(
+    supabaseConfig,
+    organization.id,
+    activeMembers.map(m => m.userId),
+    projectKey,
+    startDate,
+    endDate,
+    mode
+  );
+
+  for (const member of activeMembers) {
     lines.push(`DETAILED ACTIVITY - ${member.displayName}`);
     lines.push('Member,Date,Issue Key,Classification,Total Time,Time (Start - End)');
     let memberTotalSeconds = 0;
 
-    try {
-      let baseQuery = `activity_records?organization_id=eq.${organization.id}&user_id=eq.${member.userId}&work_date=gte.${startDate}&work_date=lte.${endDate}&status=in.(pending,processing,analyzed)&select=user_assigned_issue_key,work_date,start_time,end_time,duration_seconds,classification&order=work_date.asc,start_time.asc,id.asc`;
+    const memberRecords = recordsByUser.get(member.userId) || [];
 
-      if (projectKey && projectKey !== 'null') {
-        // Include project's records AND records with NULL project_key (unassigned work)
-        // so the DETAILED ACTIVITY / Time by Issue / Daily Pivot sections match the Member Summary totals.
-        baseQuery += `&or=(project_key.eq.${projectKey},project_key.is.null)`;
+    const records = memberRecords.filter(r =>
+      r.classification === 'productive' || r.classification === 'unknown' || !r.classification
+    );
+    const npRecords = memberRecords.filter(r =>
+      r.classification === 'non_productive' || r.classification === 'private'
+    );
+
+    // Group by date + issue key
+    const grouped = {};
+    records.forEach(record => {
+      const workDate = typeof record.work_date === 'string' ? record.work_date.split('T')[0] : String(record.work_date);
+      const issueKey = record.user_assigned_issue_key || 'Unassigned';
+      const key = `${workDate}||${issueKey}`;
+      if (!grouped[key]) {
+        grouped[key] = { date: workDate, issueKey: issueKey, sessions: [], totalSeconds: 0 };
       }
+      const dur = record.duration_seconds || 0;
+      const startTime = record.start_time ? new Date(record.start_time).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true }) : '';
+      const endTime = record.end_time ? new Date(record.end_time).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true }) : '';
+      if (startTime && endTime && dur > 0) {
+        grouped[key].sessions.push({ startTime, endTime, dur });
+      }
+      grouped[key].totalSeconds += dur;
+    });
 
-      const allRecords = await supabaseRequestPaginated(supabaseConfig, baseQuery);
+    Object.values(grouped).forEach(entry => {
+      memberTotalSeconds += entry.totalSeconds;
+      allIssueSeconds[entry.issueKey] = (allIssueSeconds[entry.issueKey] || 0) + entry.totalSeconds;
 
-      // Split into productive and non-productive
-      const records = (allRecords || []).filter(r =>
-        r.classification === 'productive' || r.classification === 'unknown' || !r.classification
-      );
-      const npRecords = (allRecords || []).filter(r =>
-        r.classification === 'non_productive' || r.classification === 'private'
-      );
+      const timingStr = formatCsvSessionRange(entry.sessions);
+      lines.push(`${member.displayName},${entry.date},${entry.issueKey},Productive,${fmtDur(entry.totalSeconds)},"${timingStr}"`);
+    });
 
-      // Group by date + issue key
-      const grouped = {};
-      (records || []).forEach(record => {
+    if (npRecords.length > 0) {
+      const npGrouped = {};
+      npRecords.forEach(record => {
         const workDate = typeof record.work_date === 'string' ? record.work_date.split('T')[0] : String(record.work_date);
         const issueKey = record.user_assigned_issue_key || 'Unassigned';
         const key = `${workDate}||${issueKey}`;
-        if (!grouped[key]) {
-          grouped[key] = { date: workDate, issueKey: issueKey, sessions: [], totalSeconds: 0 };
+        if (!npGrouped[key]) {
+          npGrouped[key] = { date: workDate, issueKey, sessions: [], totalSeconds: 0, classification: record.classification };
         }
         const dur = record.duration_seconds || 0;
         const startTime = record.start_time ? new Date(record.start_time).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true }) : '';
         const endTime = record.end_time ? new Date(record.end_time).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true }) : '';
         if (startTime && endTime && dur > 0) {
-          grouped[key].sessions.push({ startTime, endTime, dur });
+          npGrouped[key].sessions.push({ startTime, endTime, dur });
         }
-        grouped[key].totalSeconds += dur;
+        npGrouped[key].totalSeconds += dur;
       });
-     
-      // Output one row per date+issue with start-end time (productive records)
-      Object.values(grouped).forEach(entry => {
+      Object.values(npGrouped).forEach(entry => {
         memberTotalSeconds += entry.totalSeconds;
-        // Track for issue totals
         allIssueSeconds[entry.issueKey] = (allIssueSeconds[entry.issueKey] || 0) + entry.totalSeconds;
-       
-        const firstStart = entry.sessions.length > 0 ? entry.sessions[0].startTime : '';
-        const lastEnd = entry.sessions.length > 0 ? entry.sessions[entry.sessions.length - 1].endTime : '';
-        const timingStr = firstStart && lastEnd ? `${firstStart} - ${lastEnd}` : '';
-        lines.push(`${member.displayName},${entry.date},${entry.issueKey},Productive,${fmtDur(entry.totalSeconds)},"${timingStr}"`);
+        const timingStr = formatCsvSessionRange(entry.sessions);
+        const classLabel = entry.classification === 'private' ? 'Private' : 'Non-Productive';
+        lines.push(`${member.displayName},${entry.date},${entry.issueKey},${classLabel},${fmtDur(entry.totalSeconds)},"${timingStr}"`);
       });
-     
-      // Output non-productive records in the same section
-      if (npRecords && npRecords.length > 0) {
-        let npTotalSeconds = 0;
-        const npGrouped = {};
-        npRecords.forEach(record => {
-          const workDate = typeof record.work_date === 'string' ? record.work_date.split('T')[0] : String(record.work_date);
-          const issueKey = record.user_assigned_issue_key || 'Unassigned';
-          const key = `${workDate}||${issueKey}`;
-          if (!npGrouped[key]) {
-            npGrouped[key] = { date: workDate, issueKey, sessions: [], totalSeconds: 0, classification: record.classification };
-          }
-          const dur = record.duration_seconds || 0;
-          const startTime = record.start_time ? new Date(record.start_time).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true }) : '';
-          const endTime = record.end_time ? new Date(record.end_time).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true }) : '';
-          if (startTime && endTime && dur > 0) {
-            npGrouped[key].sessions.push({ startTime, endTime, dur });
-          }
-          npGrouped[key].totalSeconds += dur;
-        });
-        Object.values(npGrouped).forEach(entry => {
-          npTotalSeconds += entry.totalSeconds;
-          memberTotalSeconds += entry.totalSeconds;
-          allIssueSeconds[entry.issueKey] = (allIssueSeconds[entry.issueKey] || 0) + entry.totalSeconds;
-          const firstStart = entry.sessions.length > 0 ? entry.sessions[0].startTime : '';
-          const lastEnd = entry.sessions.length > 0 ? entry.sessions[entry.sessions.length - 1].endTime : '';
-          const timingStr = firstStart && lastEnd ? `${firstStart} - ${lastEnd}` : '';
-          const classLabel = entry.classification === 'private' ? 'Private' : 'Non-Productive';
-          lines.push(`${member.displayName},${entry.date},${entry.issueKey},${classLabel},${fmtDur(entry.totalSeconds)},"${timingStr}"`);
-        });
-      }
-    } catch (error) {
-      console.error(`Error fetching details for ${member.displayName}:`, error);
-      lines.push(`Error: Could not fetch detailed data`);
     }
-   
+
     // Member total row (includes all classifications)
     lines.push(`TOTAL,,,,${fmtDur(memberTotalSeconds)},`);
-   
+
     lines.push('');
   }
  
@@ -2300,21 +2398,35 @@ export async function generateTeamExportData(accountId, cloudId, projectKey, sta
   lines.push(`TOTAL,${Math.round(grandTotalSec / 60)},${fmtDur(grandTotalSec)},100.0%`);
   lines.push('');
  
+  // For modes that break out Unassigned into its own section, suppress the
+  // duplicated Unassigned columns (always 0 then).
+  const stripUnassigned = mode === 'projectOnly' || isUnassignedSection;
+  const zero = (v) => stripUnassigned ? 0 : (v || 0);
+
+  // Issues Worked: for the synthetic Unassigned section there's no teamAnalytics
+  // to read from — derive from the distinct issue keys collected above.
+  const issuesWorked = isUnassignedSection
+    ? Object.keys(allIssueSeconds).length
+    : (teamAnalytics?.teamSummary?.issuesWorked ?? 0);
+
   // === SUMMARY ===
   lines.push('SUMMARY');
   lines.push('Metric,Value');
-  lines.push(`Active Members,${members.length}`);
+  lines.push(`Active Members,${activeMembers.length}`);
+  // Total Hours is summed across all members (inactive ones contribute 0).
+  // Average is computed over ACTIVE members only — an org with 100 rostered
+  // users where 3 actually worked should report avg = total/3, not total/100.
   const totalMemberHours = members.reduce((sum, m) => sum + m.monthHours, 0);
   lines.push(`Total Hours,${Math.round(totalMemberHours * 10) / 10}h`);
-  lines.push(`Issues Worked,${teamAnalytics.teamSummary.issuesWorked}`);
-  lines.push(`Average Hours/Member,${members.length > 0 ? Math.round(totalMemberHours / members.length * 10) / 10 : 0}h`);
+  lines.push(`Issues Worked,${issuesWorked}`);
+  lines.push(`Average Hours/Member,${activeMembers.length > 0 ? Math.round(totalMemberHours / activeMembers.length * 10) / 10 : 0}h`);
   lines.push('');
- 
+
   lines.push('MEMBER SUMMARY');
   lines.push('Member Name,Today,Today Unassigned,Today Non-Productive,This Week,Week Unassigned,Week Non-Productive,This Month,Month Unassigned,Month Non-Productive,% of Total');
   members.forEach(member => {
     const percentage = totalMemberHours > 0 ? Math.round((member.monthHours / totalMemberHours) * 100) : 0;
-    lines.push(`"${member.displayName}",${fmtDur(member.todaySeconds)},${fmtDur(member.todayUnassignedSeconds || 0)},${fmtDur(member.todayNonProductiveSeconds || 0)},${fmtDur(member.weekSeconds)},${fmtDur(member.weekUnassignedSeconds || 0)},${fmtDur(member.weekNonProductiveSeconds || 0)},${fmtDur(member.monthSeconds)},${fmtDur(member.monthUnassignedSeconds || 0)},${fmtDur(member.monthNonProductiveSeconds || 0)},${percentage}%`);
+    lines.push(`"${member.displayName}",${fmtDur(member.todaySeconds)},${fmtDur(zero(member.todayUnassignedSeconds))},${fmtDur(member.todayNonProductiveSeconds || 0)},${fmtDur(member.weekSeconds)},${fmtDur(zero(member.weekUnassignedSeconds))},${fmtDur(member.weekNonProductiveSeconds || 0)},${fmtDur(member.monthSeconds)},${fmtDur(zero(member.monthUnassignedSeconds))},${fmtDur(member.monthNonProductiveSeconds || 0)},${percentage}%`);
   });
   const todayTotalSec = members.reduce((s, m) => s + (m.todaySeconds || 0), 0);
   const weekTotalSec = members.reduce((s, m) => s + (m.weekSeconds || 0), 0);
@@ -2322,41 +2434,82 @@ export async function generateTeamExportData(accountId, cloudId, projectKey, sta
   const todayNpTotal = members.reduce((s, m) => s + (m.todayNonProductiveSeconds || 0), 0);
   const weekNpTotal = members.reduce((s, m) => s + (m.weekNonProductiveSeconds || 0), 0);
   const monthNpTotal = members.reduce((s, m) => s + (m.monthNonProductiveSeconds || 0), 0);
-  const todayUnassignedTotal = members.reduce((s, m) => s + (m.todayUnassignedSeconds || 0), 0);
-  const weekUnassignedTotal = members.reduce((s, m) => s + (m.weekUnassignedSeconds || 0), 0);
-  const monthUnassignedTotal = members.reduce((s, m) => s + (m.monthUnassignedSeconds || 0), 0);
+  const todayUnassignedTotal = members.reduce((s, m) => s + zero(m.todayUnassignedSeconds), 0);
+  const weekUnassignedTotal = members.reduce((s, m) => s + zero(m.weekUnassignedSeconds), 0);
+  const monthUnassignedTotal = members.reduce((s, m) => s + zero(m.monthUnassignedSeconds), 0);
   lines.push(`"TOTAL",${fmtDur(todayTotalSec)},${fmtDur(todayUnassignedTotal)},${fmtDur(todayNpTotal)},${fmtDur(weekTotalSec)},${fmtDur(weekUnassignedTotal)},${fmtDur(weekNpTotal)},${fmtDur(monthTotalSec)},${fmtDur(monthUnassignedTotal)},${fmtDur(monthNpTotal)},100%`);
- 
+
   return lines.join('\n');
 }
 
 /**
  * Generate structured export data for Excel generation on the frontend
  * Returns JSON with grouped sessions by date + issue
+ *
+ * @param {Object} [options]
+ * @param {string} [options.mode='projectWithUnassigned'] - see fetchActivityRecordsBatched
+ * @param {Array}  [options.presetMembers] - For 'unassignedOnly' mode: pre-built member
+ *                  list (no fetchProjectTeamAnalytics call). Each member should already
+ *                  have monthSeconds/monthUnassignedSeconds populated as desired.
+ * @param {string} [options.displayProjectKey] - Override the projectKey reported in the
+ *                  returned data (used to label the synthetic Unassigned section).
  */
-export async function generateTeamExportDataStructured(accountId, cloudId, projectKey, startDate, endDate, filterUserIds) {
+export async function generateTeamExportDataStructured(accountId, cloudId, projectKey, startDate, endDate, filterUserIds, options = {}) {
   validateDateFormat(startDate);
   validateDateFormat(endDate);
- 
-  if (projectKey && !isValidProjectKey(projectKey)) {
+
+  const mode = options.mode || 'projectWithUnassigned';
+  const isUnassignedSection = mode === 'unassignedOnly';
+
+  if (!isUnassignedSection && projectKey && !isValidProjectKey(projectKey)) {
     throw new Error('Invalid project key format');
   }
- 
+
   const { supabaseConfig, organization } = await initializeContext(accountId, cloudId);
-  const teamAnalytics = await fetchProjectTeamAnalytics(accountId, cloudId, projectKey, endDate);
- 
-  let members = teamAnalytics.teamMemberActivity || [];
+
+  let members;
+  let teamAnalytics;
+  if (isUnassignedSection) {
+    // Caller pre-computes the union of users (across all selected projects) and
+    // hands them in. fetchProjectTeamAnalytics doesn't apply — there's no project.
+    members = options.presetMembers || [];
+  } else {
+    teamAnalytics = await fetchProjectTeamAnalytics(accountId, cloudId, projectKey, endDate);
+    members = teamAnalytics.teamMemberActivity || [];
+  }
+
   if (filterUserIds && filterUserIds.length > 0) {
     members = members.filter(m => filterUserIds.includes(m.userId));
   }
- 
-  const isSingleUser = members.length === 1;
+
   const memberDetails = [];
- 
-  for (const member of members) {
-    if (member.monthHours === 0) continue;
-   
+
+  // Only members with recorded work get a detailed-activity block.
+  const activeMembers = members.filter(m => m.monthHours > 0);
+
+  // isSingleUser drives the `timeByIssue` shape in the returned payload.
+  // It must reflect the contributors actually present in the report (active),
+  // not the full project roster (which can include long-inactive users).
+  const isSingleUser = activeMembers.length === 1;
+
+  // Fetch all activity records for all active members in chunked, parallel queries.
+  // One query per ~100 users instead of one per user keeps the Forge 25s budget
+  // bounded by chunk count rather than by team size.
+  const recordsByUser = await fetchActivityRecordsBatched(
+    supabaseConfig,
+    organization.id,
+    activeMembers.map(m => m.userId),
+    projectKey,
+    startDate,
+    endDate,
+    mode
+  );
+
+  for (const member of activeMembers) {
     const memberData = {
+      // userId enables the frontend renderer to dedupe by stable identity
+      // (e.g. for cross-project unique-member counts) rather than display name.
+      userId: member.userId,
       displayName: member.displayName,
       todayHours: member.todayHours,
       weekHours: member.weekHours,
@@ -2375,92 +2528,115 @@ export async function generateTeamExportDataStructured(accountId, cloudId, proje
       totalSeconds: 0,
       nonProductiveTotalSeconds: 0
     };
-   
-    try {
-      let baseQuery = `activity_records?organization_id=eq.${organization.id}&user_id=eq.${member.userId}&work_date=gte.${startDate}&work_date=lte.${endDate}&status=in.(pending,processing,analyzed)&select=user_assigned_issue_key,work_date,start_time,end_time,duration_seconds,classification&order=work_date.asc,start_time.asc,id.asc`;
 
-      if (projectKey && projectKey !== 'null') {
-        // Include project's records AND records with NULL project_key (unassigned work)
-        // so the structured export entries match the Member Summary totals.
-        baseQuery += `&or=(project_key.eq.${projectKey},project_key.is.null)`;
+    const memberRecords = recordsByUser.get(member.userId) || [];
+
+    const records = memberRecords.filter(r =>
+      r.classification === 'productive' || r.classification === 'unknown' || !r.classification
+    );
+    const npRecords = memberRecords.filter(r =>
+      r.classification === 'non_productive' || r.classification === 'private'
+    );
+
+    const grouped = {};
+    records.forEach(record => {
+      const workDate = typeof record.work_date === 'string' ? record.work_date.split('T')[0] : String(record.work_date);
+      const issueKey = record.user_assigned_issue_key || 'Unassigned';
+      const key = `${workDate}||${issueKey}`;
+      if (!grouped[key]) {
+        grouped[key] = { date: workDate, issueKey: issueKey, sessions: [], totalSeconds: 0 };
       }
+      grouped[key].sessions.push({
+        startTime: record.start_time || null,
+        endTime: record.end_time || null,
+        durationSeconds: record.duration_seconds || 0
+      });
+      grouped[key].totalSeconds += record.duration_seconds || 0;
+    });
 
-      const allRecords = await supabaseRequestPaginated(supabaseConfig, baseQuery);
+    memberData.entries = Object.values(grouped);
+    memberData.totalSeconds = memberData.entries.reduce((s, e) => s + e.totalSeconds, 0);
 
-      // Split into productive and non-productive
-      const records = (allRecords || []).filter(r =>
-        r.classification === 'productive' || r.classification === 'unknown' || !r.classification
-      );
-      const npRecords = (allRecords || []).filter(r =>
-        r.classification === 'non_productive' || r.classification === 'private'
-      );
-
-      // Group by date + issue key
-      const grouped = {};
-      (records || []).forEach(record => {
+    if (npRecords.length > 0) {
+      const npGrouped = {};
+      npRecords.forEach(record => {
         const workDate = typeof record.work_date === 'string' ? record.work_date.split('T')[0] : String(record.work_date);
         const issueKey = record.user_assigned_issue_key || 'Unassigned';
         const key = `${workDate}||${issueKey}`;
-        if (!grouped[key]) {
-          grouped[key] = { date: workDate, issueKey: issueKey, sessions: [], totalSeconds: 0 };
+        if (!npGrouped[key]) {
+          npGrouped[key] = { date: workDate, issueKey, sessions: [], totalSeconds: 0, classification: record.classification };
         }
-        grouped[key].sessions.push({
+        npGrouped[key].sessions.push({
           startTime: record.start_time || null,
           endTime: record.end_time || null,
           durationSeconds: record.duration_seconds || 0
         });
-        grouped[key].totalSeconds += record.duration_seconds || 0;
+        npGrouped[key].totalSeconds += record.duration_seconds || 0;
       });
-     
-      memberData.entries = Object.values(grouped);
-      memberData.totalSeconds = memberData.entries.reduce((s, e) => s + e.totalSeconds, 0);
-     
-      // Process non-productive records (already fetched above)
-      if (npRecords && npRecords.length > 0) {
-        const npGrouped = {};
-        npRecords.forEach(record => {
-          const workDate = typeof record.work_date === 'string' ? record.work_date.split('T')[0] : String(record.work_date);
-          const issueKey = record.user_assigned_issue_key || 'Unassigned';
-          const key = `${workDate}||${issueKey}`;
-          if (!npGrouped[key]) {
-            npGrouped[key] = { date: workDate, issueKey, sessions: [], totalSeconds: 0, classification: record.classification };
-          }
-          npGrouped[key].sessions.push({
-            startTime: record.start_time || null,
-            endTime: record.end_time || null,
-            durationSeconds: record.duration_seconds || 0
-          });
-          npGrouped[key].totalSeconds += record.duration_seconds || 0;
-        });
-        memberData.nonProductiveEntries = Object.values(npGrouped);
-        memberData.nonProductiveTotalSeconds = memberData.nonProductiveEntries.reduce((s, e) => s + e.totalSeconds, 0);
-        // Add non-productive to total seconds so export totals match the table
-        memberData.totalSeconds += memberData.nonProductiveTotalSeconds;
-      }
-    } catch (error) {
-      console.error(`Error fetching details for ${member.displayName}:`, error);
+      memberData.nonProductiveEntries = Object.values(npGrouped);
+      memberData.nonProductiveTotalSeconds = memberData.nonProductiveEntries.reduce((s, e) => s + e.totalSeconds, 0);
+      // Add non-productive to total seconds so export totals match the table
+      memberData.totalSeconds += memberData.nonProductiveTotalSeconds;
     }
-   
+
     memberDetails.push(memberData);
   }
  
   // Summary data
   const totalMemberHours = members.reduce((sum, m) => sum + m.monthHours, 0);
- 
+
+  // For mode='projectOnly': zero-out the Unassigned breakdown fields so per-project
+  // member rows don't display NULL-project time that's now broken out into the
+  // synthetic Unassigned section. Detailed-activity totals will then match the
+  // Member Summary's "This Month" column for that project.
+  // For mode='unassignedOnly': zero-out the same fields so the synthetic Unassigned
+  // section doesn't show a redundant "Unassigned (Month)" breakdown (the whole
+  // section is already unassigned).
+  const stripUnassigned = mode === 'projectOnly' || isUnassignedSection;
+  const zero = (v) => stripUnassigned ? 0 : (v || 0);
+
+  // Update memberDetails (per-section summary rows in Sheet 1) so the "⚠ Unassigned"
+  // breakdown line is 0 in projectOnly mode.
+  if (stripUnassigned) {
+    for (const md of memberDetails) {
+      md.todayUnassignedSeconds = 0;
+      md.weekUnassignedSeconds = 0;
+      md.monthUnassignedSeconds = 0;
+    }
+  }
+
+  // For unassigned section: the summary "issuesWorked" is just the count of
+  // distinct issueKeys in entries (effectively 1 since all are 'Unassigned').
+  const issuesWorked = isUnassignedSection
+    ? (() => {
+        const set = new Set();
+        for (const md of memberDetails) {
+          for (const e of md.entries) set.add(e.issueKey);
+          for (const e of md.nonProductiveEntries) set.add(e.issueKey);
+        }
+        return set.size;
+      })()
+    : (teamAnalytics?.teamSummary?.issuesWorked ?? 0);
+
   return {
-    projectKey,
+    projectKey: options.displayProjectKey || projectKey,
+    isUnassignedSection,
     startDate,
     endDate,
     generatedAt: new Date().toISOString(),
     isSingleUser,
     memberDetails,
     summary: {
-      activeMembers: members.length,
+      activeMembers: activeMembers.length,
       totalHours: Math.round(totalMemberHours * 10) / 10,
-      issuesWorked: teamAnalytics.teamSummary.issuesWorked,
-      avgHoursPerMember: members.length > 0 ? Math.round(totalMemberHours / members.length * 10) / 10 : 0
+      issuesWorked,
+      // Divide by ACTIVE members so the average reflects people who actually
+      // contributed; dividing by the full roster understates productivity for
+      // teams with many inactive accounts.
+      avgHoursPerMember: activeMembers.length > 0 ? Math.round(totalMemberHours / activeMembers.length * 10) / 10 : 0
     },
     memberSummary: members.map(m => ({
+      userId: m.userId,
       displayName: m.displayName,
       todayHours: m.todayHours,
       weekHours: m.weekHours,
@@ -2468,15 +2644,15 @@ export async function generateTeamExportDataStructured(accountId, cloudId, proje
       todaySeconds: m.todaySeconds || 0,
       weekSeconds: m.weekSeconds || 0,
       monthSeconds: m.monthSeconds || 0,
-      todayUnassignedSeconds: m.todayUnassignedSeconds || 0,
-      weekUnassignedSeconds: m.weekUnassignedSeconds || 0,
-      monthUnassignedSeconds: m.monthUnassignedSeconds || 0,
+      todayUnassignedSeconds: zero(m.todayUnassignedSeconds),
+      weekUnassignedSeconds: zero(m.weekUnassignedSeconds),
+      monthUnassignedSeconds: zero(m.monthUnassignedSeconds),
       todayNonProductiveSeconds: m.todayNonProductiveSeconds || 0,
       weekNonProductiveSeconds: m.weekNonProductiveSeconds || 0,
       monthNonProductiveSeconds: m.monthNonProductiveSeconds || 0,
       percentage: totalMemberHours > 0 ? Math.round((m.monthHours / totalMemberHours) * 100) : 0
     })),
-    timeByIssue: !isSingleUser ? (teamAnalytics.teamTimeByIssue || []).map(issue => {
+    timeByIssue: !isSingleUser && !isUnassignedSection ? (teamAnalytics.teamTimeByIssue || []).map(issue => {
       const totalSeconds = teamAnalytics.teamTimeByIssue.reduce((sum, i) => sum + i.totalSeconds, 0);
       return {
         issueKey: issue.issueKey,

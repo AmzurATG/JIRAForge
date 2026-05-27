@@ -45,24 +45,27 @@ function formatDateRange(startDate, endDate) {
 }
 
 // ── Shared Styles ──
+//
+// Restricted palette (3 colors + neutrals) for a calmer, more report-grade look:
+//   navy   — primary structural color (titles, headers, banners)
+//   sky    — soft accent for sub-banners (per-member roll-up rows)
+//   sage   — totals/grand-totals row
+//   neutrals for row alternation, borders, secondary text.
 
 const COLORS = {
-  headerBg: 'FF2C5F8A',
-  headerFont: 'FFFFFFFF',
-  sectionBg: 'FFDEEBFF',
-  sectionFont: 'FF0052CC',
-  rowEvenBg: 'FFE8F0FE',
+  navy: 'FF1F3A5F',
+  navyText: 'FFFFFFFF',
+  sky: 'FFEAF1FA',
+  skyText: 'FF1F3A5F',
+  sage: 'FFE8F1E4',
+  sageText: 'FF2C5F2D',
+  rowEvenBg: 'FFFAFBFC',
   rowOddBg: 'FFFFFFFF',
-  borderColor: 'FFB0BEC5',
-  totalBg: 'FFDCEDC8',
-  totalFont: 'FF1B5E20',
-  titleBg: 'FF1A3E5C',
-  titleFont: 'FFFFFFFF',
-  pivotColors: [
-    'FFFFF3E0', 'FFE8F5E9', 'FFE3F2FD', 'FFFCE4EC',
-    'FFF3E5F5', 'FFEFEBE9', 'FFE0F7FA', 'FFFFF8E1',
-    'FFE8EAF6', 'FFEDE7F6'
-  ]
+  borderColor: 'FFD0D7DE',
+  bodyText: 'FF1F2328',
+  subtleText: 'FF6E7781',
+  warnBg: 'FFFFF8E1',
+  warnText: 'FF7A5700'
 };
 
 const thinBorder = {
@@ -73,11 +76,11 @@ const thinBorder = {
 };
 
 function styleHeaderRow(row, colCount) {
-  row.height = 30;
+  row.height = 28;
   row.eachCell({ includeEmpty: true }, (cell, colNumber) => {
     if (colNumber > colCount) return;
-    cell.font = { bold: true, size: 11, color: { argb: COLORS.headerFont } };
-    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: COLORS.headerBg } };
+    cell.font = { bold: true, size: 11, color: { argb: COLORS.navyText } };
+    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: COLORS.navy } };
     cell.alignment = { vertical: 'middle', horizontal: 'center', wrapText: true };
     cell.border = thinBorder;
   });
@@ -86,20 +89,20 @@ function styleHeaderRow(row, colCount) {
 function styleDataRow(row, colCount, isEven) {
   row.eachCell({ includeEmpty: true }, (cell, colNumber) => {
     if (colNumber > colCount) return;
-    cell.font = { size: 10, color: { argb: 'FF172B4D' } };
+    cell.font = { size: 10, color: { argb: COLORS.bodyText } };
     cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: isEven ? COLORS.rowEvenBg : COLORS.rowOddBg } };
-    cell.alignment = { vertical: 'middle', horizontal: 'center' };
+    cell.alignment = { vertical: 'middle', horizontal: 'left' };
     cell.border = thinBorder;
   });
 }
 
 function styleTotalRow(row, colCount) {
-  row.height = 26;
+  row.height = 24;
   row.eachCell({ includeEmpty: true }, (cell, colNumber) => {
     if (colNumber > colCount) return;
-    cell.font = { bold: true, size: 11, color: { argb: COLORS.totalFont } };
-    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: COLORS.totalBg } };
-    cell.alignment = { vertical: 'middle', horizontal: 'center' };
+    cell.font = { bold: true, size: 11, color: { argb: COLORS.sageText } };
+    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: COLORS.sage } };
+    cell.alignment = { vertical: 'middle', horizontal: 'left' };
     cell.border = thinBorder;
   });
 }
@@ -109,11 +112,11 @@ function addTitleRow(ws, text, colCount, rowNum) {
   ws.mergeCells(rowNum, 1, rowNum, colCount);
   const cell = row.getCell(1);
   cell.value = text;
-  cell.font = { bold: true, size: 14, color: { argb: COLORS.titleFont } };
-  cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: COLORS.titleBg } };
-  cell.alignment = { vertical: 'middle', horizontal: 'center' };
+  cell.font = { bold: true, size: 14, color: { argb: COLORS.navyText } };
+  cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: COLORS.navy } };
+  cell.alignment = { vertical: 'middle', horizontal: 'left', indent: 1 };
   cell.border = thinBorder;
-  row.height = 32;
+  row.height = 30;
   return rowNum + 1;
 }
 
@@ -122,10 +125,158 @@ function addSubtitleRow(ws, text, colCount, rowNum) {
   ws.mergeCells(rowNum, 1, rowNum, colCount);
   const cell = row.getCell(1);
   cell.value = text;
-  cell.font = { italic: true, size: 9, color: { argb: 'FF757575' } };
-  cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF5F5F5' } };
-  cell.alignment = { vertical: 'middle', horizontal: 'center' };
+  cell.font = { italic: true, size: 10, color: { argb: COLORS.subtleText } };
+  cell.alignment = { vertical: 'middle', horizontal: 'left', indent: 1 };
+  row.height = 18;
+  return rowNum + 1;
+}
+
+/**
+ * Render a project section banner (clean, no emoji — works across all systems).
+ */
+function addBannerRow(ws, text, colCount, rowNum) {
+  const row = ws.getRow(rowNum);
+  ws.mergeCells(rowNum, 1, rowNum, colCount);
+  const cell = row.getCell(1);
+  cell.value = text;
+  cell.font = { bold: true, size: 12, color: { argb: COLORS.skyText } };
+  cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: COLORS.sky } };
+  cell.alignment = { vertical: 'middle', horizontal: 'left', indent: 1 };
+  cell.border = thinBorder;
+  row.height = 26;
+  return rowNum + 1;
+}
+
+/**
+ * Render a labeled key/value pair as a row pair (label cell + value cell).
+ * Used inside the executive Report Header block.
+ */
+function addKeyValueRow(ws, label, value, rowNum, opts = {}) {
+  const row = ws.getRow(rowNum);
+  const labelCell = row.getCell(1);
+  labelCell.value = label;
+  labelCell.font = { bold: true, size: 10, color: { argb: COLORS.subtleText } };
+  labelCell.alignment = { vertical: 'middle', horizontal: 'left', indent: 1 };
+  labelCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: COLORS.rowEvenBg } };
+  labelCell.border = thinBorder;
+
+  const valueCell = row.getCell(2);
+  valueCell.value = value;
+  valueCell.font = { bold: !!opts.bold, size: opts.size || 11, color: { argb: COLORS.bodyText } };
+  valueCell.alignment = { vertical: 'middle', horizontal: 'left' };
+  valueCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: COLORS.rowOddBg } };
+  valueCell.border = thinBorder;
   row.height = 20;
+  return rowNum + 1;
+}
+
+/**
+ * Build an executive "Report Header" block at the top of a sheet:
+ * project list, period, generated-at, total hours, members. Self-documenting
+ * even if the file is shared without context.
+ */
+function addReportHeader(ws, { title, projectLabel, dateRangeStr, generatedAt, totalHours, memberCount, issuesWorked }, colCount, rowNum) {
+  let r = rowNum;
+  r = addTitleRow(ws, title, colCount, r);
+
+  const facts = [
+    ['Project(s)', projectLabel],
+    ['Period', dateRangeStr],
+    ['Active Members', String(memberCount)],
+    ['Issues Worked', String(issuesWorked)],
+    ['Total Time (Period)', totalHours],
+    ['Generated', generatedAt],
+  ];
+  for (const [k, v] of facts) {
+    r = addKeyValueRow(ws, k, v, r);
+  }
+  // Spacer row
+  ws.getRow(r).height = 8;
+  r += 1;
+  return r;
+}
+
+/**
+ * Render the "Time (Start – End)" cell. When a row collapses multiple disjoint
+ * sessions onto one (date, issueKey) pair, the literal "first start – last end"
+ * range can look absurd (e.g. "9:54 AM – 11:15 PM" for a 2-minute total). For
+ * multi-session rows, annotate with the session count so readers know the range
+ * is non-contiguous.
+ *
+ * @param {Array<{startTime?: string|null, endTime?: string|null, durationSeconds?: number}>} sessions
+ */
+function formatSessionRange(sessions) {
+  const valid = (sessions || [])
+    .filter(s => s && (s.durationSeconds || 0) > 0 && s.startTime)
+    .sort((a, b) => new Date(a.startTime) - new Date(b.startTime));
+  if (valid.length === 0) return '—';
+  const first = formatTime(valid[0].startTime);
+  const last = formatTime(valid[valid.length - 1].endTime);
+  if (valid.length === 1) return `${first} – ${last}`;
+  return `${first} – ${last} (${valid.length} sessions)`;
+}
+
+/**
+ * Format a "total time" duration using the same fmt as below, but null-safe.
+ */
+function hoursLabel(seconds) {
+  if (!seconds || seconds <= 0) return '0h';
+  const h = seconds / 3600;
+  if (h >= 10) return `${h.toFixed(1)}h`;
+  return `${formatDuration(Math.round(seconds))}`;
+}
+
+/**
+ * Aggregate time-per-issue (across members) from a list of memberDetails.
+ * Returns an object keyed by issueKey with the total seconds. Caller decides
+ * whether to include non-productive entries; we include both by default since
+ * the "Time by Issue" view should match the Detailed Activity total.
+ */
+function computeIssueAggregation(memberDetails) {
+  const issueMap = {};
+  for (const m of memberDetails || []) {
+    for (const e of (m.entries || [])) {
+      issueMap[e.issueKey] = (issueMap[e.issueKey] || 0) + (e.totalSeconds || 0);
+    }
+    for (const e of (m.nonProductiveEntries || [])) {
+      issueMap[e.issueKey] = (issueMap[e.issueKey] || 0) + (e.totalSeconds || 0);
+    }
+  }
+  return issueMap;
+}
+
+/**
+ * Render a single sky-banded roll-up row after a member's detail rows,
+ * showing their total time for the selected period and a productive /
+ * non-productive split. Replaces three banded rows in the old format that
+ * showed Today/Week/Month + Unassigned + Non-Productive — values that were
+ * misleading for custom date ranges and noisy in print.
+ *
+ * `extraColsBefore` is for multi-project sheets where a leading "Project"
+ * column shifts the layout right by one.
+ */
+function renderMemberRollup(ws, member, colCount, rowNum, extraColsBefore = 0) {
+  const periodSec = member.totalSeconds || 0;
+  const npSec = member.nonProductiveTotalSeconds || 0;
+  const prodSec = Math.max(0, periodSec - npSec);
+
+  const row = ws.getRow(rowNum);
+  const labelCol = 1 + extraColsBefore;
+  const valueCol = labelCol + 1;
+  if (valueCol < colCount) ws.mergeCells(rowNum, valueCol, rowNum, colCount);
+
+  row.getCell(labelCol).value = member.displayName;
+  row.getCell(valueCol).value = `Period total: ${formatDuration(periodSec)}` +
+    (npSec > 0 ? `  •  Productive: ${formatDuration(prodSec)}  •  Non-Productive / Private: ${formatDuration(npSec)}` : '');
+
+  row.eachCell({ includeEmpty: true }, (cell, colNumber) => {
+    if (colNumber > colCount) return;
+    cell.font = { bold: true, size: 10, color: { argb: COLORS.skyText } };
+    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: COLORS.sky } };
+    cell.alignment = { vertical: 'middle', horizontal: 'left', indent: 1 };
+    cell.border = thinBorder;
+  });
+  row.height = 22;
   return rowNum + 1;
 }
 
@@ -150,17 +301,20 @@ async function generateSingleProjectExcelReport(data, filename) {
   workbook.creator = 'JIRAForge Time Tracker';
   workbook.created = new Date();
 
-  const memberNames = data.memberDetails.map(m => m.displayName).join(', ');
   const dateRangeStr = formatDateRange(data.startDate, data.endDate);
+  const activeMembers = (data.memberDetails || []).filter(m => (m.totalSeconds || 0) > 0);
+  const teamPeriodSeconds = activeMembers.reduce((s, m) => s + (m.totalSeconds || 0), 0);
+  const teamIssueSeconds = computeIssueAggregation(activeMembers);
+  const issuesWorked = Object.keys(teamIssueSeconds).length;
 
   // ═══════════════════════════════════════════════════
   // SHEET 1: Detailed Activity (Grouped)
   // ═══════════════════════════════════════════════════
-  const ws = workbook.addWorksheet('Detailed Activity (Grouped)');
+  const ws = workbook.addWorksheet('Detailed Activity');
 
   const COL_COUNT = 6;
   ws.columns = [
-    { key: 'member', width: 22 },
+    { key: 'member', width: 28 },
     { key: 'date', width: 16 },
     { key: 'issueKey', width: 18 },
     { key: 'classification', width: 16 },
@@ -168,52 +322,48 @@ async function generateSingleProjectExcelReport(data, filename) {
     { key: 'timings', width: 40 }
   ];
 
-  // Title
-  let cr = addTitleRow(ws, `Team Analytics – ${data.projectKey || 'All'} Project  |  ${dateRangeStr}  |  ${memberNames}`, COL_COUNT, 1);
-  // Subtitle
-  cr = addSubtitleRow(ws, 'Each row = one issue on one day. Start and end times are in the last column.', COL_COUNT, cr);
+  // Executive header block — answers "what is this report?" without scrolling.
+  let cr = addReportHeader(ws, {
+    title: 'Team Time Tracking Report',
+    projectLabel: data.projectKey || 'All Projects',
+    dateRangeStr,
+    generatedAt: new Date().toLocaleString(),
+    totalHours: hoursLabel(teamPeriodSeconds),
+    memberCount: activeMembers.length,
+    issuesWorked
+  }, COL_COUNT, 1);
+
+  cr = addSubtitleRow(ws, 'Each row represents one issue worked on one day. The Time column shows the session window for that day.', COL_COUNT, cr);
+  // Spacer
+  ws.getRow(cr).height = 6;
+  cr += 1;
 
   // Header row
   const hRow = ws.getRow(cr);
-  hRow.values = ['Member', 'Date', 'Issue Key', 'Classification', 'Total Time', 'Time (Start - End)'];
+  hRow.values = ['Member', 'Date', 'Issue Key', 'Classification', 'Total Time', 'Time (Start – End)'];
   styleHeaderRow(hRow, COL_COUNT);
   const headerRowNum = cr;
   ws.views = [{ state: 'frozen', ySplit: cr }];
   cr++;
 
-  // Collect all entries across all members for the pivot later
+  // Collect all entries across all members for the per-issue aggregation later
   const allEntries = [];
 
-  for (const member of data.memberDetails) {
+  for (const member of activeMembers) {
     // Combine productive and non-productive entries
     const productiveEntries = (member.entries || []).map(e => ({ ...e, classification: 'Productive' }));
-    const npEntries = (member.nonProductiveEntries || []).map(e => ({ 
-      ...e, 
-      classification: e.classification === 'private' ? 'Private' : 'Non-Productive' 
+    const npEntries = (member.nonProductiveEntries || []).map(e => ({
+      ...e,
+      classification: e.classification === 'private' ? 'Private' : 'Non-Productive'
     }));
-    const allMemberEntries = [...productiveEntries, ...npEntries];
-
-    const sortedEntries = allMemberEntries.sort((a, b) => {
+    const sortedEntries = [...productiveEntries, ...npEntries].sort((a, b) => {
       if (a.date !== b.date) return a.date.localeCompare(b.date);
       return a.issueKey.localeCompare(b.issueKey);
     });
 
     let rowIdx = 0;
     for (const entry of sortedEntries) {
-      const sessions = [...entry.sessions]
-        .filter(s => s.durationSeconds > 0)
-        .sort((a, b) => {
-          if (!a.startTime) return 1;
-          if (!b.startTime) return -1;
-          return new Date(a.startTime) - new Date(b.startTime);
-        });
-
       allEntries.push({ ...entry, memberName: member.displayName });
-
-      // Show just the first start time and last end time for the issue
-      const firstStart = sessions.length > 0 ? formatTime(sessions[0].startTime) : '';
-      const lastEnd = sessions.length > 0 ? formatTime(sessions[sessions.length - 1].endTime) : '';
-      const timingText = firstStart && lastEnd ? `${firstStart} - ${lastEnd}` : '—';
 
       const row = ws.getRow(cr);
       row.values = [
@@ -222,111 +372,51 @@ async function generateSingleProjectExcelReport(data, filename) {
         entry.issueKey,
         entry.classification || 'Productive',
         formatDuration(entry.totalSeconds),
-        timingText
+        formatSessionRange(entry.sessions)
       ];
       styleDataRow(row, COL_COUNT, rowIdx % 2 === 0);
-      row.getCell(1).alignment = { vertical: 'middle', horizontal: 'left' };
-      row.getCell(1).font = { size: 10, color: { argb: 'FF172B4D' } };
-      row.getCell(2).alignment = { vertical: 'middle', horizontal: 'left' };
-      row.getCell(2).font = { bold: true, size: 10, color: { argb: 'FF172B4D' } };
-      row.getCell(3).alignment = { vertical: 'middle', horizontal: 'left' };
-      row.getCell(4).alignment = { vertical: 'middle', horizontal: 'left' };
-      row.getCell(5).font = { bold: true, size: 10, color: { argb: 'FF172B4D' } };
-      row.getCell(6).alignment = { vertical: 'middle', horizontal: 'left' };
-      row.getCell(6).font = { size: 10, color: { argb: 'FF37474F' } };
+      row.getCell(2).font = { bold: true, size: 10, color: { argb: COLORS.bodyText } };
+      row.getCell(5).font = { bold: true, size: 10, color: { argb: COLORS.bodyText } };
+      row.getCell(6).font = { size: 10, color: { argb: COLORS.subtleText } };
       row.height = 20;
 
       cr++;
       rowIdx++;
     }
 
-    // Member time summary rows (Today / This Week / This Month + breakdowns)
-    if (member.todaySeconds !== undefined || member.weekSeconds !== undefined || member.monthSeconds !== undefined) {
-      const mSummaryRow = ws.getRow(cr);
-      mSummaryRow.getCell(1).value = member.displayName;
-      ws.mergeCells(cr, 2, cr, COL_COUNT);
-      // Total Time = project-matched time + unassigned (NULL project_key) time
-      // so this line reflects the member's actual total work time, not just the
-      // portion that could be attributed to a specific issue under this project.
-      const mTodayTotal = (member.todaySeconds || 0) + (member.todayUnassignedSeconds || 0);
-      const mWeekTotal = (member.weekSeconds || 0) + (member.weekUnassignedSeconds || 0);
-      const mMonthTotal = (member.monthSeconds || 0) + (member.monthUnassignedSeconds || 0);
-      mSummaryRow.getCell(2).value = `Total Time → Today: ${formatDuration(mTodayTotal)}  |  This Week: ${formatDuration(mWeekTotal)}  |  This Month: ${formatDuration(mMonthTotal)}`;
-      mSummaryRow.height = 24;
-      mSummaryRow.eachCell({ includeEmpty: true }, (cell, colNumber) => {
-        if (colNumber > COL_COUNT) return;
-        cell.font = { bold: true, size: 10, color: { argb: COLORS.sectionFont } };
-        cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: COLORS.sectionBg } };
-        cell.alignment = { vertical: 'middle', horizontal: 'left' };
-        cell.border = thinBorder;
-      });
-      cr++;
-
-      // Breakdown row: Unassigned
-      const unassignedRow = ws.getRow(cr);
-      unassignedRow.getCell(1).value = '';
-      ws.mergeCells(cr, 2, cr, COL_COUNT);
-      unassignedRow.getCell(2).value = `⚠ Unassigned → Today: ${formatDuration(member.todayUnassignedSeconds || 0)}  |  This Week: ${formatDuration(member.weekUnassignedSeconds || 0)}  |  This Month: ${formatDuration(member.monthUnassignedSeconds || 0)}`;
-      unassignedRow.height = 22;
-      unassignedRow.eachCell({ includeEmpty: true }, (cell, colNumber) => {
-        if (colNumber > COL_COUNT) return;
-        cell.font = { bold: true, size: 9, color: { argb: 'FF7A5700' } };
-        cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFF3E0' } };
-        cell.alignment = { vertical: 'middle', horizontal: 'left' };
-        cell.border = thinBorder;
-      });
-      cr++;
-
-      // Breakdown row: Non-Productive & Private
-      const npRow = ws.getRow(cr);
-      npRow.getCell(1).value = '';
-      ws.mergeCells(cr, 2, cr, COL_COUNT);
-      npRow.getCell(2).value = `✖ Non-Productive / Private → Today: ${formatDuration(member.todayNonProductiveSeconds || 0)}  |  This Week: ${formatDuration(member.weekNonProductiveSeconds || 0)}  |  This Month: ${formatDuration(member.monthNonProductiveSeconds || 0)}`;
-      npRow.height = 22;
-      npRow.eachCell({ includeEmpty: true }, (cell, colNumber) => {
-        if (colNumber > COL_COUNT) return;
-        cell.font = { bold: true, size: 9, color: { argb: 'FF8B0000' } };
-        cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFCE4EC' } };
-        cell.alignment = { vertical: 'middle', horizontal: 'left' };
-        cell.border = thinBorder;
-      });
-      cr++;
-    }
+    // Per-member roll-up row: a single sky-banded row that contains the member's
+    // total for the selected period. Drops the old Today/Week/Month + Unassigned +
+    // NonProductive triple-banded rows, which were noisy and double-counted.
+    cr = renderMemberRollup(ws, member, COL_COUNT, cr);
   }
 
-  // Set autoFilter to span from header row to last data row
-  ws.autoFilter = { from: `A${headerRowNum}`, to: `F${cr - 1}` };
+  // Set autoFilter to span from header row to last data row (data only)
+  if (cr - 1 > headerRowNum) {
+    ws.autoFilter = { from: `A${headerRowNum}`, to: `F${cr - 1}` };
+  }
 
   // ═══════════════════════════════════════════════════
-  // SHEET 2: Time by Issue
+  // SHEET 2: Time by Issue (period-filtered, sorted desc)
   // ═══════════════════════════════════════════════════
   const issueWs = workbook.addWorksheet('Time by Issue');
   const IC = 4;
   issueWs.columns = [
-    { key: 'issueKey', width: 18 },
+    { key: 'issueKey', width: 24 },
     { key: 'totalMin', width: 18 },
-    { key: 'totalTime', width: 16 },
-    { key: 'pct', width: 16 }
+    { key: 'totalTime', width: 18 },
+    { key: 'pct', width: 14 }
   ];
 
-  // Aggregate time by issue from allEntries
-  const issueMap = {};
-  for (const entry of allEntries) {
-    if (!issueMap[entry.issueKey]) {
-      issueMap[entry.issueKey] = 0;
-    }
-    issueMap[entry.issueKey] += entry.totalSeconds;
-  }
-  const issueArray = Object.entries(issueMap)
+  const issueArray = Object.entries(teamIssueSeconds)
     .map(([key, sec]) => ({ issueKey: key, totalSeconds: sec }))
     .sort((a, b) => b.totalSeconds - a.totalSeconds);
   const grandTotalSec = issueArray.reduce((s, i) => s + i.totalSeconds, 0);
 
-  // Title
-  const allContrib = data.memberDetails.length > 1 ? 'All Contributors' : memberNames;
-  let icr = addTitleRow(issueWs, `Time by Issue – ${allContrib}`, IC, 1);
+  let icr = addTitleRow(issueWs, `Time by Issue  |  ${data.projectKey || 'All Projects'}  |  ${dateRangeStr}`, IC, 1);
+  icr = addSubtitleRow(issueWs, 'Aggregated across all team members for the selected period.', IC, icr);
+  issueWs.getRow(icr).height = 6;
+  icr += 1;
 
-  // Header
   const ihRow = issueWs.getRow(icr);
   ihRow.values = ['Issue Key', 'Total Time (min)', 'Total Time', '% of Total'];
   styleHeaderRow(ihRow, IC);
@@ -340,104 +430,90 @@ async function generateSingleProjectExcelReport(data, filename) {
     const r = issueWs.getRow(icr);
     r.values = [issue.issueKey, totalMin, formatDuration(issue.totalSeconds), `${pct}%`];
     styleDataRow(r, IC, i % 2 === 0);
-    r.getCell(1).alignment = { vertical: 'middle', horizontal: 'center' };
-    r.getCell(2).font = { size: 10, color: { argb: 'FF172B4D' } };
-    r.getCell(3).font = { size: 10, color: { argb: 'FF172B4D' } };
+    r.getCell(2).alignment = { vertical: 'middle', horizontal: 'right' };
+    r.getCell(3).alignment = { vertical: 'middle', horizontal: 'right' };
+    r.getCell(4).alignment = { vertical: 'middle', horizontal: 'right' };
     icr++;
   });
 
-  // Total
-  const totalMin = Math.round(grandTotalSec / 60);
   const totalR = issueWs.getRow(icr);
-  totalR.values = ['TOTAL', totalMin, formatDuration(grandTotalSec), '100.0%'];
+  totalR.values = ['TOTAL', Math.round(grandTotalSec / 60), formatDuration(grandTotalSec), '100.0%'];
   styleTotalRow(totalR, IC);
+  totalR.getCell(2).alignment = { vertical: 'middle', horizontal: 'right' };
+  totalR.getCell(3).alignment = { vertical: 'middle', horizontal: 'right' };
+  totalR.getCell(4).alignment = { vertical: 'middle', horizontal: 'right' };
 
   // ═══════════════════════════════════════════════════
-  // SHEET 3: Summary
+  // SHEET 3: Team Summary (period-filtered)
+  //
+  // Rebuilt to be honest about the period: numbers come from memberDetails
+  // (which IS the user's selected date range) instead of the rolling
+  // Today/This Week/This Month buckets that don't reflect a custom range.
   // ═══════════════════════════════════════════════════
-  if (data.memberSummary && data.memberSummary.length > 0) {
+  if (activeMembers.length > 0) {
     const summaryWs = workbook.addWorksheet('Summary');
-    const SC = 7;
+    const SC = 5;
     summaryWs.columns = [
-      { key: 'c1', width: 24 },
-      { key: 'c2', width: 16 },
-      { key: 'c3', width: 16 },
-      { key: 'c4', width: 16 },
-      { key: 'c5', width: 18 },
-      { key: 'c6', width: 24 },
-      { key: 'c7', width: 14 }
+      { key: 'c1', width: 28 },
+      { key: 'c2', width: 18 },
+      { key: 'c3', width: 18 },
+      { key: 'c4', width: 24 },
+      { key: 'c5', width: 14 },
     ];
 
-    let scr = addTitleRow(summaryWs, `Team Summary – ${data.projectKey || 'All'} Project  |  ${dateRangeStr}`, SC, 1);
+    let scr = addTitleRow(summaryWs, `Team Summary  |  ${data.projectKey || 'All Projects'}  |  ${dateRangeStr}`, SC, 1);
+    scr = addSubtitleRow(summaryWs, 'All figures are for the selected period.', SC, scr);
+    summaryWs.getRow(scr).height = 6;
+    scr += 1;
 
-    // Today/Week/Month = project-matched time + unassigned (NULL project_key) time so
-    // the columns reflect each member's actual total work time. "Unassigned (Month)"
-    // stays as an informational breakdown column (subset of "This Month").
-    const effSeconds = (m, bucket) => (m[`${bucket}Seconds`] ?? Math.round((m[`${bucket}Hours`] ?? 0) * 3600)) + (m[`${bucket}UnassignedSeconds`] ?? 0);
+    // Headline KPI block
+    const totalPeriodSec = activeMembers.reduce((s, m) => s + (m.totalSeconds || 0), 0);
+    const totalNpSec = activeMembers.reduce((s, m) => s + (m.nonProductiveTotalSeconds || 0), 0);
+    const totalProdSec = Math.max(0, totalPeriodSec - totalNpSec);
+    const avgPerMember = activeMembers.length > 0 ? totalPeriodSec / activeMembers.length : 0;
 
-    const totalMonthSeconds = data.memberSummary.reduce((s, m) => s + effSeconds(m, 'month'), 0);
-
-    // Info rows — recompute Total Hours / Avg Hours from actual totals (project + unassigned)
-    const actualTotalHours = Math.round(totalMonthSeconds / 3600 * 10) / 10;
-    const actualAvgHours = data.memberSummary.length > 0 ? Math.round(totalMonthSeconds / 3600 / data.memberSummary.length * 10) / 10 : 0;
-    const infoRows = [
-      ['Active Members', data.summary.activeMembers],
-      ['Total Hours', `${actualTotalHours}h`],
-      ['Issues Worked', data.summary.issuesWorked],
-      ['Avg Hours/Member', `${actualAvgHours}h`]
+    const kpis = [
+      ['Active Members', String(activeMembers.length)],
+      ['Issues Worked', String(issuesWorked)],
+      ['Total Time', formatDuration(totalPeriodSec)],
+      ['Productive', formatDuration(totalProdSec)],
+      ['Non-Productive / Private', formatDuration(totalNpSec)],
+      ['Avg per Member', formatDuration(Math.round(avgPerMember))],
     ];
-    infoRows.forEach((vals, i) => {
-      const r = summaryWs.getRow(scr);
-      r.values = [vals[0], vals[1], '', '', '', '', ''];
-      styleDataRow(r, 2, i % 2 === 0);
-      r.getCell(1).font = { bold: true, size: 10, color: { argb: 'FF172B4D' } };
-      r.getCell(1).alignment = { vertical: 'middle', horizontal: 'left' };
-      r.getCell(2).alignment = { vertical: 'middle', horizontal: 'left' };
-      scr++;
-    });
-    scr++; // spacer
+    for (const [k, v] of kpis) scr = addKeyValueRow(summaryWs, k, v, scr);
 
-    // Member Summary Table
+    summaryWs.getRow(scr).height = 8;
+    scr += 1;
+
+    // Per-member table
     const mhRow = summaryWs.getRow(scr);
-    mhRow.values = ['Member Name', 'Today', 'This Week', 'This Month', 'Unassigned (Month)', 'Non-Productive / Private (Month)', '% of Total'];
+    mhRow.values = ['Member', 'Period Total', 'Productive', 'Non-Productive / Private', '% of Team'];
     styleHeaderRow(mhRow, SC);
     scr++;
 
-    data.memberSummary.forEach((m, i) => {
-      const memberMonthSec = effSeconds(m, 'month');
-      // Recompute percentage against the new total (project + unassigned) so it matches the column values.
-      const percentage = totalMonthSeconds > 0 ? Math.round((memberMonthSec / totalMonthSeconds) * 100) : 0;
+    const sortedMembers = [...activeMembers].sort((a, b) => (b.totalSeconds || 0) - (a.totalSeconds || 0));
+    sortedMembers.forEach((m, i) => {
+      const periodSec = m.totalSeconds || 0;
+      const npSec = m.nonProductiveTotalSeconds || 0;
+      const prodSec = Math.max(0, periodSec - npSec);
+      const pct = totalPeriodSec > 0 ? Math.round((periodSec / totalPeriodSec) * 100) : 0;
       const r = summaryWs.getRow(scr);
-      r.values = [
-        m.displayName,
-        formatDuration(effSeconds(m, 'today')),
-        formatDuration(effSeconds(m, 'week')),
-        formatDuration(memberMonthSec),
-        formatDuration(m.monthUnassignedSeconds || 0),
-        formatDuration(m.monthNonProductiveSeconds || 0),
-        `${percentage}%`
-      ];
+      r.values = [m.displayName, formatDuration(periodSec), formatDuration(prodSec), formatDuration(npSec), `${pct}%`];
       styleDataRow(r, SC, i % 2 === 0);
-      r.getCell(1).alignment = { vertical: 'middle', horizontal: 'left' };
+      r.getCell(2).alignment = { vertical: 'middle', horizontal: 'right' };
+      r.getCell(3).alignment = { vertical: 'middle', horizontal: 'right' };
+      r.getCell(4).alignment = { vertical: 'middle', horizontal: 'right' };
+      r.getCell(5).alignment = { vertical: 'middle', horizontal: 'right' };
       scr++;
     });
 
-    // Total
-    const totalTodaySeconds = data.memberSummary.reduce((s, m) => s + effSeconds(m, 'today'), 0);
-    const totalWeekSeconds = data.memberSummary.reduce((s, m) => s + effSeconds(m, 'week'), 0);
-    const totalUnassignedSeconds = data.memberSummary.reduce((s, m) => s + (m.monthUnassignedSeconds || 0), 0);
-    const totalNpSeconds = data.memberSummary.reduce((s, m) => s + (m.monthNonProductiveSeconds || 0), 0);
     const stRow = summaryWs.getRow(scr);
-    stRow.values = [
-      'TOTAL',
-      formatDuration(totalTodaySeconds),
-      formatDuration(totalWeekSeconds),
-      formatDuration(totalMonthSeconds),
-      formatDuration(totalUnassignedSeconds),
-      formatDuration(totalNpSeconds),
-      '100%'
-    ];
+    stRow.values = ['TOTAL', formatDuration(totalPeriodSec), formatDuration(totalProdSec), formatDuration(totalNpSec), '100%'];
     styleTotalRow(stRow, SC);
+    stRow.getCell(2).alignment = { vertical: 'middle', horizontal: 'right' };
+    stRow.getCell(3).alignment = { vertical: 'middle', horizontal: 'right' };
+    stRow.getCell(4).alignment = { vertical: 'middle', horizontal: 'right' };
+    stRow.getCell(5).alignment = { vertical: 'middle', horizontal: 'right' };
   }
 
   // ── Generate and Download ──
@@ -447,27 +523,61 @@ async function generateSingleProjectExcelReport(data, filename) {
 }
 
 /**
- * Generate Excel report for multiple projects
- * Data is grouped by project with a Project column added to each sheet
+ * Generate Excel report for multiple projects.
+ *
+ * Layout per sheet:
+ *   1) Detailed Activity — clean project banners, period-only roll-up rows.
+ *   2) Time by Issue — per-project sections + a global Top Issues block.
+ *   3) Team Summary — KPI block, per-project tables, Grand Totals.
+ *
+ * Projects (and the synthetic "Unassigned (All Projects)" section) with no
+ * recorded activity are skipped entirely so empty sections don't dilute the
+ * report. The renderer treats the synthetic Unassigned section like any other
+ * project, just with a distinct banner label coming from the backend.
  */
 async function generateMultiProjectExcelReport(data, filename) {
   const workbook = new ExcelJS.Workbook();
   workbook.creator = 'JIRAForge Time Tracker';
   workbook.created = new Date();
 
-  const projects = data.projects;
-  const projectKeys = projects.map(p => p.projectKey).filter(Boolean);
-  const dateRangeStr = projects.length > 0 ? formatDateRange(projects[0].startDate, projects[0].endDate) : '';
+  // Drop projects with zero active members so the report doesn't show empty
+  // "Project: TES" / "Project: TRAIN" sections.
+  const rawProjects = data.projects || [];
+  const projects = rawProjects
+    .map(p => ({
+      ...p,
+      _activeMembers: (p.memberDetails || []).filter(m => (m.totalSeconds || 0) > 0)
+    }))
+    .filter(p => p._activeMembers.length > 0);
+
+  const realProjectKeys = projects.filter(p => !p.isUnassignedSection).map(p => p.projectKey);
+  const projectLabel = realProjectKeys.length > 0
+    ? (realProjectKeys.length <= 5 ? realProjectKeys.join(', ') : `${realProjectKeys.length} projects`)
+    : 'All Projects';
+  const dateRangeStr = rawProjects.length > 0 ? formatDateRange(rawProjects[0].startDate, rawProjects[0].endDate) : '';
+
+  // Cross-project totals (one record per row — no Unassigned double counting,
+  // since the backend now puts NULL-project records in their own section).
+  const teamPeriodSeconds = projects.reduce((s, p) =>
+    s + p._activeMembers.reduce((ss, m) => ss + (m.totalSeconds || 0), 0), 0);
+  // Dedup by userId so two members with the same display name are counted as
+  // distinct people. Falls back to displayName for legacy payloads that don't
+  // carry userId (older backend versions).
+  const uniqueMembers = new Set();
+  projects.forEach(p => p._activeMembers.forEach(m => uniqueMembers.add(m.userId || `name:${m.displayName}`)));
+  const uniqueMemberCount = uniqueMembers.size;
+  const uniqueIssueKeys = new Set();
+  projects.forEach(p => Object.keys(computeIssueAggregation(p._activeMembers)).forEach(k => uniqueIssueKeys.add(`${p.projectKey}::${k}`)));
 
   // ═══════════════════════════════════════════════════
-  // SHEET 1: Detailed Activity (Grouped by Project)
+  // SHEET 1: Detailed Activity
   // ═══════════════════════════════════════════════════
-  const ws = workbook.addWorksheet('Detailed Activity (Grouped)');
+  const ws = workbook.addWorksheet('Detailed Activity');
 
   const COL_COUNT = 7;
   ws.columns = [
-    { key: 'project', width: 16 },
-    { key: 'member', width: 22 },
+    { key: 'project', width: 22 },
+    { key: 'member', width: 28 },
     { key: 'date', width: 16 },
     { key: 'issueKey', width: 18 },
     { key: 'classification', width: 16 },
@@ -475,11 +585,22 @@ async function generateMultiProjectExcelReport(data, filename) {
     { key: 'timings', width: 40 }
   ];
 
-  let cr = addTitleRow(ws, `Team Analytics – ${projectKeys.join(', ')}  |  ${dateRangeStr}`, COL_COUNT, 1);
-  cr = addSubtitleRow(ws, 'Data grouped by project. Each row = one issue on one day.', COL_COUNT, cr);
+  let cr = addReportHeader(ws, {
+    title: 'Team Time Tracking Report',
+    projectLabel,
+    dateRangeStr,
+    generatedAt: new Date().toLocaleString(),
+    totalHours: hoursLabel(teamPeriodSeconds),
+    memberCount: uniqueMemberCount,
+    issuesWorked: uniqueIssueKeys.size
+  }, COL_COUNT, 1);
+
+  cr = addSubtitleRow(ws, 'Activity grouped by project, then by member. Each row = one issue worked on one day.', COL_COUNT, cr);
+  ws.getRow(cr).height = 6;
+  cr += 1;
 
   const hRow = ws.getRow(cr);
-  hRow.values = ['Project', 'Member', 'Date', 'Issue Key', 'Classification', 'Total Time', 'Time (Start - End)'];
+  hRow.values = ['Project', 'Member', 'Date', 'Issue Key', 'Classification', 'Total Time', 'Time (Start – End)'];
   styleHeaderRow(hRow, COL_COUNT);
   const headerRowNum = cr;
   ws.views = [{ state: 'frozen', ySplit: cr }];
@@ -488,47 +609,26 @@ async function generateMultiProjectExcelReport(data, filename) {
   const allEntries = []; // { projectKey, memberName, date, issueKey, totalSeconds, sessions }
 
   for (const projData of projects) {
-    // Project header row
-    const projRow = ws.getRow(cr);
-    ws.mergeCells(cr, 1, cr, COL_COUNT);
-    const projCell = projRow.getCell(1);
-    projCell.value = `📁  Project: ${projData.projectKey}`;
-    projCell.font = { bold: true, size: 12, color: { argb: 'FFFFFFFF' } };
-    projCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF0052CC' } };
-    projCell.alignment = { vertical: 'middle', horizontal: 'left' };
-    projCell.border = thinBorder;
-    projRow.height = 28;
-    cr++;
+    // Project banner — no emoji (avoids cross-platform mojibake), styled cleanly.
+    const bannerText = projData.isUnassignedSection
+      ? projData.projectKey  // e.g. "Unassigned (All Projects)"
+      : `Project · ${projData.projectKey}`;
+    cr = addBannerRow(ws, bannerText, COL_COUNT, cr);
 
-    for (const member of projData.memberDetails) {
-      // Combine productive and non-productive entries
+    for (const member of projData._activeMembers) {
       const productiveEntries = (member.entries || []).map(e => ({ ...e, classification: 'Productive' }));
-      const npEntries = (member.nonProductiveEntries || []).map(e => ({ 
-        ...e, 
-        classification: e.classification === 'private' ? 'Private' : 'Non-Productive' 
+      const npEntries = (member.nonProductiveEntries || []).map(e => ({
+        ...e,
+        classification: e.classification === 'private' ? 'Private' : 'Non-Productive'
       }));
-      const allMemberEntries = [...productiveEntries, ...npEntries];
-
-      const sortedEntries = allMemberEntries.sort((a, b) => {
+      const sortedEntries = [...productiveEntries, ...npEntries].sort((a, b) => {
         if (a.date !== b.date) return a.date.localeCompare(b.date);
         return a.issueKey.localeCompare(b.issueKey);
       });
 
       let rowIdx = 0;
       for (const entry of sortedEntries) {
-        const sessions = [...entry.sessions]
-          .filter(s => s.durationSeconds > 0)
-          .sort((a, b) => {
-            if (!a.startTime) return 1;
-            if (!b.startTime) return -1;
-            return new Date(a.startTime) - new Date(b.startTime);
-          });
-
         allEntries.push({ ...entry, projectKey: projData.projectKey, memberName: member.displayName });
-
-        const firstStart = sessions.length > 0 ? formatTime(sessions[0].startTime) : '';
-        const lastEnd = sessions.length > 0 ? formatTime(sessions[sessions.length - 1].endTime) : '';
-        const timingText = firstStart && lastEnd ? `${firstStart} - ${lastEnd}` : '—';
 
         const row = ws.getRow(cr);
         row.values = [
@@ -538,117 +638,56 @@ async function generateMultiProjectExcelReport(data, filename) {
           entry.issueKey,
           entry.classification || 'Productive',
           formatDuration(entry.totalSeconds),
-          timingText
+          formatSessionRange(entry.sessions)
         ];
         styleDataRow(row, COL_COUNT, rowIdx % 2 === 0);
-        row.getCell(1).alignment = { vertical: 'middle', horizontal: 'left' };
-        row.getCell(1).font = { bold: true, size: 10, color: { argb: 'FF0052CC' } };
-        row.getCell(2).alignment = { vertical: 'middle', horizontal: 'left' };
-        row.getCell(2).font = { size: 10, color: { argb: 'FF172B4D' } };
-        row.getCell(3).alignment = { vertical: 'middle', horizontal: 'left' };
-        row.getCell(3).font = { bold: true, size: 10, color: { argb: 'FF172B4D' } };
-        row.getCell(4).alignment = { vertical: 'middle', horizontal: 'left' };
-        row.getCell(5).alignment = { vertical: 'middle', horizontal: 'left' };
-        row.getCell(6).font = { bold: true, size: 10, color: { argb: 'FF172B4D' } };
-        row.getCell(7).alignment = { vertical: 'middle', horizontal: 'left' };
-        row.getCell(7).font = { size: 10, color: { argb: 'FF37474F' } };
+        row.getCell(3).font = { bold: true, size: 10, color: { argb: COLORS.bodyText } };
+        row.getCell(6).font = { bold: true, size: 10, color: { argb: COLORS.bodyText } };
+        row.getCell(7).font = { size: 10, color: { argb: COLORS.subtleText } };
         row.height = 20;
 
         cr++;
         rowIdx++;
       }
 
-      // Member time summary rows (Today / This Week / This Month + breakdowns)
-      if (member.todaySeconds !== undefined || member.weekSeconds !== undefined || member.monthSeconds !== undefined) {
-        const mSummaryRow = ws.getRow(cr);
-        mSummaryRow.getCell(1).value = projData.projectKey;
-        mSummaryRow.getCell(2).value = member.displayName;
-        ws.mergeCells(cr, 3, cr, COL_COUNT);
-        // Total Time = project-matched time + unassigned (NULL project_key) time
-        // so this line reflects the member's actual total work time, not just the
-        // portion that could be attributed to a specific issue under this project.
-        const mTodayTotal = (member.todaySeconds || 0) + (member.todayUnassignedSeconds || 0);
-        const mWeekTotal = (member.weekSeconds || 0) + (member.weekUnassignedSeconds || 0);
-        const mMonthTotal = (member.monthSeconds || 0) + (member.monthUnassignedSeconds || 0);
-        mSummaryRow.getCell(3).value = `Total Time → Today: ${formatDuration(mTodayTotal)}  |  This Week: ${formatDuration(mWeekTotal)}  |  This Month: ${formatDuration(mMonthTotal)}`;
-        mSummaryRow.height = 24;
-        mSummaryRow.eachCell({ includeEmpty: true }, (cell, colNumber) => {
-          if (colNumber > COL_COUNT) return;
-          cell.font = { bold: true, size: 10, color: { argb: COLORS.sectionFont } };
-          cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: COLORS.sectionBg } };
-          cell.alignment = { vertical: 'middle', horizontal: 'left' };
-          cell.border = thinBorder;
-        });
-        cr++;
-
-        // Breakdown row: Unassigned
-        const unassignedRow = ws.getRow(cr);
-        unassignedRow.getCell(1).value = '';
-        unassignedRow.getCell(2).value = '';
-        ws.mergeCells(cr, 3, cr, COL_COUNT);
-        unassignedRow.getCell(3).value = `⚠ Unassigned → Today: ${formatDuration(member.todayUnassignedSeconds || 0)}  |  This Week: ${formatDuration(member.weekUnassignedSeconds || 0)}  |  This Month: ${formatDuration(member.monthUnassignedSeconds || 0)}`;
-        unassignedRow.height = 22;
-        unassignedRow.eachCell({ includeEmpty: true }, (cell, colNumber) => {
-          if (colNumber > COL_COUNT) return;
-          cell.font = { bold: true, size: 9, color: { argb: 'FF7A5700' } };
-          cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFF3E0' } };
-          cell.alignment = { vertical: 'middle', horizontal: 'left' };
-          cell.border = thinBorder;
-        });
-        cr++;
-
-        // Breakdown row: Non-Productive & Private
-        const npRow = ws.getRow(cr);
-        npRow.getCell(1).value = '';
-        npRow.getCell(2).value = '';
-        ws.mergeCells(cr, 3, cr, COL_COUNT);
-        npRow.getCell(3).value = `✖ Non-Productive / Private → Today: ${formatDuration(member.todayNonProductiveSeconds || 0)}  |  This Week: ${formatDuration(member.weekNonProductiveSeconds || 0)}  |  This Month: ${formatDuration(member.monthNonProductiveSeconds || 0)}`;
-        npRow.height = 22;
-        npRow.eachCell({ includeEmpty: true }, (cell, colNumber) => {
-          if (colNumber > COL_COUNT) return;
-          cell.font = { bold: true, size: 9, color: { argb: 'FF8B0000' } };
-          cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFCE4EC' } };
-          cell.alignment = { vertical: 'middle', horizontal: 'left' };
-          cell.border = thinBorder;
-        });
-        cr++;
-      }
+      // Single, period-focused roll-up row per member.
+      cr = renderMemberRollup(ws, member, COL_COUNT, cr, /* extraColsBefore */ 1);
     }
   }
 
-  ws.autoFilter = { from: `A${headerRowNum}`, to: `G${cr - 1}` };
+  if (cr - 1 > headerRowNum) {
+    ws.autoFilter = { from: `A${headerRowNum}`, to: `G${cr - 1}` };
+  }
 
   // ═══════════════════════════════════════════════════
-  // SHEET 2: Time by Issue (Grouped by Project)
+  // SHEET 2: Time by Issue (per project, then global Top Issues)
   // ═══════════════════════════════════════════════════
   const issueWs = workbook.addWorksheet('Time by Issue');
   const IC = 5;
   issueWs.columns = [
-    { key: 'project', width: 16 },
-    { key: 'issueKey', width: 18 },
+    { key: 'project', width: 24 },
+    { key: 'issueKey', width: 22 },
     { key: 'totalMin', width: 18 },
-    { key: 'totalTime', width: 16 },
-    { key: 'pct', width: 16 }
+    { key: 'totalTime', width: 18 },
+    { key: 'pct', width: 14 }
   ];
 
-  let icr = addTitleRow(issueWs, `Time by Issue – ${projectKeys.join(', ')}`, IC, 1);
+  let icr = addTitleRow(issueWs, `Time by Issue  |  ${projectLabel}  |  ${dateRangeStr}`, IC, 1);
+  icr = addSubtitleRow(issueWs, 'Per project, then a Top Issues view across the full report.', IC, icr);
+  issueWs.getRow(icr).height = 6;
+  icr += 1;
 
   const ihRow = issueWs.getRow(icr);
-  ihRow.values = ['Project', 'Issue Key', 'Total Time (min)', 'Total Time', '% of Project Total'];
+  ihRow.values = ['Project', 'Issue Key', 'Total Time (min)', 'Total Time', '% of Project'];
   styleHeaderRow(ihRow, IC);
   issueWs.autoFilter = { from: `A${icr}`, to: `E${icr}` };
   issueWs.views = [{ state: 'frozen', ySplit: icr }];
   icr++;
 
+  // Per-project blocks
   let globalRowIdx = 0;
   for (const projData of projects) {
-    // Aggregate per project
-    const projEntries = allEntries.filter(e => e.projectKey === projData.projectKey);
-    const issueMap = {};
-    for (const entry of projEntries) {
-      if (!issueMap[entry.issueKey]) issueMap[entry.issueKey] = 0;
-      issueMap[entry.issueKey] += entry.totalSeconds;
-    }
+    const issueMap = computeIssueAggregation(projData._activeMembers);
     const issueArray = Object.entries(issueMap)
       .map(([key, sec]) => ({ issueKey: key, totalSeconds: sec }))
       .sort((a, b) => b.totalSeconds - a.totalSeconds);
@@ -660,177 +699,151 @@ async function generateMultiProjectExcelReport(data, filename) {
       const r = issueWs.getRow(icr);
       r.values = [projData.projectKey, issue.issueKey, totalMin, formatDuration(issue.totalSeconds), `${pct}%`];
       styleDataRow(r, IC, globalRowIdx % 2 === 0);
-      r.getCell(1).alignment = { vertical: 'middle', horizontal: 'center' };
-      r.getCell(1).font = { bold: true, size: 10, color: { argb: 'FF0052CC' } };
-      r.getCell(2).alignment = { vertical: 'middle', horizontal: 'center' };
+      r.getCell(3).alignment = { vertical: 'middle', horizontal: 'right' };
+      r.getCell(4).alignment = { vertical: 'middle', horizontal: 'right' };
+      r.getCell(5).alignment = { vertical: 'middle', horizontal: 'right' };
       icr++;
       globalRowIdx++;
     }
 
-    // Subtotal per project
     const projMin = Math.round(projTotalSec / 60);
     const stRow = issueWs.getRow(icr);
-    stRow.values = [`${projData.projectKey} Total`, '', projMin, formatDuration(projTotalSec), '100.0%'];
+    stRow.values = [`${projData.projectKey} subtotal`, '', projMin, formatDuration(projTotalSec), '100.0%'];
     styleTotalRow(stRow, IC);
+    stRow.getCell(3).alignment = { vertical: 'middle', horizontal: 'right' };
+    stRow.getCell(4).alignment = { vertical: 'middle', horizontal: 'right' };
+    stRow.getCell(5).alignment = { vertical: 'middle', horizontal: 'right' };
     icr++;
     globalRowIdx++;
   }
 
-  // Grand total
-  const grandTotalSec = allEntries.reduce((s, e) => s + e.totalSeconds, 0);
+  // Grand total row
+  const grandTotalSec = allEntries.reduce((s, e) => s + (e.totalSeconds || 0), 0);
   const grandMin = Math.round(grandTotalSec / 60);
   const gtRow = issueWs.getRow(icr);
   gtRow.values = ['GRAND TOTAL', '', grandMin, formatDuration(grandTotalSec), ''];
   styleTotalRow(gtRow, IC);
+  gtRow.getCell(3).alignment = { vertical: 'middle', horizontal: 'right' };
+  gtRow.getCell(4).alignment = { vertical: 'middle', horizontal: 'right' };
 
   // ═══════════════════════════════════════════════════
-  // SHEET 3: Summary (per Project)
+  // SHEET 3: Team Summary — KPI block + per-project tables + Grand Totals
   // ═══════════════════════════════════════════════════
   const summaryWs = workbook.addWorksheet('Summary');
-  const SC = 8;
+  const SC = 6;
   summaryWs.columns = [
-    { key: 'c1', width: 16 },
-    { key: 'c2', width: 24 },
-    { key: 'c3', width: 16 },
-    { key: 'c4', width: 16 },
-    { key: 'c5', width: 16 },
-    { key: 'c6', width: 18 },
-    { key: 'c7', width: 24 },
-    { key: 'c8', width: 14 }
+    { key: 'c1', width: 26 }, // Project — wide enough for "Unassigned (All Projects)"
+    { key: 'c2', width: 28 }, // Member
+    { key: 'c3', width: 16 }, // Period Total
+    { key: 'c4', width: 16 }, // Productive
+    { key: 'c5', width: 22 }, // Non-Productive / Private
+    { key: 'c6', width: 14 }, // % of Project
   ];
 
-  let scr = addTitleRow(summaryWs, `Team Summary – ${projectKeys.join(', ')}  |  ${dateRangeStr}`, SC, 1);
+  let scr = addTitleRow(summaryWs, `Team Summary  |  ${projectLabel}  |  ${dateRangeStr}`, SC, 1);
+  scr = addSubtitleRow(summaryWs, 'All figures are for the selected period. Unassigned time is reported once, in its own section.', SC, scr);
+  summaryWs.getRow(scr).height = 6;
+  scr += 1;
 
-  // Today/Week/Month = project-matched time + unassigned (NULL project_key) time so
-  // the columns reflect each member's actual total work time. "Unassigned (Month)"
-  // stays as an informational breakdown column (subset of "This Month").
-  const effSeconds = (m, bucket) => (m[`${bucket}Seconds`] ?? Math.round((m[`${bucket}Hours`] ?? 0) * 3600)) + (m[`${bucket}UnassignedSeconds`] ?? 0);
+  // Headline KPIs (cross-project)
+  const grandProdSec = projects.reduce((s, p) =>
+    s + p._activeMembers.reduce((ss, m) => ss + Math.max(0, (m.totalSeconds || 0) - (m.nonProductiveTotalSeconds || 0)), 0), 0);
+  const grandNpSec = projects.reduce((s, p) =>
+    s + p._activeMembers.reduce((ss, m) => ss + (m.nonProductiveTotalSeconds || 0), 0), 0);
 
-  // Per-project summary sections
-  const projectMonthSeconds = []; // per-project actual total for grand total aggregation
+  const kpis = [
+    ['Active Projects', String(realProjectKeys.length)],
+    ['Active Members (unique)', String(uniqueMemberCount)],
+    ['Issues Worked (across projects)', String(uniqueIssueKeys.size)],
+    ['Total Time', formatDuration(teamPeriodSeconds)],
+    ['Productive', formatDuration(grandProdSec)],
+    ['Non-Productive / Private', formatDuration(grandNpSec)],
+  ];
+  for (const [k, v] of kpis) scr = addKeyValueRow(summaryWs, k, v, scr);
+
+  summaryWs.getRow(scr).height = 10;
+  scr += 1;
+
+  // Per-project member tables
   for (const projData of projects) {
-    // Project header
-    const projHeaderRow = summaryWs.getRow(scr);
-    summaryWs.mergeCells(scr, 1, scr, SC);
-    const projCell = projHeaderRow.getCell(1);
-    projCell.value = `Project: ${projData.projectKey}`;
-    projCell.font = { bold: true, size: 12, color: { argb: COLORS.sectionFont } };
-    projCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: COLORS.sectionBg } };
-    projCell.alignment = { vertical: 'middle', horizontal: 'left' };
-    projCell.border = thinBorder;
-    projHeaderRow.height = 28;
+    scr = addBannerRow(summaryWs, projData.isUnassignedSection
+      ? projData.projectKey
+      : `Project · ${projData.projectKey}`, SC, scr);
+
+    const projPeriodSec = projData._activeMembers.reduce((s, m) => s + (m.totalSeconds || 0), 0);
+    const projNpSec = projData._activeMembers.reduce((s, m) => s + (m.nonProductiveTotalSeconds || 0), 0);
+    const projProdSec = Math.max(0, projPeriodSec - projNpSec);
+
+    const mhRow = summaryWs.getRow(scr);
+    mhRow.values = ['Project', 'Member', 'Period Total', 'Productive', 'Non-Productive / Private', '% of Project'];
+    styleHeaderRow(mhRow, SC);
     scr++;
 
-    // Project actual totals (include unassigned)
-    const projTotalMonthSeconds = (projData.memberSummary || []).reduce((s, m) => s + effSeconds(m, 'month'), 0);
-    const projActualTotalHours = Math.round(projTotalMonthSeconds / 3600 * 10) / 10;
-    const projMemberCount = (projData.memberSummary || []).length;
-    const projActualAvgHours = projMemberCount > 0 ? Math.round(projTotalMonthSeconds / 3600 / projMemberCount * 10) / 10 : 0;
-    projectMonthSeconds.push(projTotalMonthSeconds);
-
-    // Info rows
-    const infoRows = [
-      ['Active Members', projData.summary.activeMembers],
-      ['Total Hours', `${projActualTotalHours}h`],
-      ['Issues Worked', projData.summary.issuesWorked],
-      ['Avg Hours/Member', `${projActualAvgHours}h`]
-    ];
-    for (let i = 0; i < infoRows.length; i++) {
-      const vals = infoRows[i];
+    const sortedMembers = [...projData._activeMembers].sort((a, b) => (b.totalSeconds || 0) - (a.totalSeconds || 0));
+    for (let i = 0; i < sortedMembers.length; i++) {
+      const m = sortedMembers[i];
+      const periodSec = m.totalSeconds || 0;
+      const npSec = m.nonProductiveTotalSeconds || 0;
+      const prodSec = Math.max(0, periodSec - npSec);
+      const pct = projPeriodSec > 0 ? Math.round((periodSec / projPeriodSec) * 100) : 0;
       const r = summaryWs.getRow(scr);
-      r.values = ['', vals[0], vals[1], '', '', ''];
-      styleDataRow(r, 3, i % 2 === 0);
-      r.getCell(2).font = { bold: true, size: 10, color: { argb: 'FF172B4D' } };
-      r.getCell(2).alignment = { vertical: 'middle', horizontal: 'left' };
-      r.getCell(3).alignment = { vertical: 'middle', horizontal: 'left' };
-      scr++;
-    }
-    scr++; // spacer
-
-    if (projData.memberSummary && projData.memberSummary.length > 0) {
-      // Member Summary Table header
-      const mhRow = summaryWs.getRow(scr);
-      mhRow.values = ['Project', 'Member Name', 'Today', 'This Week', 'This Month', 'Unassigned (Month)', 'Non-Productive / Private (Month)', '% of Total'];
-      styleHeaderRow(mhRow, SC);
-      scr++;
-
-      for (let i = 0; i < projData.memberSummary.length; i++) {
-        const m = projData.memberSummary[i];
-        const memberMonthSec = effSeconds(m, 'month');
-        // Recompute percentage against the new project total so it matches the column values.
-        const percentage = projTotalMonthSeconds > 0 ? Math.round((memberMonthSec / projTotalMonthSeconds) * 100) : 0;
-        const r = summaryWs.getRow(scr);
-        r.values = [
-          projData.projectKey,
-          m.displayName,
-          formatDuration(effSeconds(m, 'today')),
-          formatDuration(effSeconds(m, 'week')),
-          formatDuration(memberMonthSec),
-          formatDuration(m.monthUnassignedSeconds || 0),
-          formatDuration(m.monthNonProductiveSeconds || 0),
-          `${percentage}%`
-        ];
-        styleDataRow(r, SC, i % 2 === 0);
-        r.getCell(1).font = { bold: true, size: 10, color: { argb: 'FF0052CC' } };
-        r.getCell(1).alignment = { vertical: 'middle', horizontal: 'left' };
-        r.getCell(2).alignment = { vertical: 'middle', horizontal: 'left' };
-        scr++;
-      }
-
-      // Project total
-      const totalTodaySeconds = projData.memberSummary.reduce((s, m) => s + effSeconds(m, 'today'), 0);
-      const totalWeekSeconds = projData.memberSummary.reduce((s, m) => s + effSeconds(m, 'week'), 0);
-      const totalUnassignedSeconds = projData.memberSummary.reduce((s, m) => s + (m.monthUnassignedSeconds || 0), 0);
-      const totalNpSeconds = projData.memberSummary.reduce((s, m) => s + (m.monthNonProductiveSeconds || 0), 0);
-      const stRow = summaryWs.getRow(scr);
-      stRow.values = [
-        '',
-        `${projData.projectKey} TOTAL`,
-        formatDuration(totalTodaySeconds),
-        formatDuration(totalWeekSeconds),
-        formatDuration(projTotalMonthSeconds),
-        formatDuration(totalUnassignedSeconds),
-        formatDuration(totalNpSeconds),
-        '100%'
+      r.values = [
+        projData.projectKey,
+        m.displayName,
+        formatDuration(periodSec),
+        formatDuration(prodSec),
+        formatDuration(npSec),
+        `${pct}%`
       ];
-      styleTotalRow(stRow, SC);
+      styleDataRow(r, SC, i % 2 === 0);
+      r.getCell(3).alignment = { vertical: 'middle', horizontal: 'right' };
+      r.getCell(4).alignment = { vertical: 'middle', horizontal: 'right' };
+      r.getCell(5).alignment = { vertical: 'middle', horizontal: 'right' };
+      r.getCell(6).alignment = { vertical: 'middle', horizontal: 'right' };
       scr++;
     }
 
-    scr++; // spacer between projects
+    const stRow = summaryWs.getRow(scr);
+    stRow.values = [
+      '',
+      `${projData.projectKey} subtotal`,
+      formatDuration(projPeriodSec),
+      formatDuration(projProdSec),
+      formatDuration(projNpSec),
+      '100%'
+    ];
+    styleTotalRow(stRow, SC);
+    stRow.getCell(3).alignment = { vertical: 'middle', horizontal: 'right' };
+    stRow.getCell(4).alignment = { vertical: 'middle', horizontal: 'right' };
+    stRow.getCell(5).alignment = { vertical: 'middle', horizontal: 'right' };
+    stRow.getCell(6).alignment = { vertical: 'middle', horizontal: 'right' };
+    scr++;
+
+    // Spacer
+    summaryWs.getRow(scr).height = 8;
+    scr++;
   }
 
-  // Grand totals across all projects
-  const grandActiveMembers = [...new Set(projects.flatMap(p => (p.memberSummary || []).map(m => m.displayName)))].length;
-  const grandTotalHours = Math.round(projectMonthSeconds.reduce((s, sec) => s + sec, 0) / 3600 * 10) / 10;
-  const grandIssuesWorked = projects.reduce((s, p) => s + (p.summary?.issuesWorked || 0), 0);
-
-  const grandHeaderRow = summaryWs.getRow(scr);
-  summaryWs.mergeCells(scr, 1, scr, SC);
-  const grandCell = grandHeaderRow.getCell(1);
-  grandCell.value = 'Grand Totals (All Projects)';
-  grandCell.font = { bold: true, size: 12, color: { argb: COLORS.totalFont } };
-  grandCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: COLORS.totalBg } };
-  grandCell.alignment = { vertical: 'middle', horizontal: 'left' };
-  grandCell.border = thinBorder;
-  grandHeaderRow.height = 28;
-  scr++;
-
-  const grandInfoRows = [
-    ['Total Projects', projects.length],
-    ['Active Members (unique)', grandActiveMembers],
-    ['Total Hours', `${Math.round(grandTotalHours * 10) / 10}h`],
-    ['Total Issues Worked', grandIssuesWorked]
+  // Grand Totals banner + KPIs
+  scr = addBannerRow(summaryWs, 'Grand Totals (All Sections)', SC, scr);
+  const grandKpis = [
+    ['Total Projects', String(realProjectKeys.length)],
+    ['Active Members (unique)', String(uniqueMemberCount)],
+    ['Total Time', formatDuration(teamPeriodSeconds)],
+    ['Productive', formatDuration(grandProdSec)],
+    ['Non-Productive / Private', formatDuration(grandNpSec)],
   ];
-  grandInfoRows.forEach((vals, i) => {
-    const r = summaryWs.getRow(scr);
-    r.values = ['', vals[0], vals[1], '', '', ''];
-    styleDataRow(r, 3, i % 2 === 0);
-    r.getCell(2).font = { bold: true, size: 10, color: { argb: 'FF172B4D' } };
-    r.getCell(2).alignment = { vertical: 'middle', horizontal: 'left' };
-    r.getCell(3).alignment = { vertical: 'middle', horizontal: 'left' };
+  for (const [k, v] of grandKpis) scr = addKeyValueRow(summaryWs, k, v, scr);
+
+  // Notify which projects were dropped for emptiness (footer breadcrumb)
+  const skippedProjectKeys = (data.projects || [])
+    .filter(p => !p.isUnassignedSection && (p.memberDetails || []).every(m => (m.totalSeconds || 0) === 0))
+    .map(p => p.projectKey);
+  if (skippedProjectKeys.length > 0) {
+    summaryWs.getRow(scr).height = 8;
     scr++;
-  });
+    scr = addSubtitleRow(summaryWs, `Projects with no recorded activity in this period: ${skippedProjectKeys.join(', ')}.`, SC, scr);
+  }
 
   // ── Generate and Download ──
   const buffer = await workbook.xlsx.writeBuffer();
