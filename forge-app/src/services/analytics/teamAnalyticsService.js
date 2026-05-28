@@ -15,29 +15,59 @@ const SUPABASE_PAGE_SIZE = 1000;
 /**
  * Fetch all records from Supabase by paginating through results.
  * PostgREST enforces max_rows=1000, so queries expecting more must paginate.
- * Uses offset-based pagination via the AI server's range() support.
+ *
+ * Page 1 is fetched first so single-page queries (the common case) don't pay
+ * for speculative parallel requests. If page 1 is full, the remaining pages
+ * up to `maxRecords` are fired in parallel — collapsing what used to be N
+ * sequential ~300–500ms round-trips into a single round-trip's worth of
+ * wall-clock latency. This is what keeps the team-analytics export inside
+ * Forge's 25s synchronous-resolver budget on busy months.
+ *
  * @param {Object} supabaseConfig
  * @param {string} baseEndpoint - Query string WITHOUT limit/offset (e.g. 'activity_records?org=eq.x&...')
- * @param {number} [maxRecords=20000] - Safety cap to prevent runaway fetches
- * @returns {Promise<Array>} All matching records
+ * @param {number} [maxRecords] - Safety cap to prevent runaway fetches
+ * @returns {Promise<Array>} All matching records, in the order returned by Supabase
  */
 async function supabaseRequestPaginated(supabaseConfig, baseEndpoint, maxRecords = MAX_PAGINATED_PAGES * 1000) {
-  const allRecords = [];
-  let offset = 0;
+  const firstPage = await supabaseRequest(
+    supabaseConfig,
+    `${baseEndpoint}&limit=${SUPABASE_PAGE_SIZE}&offset=0`
+  );
+  if (!firstPage || firstPage.length < SUPABASE_PAGE_SIZE) {
+    return firstPage || [];
+  }
 
-  while (offset < maxRecords) {
-    const page = await supabaseRequest(
-      supabaseConfig,
-      `${baseEndpoint}&limit=${SUPABASE_PAGE_SIZE}&offset=${offset}`
+  // Page 0 was full → there may be more. Fire all remaining pages in parallel.
+  // Wasted requests on partially-filled tail pages return quickly (empty arrays),
+  // so the only cost is one round-trip's worth of latency regardless of page count.
+  const maxPages = Math.ceil(maxRecords / SUPABASE_PAGE_SIZE);
+  const restPromises = [];
+  for (let page = 1; page < maxPages; page++) {
+    const offset = page * SUPABASE_PAGE_SIZE;
+    restPromises.push(
+      supabaseRequest(
+        supabaseConfig,
+        `${baseEndpoint}&limit=${SUPABASE_PAGE_SIZE}&offset=${offset}`
+      ).catch(err => {
+        console.warn(`[TeamAnalytics] Parallel page ${page} failed:`, err.message);
+        return [];
+      })
     );
+  }
+  const restPages = await Promise.all(restPromises);
+
+  // Merge in page order. Stop as soon as we hit a short or empty page —
+  // beyond that, parallel pages may have queried offsets past the real
+  // result set (they'd return empty), and including them is wasted work.
+  const allRecords = [...firstPage];
+  for (const page of restPages) {
     if (!page || page.length === 0) break;
     allRecords.push(...page);
-    if (page.length < SUPABASE_PAGE_SIZE) break; // Last page - fewer records than requested
-    offset += SUPABASE_PAGE_SIZE;
+    if (page.length < SUPABASE_PAGE_SIZE) break;
   }
 
   if (allRecords.length >= maxRecords) {
-    console.warn(`[TeamAnalytics] Paginated fetch hit maxRecords cap (${maxRecords}) for query: ${baseEndpoint.substring(0, 100)}...`);
+    console.warn(`[TeamAnalytics] Paginated fetch hit maxRecords cap (${maxRecords}) for query: ${baseEndpoint.substring(0, 100)}... — export may be truncated; consider raising MAX_PAGINATED_PAGES.`);
   }
 
   return allRecords;
