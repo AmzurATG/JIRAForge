@@ -140,7 +140,7 @@ async function createAdminUser(req, res) {
     // Send email asynchronously (don't block response)
     setImmediate(async () => {
       try {
-        const portalUrl = process.env.PORTAL_BASE_URL || 'https://jira-forge.vercel.app/login';
+        const portalUrl = process.env.PORTAL_BASE_URL || 'https://jira-forge-toz8.vercel.app/login';
         const template = templates.adminInvite;
         
         const templateData = {
