@@ -471,35 +471,6 @@ async function analyzeDescription(params) {
   const getClientFn = deps.getClient;
   const runLLM = deps.runLLM || runLLMAnalysis;
 
-  const contentHash = generateContentHash(title, description, issueType);
-
-  // Cache lookup
-  const cached = await readCache({ orgId, issueKey, contentHash, getClientFn });
-  if (cached && !requestImprovement) {
-    return {
-      score: cached.score,
-      source: cached.source,
-      cached: true,
-      issues: cached.issues || [],
-      suggestions: cached.suggestions || [],
-      improved_title: cached.improved_title || null,
-      improved_description: cached.improved_description || null
-    };
-  }
-  // If a cache hit exists but client requested improvement and we don't yet
-  // have an improved version, fall through and run analysis.
-  if (cached && requestImprovement && cached.improved_description) {
-    return {
-      score: cached.score,
-      source: cached.source,
-      cached: true,
-      issues: cached.issues || [],
-      suggestions: cached.suggestions || [],
-      improved_title: cached.improved_title,
-      improved_description: cached.improved_description
-    };
-  }
-
   // Deterministic pass
   const det = scoreDeterministic({ title, description, issueType });
 
@@ -540,9 +511,6 @@ async function analyzeDescription(params) {
       };
     }
   }
-
-  // Best-effort cache write
-  await writeCache({ orgId, issueKey, contentHash, issueType, result, getClientFn });
 
   // Best-effort analytics event
   recordEvent({
