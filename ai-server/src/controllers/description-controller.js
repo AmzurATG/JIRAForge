@@ -26,6 +26,10 @@ const MAX_TITLE_LEN = 500;
 const MAX_DESCRIPTION_LEN = 50000;
 const MAX_PROJECT_KEY_LEN = 20;
 const MAX_ISSUE_KEY_LEN = 50;
+const MAX_ATTACHMENTS = 3;
+const MAX_ATTACHMENT_SIZE = 2 * 1024 * 1024; // 2 MB base64
+const MAX_PARENT_DESC_LEN = 5000;
+const ALLOWED_IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif']);
 
 function badRequest(res, message) {
   return res.status(400).json({ success: false, error: message });
@@ -34,7 +38,7 @@ function badRequest(res, message) {
 function validateAnalyzePayload(body) {
   if (!body || typeof body !== 'object') return 'Request body must be a JSON object';
 
-  const { issueKey, title, description, issueType, projectKey, requestImprovement } = body;
+  const { issueKey, title, description, issueType, projectKey, requestImprovement, parentContext, attachments } = body;
 
   if (typeof issueKey !== 'string' || issueKey.length === 0) return 'Missing required field: issueKey';
   if (issueKey.length > MAX_ISSUE_KEY_LEN || !ISSUE_KEY_RE.test(issueKey)) return 'Invalid issueKey format';
@@ -52,6 +56,32 @@ function validateAnalyzePayload(body) {
 
   if (requestImprovement !== undefined && typeof requestImprovement !== 'boolean') {
     return 'requestImprovement must be a boolean';
+  }
+
+  // Validate parentContext (optional)
+  if (parentContext !== undefined && parentContext !== null) {
+    if (typeof parentContext !== 'object') return 'parentContext must be an object or null';
+    if (parentContext.key && (typeof parentContext.key !== 'string' || !ISSUE_KEY_RE.test(parentContext.key))) {
+      return 'parentContext.key has invalid format';
+    }
+    if (parentContext.description && typeof parentContext.description === 'string' && parentContext.description.length > MAX_PARENT_DESC_LEN) {
+      return `parentContext.description exceeds max length (${MAX_PARENT_DESC_LEN})`;
+    }
+  }
+
+  // Validate attachments (optional)
+  if (attachments !== undefined && attachments !== null) {
+    if (!Array.isArray(attachments)) return 'attachments must be an array or null';
+    if (attachments.length > MAX_ATTACHMENTS) return `attachments exceeds max count (${MAX_ATTACHMENTS})`;
+    for (let i = 0; i < attachments.length; i++) {
+      const att = attachments[i];
+      if (!att || typeof att !== 'object') return `attachments[${i}] must be an object`;
+      if (typeof att.data !== 'string' || att.data.length === 0) return `attachments[${i}].data is required`;
+      if (att.data.length > MAX_ATTACHMENT_SIZE) return `attachments[${i}].data exceeds max size (2 MB)`;
+      if (!att.mimeType || !ALLOWED_IMAGE_TYPES.has(att.mimeType)) {
+        return `attachments[${i}].mimeType must be one of: ${[...ALLOWED_IMAGE_TYPES].join(', ')}`;
+      }
+    }
   }
 
   return null;
@@ -80,11 +110,12 @@ async function analyze(req, res) {
   const validationError = validateAnalyzePayload(req.body);
   if (validationError) return badRequest(res, validationError);
 
-  const { issueKey, title, description, issueType, projectKey, requestImprovement } = req.body;
+  const { issueKey, title, description, issueType, projectKey, requestImprovement, parentContext, attachments } = req.body;
   const { cloudId, accountId } = req.forgeContext || {};
 
-  logger.info('[DescQuality] analyze | issue=%s project=%s type=%s improve=%s',
-    issueKey, projectKey, issueType, !!requestImprovement);
+  logger.info('[DescQuality] analyze | issue=%s project=%s type=%s improve=%s parent=%s attachments=%d',
+    issueKey, projectKey, issueType, !!requestImprovement,
+    parentContext?.key || 'none', (attachments || []).length);
 
   try {
     const result = await descriptionService.analyzeDescription({
@@ -95,7 +126,9 @@ async function analyze(req, res) {
       projectKey,
       requestImprovement: !!requestImprovement,
       orgId: cloudId,
-      accountId
+      accountId,
+      parentContext: parentContext || null,
+      attachments: attachments || null
     });
 
     return res.json({

@@ -30,11 +30,12 @@ function failure(message) {
 
 /**
  * Fetch a Jira issue and reduce it to the fields the analyzer needs.
+ * Includes parent key and attachment metadata for context enrichment.
  * @returns {Promise<{title: string, description: string, issueType: string,
- *                   projectKey: string}>}
+ *                   projectKey: string, parentKey: string|null, attachments: Array}>}
  */
 async function fetchIssueForAnalysis(issueKey) {
-  const fields = 'summary,description,issuetype,project';
+  const fields = 'summary,description,issuetype,project,parent,attachment';
   const response = await api
     .asUser()
     .requestJira(route`/rest/api/3/issue/${issueKey}?fields=${fields}`, {
@@ -51,8 +52,117 @@ async function fetchIssueForAnalysis(issueKey) {
   const description = issue.fields?.description ? adfToText(issue.fields.description) : '';
   const issueType = issue.fields?.issuetype?.name || 'Task';
   const projectKey = issue.fields?.project?.key || '';
+  const parentKey = issue.fields?.parent?.key || null;
+  const rawAttachments = issue.fields?.attachment || [];
 
-  return { title, description, issueType, projectKey };
+  return { title, description, issueType, projectKey, parentKey, rawAttachments };
+}
+
+/**
+ * Fetch a parent/grandparent issue's title + description for LLM context.
+ * Returns null on any failure (best-effort).
+ */
+async function fetchParentContext(parentKey) {
+  if (!parentKey) return null;
+  try {
+    const response = await api
+      .asUser()
+      .requestJira(route`/rest/api/3/issue/${parentKey}?fields=summary,description,issuetype,parent`, {
+        headers: { Accept: 'application/json' }
+      });
+    if (!response.ok) return null;
+    const parent = await response.json();
+    return {
+      key: parentKey,
+      title: parent.fields?.summary || '',
+      description: parent.fields?.description ? adfToText(parent.fields.description) : '',
+      issueType: parent.fields?.issuetype?.name || '',
+      parentKey: parent.fields?.parent?.key || null
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Build hierarchical parent context (up to 2 levels: parent + grandparent).
+ * Concatenates parent and grandparent descriptions with a separator.
+ * Total context is capped at 3000 characters.
+ */
+async function buildParentContext(parentKey) {
+  if (!parentKey) return null;
+  const parent = await fetchParentContext(parentKey);
+  if (!parent) return null;
+
+  let combinedDescription = parent.description || '';
+  let contextLabel = `${parent.issueType} ${parent.key}`;
+
+  // If the parent itself has a parent (grandparent), fetch one more level
+  if (parent.parentKey && parent.issueType !== 'Epic') {
+    const grandparent = await fetchParentContext(parent.parentKey);
+    if (grandparent && grandparent.description) {
+      contextLabel = `${grandparent.issueType} ${grandparent.key} > ${parent.issueType} ${parent.key}`;
+      combinedDescription = `[${grandparent.issueType} ${grandparent.key}: ${grandparent.title}]\n${grandparent.description.slice(0, 1500)}\n\n[${parent.issueType} ${parent.key}: ${parent.title}]\n${parent.description}`;
+    }
+  }
+
+  return {
+    key: parent.key,
+    title: parent.title,
+    description: combinedDescription.slice(0, 3000),
+    issueType: parent.issueType,
+    hierarchy: contextLabel
+  };
+}
+
+const ALLOWED_IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif']);
+const MAX_IMAGE_SIZE = 1.5 * 1024 * 1024; // 1.5 MB raw — fits in Forge Remote payload
+const MAX_IMAGES = 2;
+
+/**
+ * Download up to MAX_IMAGES image attachments from the issue and return
+ * base64-encoded data. Only selects recent, reasonably-sized images.
+ * Best-effort — silently skips failures.
+ */
+async function fetchImageAttachments(rawAttachments) {
+  if (!Array.isArray(rawAttachments) || rawAttachments.length === 0) return [];
+
+  // Filter to supported image types under size limit, prefer most recent
+  const candidates = rawAttachments
+    .filter(att => att.mimeType && ALLOWED_IMAGE_TYPES.has(att.mimeType))
+    .filter(att => att.size && att.size <= MAX_IMAGE_SIZE)
+    .sort((a, b) => new Date(b.created || 0) - new Date(a.created || 0))
+    .slice(0, MAX_IMAGES);
+
+  if (candidates.length === 0) return [];
+
+  const results = [];
+  for (const att of candidates) {
+    try {
+      const response = await api
+        .asUser()
+        .requestJira(route`/rest/api/3/attachment/content/${att.id}`, {
+          headers: { Accept: att.mimeType }
+        });
+      if (!response.ok) continue;
+      const buffer = await response.arrayBuffer();
+      // Convert ArrayBuffer to base64
+      const bytes = new Uint8Array(buffer);
+      let binary = '';
+      for (let i = 0; i < bytes.byteLength; i++) {
+        binary += String.fromCharCode(bytes[i]);
+      }
+      const base64 = btoa(binary);
+      results.push({
+        data: base64,
+        mimeType: att.mimeType,
+        filename: att.filename || 'attachment'
+      });
+    } catch {
+      // Skip failed downloads silently
+    }
+  }
+  return results;
 }
 
 /**
@@ -75,18 +185,30 @@ export function registerDescriptionResolvers(resolver) {
     }
 
     try {
-      const { title, description, issueType, projectKey } = await fetchIssueForAnalysis(issueKey);
+      const { title, description, issueType, projectKey, parentKey, rawAttachments } = await fetchIssueForAnalysis(issueKey);
+
+      // Fetch parent/grandparent context and image attachments in parallel (best-effort)
+      const [parentContext, attachments] = await Promise.all([
+        buildParentContext(parentKey),
+        fetchImageAttachments(rawAttachments)
+      ]);
+
+      const body = {
+        issueKey,
+        title,
+        description,
+        issueType: normalizeIssueType(issueType),
+        projectKey,
+        requestImprovement
+      };
+
+      // Only include optional context fields if they have data (saves payload size)
+      if (parentContext) body.parentContext = parentContext;
+      if (attachments && attachments.length > 0) body.attachments = attachments;
 
       const data = await remoteRequest('/api/forge/description/analyze', {
         method: 'POST',
-        body: {
-          issueKey,
-          title,
-          description,
-          issueType: normalizeIssueType(issueType),
-          projectKey,
-          requestImprovement
-        }
+        body
       });
 
       // remoteRequest unwraps { success, data } when the upstream uses that

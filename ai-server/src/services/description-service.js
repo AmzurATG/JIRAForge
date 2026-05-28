@@ -297,13 +297,15 @@ function withTimeout(promise, ms, label) {
   });
 }
 
-async function invokeLLMOnce({ title, description, issueType, stricterJson }) {
-  const messages = buildMessages({ title, description, issueType, stricterJson });
+async function invokeLLMOnce({ title, description, issueType, stricterJson, parentContext, attachments }) {
+  const messages = buildMessages({ title, description, issueType, stricterJson, parentContext, attachments });
+  const hasImages = Array.isArray(attachments) && attachments.length > 0;
   const { response } = await withTimeout(
     chatCompletionWithFallback({
       messages,
       max_tokens: LLM_MAX_TOKENS,
       temperature: LLM_TEMPERATURE,
+      isVision: hasImages,
       response_format: { type: 'json_object' }
     }),
     LLM_TIMEOUT_MS,
@@ -317,7 +319,7 @@ async function invokeLLMOnce({ title, description, issueType, stricterJson }) {
  * Run an LLM analysis with up to one retry on malformed/invalid JSON.
  * Returns null if both attempts fail or LLM is unavailable.
  */
-async function runLLMAnalysis({ sanitizedTitle, sanitizedDescription, issueType }) {
+async function runLLMAnalysis({ sanitizedTitle, sanitizedDescription, issueType, parentContext, attachments }) {
   if (!isPortkeyEnabled()) {
     logger.warn('[DescQuality] LLM unavailable: Portkey not enabled');
     return null;
@@ -328,7 +330,9 @@ async function runLLMAnalysis({ sanitizedTitle, sanitizedDescription, issueType 
       title: sanitizedTitle,
       description: sanitizedDescription,
       issueType,
-      stricterJson: false
+      stricterJson: false,
+      parentContext,
+      attachments
     });
     if (validateLLMResponse(first)) return first;
 
@@ -337,7 +341,9 @@ async function runLLMAnalysis({ sanitizedTitle, sanitizedDescription, issueType 
       title: sanitizedTitle,
       description: sanitizedDescription,
       issueType,
-      stricterJson: true
+      stricterJson: true,
+      parentContext,
+      attachments
     });
     if (validateLLMResponse(second)) return second;
 
@@ -465,6 +471,8 @@ async function analyzeDescription(params) {
     requestImprovement = false,
     orgId,
     accountId,
+    parentContext = null,
+    attachments = null,
     deps = {}
   } = params || {};
 
@@ -488,10 +496,18 @@ async function analyzeDescription(params) {
   if (shouldInvokeLLM) {
     const sanitizedTitle = sanitizePII(title);
     const sanitizedDescription = sanitizePII(description);
+    // Sanitize parent context description (title is less likely to have PII but sanitize anyway)
+    const sanitizedParent = parentContext ? {
+      ...parentContext,
+      title: sanitizePII(parentContext.title || ''),
+      description: sanitizePII(parentContext.description || '')
+    } : null;
     const llm = await runLLM({
       sanitizedTitle,
       sanitizedDescription,
-      issueType
+      issueType,
+      parentContext: sanitizedParent,
+      attachments
     });
     if (llm) {
       // Only adopt the LLM score when the LLM was invoked for scoring purposes
