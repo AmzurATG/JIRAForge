@@ -125,7 +125,12 @@ const MAX_IMAGES = 2;
  * Best-effort — silently skips failures.
  */
 async function fetchImageAttachments(rawAttachments) {
-  if (!Array.isArray(rawAttachments) || rawAttachments.length === 0) return [];
+  if (!Array.isArray(rawAttachments) || rawAttachments.length === 0) {
+    console.log('[descriptionResolvers] No rawAttachments to process');
+    return [];
+  }
+
+  console.log(`[descriptionResolvers] rawAttachments count=${rawAttachments.length}, types: ${rawAttachments.map(a => `${a.filename}(${a.mimeType},${a.size}b)`).join(', ')}`);
 
   // Filter to supported image types under size limit, prefer most recent
   const candidates = rawAttachments
@@ -134,7 +139,12 @@ async function fetchImageAttachments(rawAttachments) {
     .sort((a, b) => new Date(b.created || 0) - new Date(a.created || 0))
     .slice(0, MAX_IMAGES);
 
-  if (candidates.length === 0) return [];
+  if (candidates.length === 0) {
+    console.log('[descriptionResolvers] No candidates after filtering');
+    return [];
+  }
+
+  console.log(`[descriptionResolvers] ${candidates.length} image candidate(s): ${candidates.map(a => `${a.filename}(id=${a.id})`).join(', ')}`);
 
   const results = [];
   for (const att of candidates) {
@@ -144,22 +154,20 @@ async function fetchImageAttachments(rawAttachments) {
         .requestJira(route`/rest/api/3/attachment/content/${att.id}`, {
           headers: { Accept: att.mimeType }
         });
-      if (!response.ok) continue;
-      const buffer = await response.arrayBuffer();
-      // Convert ArrayBuffer to base64
-      const bytes = new Uint8Array(buffer);
-      let binary = '';
-      for (let i = 0; i < bytes.byteLength; i++) {
-        binary += String.fromCharCode(bytes[i]);
+      if (!response.ok) {
+        console.warn(`[descriptionResolvers] Attachment ${att.id} download failed: HTTP ${response.status}`);
+        continue;
       }
-      const base64 = btoa(binary);
+      const buffer = await response.arrayBuffer();
+      const base64 = Buffer.from(buffer).toString('base64');
+      console.log(`[descriptionResolvers] Downloaded ${att.filename}: ${base64.length} base64 chars`);
       results.push({
         data: base64,
         mimeType: att.mimeType,
         filename: att.filename || 'attachment'
       });
-    } catch {
-      // Skip failed downloads silently
+    } catch (err) {
+      console.warn(`[descriptionResolvers] Failed to fetch attachment ${att.id}: ${err.message}`);
     }
   }
   return results;
@@ -187,11 +195,15 @@ export function registerDescriptionResolvers(resolver) {
     try {
       const { title, description, issueType, projectKey, parentKey, rawAttachments } = await fetchIssueForAnalysis(issueKey);
 
+      console.log(`[descriptionResolvers] issue=${issueKey} parentKey=${parentKey || 'none'} attachments=${rawAttachments?.length || 0}`);
+
       // Fetch parent/grandparent context and image attachments in parallel (best-effort)
       const [parentContext, attachments] = await Promise.all([
         buildParentContext(parentKey),
         fetchImageAttachments(rawAttachments)
       ]);
+
+      console.log(`[descriptionResolvers] parentContext=${parentContext ? parentContext.key : 'null'} images=${attachments.length}`);
 
       const body = {
         issueKey,
