@@ -194,6 +194,34 @@ class TestSessionFinalization:
         tracker.session_manager.stop_current_timer.assert_not_called()
 
 
+class TestActiveSessionManagerStartNewTimer:
+    """Regression tests for ActiveSessionManager.start_new_timer."""
+
+    def test_start_new_timer_resets_current_key(self):
+        """start_new_timer() must clear _current_key on a real instance.
+
+        This guards against the AttributeError regression where the method
+        was called by resume_from_idle() but never existed on the class.
+        Tests that mock session_manager cannot catch this — only a test
+        against the real class can.
+        """
+        from desktop_app import ActiveSessionManager
+        from unittest.mock import MagicMock
+        mgr = ActiveSessionManager(db_manager=MagicMock())
+        mgr._current_key = ("some title", "some.exe")
+        mgr.start_new_timer()
+        assert mgr._current_key is None
+
+    def test_start_new_timer_idempotent_when_already_none(self):
+        """Calling start_new_timer() when _current_key is already None is a safe no-op."""
+        from desktop_app import ActiveSessionManager
+        from unittest.mock import MagicMock
+        mgr = ActiveSessionManager(db_manager=MagicMock())
+        mgr._current_key = None
+        mgr.start_new_timer()  # must not raise
+        assert mgr._current_key is None
+
+
 class TestEdgeCases:
     """Test edge cases and error conditions."""
     
