@@ -136,6 +136,18 @@ const authLimiter = rateLimit({
   }
 });
 
+// Lenient rate limiter for OAuth callbacks (Google already rate-limits their OAuth flow)
+const oauthLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 500, // 500 requests per 15 minutes per IP (generous for dev/testing)
+  message: 'Too many OAuth attempts, please try again later.',
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => {
+    return req.ip || req.headers['x-forwarded-for'] || req.connection.remoteAddress || 'unknown';
+  }
+});
+
 // REMOVABLE: dedicated limiter for the AI accuracy dashboard. publicLimiter
 // (30/min) is too tight here: each dashboard refresh fires ~6 parallel
 // requests (orgs + 5 panels), and changing a filter retriggers all of them.
@@ -619,8 +631,8 @@ app.post('/api/portal/auth/forgot-password', authLimiter, portalAuthController.r
 app.post('/api/portal/auth/reset-password', authLimiter, portalAuthController.resetPassword);
 
 // Google OAuth for Portal SSO
-app.get('/api/portal/auth/google/url', portalAuthController.getGoogleAuthUrl);
-app.post('/api/portal/auth/google/callback', authLimiter, portalAuthController.googleCallback);
+app.get('/api/portal/auth/google/url', oauthLimiter, portalAuthController.getGoogleAuthUrl);
+app.post('/api/portal/auth/google/callback', oauthLimiter, portalAuthController.googleCallback);
 
 // Portal password management (authenticated)
 app.post('/api/portal/auth/change-password', portalAuthMiddleware.verifyPortalToken, portalAuthController.changePassword);

@@ -86,12 +86,12 @@ You're receiving this because you were added as an admin user to the Productivit
         .card {
             background: white;
             border-radius: 8px;
-            padding: 40px;
+            padding: 40px 30px;
             box-shadow: 0 2px 4px rgba(0,0,0,0.1);
         }
         .header {
             text-align: center;
-            margin-bottom: 30px;
+            margin-bottom: 35px;
         }
         .header h1 {
             color: #1a73e8;
@@ -130,12 +130,14 @@ You're receiving this because you were added as an admin user to the Productivit
             display: inline-block;
             background: #1a73e8;
             color: white !important;
-            padding: 14px 32px;
+            padding: 16px 40px;
             text-decoration: none;
             border-radius: 6px;
-            margin: 20px 0;
+            margin: 25px 0;
             font-weight: 600;
             text-align: center;
+            font-size: 16px;
+            box-shadow: 0 2px 8px rgba(26, 115, 232, 0.3);
         }
         .button:hover {
             background: #1557b0;
@@ -147,9 +149,10 @@ You're receiving this because you were added as an admin user to the Productivit
         }
         .steps li {
             counter-increment: step-counter;
-            margin: 15px 0;
-            padding-left: 40px;
+            margin: 18px 0;
+            padding-left: 45px;
             position: relative;
+            line-height: 1.8;
         }
         .steps li::before {
             content: counter(step-counter);
@@ -172,8 +175,9 @@ You're receiving this because you were added as an admin user to the Productivit
             padding-left: 0;
         }
         .permissions li {
-            padding: 8px 0 8px 28px;
+            padding: 10px 0 10px 32px;
             position: relative;
+            line-height: 1.6;
         }
         .permissions li::before {
             content: "✓";
@@ -186,13 +190,15 @@ You're receiving this because you were added as an admin user to the Productivit
         .google-badge {
             display: inline-flex;
             align-items: center;
+            justify-content: center;
             gap: 8px;
-            padding: 8px 16px;
+            padding: 10px 20px;
             background: #fff;
             border: 1px solid #dadce0;
             border-radius: 4px;
             font-size: 14px;
-            margin: 10px 0;
+            margin: 15px auto;
+            max-width: 220px;
         }
         .footer {
             margin-top: 30px;
