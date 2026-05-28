@@ -25,7 +25,7 @@ function Sidebar({ collapsed, onToggle }) {
       collapsed ? 'w-16' : 'w-56'
     } bg-gradient-to-b from-gray-900 via-gray-900 to-gray-800 h-screen fixed left-0 top-0 shadow-xl transition-all duration-300 z-50`}>
       {/* Logo & Toggle */}
-      <div className="p-3 border-b border-gray-700/50 flex items-center justify-between">
+      <div className={`h-12 px-3 border-b border-gray-700/50 flex items-center ${collapsed ? 'justify-center' : 'justify-between'}`}>
         {!collapsed && (
           <div className="flex items-center gap-2">
             <div className="p-1.5 bg-gradient-to-br from-primary-500 to-primary-700 rounded-lg shadow-md">
@@ -39,22 +39,24 @@ function Sidebar({ collapsed, onToggle }) {
             </div>
           </div>
         )}
-        {collapsed && (
-          <div className="p-1.5 bg-gradient-to-br from-primary-500 to-primary-700 rounded-lg shadow-md mx-auto">
-            <Activity className="w-4 h-4 text-white" />
-          </div>
-        )}
-        <button
-          onClick={onToggle}
-          className="p-1.5 rounded-lg hover:bg-gray-800 transition-colors text-gray-400 hover:text-white"
-          title={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
-        >
-          {collapsed ? (
-            <ChevronRight className="w-4 h-4" />
-          ) : (
+        {!collapsed && (
+          <button
+            onClick={onToggle}
+            className="p-1.5 rounded-lg hover:bg-gray-800 transition-colors text-gray-400 hover:text-white flex-shrink-0"
+            title="Collapse sidebar"
+          >
             <ChevronLeft className="w-4 h-4" />
-          )}
-        </button>
+          </button>
+        )}
+        {collapsed && (
+          <button
+            onClick={onToggle}
+            className="p-1.5 rounded-lg hover:bg-gray-800 transition-colors text-gray-400 hover:text-white"
+            title="Expand sidebar"
+          >
+            <ChevronRight className="w-4 h-4" />
+          </button>
+        )}
       </div>
       
       {/* Navigation */}

@@ -29,13 +29,25 @@ from enum import Enum
 # Fix broken TLS CA-bundle env vars before any HTTPS library is imported.
 # The PostgreSQL Windows installer (v14-17) sets CURL_CA_BUNDLE to a path
 # that doesn't exist, which makes every Python requests HTTPS call fail.
+# When running as a PyInstaller bundle, certifi.where() may also return a
+# stale/wrong path if cacert.pem was not correctly placed — fall back to
+# the explicit _MEIPASS/certifi/cacert.pem location in that case.
 import certifi as _certifi_startup
+import sys as _sys_certifi
 _certifi_bundle = _certifi_startup.where()
+if not os.path.isfile(_certifi_bundle):
+    # PyInstaller bundle: try the canonical extracted location
+    _meipass = getattr(_sys_certifi, '_MEIPASS', None)
+    if _meipass:
+        _candidate = os.path.join(_meipass, 'certifi', 'cacert.pem')
+        if os.path.isfile(_candidate):
+            _certifi_bundle = _candidate
 for _var in ('REQUESTS_CA_BUNDLE', 'CURL_CA_BUNDLE', 'SSL_CERT_FILE'):
     _existing = os.environ.get(_var)
     if not _existing or not os.path.isfile(_existing):
-        os.environ[_var] = _certifi_bundle
-del _certifi_startup, _certifi_bundle, _var, _existing
+        if os.path.isfile(_certifi_bundle):
+            os.environ[_var] = _certifi_bundle
+del _certifi_startup, _sys_certifi, _certifi_bundle, _var, _existing
 
 # Core dependencies
 from PIL import Image, ImageGrab, ImageDraw
@@ -374,7 +386,7 @@ load_dotenv()
 
 # Application version - IMPORTANT: Update this when releasing new versions
 # This is used for update checking and notifications
-APP_VERSION = "1.4.3"
+APP_VERSION = "1.4.5"
 
 # Hard-disable screenshot monitoring/storage in desktop app.
 # OCR text extraction for activity records still runs via event-based flow.
@@ -383,10 +395,10 @@ SCREENSHOT_MONITORING_HARD_DISABLED = True
 # Embedded credentials (for production builds - no .env file needed)
 # SECURITY: All sensitive keys moved to AI Server - fetched at runtime after authentication
 EMBEDDED_CONFIG = {
-    'ATLASSIAN_CLIENT_ID': 'Q8HT4Jn205AuTiAarj088oWNDrOqwvM5',
+    'ATLASSIAN_CLIENT_ID': 'k2Xwzy8c1g3Wk6Xpbeev0x70CXEp9lJH',
     # REMOVED: ATLASSIAN_CLIENT_SECRET - now on AI Server only (security fix)
     # REMOVED: SUPABASE_URL, SUPABASE_ANON_KEY, SUPABASE_SERVICE_ROLE_KEY - fetched from AI Server
-    'AI_SERVER_URL': 'https://forgesync.amzur.com',  # AI Server for secure token exchange & config
+    'AI_SERVER_URL': 'https://timetracker-forge.amzur.com',  # AI Server for secure token exchange & config
     'CAPTURE_INTERVAL': '300',
     'WEB_PORT': '51777',
 }
@@ -1897,7 +1909,7 @@ class AtlassianAuthManager:
         self.redirect_uri = f'http://localhost:{web_port}/auth/callback'
         self.authorization_url = 'https://auth.atlassian.com/authorize'
         # Token exchange now goes through AI Server
-        self.ai_server_url = get_env_var('AI_SERVER_URL', 'https://forgesync.amzur.com')
+        self.ai_server_url = get_env_var('AI_SERVER_URL', 'https://timetracker-forge.amzur.com')
         self.store_path = store_path or os.path.join(get_app_data_dir(), 'time_tracker_auth.json')
         self.metadata_path = os.path.join(get_app_data_dir(), 'auth_metadata.json')  # For non-sensitive data
 
@@ -2701,7 +2713,7 @@ class AtlassianAuthManager:
             print("[ERROR] No valid Atlassian token - cannot fetch OCR config")
             return False
 
-        ai_server_url = get_env_var('AI_SERVER_URL', 'https://forgesync.amzur.com')
+        ai_server_url = get_env_var('AI_SERVER_URL', 'https://timetracker-forge.amzur.com')
         
         try:
             print("[INFO] Fetching OCR config from AI Server...")
@@ -4586,6 +4598,17 @@ class ActiveSessionManager:
             except Exception as e:
                 conn.rollback()
                 print(f"[ERROR] stop_current_timer failed: {e}")
+
+    def start_new_timer(self):
+        """Reset _current_key so the next window switch starts a fresh session.
+
+        The pre-idle row's timer was already nulled by stop_current_timer();
+        if a batch upload ran during idle, the row may have been harvested.
+        Clearing _current_key avoids a stale lookup on the next
+        on_window_switch() call.
+        """
+        with self._lock:
+            self._current_key = None
 
     def get_all_sessions(self):
         """Get all sessions for batch upload."""
@@ -10059,14 +10082,17 @@ class TimeTracker:
             'application_name': 'System',
             'classification': 'idle',
             'is_idle': True,
-            'idle_start_time': self.idle_start_time.isoformat(),
-            'idle_end_time': idle_end.isoformat(),
-            'ocr_text': None,  # No OCR for idle records (FIX: PGRST102 - all batch records must have same fields)
-            'ocr_method': None,  # No OCR method for idle records
-            'ocr_confidence': None,  # No OCR confidence for idle records
-            'ocr_error_message': None,  # No OCR errors for idle records
+            # idle_start_time / idle_end_time intentionally omitted:
+            # they are not columns in activity_records and their presence
+            # as extra keys causes PostgREST PGRST102 ("All object keys
+            # must match") when mixed with work records in the same batch.
+            # start_time / end_time below capture the same information.
+            'ocr_text': None,
+            'ocr_method': None,
+            'ocr_confidence': None,
+            'ocr_error_message': None,
             'total_time_seconds': idle_duration,
-            'visit_count': 1,  # Single continuous idle period (FIX: PGRST102)
+            'visit_count': 1,
             'start_time': self.idle_start_time.isoformat(),
             'end_time': idle_end.isoformat(),
             'duration_seconds': idle_duration,

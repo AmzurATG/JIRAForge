@@ -28,6 +28,7 @@ Portal will run on http://localhost:3002 and proxy API requests to http://localh
 - **Time Logs**: Activity logs with advanced filtering and sorting
 - **Reports**: Generate and export (CSV/PDF) activity reports with pagination
 - **Settings**: User profile and organization management
+- **Mail Service**: Scalable adapter architecture with SendGrid/Resend support and automatic fallback (see [MAIL_SERVICE_QUICK_START.md](MAIL_SERVICE_QUICK_START.md))
 
 ## Complete Setup Guide
 

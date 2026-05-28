@@ -4,7 +4,15 @@ import path from 'path';
 
 // https://vitejs.dev/config/
 export default defineConfig({
-  plugins: [react()],
+  base: '/',
+  plugins: [
+    react({
+      jsxRuntime: 'automatic',
+      babel: {
+        plugins: [],
+      },
+    }),
+  ],
   resolve: {
     alias: {
       '@': path.resolve(__dirname, './src'),
@@ -22,5 +30,6 @@ export default defineConfig({
   build: {
     outDir: 'build',
     sourcemap: true,
+    assetsDir: 'assets',
   },
 });

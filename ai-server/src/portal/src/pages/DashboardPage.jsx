@@ -90,14 +90,14 @@ function DashboardPage() {
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
         <KPICard
           title="Total Productive Hours"
-          value={dashboardData?.summary?.totalProductiveHours?.toFixed(1) || '0.0'}
+          value={dashboardData?.summary?.totalProductiveHours?.toFixed(2) || '0.00'}
           subtitle="Hours tracked"
           icon={Clock}
           variant="success"
         />
         <KPICard
           title="Total Non-Productive Hours"
-          value={dashboardData?.summary?.totalNonProductiveHours?.toFixed(1) || '0.0'}
+          value={dashboardData?.summary?.totalNonProductiveHours?.toFixed(2) || '0.00'}
           subtitle="Hours tracked"
           icon={Activity}
           variant="danger"

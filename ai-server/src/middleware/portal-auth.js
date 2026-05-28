@@ -18,6 +18,12 @@ const logger = require('../utils/logger');
  * @param {Function} next - Express next middleware
  */
 function verifyPortalToken(req, res, next) {
+  logger.info('[PortalAuth] verifyPortalToken called', { 
+    path: req.path,
+    method: req.method,
+    hasAuthHeader: !!req.headers.authorization 
+  });
+  
   try {
     const authHeader = req.headers.authorization;
     

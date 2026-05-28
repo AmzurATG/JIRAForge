@@ -1,19 +1,17 @@
 /**
- * NotifMe SDK Wrapper
+ * Mail Service Wrapper (formerly NotifMe SDK Wrapper)
  * 
- * Abstracts email provider configuration for easy switching between providers.
- * Change EMAIL_PROVIDER env variable to switch providers without code changes.
+ * Migrated from notifme-sdk to use the new mail service adapter architecture.
+ * Maintains backward compatibility with existing notification code.
  * 
- * Supported providers: sendgrid, mailgun, smtp, ses, sparkpost
+ * Uses the new mail service with automatic fallback between providers.
  */
 
-const NotifmeSdk = require('notifme-sdk').default;
+const mailService = require('../mail');
 const logger = require('../../utils/logger');
 
 
 class NotifMeWrapper {
-    sdk = null;
-    provider = null;
     initialized = false;
 
     constructor() {
@@ -21,8 +19,8 @@ class NotifMeWrapper {
     }
 
     /**
-     * Initialize the SDK with environment-based configuration
-     * Provider is determined by EMAIL_PROVIDER env variable
+     * Initialize the mail service
+     * Now uses the new mail adapter instead of notifme-sdk
      * @returns {NotifMeWrapper} Returns this for method chaining
      */
     initialize() {
@@ -30,23 +28,14 @@ class NotifMeWrapper {
             return this;
         }
 
-        const provider = process.env.EMAIL_PROVIDER || 'sendgrid';
-        
         try {
-            const config = this._buildConfig(provider);
-            
-            this.sdk = new NotifmeSdk({
-                channels: {
-                    email: config
-                }
-            });
-            
-            this.provider = provider;
+            // Verify mail service is configured
+            const provider = process.env.MAIL_PRIMARY_PROVIDER || 'resend';
             this.initialized = true;
             
-            logger.info(`[NotifMe] Initialized with provider: ${provider}`);
+            logger.info(`[MailService] Initialized with provider: ${provider}`);
         } catch (error) {
-            logger.error(`[NotifMe] Failed to initialize with provider ${provider}:`, error.message);
+            logger.error(`[MailService] Failed to initialize:`, error.message);
             throw error;
         }
         
@@ -54,100 +43,7 @@ class NotifMeWrapper {
     }
 
     /**
-     * Build provider-specific configuration from environment variables
-     * @param {string} provider - Provider name
-     * @returns {Object} Provider configuration for notifme-sdk
-     */
-    _buildConfig(provider) {
-        const configs = {
-            sendgrid: {
-                providers: [{
-                    type: 'sendgrid',
-                    apiKey: process.env.SENDGRID_API_KEY
-                }]
-            },
-            mailgun: {
-                providers: [{
-                    type: 'mailgun',
-                    apiKey: process.env.MAILGUN_API_KEY,
-                    domainName: process.env.MAILGUN_DOMAIN
-                }]
-            },
-            smtp: {
-                providers: [{
-                    type: 'smtp',
-                    host: process.env.SMTP_HOST,
-                    port: Number.parseInt(process.env.SMTP_PORT || '587', 10),
-                    secure: process.env.SMTP_SECURE === 'true',
-                    auth: {
-                        user: process.env.SMTP_USER,
-                        pass: process.env.SMTP_PASSWORD
-                    }
-                }]
-            },
-            ses: {
-                providers: [{
-                    type: 'ses',
-                    region: process.env.AWS_SES_REGION || process.env.AWS_REGION || 'us-east-1',
-                    accessKeyId: process.env.AWS_ACCESS_KEY_ID,
-                    secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY
-                }]
-            },
-            sparkpost: {
-                providers: [{
-                    type: 'sparkpost',
-                    apiKey: process.env.SPARKPOST_API_KEY
-                }]
-            }
-        };
-
-        const config = configs[provider];
-        if (!config) {
-            throw new Error(`Unsupported email provider: ${provider}. Supported: ${Object.keys(configs).join(', ')}`);
-        }
-
-        // Validate required credentials based on provider
-        this._validateConfig(provider, config);
-
-        return config;
-    }
-
-    /**
-     * Validate that required configuration is present
-     * @param {string} provider - Provider name
-     * @param {Object} config - Provider configuration
-     */
-    _validateConfig(provider, config) {
-        const providerConfig = config.providers[0];
-        
-        const requiredFields = {
-            sendgrid: ['apiKey'],
-            mailgun: ['apiKey', 'domainName'],
-            smtp: ['host', 'auth.user', 'auth.pass'],
-            ses: ['accessKeyId', 'secretAccessKey'],
-            sparkpost: ['apiKey']
-        };
-
-        const required = requiredFields[provider] || [];
-        const missing = [];
-
-        for (const field of required) {
-            const value = field.includes('.') 
-                ? field.split('.').reduce((obj, key) => obj?.[key], providerConfig)
-                : providerConfig[field];
-            
-            if (!value) {
-                missing.push(field);
-            }
-        }
-
-        if (missing.length > 0) {
-            logger.warn(`[NotifMe] Missing configuration for ${provider}: ${missing.join(', ')}`);
-        }
-    }
-
-    /**
-     * Send an email using the configured provider
+     * Send an email using the new mail service adapter
      * @param {Object} options - Email options
      * @param {string} options.to - Recipient email address
      * @param {string} [options.from] - Sender email address (uses default if not provided)
@@ -161,49 +57,46 @@ class NotifMeWrapper {
             this.initialize();
         }
 
-        const fromEmail = from || process.env.EMAIL_FROM || 'noreply@jiraforge.io';
-        const fromName = process.env.EMAIL_FROM_NAME || 'JIRAForge';
+        const fromEmail = from || process.env.MAIL_FROM_ADDRESS || process.env.EMAIL_FROM || 'noreply@jiraforge.io';
+        const fromName = process.env.MAIL_FROM_NAME || process.env.EMAIL_FROM_NAME || 'JIRAForge';
 
         try {
-            const result = await this.sdk.send({
-                email: {
-                    from: `${fromName} <${fromEmail}>`,
-                    to,
-                    subject,
-                    text,
-                    html: html || this._textToBasicHtml(text)
-                }
+            const result = await mailService.send({
+                to,
+                from: fromEmail,
+                fromName,
+                subject,
+                text,
+                html: html || this._textToBasicHtml(text)
             });
 
-            const success = result.status === 'success';
-            
-            if (success) {
-                logger.info(`[NotifMe] Email sent to ${to} via ${this.provider}`, {
-                    status: result.status,
-                    messageId: result.id
+            if (result.success) {
+                logger.info(`[MailService] Email sent to ${to} via ${result.provider}`, {
+                    status: 'success',
+                    messageId: result.messageId
                 });
             } else {
-                logger.warn(`[NotifMe] Email to ${to} not successful`, {
-                    status: result.status,
-                    errors: result.errors
+                logger.warn(`[MailService] Email to ${to} not successful`, {
+                    status: 'error',
+                    errors: { email: result.error }
                 });
             }
 
             return {
-                success,
-                status: result.status,
-                messageId: result.id || null,
-                provider: this.provider,
-                errors: result.errors || null
+                success: result.success,
+                status: result.success ? 'success' : 'error',
+                messageId: result.messageId || null,
+                provider: result.provider,
+                errors: result.success ? null : { email: result.error }
             };
 
         } catch (error) {
-            logger.error(`[NotifMe] Failed to send email to ${to}:`, error);
+            logger.error(`[MailService] Failed to send email to ${to}:`, error);
             return {
                 success: false,
                 status: 'error',
                 messageId: null,
-                provider: this.provider,
+                provider: 'none',
                 errors: [{ message: error.message, code: error.code }]
             };
         }
@@ -246,21 +139,17 @@ class NotifMeWrapper {
      * @returns {string|null} Provider name or null if not initialized
      */
     getProvider() {
-        return this.provider;
+        return process.env.MAIL_PRIMARY_PROVIDER || 'resend';
     }
 
     /**
-     * Check if the wrapper is properly configured for the current provider
+     * Check if the mail service is properly configured
      * @returns {boolean} True if configuration is valid
      */
     isConfigured() {
-        try {
-            const provider = process.env.EMAIL_PROVIDER || 'sendgrid';
-            this._buildConfig(provider);
-            return true;
-        } catch {
-            return false;
-        }
+        const resendKey = process.env.RESEND_API_KEY;
+        const sendgridKey = process.env.SENDGRID_API_KEY;
+        return Boolean(resendKey || sendgridKey);
     }
 
     /**
@@ -276,10 +165,8 @@ class NotifMeWrapper {
      */
     reset() {
         // Reset state and log the reset action
-        this.sdk = null;
-        this.provider = null;
         this.initialized = false;
-        logger.info('[NotifMe] Wrapper state has been reset');
+        logger.info('[MailService] Wrapper state has been reset');
     }
 }
 

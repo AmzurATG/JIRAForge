@@ -9,6 +9,8 @@
 const logger = require('../utils/logger');
 const portalDbService = require('../services/db/portal-db-service');
 const bcrypt = require('bcrypt');
+const notifmeWrapper = require('../services/notifications/notifme-wrapper');
+const templates = require('../services/notifications/templates');
 
 /**
  * Get admin users list.
@@ -57,12 +59,14 @@ async function getAdminUsers(req, res) {
  * Create admin user.
  * 
  * POST /api/portal/admin-users
- * Body: { email, password, displayName, role }
+ * Body: { email, displayName, role }
+ * 
+ * Note: Password not required - users authenticate via Google SSO
  */
 async function createAdminUser(req, res) {
   try {
     const { orgId, role } = req.portalUser;
-    const { email, password, displayName, role: newUserRole } = req.body;
+    const { email, displayName, role: newUserRole } = req.body;
     
     // Role check: only superadmin can create admin users
     if (role !== 'superadmin') {
@@ -73,10 +77,10 @@ async function createAdminUser(req, res) {
     }
     
     // Validation
-    if (!email || !password || !displayName || !newUserRole) {
+    if (!email || !displayName || !newUserRole) {
       return res.status(400).json({ 
         success: false, 
-        error: 'Email, password, displayName, and role are required' 
+        error: 'Email, displayName, and role are required' 
       });
     }
     
@@ -88,24 +92,92 @@ async function createAdminUser(req, res) {
       });
     }
     
-    // Check if admin with this email already exists
-    const existingAdmin = await portalDbService.getAdminByEmail(email);
-    if (existingAdmin) {
-      return res.status(409).json({ 
-        success: false, 
-        error: 'Admin user with this email already exists' 
+    // Generate random password hash (never used - Google SSO only)
+    // This satisfies DB schema while user authenticates via OAuth
+    const randomPassword = require('crypto').randomBytes(32).toString('hex');
+    const passwordHash = await bcrypt.hash(randomPassword, 10);
+    
+    // Create admin - wrap in try-catch to handle unique constraint violations gracefully
+    let newAdmin;
+    try {
+      newAdmin = await portalDbService.createAdmin(orgId, {
+        email: email.toLowerCase().trim(),
+        passwordHash,
+        displayName,
+        role: newUserRole
       });
+    } catch (dbError) {
+      // Check if it's a unique constraint violation (PostgreSQL error code 23505)
+      if (dbError.code === '23505' || 
+          dbError.message?.includes('duplicate key') ||
+          dbError.message?.includes('unique constraint')) {
+        logger.warn('[PortalAdminUsers] Duplicate email on create', { 
+          email, 
+          orgId,
+          error: dbError.message 
+        });
+        return res.status(409).json({ 
+          success: false, 
+          error: 'Admin user with this email already exists' 
+        });
+      }
+      // Re-throw if it's a different error
+      throw dbError;
     }
     
-    // Hash password
-    const passwordHash = await bcrypt.hash(password, 10);
+    logger.info('[PortalAdminUsers] Admin user created successfully', { 
+      userId: newAdmin.id, 
+      email: newAdmin.email,
+      role: newAdmin.role 
+    });
     
-    // Create admin
-    const newAdmin = await portalDbService.createAdmin(orgId, {
-      email,
-      passwordHash,
-      displayName,
-      role: newUserRole
+    // Send invite email (async, don't block response)
+    // Get inviter's name for personalization
+    const inviterName = req.portalUser.email ? 
+      (await portalDbService.getAdminById(req.portalUser.orgId, req.portalUser.userId))?.display_name : 
+      null;
+    
+    // Send email asynchronously (don't block response)
+    setImmediate(async () => {
+      try {
+        const portalUrl = process.env.PORTAL_BASE_URL || 'http://localhost:3002/login';
+        const template = templates.adminInvite;
+        
+        const templateData = {
+          displayName: newAdmin.display_name,
+          email: newAdmin.email,
+          role: newAdmin.role,
+          portalUrl,
+          invitedBy: inviterName
+        };
+        
+        const emailResult = await notifmeWrapper.send({
+          to: newAdmin.email,
+          subject: template.subject,
+          text: template.text(templateData),
+          html: template.html(templateData)
+        });
+        
+        if (emailResult.success) {
+          logger.info('[PortalAdminUsers] Invite email sent successfully', { 
+            userId: newAdmin.id,
+            email: newAdmin.email,
+            messageId: emailResult.messageId
+          });
+        } else {
+          logger.warn('[PortalAdminUsers] Failed to send invite email', { 
+            userId: newAdmin.id,
+            email: newAdmin.email,
+            errors: emailResult.errors
+          });
+        }
+      } catch (emailError) {
+        logger.error('[PortalAdminUsers] Error sending invite email', {
+          userId: newAdmin.id,
+          email: newAdmin.email,
+          error: emailError.message
+        });
+      }
     });
     
     // Don't return password hash

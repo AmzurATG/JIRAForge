@@ -26,7 +26,7 @@ function ProductivityTrendChart({ data }) {
           <CartesianGrid strokeDasharray="3 3" />
           <XAxis dataKey="date" />
           <YAxis label={{ value: 'Hours', angle: -90, position: 'insideLeft' }} />
-          <Tooltip />
+          <Tooltip formatter={(value) => `${value.toFixed(2)}`} />
           <Legend />
           <Bar dataKey="productiveHours" stackId="a" fill="#10b981" name="Productive" />
           <Bar dataKey="nonProductiveHours" stackId="a" fill="#ef4444" name="Non-Productive" />

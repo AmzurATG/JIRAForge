@@ -45,7 +45,7 @@ function DataTable({
   if (loading) {
     return (
       <div className="flex justify-center py-16">
-        <LoadingSpinner />
+        <LoadingSpinner size="lg" message="Loading data..." />
       </div>
     );
   }
@@ -112,7 +112,12 @@ function DataTable({
               >
                 {columns.map((col) => (
                   <td key={col.key} className="px-3 py-2 text-xs text-gray-900 dark:text-gray-100">
-                    {col.render ? col.render(row[col.key], row) : row[col.key]}
+                    {col.render 
+                      ? col.render(row[col.key], row) 
+                      : (row[col.key] == null || (typeof row[col.key] === 'number' && isNaN(row[col.key])))
+                        ? '—' 
+                        : row[col.key]
+                    }
                   </td>
                 ))}
               </tr>
