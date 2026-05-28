@@ -371,6 +371,51 @@ Investigate and fix.`,
     expect(runLLM).toHaveBeenCalledTimes(1);
   });
 
+  test('does NOT lower score when requestImprovement=true on a high-scoring ticket', async () => {
+    // Regression test: clicking "Improve with AI" must never produce a lower score
+    // than the initial "Check quality" run on the same ticket.
+    // The LLM is invoked for its improvement content, but the deterministic score
+    // is kept because the LLM was not invoked for scoring purposes.
+    const runLLM = jest.fn().mockResolvedValue({
+      score: 55,  // LLM gives a lower score than deterministic
+      issues: ['some issue'],
+      suggestions: ['some suggestion'],
+      improved_title: 'Better title',
+      improved_description: '## Summary\nimproved'
+    });
+    const result = await analyzeDescription({
+      ...goodTicket,
+      requestImprovement: true,
+      deps: { runLLM, getClient: () => null }
+    });
+    // Score must NOT be the LLM score (55) — it must remain the deterministic score
+    expect(result.score).not.toBe(55);
+    expect(result.score).toBeGreaterThanOrEqual(LLM_GATE_THRESHOLD);
+    expect(result.source).toBe('deterministic');
+    // But improvement content still comes from LLM
+    expect(result.improved_title).toBe('Better title');
+    expect(result.improved_description).toContain('improved');
+    expect(result.issues).toEqual(['some issue']);
+  });
+
+  test('still adopts LLM score when det score is below gate, even with requestImprovement', async () => {
+    const runLLM = jest.fn().mockResolvedValue({
+      score: 72,
+      issues: ['vague'],
+      suggestions: ['add detail'],
+      improved_title: 'Better Bug Title',
+      improved_description: '## Summary\nfixed'
+    });
+    const result = await analyzeDescription({
+      ...lowTicket,
+      requestImprovement: true,
+      deps: { runLLM, getClient: () => null }
+    });
+    // det.score for lowTicket is < gate, so LLM score IS the authoritative one
+    expect(result.score).toBe(72);
+    expect(result.source).toBe('llm');
+  });
+
   test('falls back to deterministic when LLM returns null', async () => {
     const runLLM = jest.fn().mockResolvedValue(null);
     const result = await analyzeDescription({

@@ -523,9 +523,15 @@ async function analyzeDescription(params) {
       issueType
     });
     if (llm) {
+      // Only adopt the LLM score when the LLM was invoked for scoring purposes
+      // (i.e. the deterministic score was below the gate threshold).
+      // When the user explicitly requested improvement on an already-good ticket
+      // (det.score >= gate), keep the deterministic score to prevent confusing
+      // score regression: clicking "Improve with AI" must never lower the score.
+      const llmInvokedForScoring = det.score < LLM_GATE_THRESHOLD;
       result = {
-        score: llm.score,
-        source: 'llm',
+        score: llmInvokedForScoring ? llm.score : det.score,
+        source: llmInvokedForScoring ? 'llm' : 'deterministic',
         cached: false,
         issues: llm.issues,
         suggestions: llm.suggestions,
