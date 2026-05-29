@@ -24,6 +24,7 @@ const jwt = require('jsonwebtoken');
 const logger = require('../utils/logger');
 const { getClient } = require('../services/db/supabase-client');
 const userDbService = require('../services/db/user-db-service');
+const { buildOcrConfig, buildPrivacyConfig } = require('../config/ocr-config-builder');
 
 const GOOGLE_TOKEN_URL = 'https://oauth2.googleapis.com/token';
 const GOOGLE_USERINFO_URL = 'https://www.googleapis.com/oauth2/v2/userinfo';
@@ -67,7 +68,15 @@ async function postGoogleToken(body) {
   return resp.json();
 }
 
-/** Fetch the verified Google identity using the access token. */
+/**
+ * Fetch the verified Google identity using the access token.
+ *
+ * We validate identity by calling Google's userinfo endpoint with the access
+ * token (authoritative — the token was just issued to OUR client via the code/
+ * refresh exchange using our client_id+secret), rather than locally verifying
+ * the id_token signature. The caller then enforces `verified_email === true`
+ * and the org email-domain allowlist. This mirrors the existing portal Google flow.
+ */
 async function fetchGoogleUser(accessToken) {
   const resp = await fetch(GOOGLE_USERINFO_URL, {
     headers: { Authorization: `Bearer ${accessToken}` },
@@ -166,6 +175,11 @@ async function buildGoogleSessionResponse(googleUser, refreshToken, res) {
     // + anon key here and it caches them for client init.
     supabase_url: process.env.SUPABASE_URL || null,
     supabase_anon_key: process.env.SUPABASE_ANON_KEY || null,
+    // OCR + privacy config — Google users can't call /api/auth/ocr-config (no
+    // Atlassian token), so we deliver it here. Without this they'd run OCR with
+    // DEFAULT privacy settings instead of the org's configured ones (privacy gap).
+    config: buildOcrConfig(),
+    privacy: buildPrivacyConfig(),
     user: {
       id: dbUser.id,
       organization_id: dbUser.organization_id,

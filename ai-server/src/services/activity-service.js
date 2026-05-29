@@ -576,9 +576,12 @@ async function analyzeBatch(records, userAssignedIssues, userId, organizationId,
     throw new Error('AI client not initialized - check API keys');
   }
 
-  // DESCRIBE MODE: users with no assigned Jira issues (e.g. Google-SSO non-Jira
-  // employees) are never matched to an issue — instead the LLM describes what
-  // they're working on. An empty issue list is the trigger.
+  // DESCRIBE MODE: when there are no assigned issues, the LLM describes what the
+  // user is working on instead of matching to an issue. An empty issue list is
+  // the trigger — this is always the case for Google-SSO non-Jira users, and is
+  // also (intentionally, benignly) hit by a Jira user who currently has zero
+  // assigned issues: there is nothing to match, so a description is the useful
+  // output and `taskKey` stays null either way.
   const describeMode = !userAssignedIssues || userAssignedIssues.length === 0;
 
   let messages;

@@ -5854,6 +5854,15 @@ class TimeTracker:
                 result = self.auth_manager.handle_google_callback(code, state)
                 user = result.get('user', {})
 
+                # Apply OCR + privacy config from the login response. Google users
+                # can't fetch /api/auth/ocr-config (no Atlassian token), so without
+                # this they'd run OCR with DEFAULT privacy settings. Must be set
+                # BEFORE initialize_supabase() builds the OCR processor/privacy filter.
+                if result.get('config'):
+                    set_runtime_ocr_config(result['config'])
+                if result.get('privacy'):
+                    set_runtime_privacy_config(result['privacy'])
+
                 # Initialize Supabase (uses the config cached during handle_google_callback)
                 if not self.initialize_supabase():
                     return "Failed to initialize database connection - check AI server connectivity", 500

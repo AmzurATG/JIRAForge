@@ -400,6 +400,22 @@ async function findOrCreateGoogleUser({ googleSub, email, displayName, organizat
     .single();
 
   if (createErr) {
+    // Concurrent first-login race: another request inserted the same google_sub
+    // between our lookup and insert (Postgres unique_violation = 23505).
+    // Re-fetch the now-existing row instead of failing.
+    if (createErr.code === '23505') {
+      logger.info('[UserDB] findOrCreateGoogleUser race — re-fetching existing google user');
+      const { data: raced } = await supabase
+        .from('users')
+        .select('*')
+        .eq('auth_provider', 'google')
+        .eq('google_sub', googleSub)
+        .maybeSingle();
+      if (raced) {
+        await ensureGoogleUserMembership(supabase, raced.id, raced.organization_id);
+        return raced;
+      }
+    }
     logger.error('[UserDB] findOrCreateGoogleUser insert failed', { error: createErr.message });
     throw createErr;
   }
