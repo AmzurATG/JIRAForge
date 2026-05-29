@@ -396,6 +396,10 @@ SCREENSHOT_MONITORING_HARD_DISABLED = True
 # SECURITY: All sensitive keys moved to AI Server - fetched at runtime after authentication
 EMBEDDED_CONFIG = {
     'ATLASSIAN_CLIENT_ID': 'k2Xwzy8c1g3Wk6Xpbeev0x70CXEp9lJH',
+    # Google OAuth (non-Jira users). PUBLIC client ID only — the client SECRET
+    # stays on the AI Server, never in the desktop build. Same handling as
+    # ATLASSIAN_CLIENT_ID above. Must match GOOGLE_DESKTOP_CLIENT_ID on the AI server.
+    'GOOGLE_DESKTOP_CLIENT_ID': '508843846019-glrru7r3m622vt75e215lmf5ih1bcgju.apps.googleusercontent.com',
     # REMOVED: ATLASSIAN_CLIENT_SECRET - now on AI Server only (security fix)
     # REMOVED: SUPABASE_URL, SUPABASE_ANON_KEY, SUPABASE_SERVICE_ROLE_KEY - fetched from AI Server
     'AI_SERVER_URL': 'https://timetracker-forge.amzur.com',  # AI Server for secure token exchange & config
@@ -1772,7 +1776,7 @@ def is_in_startup():
 KEYRING_SERVICE = "TimeTracker"
 
 # Sensitive token keys that should be stored in keyring
-SENSITIVE_TOKEN_KEYS = ['access_token', 'refresh_token', 'supabase_token']
+SENSITIVE_TOKEN_KEYS = ['access_token', 'refresh_token', 'supabase_token', 'google_refresh_token']
 
 # Windows Credential Manager has a 2560-byte limit per credential (CredWrite API).
 # OAuth/JWT tokens often exceed this, causing error 1783 "The stub received bad data".
@@ -1904,10 +1908,18 @@ class AtlassianAuthManager:
     """Manages Atlassian OAuth 3LO flow via AI Server (secure token exchange)"""
 
     def __init__(self, web_port=51777, store_path=None):
+        self.web_port = web_port
         self.client_id = get_env_var('ATLASSIAN_CLIENT_ID', '')
         # SECURITY: client_secret is now on AI Server only, not in desktop app
         self.redirect_uri = f'http://localhost:{web_port}/auth/callback'
         self.authorization_url = 'https://auth.atlassian.com/authorize'
+
+        # Google SSO (non-Jira users). Google requires the loopback IP 127.0.0.1
+        # (NOT localhost) for Desktop-app OAuth clients. Client secret lives on
+        # the AI server; PKCE protects this public client.
+        self.google_client_id = get_env_var('GOOGLE_DESKTOP_CLIENT_ID', '')
+        self.google_authorization_url = 'https://accounts.google.com/o/oauth2/v2/auth'
+        self.google_redirect_uri = f'http://127.0.0.1:{web_port}/auth/google/callback'
         # Token exchange now goes through AI Server
         self.ai_server_url = get_env_var('AI_SERVER_URL', 'https://timetracker-forge.amzur.com')
         self.store_path = store_path or os.path.join(get_app_data_dir(), 'time_tracker_auth.json')
@@ -1935,6 +1947,10 @@ class AtlassianAuthManager:
 
         # Load tokens (from secure storage)
         self.tokens = self._load_tokens()
+
+        # Which provider authenticated this session: 'atlassian' (default, Jira)
+        # or 'google' (non-Jira SSO). Persisted in token metadata so it survives restarts.
+        self.auth_provider = self.tokens.get('auth_provider', 'atlassian')
 
     def _migrate_from_plaintext(self):
         """Migrate sensitive tokens from plain-text JSON to secure storage.
@@ -2083,7 +2099,89 @@ class AtlassianAuthManager:
 
         auth_url = f"{self.authorization_url}?{urllib.parse.urlencode(params)}"
         return auth_url
-    
+
+    def get_google_auth_url(self):
+        """Generate Google OAuth authorization URL (Desktop app client) with PKCE.
+        Used for non-Jira employees who sign in with their company Google account."""
+        if not self.google_client_id:
+            raise ValueError("GOOGLE_DESKTOP_CLIENT_ID not configured")
+
+        state = secrets.token_urlsafe(32)
+        code_verifier = secrets.token_urlsafe(64)
+        code_challenge = base64.urlsafe_b64encode(
+            hashlib.sha256(code_verifier.encode()).digest()
+        ).decode().rstrip('=')
+
+        self.tokens['google_oauth_state'] = state
+        self.tokens['google_code_verifier'] = code_verifier
+        self._save_tokens()
+
+        params = {
+            'client_id': self.google_client_id,
+            'redirect_uri': self.google_redirect_uri,
+            'response_type': 'code',
+            'scope': 'openid email profile',
+            'access_type': 'offline',   # request a refresh token
+            'prompt': 'consent',        # ensure a refresh token is returned
+            'state': state,
+            'code_challenge': code_challenge,
+            'code_challenge_method': 'S256'
+        }
+        return f"{self.google_authorization_url}?{urllib.parse.urlencode(params)}"
+
+    def handle_google_callback(self, code, state):
+        """Exchange a Google OAuth code (PKCE) for a Supabase JWT via the AI server.
+        On success, marks this session as a Google (non-Jira) session and stores the
+        Supabase token + Google refresh token. Returns the AI server's response dict."""
+        if state != self.tokens.get('google_oauth_state'):
+            raise ValueError("Invalid state parameter - possible CSRF attack")
+        code_verifier = self.tokens.get('google_code_verifier')
+        if not code_verifier:
+            raise ValueError("Missing code_verifier - PKCE flow was not properly initiated")
+
+        print("[INFO] Exchanging Google OAuth code via AI Server (with PKCE)...")
+        response = requests.post(
+            f"{self.ai_server_url}/api/auth/desktop-google",
+            json={
+                'code': code,
+                'redirect_uri': self.google_redirect_uri,
+                'code_verifier': code_verifier
+            },
+            headers={'Content-Type': 'application/json'},
+            timeout=(30, 90)
+        )
+
+        if response.status_code != 200:
+            error_data = response.json() if response.headers.get('content-type', '').startswith('application/json') else {}
+            raise Exception(error_data.get('error') or f"Google login failed (HTTP {response.status_code})")
+
+        result = response.json()
+        if not result.get('success'):
+            raise Exception(result.get('error', 'Google login failed'))
+
+        # Mark this as a Google session and persist the Supabase + refresh tokens.
+        self.auth_provider = 'google'
+        self.tokens['auth_provider'] = 'google'
+        self.tokens['supabase_token'] = result.get('supabase_token')
+        self.tokens['supabase_token_expires_at'] = time.time() + result.get('expires_in', 3600)
+        if result.get('google_refresh_token'):
+            self.tokens['google_refresh_token'] = result['google_refresh_token']
+        user_data = result.get('user', {})
+        if user_data:
+            self.tokens['exchange_user_id'] = user_data.get('id')
+            self.tokens['exchange_organization_id'] = user_data.get('organization_id')
+        # Cache the Supabase client config: google users have no Atlassian token to
+        # call /api/auth/supabase-config, so get_supabase_config() reads this cache.
+        if result.get('supabase_url') and result.get('supabase_anon_key'):
+            self.tokens['cached_supabase_url'] = result['supabase_url']
+            self.tokens['cached_supabase_anon_key'] = result['supabase_anon_key']
+            self.tokens['cached_supabase_config_at'] = time.time()
+        # code_verifier is single-use; drop it.
+        self.tokens.pop('google_code_verifier', None)
+        self._save_tokens()
+        print("[OK] Google login successful — Supabase token stored")
+        return result
+
     def handle_callback(self, code, state):
         """Handle OAuth callback and exchange code for tokens via AI Server (with PKCE)"""
         # Verify state
@@ -2165,6 +2263,9 @@ class AtlassianAuthManager:
             'refresh_token': result.get('refresh_token'),
             'expires_at': time.time() + result.get('expires_in', 3600)
         })
+        # Mark this as an Atlassian session (symmetry with the Google flow).
+        self.auth_provider = 'atlassian'
+        self.tokens['auth_provider'] = 'atlassian'
         self._save_tokens()
         self._refresh_token_invalid = False  # Clear any prior permanent-failure flag
         self._refresh_fail_count = 0  # Reset consecutive failure counter
@@ -2432,6 +2533,10 @@ class AtlassianAuthManager:
 
     def is_authenticated(self):
         """Check if user is authenticated (has a valid or refreshable access token)"""
+        # Google (non-Jira) sessions have no Atlassian access_token; they are
+        # authenticated as long as we hold a Supabase token or a Google refresh token.
+        if self.auth_provider == 'google':
+            return bool(self.tokens.get('supabase_token') or self.tokens.get('google_refresh_token'))
         if not self.tokens.get('access_token'):
             return False
         # If refresh token is marked invalid, check if the 30-min grace period
@@ -2466,8 +2571,63 @@ class AtlassianAuthManager:
             return False
         return True
 
+    def _refresh_google_supabase_token(self):
+        """Re-mint the Supabase JWT for a Google (non-Jira) user via the AI server,
+        using the stored Google refresh token. Mirrors the Atlassian get_supabase_token
+        but goes through /api/auth/desktop-google/refresh (no Atlassian token involved)."""
+        refresh_token = self.tokens.get('google_refresh_token')
+        if not refresh_token:
+            print("[ERROR] No Google refresh token available — re-login required")
+            return None
+
+        print("[INFO] Refreshing Supabase token for Google user...")
+        try:
+            response = requests.post(
+                f"{self.ai_server_url}/api/auth/desktop-google/refresh",
+                json={'google_refresh_token': refresh_token},
+                headers={'Content-Type': 'application/json'},
+                timeout=(10, 60)
+            )
+            if response.status_code != 200:
+                error_data = response.json() if response.headers.get('content-type', '').startswith('application/json') else {}
+                print(f"[ERROR] Google token refresh failed: {error_data.get('error', response.text)}")
+                return None
+
+            result = response.json()
+            if not result.get('success'):
+                print(f"[ERROR] Google token refresh failed: {result.get('error', 'Unknown error')}")
+                return None
+
+            supabase_token = result.get('supabase_token')
+            expires_in = result.get('expires_in', 3600)
+            self.tokens['supabase_token'] = supabase_token
+            self.tokens['supabase_token_expires_at'] = time.time() + expires_in
+            # Google may issue a rotated refresh token; keep it if present.
+            new_refresh = result.get('google_refresh_token')
+            if new_refresh:
+                self.tokens['google_refresh_token'] = new_refresh
+            user_data = result.get('user', {})
+            if user_data:
+                self.tokens['exchange_user_id'] = user_data.get('id')
+                self.tokens['exchange_organization_id'] = user_data.get('organization_id')
+            # Keep the Supabase config cache warm for google sessions.
+            if result.get('supabase_url') and result.get('supabase_anon_key'):
+                self.tokens['cached_supabase_url'] = result['supabase_url']
+                self.tokens['cached_supabase_anon_key'] = result['supabase_anon_key']
+                self.tokens['cached_supabase_config_at'] = time.time()
+            self._save_tokens()
+            print(f"[OK] Supabase token refreshed for Google user (expires in {expires_in}s)")
+            return supabase_token
+        except Exception as e:
+            print(f"[ERROR] Failed to refresh Google Supabase token: {e}")
+            return None
+
     def get_supabase_token(self):
         """Get Supabase JWT from AI Server using Atlassian token"""
+        # Google (non-Jira) users have no Atlassian token — refresh via Google instead.
+        if self.auth_provider == 'google':
+            return self._refresh_google_supabase_token()
+
         access_token = self.tokens.get('access_token')
         if not access_token:
             print("[ERROR] No Atlassian access token available")
@@ -2761,6 +2921,8 @@ class AtlassianAuthManager:
     def logout(self):
         """Clear authentication tokens from all storage locations"""
         self.tokens = {}
+        # Reset provider so a subsequent Atlassian login isn't treated as Google.
+        self.auth_provider = 'atlassian'
         self._refresh_token_invalid = False
         self._refresh_fail_count = 0
         self._refresh_invalid_set_at = 0
@@ -5661,7 +5823,82 @@ class TimeTracker:
                 return redirect(auth_url)
             except Exception as e:
                 return f"OAuth error: {str(e)}", 500
-        
+
+        @self.app.route('/auth/google')
+        def auth_google():
+            """Start Google OAuth flow (non-Jira users)"""
+            try:
+                auth_url = self.auth_manager.get_google_auth_url()
+                print(f"[OK] Redirecting to Google OAuth: {auth_url[:80]}...")
+                return redirect(auth_url)
+            except Exception as e:
+                return f"Google OAuth error: {str(e)}", 500
+
+        @self.app.route('/auth/google/callback')
+        def auth_google_callback():
+            """Handle Google OAuth callback for non-Jira users.
+            Unlike the Atlassian path there is no Jira identity: the AI server has
+            already created/looked-up the user (by google_sub) and returned the
+            org/user ids, so we just init Supabase and start tracking."""
+            error = request.args.get('error')
+            if error:
+                print(f"[ERROR] Google OAuth error: {error}")
+                return f"Authentication failed: {error}", 400
+
+            code = request.args.get('code')
+            state = request.args.get('state')
+            if not code:
+                return "Authentication failed: no authorization code received", 400
+
+            try:
+                result = self.auth_manager.handle_google_callback(code, state)
+                user = result.get('user', {})
+
+                # Initialize Supabase (uses the config cached during handle_google_callback)
+                if not self.initialize_supabase():
+                    return "Failed to initialize database connection - check AI server connectivity", 500
+
+                # Google users have no Atlassian account id; use the DB user id as the
+                # identity/consent key. organization_id + user_id come from the AI server.
+                self.current_user = {
+                    'account_id': user.get('id'),
+                    'email': user.get('email'),
+                    'name': user.get('display_name'),
+                    'auth_provider': 'google'
+                }
+                self.current_user_id = user.get('id')
+                self.organization_id = user.get('organization_id')
+
+                # Mark logged in (best-effort; non-fatal for google)
+                try:
+                    self._update_desktop_status(logged_in=True)
+                except Exception as e:
+                    print(f"[WARN] desktop status update failed (non-fatal): {e}")
+
+                # Sync app classifications so productive/non-productive works locally
+                try:
+                    self.classification_manager.sync_classifications(self.supabase, self.organization_id)
+                except Exception as e:
+                    print(f"[WARN] Classification sync failed during google auth: {e}")
+
+                self._associate_offline_records()
+                self.update_tray_icon()
+                self.update_tray_menu()
+
+                # Consent gate (same as the Atlassian path)
+                if not self.consent_manager.has_valid_consent(self.current_user.get('account_id')):
+                    return redirect('/consent')
+
+                if not self.running:
+                    self.start_tracking()
+
+                return redirect('/success')
+            except Exception as e:
+                self.current_user = None
+                print(f"[ERROR] Google auth callback failed: {e}")
+                traceback.print_exc()
+                return f"Authentication failed: {str(e)}", 400
+
         @self.app.route('/auth/callback')
         def auth_callback():
             """Handle OAuth callback"""
@@ -6924,6 +7161,9 @@ class TimeTracker:
     
     def get_jira_cloud_id(self):
         """Get Jira cloud ID for API calls with automatic token refresh on 401"""
+        # Non-Jira (Google SSO) users have no Jira identity — never call Atlassian.
+        if self.auth_manager.auth_provider == 'google':
+            return None
         if self.jira_cloud_id:
             return self.jira_cloud_id
 
@@ -7310,6 +7550,9 @@ class TimeTracker:
         Fallback: reads from user_jira_issues_cache in Supabase when API is
         unavailable (offline, no token, API error).
         """
+        # Non-Jira (Google SSO) users have no assigned Jira issues.
+        if self.auth_manager.auth_provider == 'google':
+            return []
         print("[INFO] Attempting to fetch Jira issues...")
 
         cloud_id = self.get_jira_cloud_id()
@@ -7496,6 +7739,9 @@ class TimeTracker:
         Uses the paginated /project/search endpoint (recommended by Atlassian).
         Requires OAuth scope: read:jira-work
         """
+        # Non-Jira (Google SSO) users have no Jira projects.
+        if self.auth_manager.auth_provider == 'google':
+            return []
         print("[INFO] Fetching user's accessible Jira projects...")
         cloud_id = self.get_jira_cloud_id()
         if not cloud_id:
@@ -8053,6 +8299,9 @@ class TimeTracker:
     
     def update_current_project(self):
         """Check if project has changed and reload settings if needed"""
+        # Non-Jira (Google SSO) users have no Jira project context.
+        if self.auth_manager.auth_provider == 'google':
+            return False
         new_project_key = self.get_user_project_key()
 
         # When offline, Jira is unreachable so get_user_project_key() returns None
@@ -11933,7 +12182,17 @@ class TimeTracker:
             Sign in with Atlassian
         </button>
 
-        <p class="info-text">This will authorize time tracking on this computer via Atlassian OAuth.</p>
+        <button class="login-btn" style="margin-top:12px;background:#ffffff;color:#3c4043;border:1px solid #dadce0;" onclick="window.location.href='/auth/google'">
+            <svg width="20" height="20" viewBox="0 0 24 24">
+                <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/>
+                <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/>
+                <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z"/>
+                <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"/>
+            </svg>
+            Sign in with Google (no Jira account)
+        </button>
+
+        <p class="info-text">Use Atlassian if you have a Jira account. If you don't, sign in with your company Google account to track your time.</p>
     </div>
 </body>
 </html>'''

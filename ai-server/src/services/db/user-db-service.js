@@ -275,6 +275,144 @@ async function getRecentlyActiveAccountIds(withinMinutes = 60) {
   }
 }
 
+/**
+ * Resolve a company email domain to an organization id (non-Jira Google SSO).
+ * Case-insensitive match against org_email_domains.domain. Uses the service-role
+ * client, so RLS is bypassed (the desktop-google endpoint has no user JWT yet).
+ *
+ * @param {string} domain - Email domain (e.g. 'amzur.com')
+ * @returns {Promise<string|null>} organization_id or null if the domain is not registered
+ */
+async function getOrgIdByEmailDomain(domain) {
+  if (!domain) return null;
+  const supabase = getClient();
+  if (!supabase) throw new Error('Supabase client not initialized');
+
+  const normalized = String(domain).trim().toLowerCase();
+  const { data, error } = await supabase
+    .from('org_email_domains')
+    .select('organization_id')
+    .eq('domain', normalized)
+    .maybeSingle();
+
+  if (error) {
+    logger.error('[UserDB] getOrgIdByEmailDomain failed', { domain: normalized, error: error.message });
+    throw error;
+  }
+  return data?.organization_id || null;
+}
+
+/**
+ * Ensure an organization_members row exists for a non-Jira user.
+ * Role is locked to 'member' with no elevated permissions (matches the
+ * org_members_self_insert RLS policy and the default member permission set).
+ *
+ * @param {Object} supabase - Service-role Supabase client
+ * @param {string} userId
+ * @param {string} organizationId
+ */
+async function ensureGoogleUserMembership(supabase, userId, organizationId) {
+  const { data: existing } = await supabase
+    .from('organization_members')
+    .select('id')
+    .eq('user_id', userId)
+    .eq('organization_id', organizationId)
+    .limit(1);
+
+  if (existing && existing.length > 0) return;
+
+  const { error } = await supabase
+    .from('organization_members')
+    .insert({
+      user_id: userId,
+      organization_id: organizationId,
+      role: 'member',
+      can_manage_settings: false,
+      can_view_team_analytics: false,
+      can_manage_members: false,
+      can_delete_screenshots: false,
+      can_manage_billing: false
+    });
+
+  if (error) {
+    // Non-fatal: a concurrent signup may have created it. Log and continue.
+    logger.warn('[UserDB] ensureGoogleUserMembership insert failed', { userId, organizationId, error: error.message });
+  }
+}
+
+/**
+ * Find-or-create a non-Jira Google user, idempotent on google_sub.
+ * Sets supabase_user_id = id so RLS (get_current_user_id) resolves the user,
+ * mirroring the Atlassian exchange-token flow. Also ensures org membership.
+ *
+ * @param {Object} params
+ * @param {string} params.googleSub - Google id_token 'sub' (stable account id)
+ * @param {string} params.email
+ * @param {string} params.displayName
+ * @param {string} params.organizationId - Resolved from the email domain
+ * @returns {Promise<Object>} The users row ({ id, organization_id, email, display_name, ... })
+ */
+async function findOrCreateGoogleUser({ googleSub, email, displayName, organizationId }) {
+  if (!googleSub) throw new Error('googleSub is required');
+  if (!organizationId) throw new Error('organizationId is required');
+
+  const supabase = getClient();
+  if (!supabase) throw new Error('Supabase client not initialized');
+
+  // Look up by stable google_sub (NOT email — email has no unique constraint).
+  const { data: existing, error: findErr } = await supabase
+    .from('users')
+    .select('*')
+    .eq('auth_provider', 'google')
+    .eq('google_sub', googleSub)
+    .maybeSingle();
+
+  if (findErr) {
+    logger.error('[UserDB] findOrCreateGoogleUser lookup failed', { error: findErr.message });
+    throw findErr;
+  }
+
+  if (existing) {
+    // Keep profile fresh; ensure supabase_user_id is set for RLS.
+    const updates = {};
+    if (existing.supabase_user_id !== existing.id) updates.supabase_user_id = existing.id;
+    if (email && existing.email !== email) updates.email = email;
+    if (displayName && existing.display_name !== displayName) updates.display_name = displayName;
+    if (Object.keys(updates).length > 0) {
+      await supabase.from('users').update(updates).eq('id', existing.id);
+      Object.assign(existing, updates);
+    }
+    await ensureGoogleUserMembership(supabase, existing.id, existing.organization_id);
+    return existing;
+  }
+
+  const { data: created, error: createErr } = await supabase
+    .from('users')
+    .insert({
+      auth_provider: 'google',
+      google_sub: googleSub,
+      email: email || null,
+      display_name: displayName || null,
+      organization_id: organizationId,
+      atlassian_account_id: null
+    })
+    .select()
+    .single();
+
+  if (createErr) {
+    logger.error('[UserDB] findOrCreateGoogleUser insert failed', { error: createErr.message });
+    throw createErr;
+  }
+
+  // Set supabase_user_id = id so RLS (WHERE supabase_user_id = auth.uid()) resolves.
+  await supabase.from('users').update({ supabase_user_id: created.id }).eq('id', created.id);
+  created.supabase_user_id = created.id;
+
+  await ensureGoogleUserMembership(supabase, created.id, organizationId);
+  logger.info('[UserDB] Created google user', { userId: created.id, organizationId });
+  return created;
+}
+
 module.exports = {
   getUserAtlassianAccountId,
   getUserJiraIssues,
@@ -283,5 +421,7 @@ module.exports = {
   getUserById,
   getOrganizationById,
   getLatestDownloadUrl,
-  getRecentlyActiveAccountIds
+  getRecentlyActiveAccountIds,
+  getOrgIdByEmailDomain,
+  findOrCreateGoogleUser
 };
