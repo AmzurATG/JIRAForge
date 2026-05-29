@@ -16,6 +16,7 @@ const portalAuthController = require('./controllers/portal-auth-controller');
 const portalController = require('./controllers/portal-controller');
 const portalReportsController = require('./controllers/portal-reports-controller');
 const portalAdminUsersController = require('./controllers/portal-admin-users-controller');
+const portalAppClassificationsController = require('./controllers/portal-app-classifications-controller');
 const authMiddleware = require('./middleware/auth');
 const forgeAuthMiddleware = require('./middleware/forge-auth');
 const atlassianAuthMiddleware = require('./middleware/atlassian-auth');
@@ -661,6 +662,13 @@ app.get('/api/portal/admin-users', portalAuthMiddleware.verifyPortalToken, porta
 app.post('/api/portal/admin-users', portalAuthMiddleware.verifyPortalToken, portalAdminUsersController.createAdminUser);
 app.put('/api/portal/admin-users/:userId', portalAuthMiddleware.verifyPortalToken, portalAdminUsersController.updateAdminUser);
 app.delete('/api/portal/admin-users/:userId', portalAuthMiddleware.verifyPortalToken, portalAdminUsersController.deleteAdminUser);
+
+// Portal application classifications endpoints (authenticated - admin/superadmin)
+app.get('/api/portal/app-classifications', portalAuthMiddleware.verifyPortalToken, portalAppClassificationsController.getAppClassifications);
+app.post('/api/portal/app-classifications', portalAuthMiddleware.verifyPortalToken, portalAppClassificationsController.createAppClassification);
+app.post('/api/portal/app-classifications/bulk-import', portalAuthMiddleware.verifyPortalToken, portalAppClassificationsController.bulkImportAppClassifications);
+app.put('/api/portal/app-classifications/:id', portalAuthMiddleware.verifyPortalToken, portalAppClassificationsController.updateAppClassification);
+app.delete('/api/portal/app-classifications/:id', portalAuthMiddleware.verifyPortalToken, portalAppClassificationsController.deleteAppClassification);
 
 // Error handling middleware
 app.use((err, req, res, next) => {

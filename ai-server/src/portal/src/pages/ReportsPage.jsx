@@ -180,6 +180,8 @@ function ReportsPage() {
           { key: 'nonProductiveHours', label: 'Non-Productive Hours', sortable: true, render: (v) => v?.toFixed(2) || '0.00' },
           { key: 'totalHours', label: 'Total Hours', sortable: true, render: (v) => v?.toFixed(2) || '0.00' },
           { key: 'productivityPercentage', label: 'Productivity %', sortable: true, render: (v) => `${v?.toFixed(1) || 0}%` },
+          { key: 'employeeCount', label: 'Employees', sortable: true },
+          { key: 'employees', label: 'Employee Names', sortable: false, render: (v) => v || 'N/A' },
         ];
       case 'employee-summary':
         return [
@@ -196,6 +198,7 @@ function ReportsPage() {
           { key: 'totalHours', label: 'Total Hours', sortable: true, render: (v) => v?.toFixed(2) || '0.00' },
           { key: 'sessionCount', label: 'Session Count', sortable: true },
           { key: 'employeeCount', label: 'Employees', sortable: true },
+          { key: 'employees', label: 'Employee Names', sortable: false, render: (v) => v || 'N/A' },
         ];
       default: // activity-logs
         return [
@@ -268,29 +271,30 @@ function ReportsPage() {
         </h3>
         
         <div className="space-y-3">
-          {/* Filters */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-2">
-            {/* Report Type Filter */}
-            <div>
-              <label className="filter-label text-xs">Report Type</label>
-              <select
-                value={reportType}
-                onChange={(e) => {
-                  setReportType(e.target.value);
-                  setPreviewData([]);
-                  setPage(1);
-                }}
-                className="select-field"
-              >
-                {Object.entries(REPORT_TYPES).map(([key, { label }]) => (
-                  <option key={key} value={key}>
-                    {label}
-                  </option>
-                ))}
-              </select>
-            </div>
+          {/* Report Configuration */}
+          <div className="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 p-4">
+            <h3 className="text-sm font-semibold text-gray-700 dark:text-gray-300 mb-3">Report Configuration</h3>
+            
+            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3">
+              {/* Report Type Filter */}
+              <div>
+                <label className="filter-label text-xs">Report Type</label>
+                <select
+                  value={reportType}
+                  onChange={(e) => {
+                    setReportType(e.target.value);
+                    setPreviewData([]);
+                    setPage(1);
+                  }}
+                  className="select-field"
+                >
+                  {Object.entries(REPORT_TYPES).map(([key, { label }]) => (
+                    <option key={key} value={key}>{label}</option>
+                  ))}
+                </select>
+              </div>
 
-            {/* Classification Filter */}
+              {/* Classification Filter */}
             <div>
               <label className="filter-label text-xs">Classification</label>
               <select
@@ -330,6 +334,7 @@ function ReportsPage() {
                 onChange={setDateRange}
               />
             </div>
+          </div>
           </div>
 
           {/* Generate Button */}
