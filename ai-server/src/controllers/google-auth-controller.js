@@ -37,6 +37,22 @@ function getGoogleCredentials() {
   };
 }
 
+/**
+ * Only accept the desktop's loopback callback shape, not an arbitrary redirect_uri.
+ * The server mints an app JWT after the exchange, so it must not act as a generic
+ * token-exchange proxy for any redirect URI the Google client happens to allow.
+ * Loopback host (127.0.0.1 / ::1 / localhost), http, fixed callback path; any port.
+ */
+function isAllowedDesktopRedirect(uri) {
+  try {
+    const u = new URL(uri);
+    const loopbackHosts = new Set(['127.0.0.1', '::1', '[::1]', 'localhost']);
+    return u.protocol === 'http:' && loopbackHosts.has(u.hostname) && u.pathname === '/auth/google/callback';
+  } catch {
+    return false;
+  }
+}
+
 /** Exchange an authorization code (PKCE) for Google tokens. Returns tokens or throws an HttpError. */
 async function exchangeGoogleCode({ code, redirectUri, codeVerifier, clientId, clientSecret }) {
   const body = new URLSearchParams({ code, client_id: clientId, redirect_uri: redirectUri, grant_type: 'authorization_code' });
@@ -128,6 +144,13 @@ function mintSupabaseToken(dbUser, email, displayName) {
  * domain, find-or-create the user, mint the Supabase JWT, and send the response.
  */
 async function buildGoogleSessionResponse(googleUser, refreshToken, res) {
+  // Fail fast if the DB isn't configured: every step below (org lookup,
+  // find-or-create, JWT minting) needs the Supabase client, so check it once
+  // up front rather than after the DB writes have already happened.
+  if (!getClient()) {
+    return res.status(500).json({ success: false, error: 'Database not configured' });
+  }
+
   const email = (googleUser.email || '').trim().toLowerCase();
   const emailVerified = googleUser.verified_email === true || googleUser.email_verified === true;
   const googleSub = googleUser.id || googleUser.sub;
@@ -158,9 +181,6 @@ async function buildGoogleSessionResponse(googleUser, refreshToken, res) {
 
   const dbUser = await userDbService.findOrCreateGoogleUser({ googleSub, email, displayName, organizationId });
 
-  if (!getClient()) {
-    return res.status(500).json({ success: false, error: 'Database not configured' });
-  }
   const { token, expiresIn } = mintSupabaseToken(dbUser, email, displayName);
 
   logger.info('[GoogleAuth] Minted Supabase JWT for google user', { userId: dbUser.id, organizationId });
@@ -201,6 +221,10 @@ exports.desktopGoogleLogin = async (req, res) => {
     // we never accept a non-PKCE authorization code (the desktop always sends one).
     if (!code || !redirect_uri || !code_verifier) {
       return res.status(400).json({ success: false, error: 'code, redirect_uri, and code_verifier are required' });
+    }
+    if (!isAllowedDesktopRedirect(redirect_uri)) {
+      logger.warn('[GoogleAuth] Rejected non-loopback redirect_uri', { redirect_uri });
+      return res.status(400).json({ success: false, error: 'redirect_uri must be the desktop loopback callback (http://127.0.0.1:<port>/auth/google/callback)' });
     }
 
     const { clientId, clientSecret } = getGoogleCredentials();

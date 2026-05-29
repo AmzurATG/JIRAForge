@@ -289,10 +289,13 @@ async function getOrgIdByEmailDomain(domain) {
   if (!supabase) throw new Error('Supabase client not initialized');
 
   const normalized = String(domain).trim().toLowerCase();
+  // Case-insensitive match to align with the migration's UNIQUE(lower(domain)):
+  // rows inserted outside the Forge UI may be mixed-case, and `eq` would miss them.
+  // Domains contain no LIKE wildcards (% / _), so ilike is an exact case-insensitive match.
   const { data, error } = await supabase
     .from('org_email_domains')
     .select('organization_id')
-    .eq('domain', normalized)
+    .ilike('domain', normalized)
     .maybeSingle();
 
   if (error) {

@@ -1775,7 +1775,10 @@ def is_in_startup():
 # Keyring service name for secure credential storage
 KEYRING_SERVICE = "TimeTracker"
 
-# Sensitive token keys that should be stored in keyring
+# Sensitive token keys that should be stored in keyring.
+# MUST match auth/secure_storage.py's SENSITIVE_TOKEN_KEYS — that module iterates
+# its own copy when LOADING from keyring/encrypted storage, so any key here that is
+# missing there would be saved but silently dropped on restart.
 SENSITIVE_TOKEN_KEYS = ['access_token', 'refresh_token', 'supabase_token', 'google_refresh_token']
 
 # Windows Credential Manager has a 2560-byte limit per credential (CredWrite API).
@@ -2166,6 +2169,12 @@ class AtlassianAuthManager:
         self.tokens['supabase_token_expires_at'] = time.time() + result.get('expires_in', 3600)
         if result.get('google_refresh_token'):
             self.tokens['google_refresh_token'] = result['google_refresh_token']
+        else:
+            # We request access_type=offline + prompt=consent, so Google should always
+            # return a refresh token. If it's missing, we can only use the cached
+            # Supabase JWT (~1h); after that uploads stop until the user signs in again.
+            # Warn loudly (don't hard-fail and lock the user out over a transient omission).
+            print("[WARN] Google login returned no refresh token — tracking will stop in ~1h without re-login")
         user_data = result.get('user', {})
         if user_data:
             self.tokens['exchange_user_id'] = user_data.get('id')

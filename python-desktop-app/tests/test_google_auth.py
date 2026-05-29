@@ -113,6 +113,17 @@ class TestGoogleRefresh:
             assert auth_mgr.get_supabase_token() == 'sb3'
 
 
+class TestSecureStorageKeySync:
+    def test_secure_storage_persists_google_refresh_token(self):
+        """Regression guard for the keyring/encrypted load path: every key
+        desktop_app marks sensitive must be in secure_storage's list too, or it
+        is saved but never loaded back on restart (Google sessions would lose the
+        refresh token and stop uploading after the cached JWT expires)."""
+        from auth import secure_storage as ss
+        assert 'google_refresh_token' in ss.SENSITIVE_TOKEN_KEYS
+        assert set(desktop_app.SENSITIVE_TOKEN_KEYS) <= set(ss.SENSITIVE_TOKEN_KEYS)
+
+
 class TestJiraGuardsNoOpForGoogle:
     def test_get_jira_cloud_id_returns_none(self, tracker):
         assert tracker.get_jira_cloud_id() is None

@@ -19,7 +19,7 @@ const { getOrgIdByEmailDomain, findOrCreateGoogleUser } = require('../../src/ser
 function makeClient(queue) {
   const makeBuilder = () => {
     const b = {};
-    ['select', 'eq', 'in', 'is', 'not', 'order', 'limit', 'insert', 'update', 'delete', 'upsert', 'gte', 'lt']
+    ['select', 'eq', 'ilike', 'in', 'is', 'not', 'order', 'limit', 'insert', 'update', 'delete', 'upsert', 'gte', 'lt']
       .forEach(m => { b[m] = jest.fn(() => b); });
     b.single = jest.fn(() => Promise.resolve(queue.shift()));
     b.maybeSingle = jest.fn(() => Promise.resolve(queue.shift()));

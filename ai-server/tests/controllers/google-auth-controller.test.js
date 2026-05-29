@@ -109,6 +109,14 @@ describe('desktopGoogleLogin', () => {
     expect(res.status).toHaveBeenCalledWith(400);
   });
 
+  test('non-loopback redirect_uri → 400 (not a generic token proxy)', async () => {
+    const req = { body: { code: 'abc', redirect_uri: 'https://evil.example.com/callback', code_verifier: 'v' } };
+    const res = makeRes();
+    await desktopGoogleLogin(req, res);
+    expect(res.status).toHaveBeenCalledWith(400);
+    expect(userDbService.getOrgIdByEmailDomain).not.toHaveBeenCalled();
+  });
+
   test('refresh re-mints a Supabase JWT from a stored google_refresh_token', async () => {
     mockGoogleFetch({ userinfo: { id: 'google-sub-1', email: 'vishnu@amzur.com', verified_email: true, name: 'Vishnu', hd: 'amzur.com' } });
     userDbService.getOrgIdByEmailDomain.mockResolvedValue('org-123');
@@ -121,6 +129,24 @@ describe('desktopGoogleLogin', () => {
     const payload = jwt.sign.mock.calls[0][0];
     expect(payload.sub).toBe('user-999');
     expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ success: true, supabase_token: 'signed.jwt.token' }));
+  });
+
+  test('refresh keeps the caller\'s refresh token when Google omits a new one', async () => {
+    // Google refresh responses usually omit refresh_token; the response must echo
+    // back the caller's existing token so the desktop keeps a usable credential.
+    global.fetch = jest.fn()
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ access_token: 'g-access' }) }) // no refresh_token
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ id: 'google-sub-1', email: 'vishnu@amzur.com', verified_email: true, name: 'Vishnu', hd: 'amzur.com' }) });
+    userDbService.getOrgIdByEmailDomain.mockResolvedValue('org-123');
+    userDbService.findOrCreateGoogleUser.mockResolvedValue({ id: 'user-999', organization_id: 'org-123' });
+
+    const req = { body: { google_refresh_token: 'caller-refresh' } };
+    const res = makeRes();
+    await desktopGoogleRefresh(req, res);
+
+    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({
+      success: true, google_refresh_token: 'caller-refresh',
+    }));
   });
 
   test('refresh without a token → 400', async () => {
