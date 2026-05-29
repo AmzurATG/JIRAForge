@@ -18,8 +18,12 @@ export const ISSUE_CACHE_TTL = 120000; // 2 minutes in milliseconds
 // Team analytics KVS cache TTL — 5 minutes balances freshness with latency savings
 export const TEAM_ANALYTICS_CACHE_TTL_MS = 5 * 60 * 1000;
 // Maximum number of 1,000-row pages fetched per paginated Supabase query.
-// Caps egress requests at 10 per paginated call (fits within Forge 100/min limit).
-export const MAX_PAGINATED_PAGES = 10;
+// Pages are fired in parallel (see supabaseRequestPaginated), so this also caps
+// concurrent egress per chunk. Forge's platform cap is 100 egress/runtime-minute;
+// 30 leaves room for the export's other queries (org/user/permission lookups,
+// project-team-analytics, and a second parallel chunk for non-productive data)
+// while preventing silent data truncation on busy months.
+export const MAX_PAGINATED_PAGES = 30;
 
 // Default Settings (Global Admin Settings - stored in Forge storage)
 // NOTE: Supabase credentials are now managed securely on the AI server

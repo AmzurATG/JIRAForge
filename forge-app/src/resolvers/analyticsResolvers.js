@@ -550,13 +550,23 @@ export function registerAnalyticsResolvers(resolver) {
   }
 
   /**
-   * For a multi-project export, run per-project generators in parallel AND collect
-   * the team-member rosters needed to build the synthetic Unassigned section.
+   * For a multi-project export, run per-project generators sequentially AND
+   * collect the team-member rosters needed to build the synthetic Unassigned
+   * section.
    *
-   * The per-project call inside `runProject` invokes `fetchProjectTeamAnalytics`
-   * internally (which caches under `cloudId:projectKey:endDate`). The pre-fetch
-   * below hits the same cache key so it's effectively free after the first call,
-   * but it gives the resolver direct access to the un-stripped member rows.
+   * Why sequential, not parallel: every project's pipeline fans out into ~6
+   * Supabase queries against `daily_time_summary` plus a paginated
+   * `activity_records` fetch. Running 4+ projects in parallel saturated
+   * Supabase's connection pool and triggered Postgres `statement_timeout`
+   * cancellations under load. Sequential keeps DB pressure bounded to one
+   * project's worth at a time while parallelism *within* a project is
+   * preserved (queries inside fetchProjectTeamAnalytics still race).
+   *
+   * Per project we pre-fetch `fetchProjectTeamAnalytics` ONCE — this warms
+   * the KVS cache so `runProject`'s internal call is a cache hit, and gives
+   * us the un-stripped member roster needed for the Unassigned section.
+   * The old code fired both calls concurrently, so on a cold cache both
+   * missed and doubled the DB load.
    *
    * @param {string} accountId
    * @param {string} cloudId
@@ -566,20 +576,22 @@ export function registerAnalyticsResolvers(resolver) {
    * @returns {Promise<{projectsData: any[], teamMembersByProject: any[][]}>}
    */
   async function buildMultiProjectExport(accountId, cloudId, keys, endDate, runProject) {
-    // Fire per-project generators and a parallel cache-warming/membership read.
-    // Both depend on fetchProjectTeamAnalytics with the same key, so only one
-    // network round trip is paid per project.
-    const [projectsData, teamMembersByProject] = await Promise.all([
-      Promise.all(keys.map(pk => runProject(pk, 'projectOnly'))),
-      Promise.all(keys.map(pk =>
-        fetchProjectTeamAnalytics(accountId, cloudId, pk, endDate)
-          .then(t => t.teamMemberActivity || [])
-          .catch(err => {
-            console.warn(`[ExportUnassignedUnion] fetchProjectTeamAnalytics failed for ${pk}:`, err.message);
-            return [];
-          })
-      )),
-    ]);
+    const projectsData = [];
+    const teamMembersByProject = [];
+
+    for (const pk of keys) {
+      const teamMembers = await fetchProjectTeamAnalytics(accountId, cloudId, pk, endDate)
+        .then(t => t.teamMemberActivity || [])
+        .catch(err => {
+          console.warn(`[ExportUnassignedUnion] fetchProjectTeamAnalytics failed for ${pk}:`, err.message);
+          return [];
+        });
+      teamMembersByProject.push(teamMembers);
+
+      const data = await runProject(pk, 'projectOnly');
+      projectsData.push(data);
+    }
+
     return { projectsData, teamMembersByProject };
   }
 
