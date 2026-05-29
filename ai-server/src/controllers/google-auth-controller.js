@@ -197,8 +197,10 @@ async function buildGoogleSessionResponse(googleUser, refreshToken, res) {
 exports.desktopGoogleLogin = async (req, res) => {
   try {
     const { code, redirect_uri, code_verifier } = req.body || {};
-    if (!code || !redirect_uri) {
-      return res.status(400).json({ success: false, error: 'code and redirect_uri are required' });
+    // PKCE is mandatory for this public desktop endpoint: require code_verifier so
+    // we never accept a non-PKCE authorization code (the desktop always sends one).
+    if (!code || !redirect_uri || !code_verifier) {
+      return res.status(400).json({ success: false, error: 'code, redirect_uri, and code_verifier are required' });
     }
 
     const { clientId, clientSecret } = getGoogleCredentials();

@@ -335,8 +335,16 @@ async function ensureGoogleUserMembership(supabase, userId, organizationId) {
     });
 
   if (error) {
-    // Non-fatal: a concurrent signup may have created it. Log and continue.
-    logger.warn('[UserDB] ensureGoogleUserMembership insert failed', { userId, organizationId, error: error.message });
+    // Only a duplicate from a concurrent signup is safe to ignore (we select
+    // first, so a unique_violation here means another request just inserted it).
+    // Any other failure leaves the user without an organization_members row,
+    // which breaks org-scoped reads (settings/classification) — fail the login.
+    if (error.code === '23505') {
+      logger.info('[UserDB] ensureGoogleUserMembership: membership already exists (race) — ignoring');
+      return;
+    }
+    logger.error('[UserDB] ensureGoogleUserMembership insert failed', { userId, organizationId, error: error.message });
+    throw error;
   }
 }
 
@@ -373,13 +381,31 @@ async function findOrCreateGoogleUser({ googleSub, email, displayName, organizat
   }
 
   if (existing) {
+    // Tenant-isolation guard: the resolved org (from the verified email domain)
+    // must match the org this Google account was provisioned into. If they
+    // differ (e.g. the account's domain now maps to a different org), refuse
+    // rather than silently keep the old org — a controlled migration must be
+    // done by an admin. Prevents stale cross-tenant access.
+    if (existing.organization_id !== organizationId) {
+      logger.warn('[UserDB] Google user org mismatch — refusing login', {
+        userId: existing.id, existingOrg: existing.organization_id, resolvedOrg: organizationId
+      });
+      const err = new Error('Your account is linked to a different organization. Please contact your administrator.');
+      err.statusCode = 403;
+      throw err;
+    }
+
     // Keep profile fresh; ensure supabase_user_id is set for RLS.
     const updates = {};
     if (existing.supabase_user_id !== existing.id) updates.supabase_user_id = existing.id;
     if (email && existing.email !== email) updates.email = email;
     if (displayName && existing.display_name !== displayName) updates.display_name = displayName;
     if (Object.keys(updates).length > 0) {
-      await supabase.from('users').update(updates).eq('id', existing.id);
+      const { error: updErr } = await supabase.from('users').update(updates).eq('id', existing.id);
+      if (updErr) {
+        logger.error('[UserDB] Failed to update existing google user', { userId: existing.id, error: updErr.message });
+        throw updErr;
+      }
       Object.assign(existing, updates);
     }
     await ensureGoogleUserMembership(supabase, existing.id, existing.organization_id);
@@ -421,7 +447,16 @@ async function findOrCreateGoogleUser({ googleSub, email, displayName, organizat
   }
 
   // Set supabase_user_id = id so RLS (WHERE supabase_user_id = auth.uid()) resolves.
-  await supabase.from('users').update({ supabase_user_id: created.id }).eq('id', created.id);
+  // supabase update() returns { error } rather than throwing — must check it, or a
+  // silent failure leaves RLS unable to resolve this user (all desktop calls 401/empty).
+  const { error: linkErr } = await supabase
+    .from('users')
+    .update({ supabase_user_id: created.id })
+    .eq('id', created.id);
+  if (linkErr) {
+    logger.error('[UserDB] Failed to set supabase_user_id (RLS would not resolve user)', { userId: created.id, error: linkErr.message });
+    throw linkErr;
+  }
   created.supabase_user_id = created.id;
 
   await ensureGoogleUserMembership(supabase, created.id, organizationId);

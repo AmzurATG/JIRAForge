@@ -76,7 +76,7 @@ describe('desktopGoogleLogin', () => {
     mockGoogleFetch({ userinfo: { id: 'gsub', email: 'someone@random.com', verified_email: true, name: 'X' } });
     userDbService.getOrgIdByEmailDomain.mockResolvedValue(null);
 
-    const req = { body: { code: 'abc', redirect_uri: 'http://127.0.0.1:51777/auth/google/callback' } };
+    const req = { body: { code: 'abc', redirect_uri: 'http://127.0.0.1:51777/auth/google/callback', code_verifier: 'v' } };
     const res = makeRes();
     await desktopGoogleLogin(req, res);
 
@@ -87,7 +87,7 @@ describe('desktopGoogleLogin', () => {
   test('unverified Google email → 401', async () => {
     mockGoogleFetch({ userinfo: { id: 'gsub', email: 'vishnu@amzur.com', verified_email: false, name: 'V' } });
 
-    const req = { body: { code: 'abc', redirect_uri: 'http://127.0.0.1:51777/auth/google/callback' } };
+    const req = { body: { code: 'abc', redirect_uri: 'http://127.0.0.1:51777/auth/google/callback', code_verifier: 'v' } };
     const res = makeRes();
     await desktopGoogleLogin(req, res);
 
@@ -97,6 +97,13 @@ describe('desktopGoogleLogin', () => {
 
   test('missing code → 400', async () => {
     const req = { body: {} };
+    const res = makeRes();
+    await desktopGoogleLogin(req, res);
+    expect(res.status).toHaveBeenCalledWith(400);
+  });
+
+  test('missing code_verifier → 400 (PKCE required)', async () => {
+    const req = { body: { code: 'abc', redirect_uri: 'http://127.0.0.1:51777/auth/google/callback' } };
     const res = makeRes();
     await desktopGoogleLogin(req, res);
     expect(res.status).toHaveBeenCalledWith(400);

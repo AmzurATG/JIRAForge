@@ -77,6 +77,17 @@ describe('user-db-service Google helpers', () => {
     expect(u.supabase_user_id).toBe('u2'); // RLS requires supabase_user_id == id
   });
 
+  test('findOrCreateGoogleUser rejects when existing user belongs to a different org (tenant isolation)', async () => {
+    const existing = {
+      id: 'u1', organization_id: 'org-OTHER', google_sub: 'sub-1',
+      email: 'a@amzur.com', display_name: 'A', supabase_user_id: 'u1',
+    };
+    getClient.mockReturnValue(makeClient([{ data: existing, error: null }]));
+    await expect(findOrCreateGoogleUser({
+      googleSub: 'sub-1', email: 'a@amzur.com', displayName: 'A', organizationId: 'org-1',
+    })).rejects.toMatchObject({ statusCode: 403 });
+  });
+
   test('findOrCreateGoogleUser requires googleSub and organizationId', async () => {
     await expect(findOrCreateGoogleUser({ organizationId: 'org-1' })).rejects.toThrow('googleSub');
     await expect(findOrCreateGoogleUser({ googleSub: 'x' })).rejects.toThrow('organizationId');

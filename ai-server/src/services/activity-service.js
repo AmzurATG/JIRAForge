@@ -576,6 +576,10 @@ async function analyzeBatch(records, userAssignedIssues, userId, organizationId,
     throw new Error('AI client not initialized - check API keys');
   }
 
+  // Normalize once so describe-mode detection and validateAnalysisKeys() (which
+  // calls .map() on this) always see an array, even if a caller passes null.
+  userAssignedIssues = Array.isArray(userAssignedIssues) ? userAssignedIssues : [];
+
   // DESCRIBE MODE: when there are no assigned issues, the LLM describes what the
   // user is working on instead of matching to an issue. An empty issue list is
   // the trigger — this is always the case for Google-SSO non-Jira users, and is
