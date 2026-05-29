@@ -10,6 +10,7 @@ const EmployeesPage = lazy(() => import('./pages/EmployeesPage'));
 const EmployeeDetailPage = lazy(() => import('./pages/EmployeeDetailPage'));
 const TimeLogsPage = lazy(() => import('./pages/TimeLogsPage'));
 const ReportsPage = lazy(() => import('./pages/ReportsPage'));
+const AppClassificationsPage = lazy(() => import('./pages/AppClassificationsPage'));
 const SettingsPage = lazy(() => import('./pages/SettingsPage'));
 
 // Layout
@@ -47,6 +48,7 @@ function App() {
             <Route path="employees/:userId" element={<EmployeeDetailPage />} />
             <Route path="time-logs" element={<TimeLogsPage />} />
             <Route path="reports" element={<ReportsPage />} />
+            <Route path="app-classifications" element={<AppClassificationsPage />} />
             <Route path="settings" element={<SettingsPage />} />
           </Route>
         </Routes>
