@@ -135,7 +135,11 @@ async function fetchImageAttachments(rawAttachments) {
   // Filter to supported image types under size limit, prefer most recent
   const candidates = rawAttachments
     .filter(att => att.mimeType && ALLOWED_IMAGE_TYPES.has(att.mimeType))
-    .filter(att => att.size && att.size <= MAX_IMAGE_SIZE)
+    .filter(att => {
+      // Accept if size is missing/0 (some Jira responses omit it) or under limit
+      const size = Number(att.size) || 0;
+      return size === 0 || size <= MAX_IMAGE_SIZE;
+    })
     .sort((a, b) => new Date(b.created || 0) - new Date(a.created || 0))
     .slice(0, MAX_IMAGES);
 
@@ -149,11 +153,14 @@ async function fetchImageAttachments(rawAttachments) {
   const results = [];
   for (const att of candidates) {
     try {
+      // Jira attachment content endpoint may return a redirect to the CDN
       const response = await api
         .asUser()
         .requestJira(route`/rest/api/3/attachment/content/${att.id}`, {
-          headers: { Accept: att.mimeType }
+          headers: { Accept: att.mimeType },
+          redirect: 'follow'
         });
+      console.log(`[descriptionResolvers] Attachment ${att.id} response: HTTP ${response.status}, type=${response.headers?.get?.('content-type') || 'unknown'}`);
       if (!response.ok) {
         console.warn(`[descriptionResolvers] Attachment ${att.id} download failed: HTTP ${response.status}`);
         continue;
