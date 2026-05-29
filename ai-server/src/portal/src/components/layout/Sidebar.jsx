@@ -7,7 +7,8 @@ import {
   Settings,
   Activity,
   ChevronLeft,
-  ChevronRight
+  ChevronRight,
+  ListChecks
 } from 'lucide-react';
 import { useState } from 'react';
 
@@ -17,6 +18,7 @@ function Sidebar({ collapsed, onToggle }) {
     { path: '/employees', label: 'Employees', icon: Users },
     { path: '/time-logs', label: 'Time Logs', icon: Clock },
     { path: '/reports', label: 'Reports', icon: FileText },
+    { path: '/app-classifications', label: 'App Classifications', icon: ListChecks },
     { path: '/settings', label: 'Settings', icon: Settings },
   ];
 
@@ -33,7 +35,7 @@ function Sidebar({ collapsed, onToggle }) {
             </div>
             <div>
               <h1 className="text-sm font-bold text-white">
-                Time Tracking
+                Time Tracker
               </h1>
               <p className="text-[10px] text-gray-400">Portal</p>
             </div>

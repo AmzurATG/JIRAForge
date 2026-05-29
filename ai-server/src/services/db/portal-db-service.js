@@ -346,6 +346,155 @@ async function clearPasswordResetToken(orgId, userId) {
   }
 }
 
+/**
+ * List application classifications for an organization.
+ * 
+ * @param {string} orgId - Organization ID
+ * @param {number} page - Page number (1-indexed)
+ * @param {number} limit - Page size
+ * @param {Object} filters - { classification, match_by, search }
+ * @returns {Promise<Object>} { data, totalCount }
+ */
+async function listAppClassifications(orgId, page = 1, limit = 50, filters = {}) {
+  const supabase = getClient();
+  if (!supabase) {
+    throw new Error('Supabase client not initialized');
+  }
+  
+  const offset = (page - 1) * limit;
+  
+  // Build query
+  let query = supabase
+    .from('application_classifications')
+    .select('*', { count: 'exact' });
+  
+  // Filter by organization (org-level + global defaults)
+  query = query.or(`organization_id.eq.${orgId},organization_id.is.null`);
+  
+  // Apply filters
+  if (filters.classification) {
+    query = query.eq('classification', filters.classification);
+  }
+  if (filters.match_by) {
+    query = query.eq('match_by', filters.match_by);
+  }
+  if (filters.search) {
+    query = query.or(`identifier.ilike.%${filters.search}%,display_name.ilike.%${filters.search}%`);
+  }
+  
+  // Get total count
+  const { count, error: countError } = await query;
+  if (countError) {
+    logger.error('[PortalDB] Count app classifications failed', { error: countError });
+    throw countError;
+  }
+  
+  // Get paginated data
+  const { data, error } = await query
+    .order('created_at', { ascending: false })
+    .range(offset, offset + limit - 1);
+  
+  if (error) {
+    logger.error('[PortalDB] List app classifications failed', { error });
+    throw error;
+  }
+  
+  return {
+    data: data || [],
+    totalCount: count || 0
+  };
+}
+
+/**
+ * Create application classification.
+ * 
+ * @param {Object} data - Classification data
+ * @returns {Promise<Object>} Created classification
+ */
+async function createAppClassification(data) {
+  const supabase = getClient();
+  if (!supabase) {
+    throw new Error('Supabase client not initialized');
+  }
+  
+  const { data: created, error } = await supabase
+    .from('application_classifications')
+    .insert(data)
+    .select()
+    .single();
+  
+  if (error) {
+    logger.error('[PortalDB] Create app classification failed', { error });
+    throw error;
+  }
+  
+  return created;
+}
+
+/**
+ * Update application classification.
+ * 
+ * @param {string} orgId - Organization ID
+ * @param {string} id - Classification ID
+ * @param {Object} updates - Fields to update
+ * @returns {Promise<Object|null>} Updated classification or null
+ */
+async function updateAppClassification(orgId, id, updates) {
+  const supabase = getClient();
+  if (!supabase) {
+    throw new Error('Supabase client not initialized');
+  }
+  
+  const { data, error } = await supabase
+    .from('application_classifications')
+    .update({
+      ...updates,
+      updated_at: new Date().toISOString()
+    })
+    .eq('id', id)
+    .or(`organization_id.eq.${orgId},organization_id.is.null`)
+    .select()
+    .single();
+  
+  if (error) {
+    if (error.code === 'PGRST116') {
+      return null;
+    }
+    logger.error('[PortalDB] Update app classification failed', { id, error });
+    throw error;
+  }
+  
+  return data;
+}
+
+/**
+ * Delete application classification.
+ * 
+ * @param {string} orgId - Organization ID
+ * @param {string} id - Classification ID
+ * @returns {Promise<boolean>} True if deleted, false if not found
+ */
+async function deleteAppClassification(orgId, id) {
+  const supabase = getClient();
+  if (!supabase) {
+    throw new Error('Supabase client not initialized');
+  }
+  
+  const { data, error } = await supabase
+    .from('application_classifications')
+    .delete()
+    .eq('id', id)
+    .or(`organization_id.eq.${orgId},organization_id.is.null`)
+    .select();
+  
+  if (error) {
+    logger.error('[PortalDB] Delete app classification failed', { id, error });
+    throw error;
+  }
+  
+  return data && data.length > 0;
+}
+
 module.exports = {
   getAdminByEmail,
   getAdminById,
@@ -357,5 +506,10 @@ module.exports = {
   setPasswordResetToken,
   getAdminsWithActiveResetToken,  // New: for hashed token lookup
   getAdminByResetToken,  // Deprecated: kept for backward compatibility
-  clearPasswordResetToken
+  clearPasswordResetToken,
+  // Application Classifications
+  listAppClassifications,
+  createAppClassification,
+  updateAppClassification,
+  deleteAppClassification
 };
