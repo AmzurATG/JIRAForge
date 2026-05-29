@@ -19,7 +19,7 @@
 import api, { route } from '@forge/api';
 import { remoteRequest } from '../utils/remote.js';
 import { isValidIssueKey } from '../utils/validators.js';
-import { markdownToADF, validateADF, adfToText } from '../utils/adfBuilder.js';
+import { markdownToADF, validateADF, adfToText, extractMediaNodes } from '../utils/adfBuilder.js';
 
 const ALLOWED_ISSUE_TYPES = new Set(['Bug', 'Story', 'Task', 'Epic', 'Sub-task']);
 const ALLOWED_EVENTS = new Set(['analyze', 'improve', 'accept', 'edit', 'reject']);
@@ -35,10 +35,9 @@ function failure(message) {
  *                   projectKey: string, parentKey: string|null, attachments: Array}>}
  */
 async function fetchIssueForAnalysis(issueKey) {
-  const fields = 'summary,description,issuetype,project,parent,attachment';
   const response = await api
     .asUser()
-    .requestJira(route`/rest/api/3/issue/${issueKey}?fields=${fields}`, {
+    .requestJira(route`/rest/api/3/issue/${issueKey}?fields=summary,description,issuetype,project,parent,attachment`, {
       headers: { Accept: 'application/json' }
     });
 
@@ -54,6 +53,8 @@ async function fetchIssueForAnalysis(issueKey) {
   const projectKey = issue.fields?.project?.key || '';
   const parentKey = issue.fields?.parent?.key || null;
   const rawAttachments = issue.fields?.attachment || [];
+
+  console.log(`[descriptionResolvers] fetchIssueForAnalysis: issue=${issueKey} parent=${parentKey || 'none'} attachmentField=${issue.fields?.attachment !== undefined ? 'present' : 'MISSING'} count=${rawAttachments.length}`);
 
   return { title, description, issueType, projectKey, parentKey, rawAttachments };
 }
@@ -126,57 +127,73 @@ const MAX_IMAGES = 2;
  */
 async function fetchImageAttachments(rawAttachments) {
   if (!Array.isArray(rawAttachments) || rawAttachments.length === 0) {
-    console.log('[descriptionResolvers] No rawAttachments to process');
+    console.log('[descriptionResolvers] fetchImageAttachments: no rawAttachments to process');
     return [];
   }
 
-  console.log(`[descriptionResolvers] rawAttachments count=${rawAttachments.length}, types: ${rawAttachments.map(a => `${a.filename}(${a.mimeType},${a.size}b)`).join(', ')}`);
+  console.log(`[descriptionResolvers] fetchImageAttachments: count=${rawAttachments.length}, items: ${JSON.stringify(rawAttachments.map(a => ({filename: a.filename, mimeType: a.mimeType, size: a.size, id: a.id})))}`);
 
   // Filter to supported image types under size limit, prefer most recent
   const candidates = rawAttachments
-    .filter(att => att.mimeType && ALLOWED_IMAGE_TYPES.has(att.mimeType))
+    .filter(att => {
+      const typeOk = att.mimeType && ALLOWED_IMAGE_TYPES.has(att.mimeType);
+      if (!typeOk) console.log(`[descriptionResolvers] Filtered out ${att.filename}: mimeType=${att.mimeType} not in allowed set`);
+      return typeOk;
+    })
     .filter(att => {
       // Accept if size is missing/0 (some Jira responses omit it) or under limit
       const size = Number(att.size) || 0;
-      return size === 0 || size <= MAX_IMAGE_SIZE;
+      const sizeOk = size === 0 || size <= MAX_IMAGE_SIZE;
+      if (!sizeOk) console.log(`[descriptionResolvers] Filtered out ${att.filename}: size=${size} exceeds limit`);
+      return sizeOk;
     })
     .sort((a, b) => new Date(b.created || 0) - new Date(a.created || 0))
     .slice(0, MAX_IMAGES);
 
   if (candidates.length === 0) {
-    console.log('[descriptionResolvers] No candidates after filtering');
+    console.log('[descriptionResolvers] fetchImageAttachments: No candidates after filtering');
     return [];
   }
 
-  console.log(`[descriptionResolvers] ${candidates.length} image candidate(s): ${candidates.map(a => `${a.filename}(id=${a.id})`).join(', ')}`);
+  console.log(`[descriptionResolvers] fetchImageAttachments: ${candidates.length} candidate(s): ${candidates.map(a => `${a.filename}(id=${a.id},mime=${a.mimeType})`).join(', ')}`);
 
   const results = [];
   for (const att of candidates) {
     try {
-      // Jira attachment content endpoint may return a redirect to the CDN
+      // Use redirect=false query param so Jira returns content directly (200)
+      // instead of a 303 redirect to CDN which Forge proxy can't follow
       const response = await api
         .asUser()
-        .requestJira(route`/rest/api/3/attachment/content/${att.id}`, {
-          headers: { Accept: att.mimeType },
-          redirect: 'follow'
+        .requestJira(route`/rest/api/3/attachment/content/${att.id}?redirect=false`, {
+          headers: { Accept: '*/*' }
         });
-      console.log(`[descriptionResolvers] Attachment ${att.id} response: HTTP ${response.status}, type=${response.headers?.get?.('content-type') || 'unknown'}`);
+      console.log(`[descriptionResolvers] Attachment ${att.id} response: HTTP ${response.status}`);
       if (!response.ok) {
         console.warn(`[descriptionResolvers] Attachment ${att.id} download failed: HTTP ${response.status}`);
         continue;
       }
       const buffer = await response.arrayBuffer();
-      const base64 = Buffer.from(buffer).toString('base64');
-      console.log(`[descriptionResolvers] Downloaded ${att.filename}: ${base64.length} base64 chars`);
+      console.log(`[descriptionResolvers] Attachment ${att.id} arrayBuffer size: ${buffer.byteLength} bytes`);
+      // Convert ArrayBuffer to base64
+      const uint8 = new Uint8Array(buffer);
+      let base64 = '';
+      // Use chunks to avoid call stack overflow on large arrays
+      const CHUNK = 8192;
+      for (let i = 0; i < uint8.length; i += CHUNK) {
+        base64 += String.fromCharCode.apply(null, uint8.slice(i, i + CHUNK));
+      }
+      base64 = btoa(base64);
+      console.log(`[descriptionResolvers] Attachment ${att.id} base64 length: ${base64.length} chars`);
       results.push({
         data: base64,
         mimeType: att.mimeType,
         filename: att.filename || 'attachment'
       });
     } catch (err) {
-      console.warn(`[descriptionResolvers] Failed to fetch attachment ${att.id}: ${err.message}`);
+      console.error(`[descriptionResolvers] Failed to fetch attachment ${att.id}: ${err.message}`, err.stack);
     }
   }
+  console.log(`[descriptionResolvers] fetchImageAttachments: returning ${results.length} image(s)`);
   return results;
 }
 
@@ -224,6 +241,9 @@ export function registerDescriptionResolvers(resolver) {
       // Only include optional context fields if they have data (saves payload size)
       if (parentContext) body.parentContext = parentContext;
       if (attachments && attachments.length > 0) body.attachments = attachments;
+
+      const bodySize = JSON.stringify(body).length;
+      console.log(`[descriptionResolvers] Sending to ai-server: bodySize=${bodySize} bytes, hasParent=${!!body.parentContext}, hasAttachments=${!!body.attachments}, attachmentCount=${body.attachments?.length || 0}`);
 
       const data = await remoteRequest('/api/forge/description/analyze', {
         method: 'POST',
@@ -292,6 +312,30 @@ export function registerDescriptionResolvers(resolver) {
       if (!validateADF(adf)) {
         return failure('Failed to build a valid ADF document');
       }
+
+      // Preserve inline media (images) from the original description.
+      // Fetch the current ADF, extract mediaSingle/mediaGroup nodes, and
+      // append them to the new ADF so attached images remain visible.
+      try {
+        const origResponse = await api
+          .asUser()
+          .requestJira(route`/rest/api/3/issue/${issueKey}?fields=description`, {
+            headers: { Accept: 'application/json' }
+          });
+        if (origResponse.ok) {
+          const origIssue = await origResponse.json();
+          const originalAdf = origIssue.fields?.description;
+          const mediaNodes = extractMediaNodes(originalAdf);
+          if (mediaNodes.length > 0) {
+            console.log(`[descriptionResolvers] Preserving ${mediaNodes.length} media node(s) from original description`);
+            adf.content.push(...mediaNodes);
+          }
+        }
+      } catch (mediaErr) {
+        // Best-effort — if we can't fetch the original, proceed without media
+        console.warn('[descriptionResolvers] Could not fetch original description for media preservation:', mediaErr.message);
+      }
+
       fields.description = adf;
     }
 

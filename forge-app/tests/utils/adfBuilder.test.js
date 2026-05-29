@@ -3,7 +3,8 @@
 const {
   markdownToADF,
   validateADF,
-  adfToText
+  adfToText,
+  extractMediaNodes
 } = require('../../src/utils/adfBuilder.js');
 
 describe('markdownToADF', () => {
@@ -131,5 +132,80 @@ describe('adfToText', () => {
     expect(text).toContain('## Steps');
     expect(text).toContain('1. open');
     expect(text).toContain('2. click');
+  });
+});
+
+describe('extractMediaNodes', () => {
+  test('returns empty array for null/undefined input', () => {
+    expect(extractMediaNodes(null)).toEqual([]);
+    expect(extractMediaNodes(undefined)).toEqual([]);
+    expect(extractMediaNodes({})).toEqual([]);
+  });
+
+  test('returns empty array when no media nodes exist', () => {
+    const adf = {
+      type: 'doc', version: 1,
+      content: [
+        { type: 'paragraph', content: [{ type: 'text', text: 'Hello' }] },
+        { type: 'heading', attrs: { level: 1 }, content: [{ type: 'text', text: 'Title' }] }
+      ]
+    };
+    expect(extractMediaNodes(adf)).toEqual([]);
+  });
+
+  test('extracts mediaSingle nodes from ADF', () => {
+    const mediaNode = {
+      type: 'mediaSingle',
+      attrs: { layout: 'center' },
+      content: [{
+        type: 'media',
+        attrs: { id: 'att-001', type: 'file', collection: 'c1' }
+      }]
+    };
+    const adf = {
+      type: 'doc', version: 1,
+      content: [
+        { type: 'paragraph', content: [{ type: 'text', text: 'Text' }] },
+        mediaNode,
+        { type: 'paragraph', content: [{ type: 'text', text: 'More' }] }
+      ]
+    };
+    const result = extractMediaNodes(adf);
+    expect(result).toHaveLength(1);
+    expect(result[0]).toEqual(mediaNode);
+  });
+
+  test('extracts mediaGroup nodes from ADF', () => {
+    const mediaGroup = {
+      type: 'mediaGroup',
+      content: [
+        { type: 'media', attrs: { id: 'att-002', type: 'file' } },
+        { type: 'media', attrs: { id: 'att-003', type: 'file' } }
+      ]
+    };
+    const adf = {
+      type: 'doc', version: 1,
+      content: [
+        { type: 'paragraph', content: [{ type: 'text', text: 'Text' }] },
+        mediaGroup
+      ]
+    };
+    const result = extractMediaNodes(adf);
+    expect(result).toHaveLength(1);
+    expect(result[0]).toEqual(mediaGroup);
+  });
+
+  test('extracts multiple media nodes', () => {
+    const adf = {
+      type: 'doc', version: 1,
+      content: [
+        { type: 'mediaSingle', attrs: { layout: 'center' }, content: [{ type: 'media', attrs: { id: '1' } }] },
+        { type: 'paragraph', content: [{ type: 'text', text: 'Between' }] },
+        { type: 'mediaSingle', attrs: { layout: 'wide' }, content: [{ type: 'media', attrs: { id: '2' } }] },
+        { type: 'mediaGroup', content: [{ type: 'media', attrs: { id: '3' } }] }
+      ]
+    };
+    const result = extractMediaNodes(adf);
+    expect(result).toHaveLength(3);
   });
 });
