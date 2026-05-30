@@ -7,6 +7,12 @@ function App() {
   const [isAdmin, setIsAdmin] = useState(false);
   const [permissionLoading, setPermissionLoading] = useState(true);
 
+  // Non-Jira (Google SSO) email-domain allowlist state
+  const [domains, setDomains] = useState([]);
+  const [domainInput, setDomainInput] = useState('');
+  const [domainBusy, setDomainBusy] = useState(false);
+  const [domainError, setDomainError] = useState('');
+
   useEffect(() => {
     checkPermissions();
   }, []);
@@ -18,6 +24,9 @@ function App() {
       if (result.success) {
         const jiraAdmin = result.permissions.isJiraAdmin;
         setIsAdmin(jiraAdmin);
+        if (jiraAdmin) {
+          await loadDomains();
+        }
       } else {
         setIsAdmin(false);
       }
@@ -27,6 +36,59 @@ function App() {
     } finally {
       setPermissionLoading(false);
       setLoading(false);
+    }
+  };
+
+  const loadDomains = async () => {
+    try {
+      const [list, suggested] = await Promise.all([
+        invoke('getEmailDomains'),
+        invoke('getSuggestedEmailDomain')
+      ]);
+      if (list?.success) setDomains(list.domains || []);
+      // Pre-fill the input with the admin's own domain if nothing registered yet.
+      if (suggested?.success && suggested.domain && (list?.domains || []).length === 0) {
+        setDomainInput(suggested.domain);
+      }
+    } catch (err) {
+      console.error('Failed to load email domains:', err);
+    }
+  };
+
+  const handleAddDomain = async () => {
+    setDomainError('');
+    const domain = (domainInput || '').trim();
+    if (!domain) return;
+    setDomainBusy(true);
+    try {
+      const result = await invoke('addEmailDomain', { domain });
+      if (result?.success) {
+        setDomainInput('');
+        await loadDomains();
+      } else {
+        setDomainError(result?.error || 'Failed to add domain');
+      }
+    } catch (err) {
+      setDomainError(err.message || 'Failed to add domain');
+    } finally {
+      setDomainBusy(false);
+    }
+  };
+
+  const handleRemoveDomain = async (domain) => {
+    setDomainError('');
+    setDomainBusy(true);
+    try {
+      const result = await invoke('removeEmailDomain', { domain });
+      if (result?.success) {
+        await loadDomains();
+      } else {
+        setDomainError(result?.error || 'Failed to remove domain');
+      }
+    } catch (err) {
+      setDomainError(err.message || 'Failed to remove domain');
+    } finally {
+      setDomainBusy(false);
     }
   };
 
@@ -73,6 +135,53 @@ function App() {
           </div>
         </section>
 
+        <section className="settings-section">
+          <h2>Non-Jira Tracking (Google Sign-In)</h2>
+          <p className="section-description">
+            Let employees <strong>without a Jira account</strong> (e.g. HR, other teams) sign in to
+            the desktop app with their company <strong>Google</strong> account and have their time
+            tracked. Register your company email domain(s) below — anyone with a verified Google
+            account on these domains can sign in and will be tracked under this organization.
+          </p>
+          <p className="note">
+            <strong>Note:</strong> this only works if your company email is on Google Workspace.
+            Adding a domain lets <em>any</em> verified account on it self-enroll.
+          </p>
+
+          {domainError && <p className="error-text" style={{ color: '#d04437' }}>{domainError}</p>}
+
+          <ul className="domain-list">
+            {domains.length === 0 && <li className="note">No domains registered yet.</li>}
+            {domains.map((d) => (
+              <li key={d} className="domain-item">
+                <span>{d}</span>
+                <button
+                  type="button"
+                  onClick={() => handleRemoveDomain(d)}
+                  disabled={domainBusy}
+                  className="btn-remove"
+                >
+                  Remove
+                </button>
+              </li>
+            ))}
+          </ul>
+
+          <div className="domain-add-row">
+            <input
+              type="text"
+              value={domainInput}
+              onChange={(e) => setDomainInput(e.target.value)}
+              placeholder="amzur.com"
+              disabled={domainBusy}
+              aria-label="Company email domain"
+            />
+            <button type="button" onClick={handleAddDomain} disabled={domainBusy || !domainInput.trim()}>
+              {domainBusy ? 'Saving…' : 'Add domain'}
+            </button>
+          </div>
+        </section>
+
         <section className="settings-section info-section">
           <h2>Tracking Settings</h2>
           <p className="section-description">
@@ -92,7 +201,7 @@ function App() {
           <ol>
             <li>Download the desktop app for your platform (Windows/macOS/Linux)</li>
             <li>Install and launch the application</li>
-            <li>Sign in with your Atlassian account</li>
+            <li>Sign in with your Atlassian account (or Google, for non-Jira users)</li>
             <li>The app will automatically start capturing screenshots at the configured interval</li>
           </ol>
           <p className="note">

@@ -12,6 +12,7 @@ const axios = require('axios');
 const jwt = require('jsonwebtoken');
 const logger = require('../utils/logger');
 const { getClient } = require('../services/db/supabase-client');
+const { buildOcrConfig, buildPrivacyConfig } = require('../config/ocr-config-builder');
 
 // Atlassian OAuth configuration
 const ATLASSIAN_TOKEN_URL = 'https://auth.atlassian.com/oauth/token';
@@ -796,78 +797,13 @@ exports.getOcrConfig = async (req, res) => {
     const atlassianUser = await verifyAtlassianTokenOrRespond(atlassian_token, res, 'OCR config');
     if (!atlassianUser) return;
 
-    // Build OCR configuration from environment variables
-    // This centralizes all OCR configuration in the AI server
-    const ocrConfig = {
-      // Primary and fallback engines
-      primary_engine: process.env.OCR_PRIMARY_ENGINE || 'rapidocr',
-      fallback_engines: (process.env.OCR_FALLBACK_ENGINES || 'winrtocr').split(',').map(e => e.trim()),
-      
-      // Global preprocessing settings
-      use_preprocessing: (process.env.OCR_USE_PREPROCESSING || 'true').toLowerCase() === 'true',
-      max_image_dimension: Number.parseInt(process.env.OCR_MAX_IMAGE_DIMENSION || '4096', 10),
-      preprocessing_target_dpi: Number.parseInt(process.env.OCR_PREPROCESSING_TARGET_DPI || '300', 10),
-      
-      // Engine-specific configurations (dynamically discovered from env)
-      engines: {}
-    };
+    // Build OCR + privacy configuration from environment variables.
+    // Centralized in ocr-config-builder so the same config is served to both
+    // Atlassian users (here) and non-Jira Google users (google-auth-controller).
+    const ocrConfig = buildOcrConfig();
+    const privacyConfig = buildPrivacyConfig();
 
-    // Discover all OCR engine configurations from environment
-    const discoveredEngines = new Set();
-    discoveredEngines.add(ocrConfig.primary_engine);
-    ocrConfig.fallback_engines.forEach(e => discoveredEngines.add(e));
-
-    // Scan environment for OCR_<ENGINE>_* patterns
-    const OCR_RESERVED_PARTS = new Set(['PRIMARY', 'FALLBACK', 'USE', 'MAX', 'PREPROCESSING']);
-    Object.keys(process.env).forEach(key => {
-      if (key.startsWith('OCR_') && key.includes('_', 4)) {
-        const parts = key.split('_');
-        if (parts.length >= 3 && !OCR_RESERVED_PARTS.has(parts[1])) {
-          discoveredEngines.add(parts[1].toLowerCase());
-        }
-      }
-    });
-
-    // Build configuration for each discovered engine
-    discoveredEngines.forEach(engineName => {
-      const prefix = `OCR_${engineName.toUpperCase()}_`;
-      const engineConfig = {
-        name: engineName,
-        enabled: (process.env[`${prefix}ENABLED`] || 'true').toLowerCase() === 'true',
-        min_confidence: Number.parseFloat(process.env[`${prefix}MIN_CONFIDENCE`] || '0.5'),
-        use_gpu: (process.env[`${prefix}USE_GPU`] || 'false').toLowerCase() === 'true',
-        language: process.env[`${prefix}LANGUAGE`] || 'en',
-        extra_params: {}
-      };
-
-      // Capture any extra custom parameters
-      const standardKeys = new Set(['ENABLED', 'MIN_CONFIDENCE', 'USE_GPU', 'LANGUAGE']);
-      Object.keys(process.env).forEach(key => {
-        if (key.startsWith(prefix)) {
-          const paramName = key.substring(prefix.length).toLowerCase();
-          if (!standardKeys.has(paramName.toUpperCase())) {
-            engineConfig.extra_params[paramName] = process.env[key];
-          }
-        }
-      });
-
-      ocrConfig.engines[engineName] = engineConfig;
-    });
-
-    // Privacy filter configuration (delivered to desktop app alongside OCR config)
-    const privacyConfig = {
-      enabled: (process.env.PRIVACY_FILTER_ENABLED || 'true').toLowerCase() === 'true',
-      min_confidence: Number.parseFloat(process.env.PRIVACY_MIN_CONFIDENCE || '0.7'),
-      detect_pii: (process.env.PRIVACY_DETECT_PII || 'true').toLowerCase() === 'true',
-      detect_secrets: (process.env.PRIVACY_DETECT_SECRETS || 'false').toLowerCase() === 'true',
-      detect_custom_patterns: (process.env.PRIVACY_DETECT_CUSTOM_PATTERNS || 'true').toLowerCase() === 'true',
-      redaction_strategy: process.env.PRIVACY_REDACTION_STRATEGY || 'mask',
-      mask_char: (process.env.PRIVACY_MASK_CHAR || '*').charAt(0) || '*',
-      mask_length: Number.parseInt(process.env.PRIVACY_MASK_LENGTH || '8', 10),
-      fail_open: (process.env.PRIVACY_FAIL_OPEN || 'false').toLowerCase() === 'true',
-    };
-
-    logger.info(`[Auth] Providing OCR config to authenticated user (engines: ${Array.from(discoveredEngines).join(', ')}, privacy: ${privacyConfig.enabled ? 'enabled' : 'disabled'})`);
+    logger.info(`[Auth] Providing OCR config to authenticated user (engines: ${Object.keys(ocrConfig.engines).join(', ')}, privacy: ${privacyConfig.enabled ? 'enabled' : 'disabled'})`);
 
     res.json({
       success: true,

@@ -52,8 +52,12 @@ except ImportError:
 # We chunk large tokens across multiple keyring entries to work around this limit.
 KEYRING_CHUNK_SIZE = 2000  # Reduced to 2000 to be safe (limit is 2560)
 
-# Token keys that are security-sensitive
-SENSITIVE_TOKEN_KEYS = ['access_token', 'refresh_token', 'supabase_token']
+# Token keys that are security-sensitive.
+# MUST stay in sync with desktop_app.py's SENSITIVE_TOKEN_KEYS: save_tokens() stores
+# whatever dict it's given, but _load_from_keyring()/_load_encrypted()/delete_tokens()
+# iterate THIS list — so a key missing here is saved but never loaded back on restart.
+# (test_google_auth.py::test_secure_storage_persists_google_refresh_token guards this.)
+SENSITIVE_TOKEN_KEYS = ['access_token', 'refresh_token', 'supabase_token', 'google_refresh_token']
 
 
 # =============================================================================

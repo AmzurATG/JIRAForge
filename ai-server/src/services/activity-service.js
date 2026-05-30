@@ -279,6 +279,61 @@ Return ONLY valid JSON (no markdown code blocks, no extra text). Your response m
 Include one entry per record, in order.`;
 }
 
+// ============================================================================
+// DESCRIBE MODE (non-Jira / Google SSO users)
+// ============================================================================
+// For users with NO assigned Jira issues (e.g. Google-SSO non-Jira employees),
+// we do NOT match to a Jira issue. Instead the LLM reads the window title, app,
+// and (privacy-redacted) OCR text and describes WHAT the person is working on.
+// taskKey is always null in this mode — no issue keys are produced or invented.
+
+const DESCRIBE_ANALYSIS_SYSTEM_PROMPT = `You are an expert at summarizing computer work activity from text. Given a window title, application name, and OCR-extracted on-screen text, you write a short, factual description of what the person is working on. You never invent project names, ticket numbers, or details that are not present in the input. You do NOT match activity to any issue tracker.`;
+
+/**
+ * Build the describe-mode prompt: summarize what the user is working on, no issue matching.
+ * @param {Array} records - Activity records with OCR text
+ * @returns {string} Complete user prompt
+ */
+function buildDescribeAnalysisPrompt(records) {
+  const recordDescriptions = records.map((record, index) => {
+    const ocrSnippet = record.ocr_text
+      ? sanitizeOcrText(record.ocr_text.substring(0, 1000))
+      : '(no text extracted)';
+    const ocrLabel = !record.ocr_text ? '(no text extracted)'
+      : record.ocr_confidence && record.ocr_confidence < 0.4
+        ? '(low-confidence OCR omitted - rely on window title and app name)'
+        : `OCR Text: ${ocrSnippet}`;
+    return `Record ${index}: [${record.application_name}] ${record.window_title}
+  Time: ${record.total_time_seconds}s | ${record.start_time} → ${record.end_time}
+  ${ocrLabel}`;
+  }).join('\n\n');
+
+  return `For EACH activity record below, describe what the user is working on. Base the description ONLY on the window title, application name, and OCR text provided. Do NOT invent specifics.
+
+When OCR text shows "(no text extracted)" or is marked low-confidence, rely on the application name and window title alone.
+
+Do NOT produce any issue/ticket keys. This is a description task, not an issue-matching task.
+
+Activity Records:
+${recordDescriptions}
+
+For EACH record return:
+1. activitySummary: a concise (<= 140 chars) description of what the user is doing (e.g. "Editing onboarding slides in Google Slides", "Reading API docs in Chrome", "Replying to email in Outlook").
+2. activityCategory: one of "development", "communication", "meeting", "documentation", "design", "research", "browsing", "other".
+3. workType: "office" for any work-related activity (incl. meetings, email, docs, research); "non-office" only for clearly personal/entertainment activity.
+
+Return ONLY valid JSON (no markdown, no extra text) — exactly one JSON array:
+[
+  {
+    "recordIndex": 0,
+    "activitySummary": "<= 140 chars",
+    "activityCategory": "development",
+    "workType": "office"
+  }
+]
+Include one entry per record, in order.`;
+}
+
 /**
  * Build the app classification prompt for an unknown application.
  *
@@ -478,16 +533,26 @@ async function persistAnalysisResults(analyses, records, provider, model) {
       }
 
       try {
+        const metadata = {
+          workType: analysis.workType || 'office',
+          confidenceScore: analysis.confidenceScore,
+          reasoning: analysis.reasoning,
+          aiProvider: provider,
+          aiModel: model
+        };
+        // Describe mode (non-Jira users): persist the activity description so the
+        // Portal can show "what they're working on". No taskKey is produced.
+        if (analysis.activitySummary) {
+          metadata.activitySummary = analysis.activitySummary;
+        }
+        if (analysis.activityCategory) {
+          metadata.activityCategory = analysis.activityCategory;
+        }
+
         await activityDbService.updateActivityRecordAnalysis(records[recordIndex].id, {
           taskKey: analysis.taskKey,
           projectKey: analysis.projectKey,
-          metadata: {
-            workType: analysis.workType || 'office',
-            confidenceScore: analysis.confidenceScore,
-            reasoning: analysis.reasoning,
-            aiProvider: provider,
-            aiModel: model
-          }
+          metadata
         });
       } catch (updateErr) {
         logger.error(`[ActivityService] Failed to update record ${records[recordIndex].id}:`, updateErr);
@@ -511,12 +576,32 @@ async function analyzeBatch(records, userAssignedIssues, userId, organizationId,
     throw new Error('AI client not initialized - check API keys');
   }
 
-  const assignedIssuesText = formatAssignedIssues(userAssignedIssues);
-  const userPrompt = buildBatchAnalysisPrompt(records, assignedIssuesText, previousMatchContext, correctionPatterns);
-  const messages = [
-    { role: 'system', content: BATCH_ANALYSIS_SYSTEM_PROMPT },
-    { role: 'user', content: userPrompt }
-  ];
+  // Normalize once so describe-mode detection and validateAnalysisKeys() (which
+  // calls .map() on this) always see an array, even if a caller passes null.
+  userAssignedIssues = Array.isArray(userAssignedIssues) ? userAssignedIssues : [];
+
+  // DESCRIBE MODE: when there are no assigned issues, the LLM describes what the
+  // user is working on instead of matching to an issue. An empty issue list is
+  // the trigger — this is always the case for Google-SSO non-Jira users, and is
+  // also (intentionally, benignly) hit by a Jira user who currently has zero
+  // assigned issues: there is nothing to match, so a description is the useful
+  // output and `taskKey` stays null either way.
+  const describeMode = !userAssignedIssues || userAssignedIssues.length === 0;
+
+  let messages;
+  if (describeMode) {
+    messages = [
+      { role: 'system', content: DESCRIBE_ANALYSIS_SYSTEM_PROMPT },
+      { role: 'user', content: buildDescribeAnalysisPrompt(records) }
+    ];
+  } else {
+    const assignedIssuesText = formatAssignedIssues(userAssignedIssues);
+    const userPrompt = buildBatchAnalysisPrompt(records, assignedIssuesText, previousMatchContext, correctionPatterns);
+    messages = [
+      { role: 'system', content: BATCH_ANALYSIS_SYSTEM_PROMPT },
+      { role: 'user', content: userPrompt }
+    ];
+  }
 
   try {
     // 30000 fits a 20-record batch with the tightened reasoning field while
@@ -765,4 +850,5 @@ module.exports = {
   sanitizeOcrText,
   _buildBatchAnalysisPrompt: buildBatchAnalysisPrompt,
   _buildClassificationPrompt: buildClassificationPrompt,
+  _buildDescribeAnalysisPrompt: buildDescribeAnalysisPrompt,
 };
