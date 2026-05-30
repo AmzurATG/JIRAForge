@@ -28,8 +28,18 @@ const MAX_PROJECT_KEY_LEN = 20;
 const MAX_ISSUE_KEY_LEN = 50;
 const MAX_ATTACHMENTS = 3;
 const MAX_ATTACHMENT_SIZE = 2 * 1024 * 1024; // 2 MB base64
+const MAX_DOCUMENTS = 3;
+const MAX_DOCUMENT_SIZE = 3 * 1024 * 1024; // 3 MB base64 (docs can be larger)
 const MAX_PARENT_DESC_LEN = 5000;
+const MAX_LINKED_ISSUES = 5;
 const ALLOWED_IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif']);
+const ALLOWED_DOCUMENT_TYPES = new Set([
+  'application/pdf',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  'text/plain',
+  'text/markdown',
+  'text/csv'
+]);
 
 function badRequest(res, message) {
   return res.status(400).json({ success: false, error: message });
@@ -84,6 +94,36 @@ function validateAnalyzePayload(body) {
     }
   }
 
+  // Validate documents (optional) — PDF, DOCX, text files
+  const { documents, linkedIssues } = body;
+  if (documents !== undefined && documents !== null) {
+    if (!Array.isArray(documents)) return 'documents must be an array or null';
+    if (documents.length > MAX_DOCUMENTS) return `documents exceeds max count (${MAX_DOCUMENTS})`;
+    for (let i = 0; i < documents.length; i++) {
+      const doc = documents[i];
+      if (!doc || typeof doc !== 'object') return `documents[${i}] must be an object`;
+      if (typeof doc.data !== 'string' || doc.data.length === 0) return `documents[${i}].data is required`;
+      if (doc.data.length > MAX_DOCUMENT_SIZE) return `documents[${i}].data exceeds max size (3 MB)`;
+      if (!doc.mimeType || !ALLOWED_DOCUMENT_TYPES.has(doc.mimeType)) {
+        return `documents[${i}].mimeType must be one of: ${[...ALLOWED_DOCUMENT_TYPES].join(', ')}`;
+      }
+      if (!doc.filename || typeof doc.filename !== 'string') return `documents[${i}].filename is required`;
+    }
+  }
+
+  // Validate linkedIssues (optional)
+  if (linkedIssues !== undefined && linkedIssues !== null) {
+    if (!Array.isArray(linkedIssues)) return 'linkedIssues must be an array or null';
+    if (linkedIssues.length > MAX_LINKED_ISSUES) return `linkedIssues exceeds max count (${MAX_LINKED_ISSUES})`;
+    for (let i = 0; i < linkedIssues.length; i++) {
+      const link = linkedIssues[i];
+      if (!link || typeof link !== 'object') return `linkedIssues[${i}] must be an object`;
+      if (!link.key || typeof link.key !== 'string') return `linkedIssues[${i}].key is required`;
+      if (!ISSUE_KEY_RE.test(link.key)) return `linkedIssues[${i}].key has invalid format`;
+      if (!link.linkType || typeof link.linkType !== 'string') return `linkedIssues[${i}].linkType is required`;
+    }
+  }
+
   return null;
 }
 
@@ -110,12 +150,13 @@ async function analyze(req, res) {
   const validationError = validateAnalyzePayload(req.body);
   if (validationError) return badRequest(res, validationError);
 
-  const { issueKey, title, description, issueType, projectKey, requestImprovement, parentContext, attachments } = req.body;
+  const { issueKey, title, description, issueType, projectKey, requestImprovement, parentContext, attachments, documents, linkedIssues } = req.body;
   const { cloudId, accountId } = req.forgeContext || {};
 
-  logger.info('[DescQuality] analyze | issue=%s project=%s type=%s improve=%s parent=%s attachments=%d',
+  logger.info('[DescQuality] analyze | issue=%s project=%s type=%s improve=%s parent=%s attachments=%d documents=%d linkedIssues=%d',
     issueKey, projectKey, issueType, !!requestImprovement,
-    parentContext?.key || 'none', (attachments || []).length);
+    parentContext?.key || 'none', (attachments || []).length,
+    (documents || []).length, (linkedIssues || []).length);
 
   try {
     const result = await descriptionService.analyzeDescription({
@@ -128,7 +169,9 @@ async function analyze(req, res) {
       orgId: cloudId,
       accountId,
       parentContext: parentContext || null,
-      attachments: attachments || null
+      attachments: attachments || null,
+      documents: documents || null,
+      linkedIssues: linkedIssues || null
     });
 
     return res.json({

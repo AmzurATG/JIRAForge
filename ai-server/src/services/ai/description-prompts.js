@@ -96,9 +96,11 @@ function getTypeCriteria(issueType) {
  *                                             (used on retry after a malformed response)
  * @param {Object|null} [params.parentContext] - Parent issue context (key, title, description, issueType)
  * @param {Array|null} [params.attachments]  - Image attachments [{data: base64, mimeType, filename}]
+ * @param {Array|null} [params.documentTexts] - Extracted document text [{filename, text}]
+ * @param {Array|null} [params.linkedIssues] - Linked issues [{key, title, description, linkType, status, issueType}]
  * @returns {Array<{role: string, content: string|Array}>}
  */
-function buildMessages({ title, description, issueType, stricterJson = false, parentContext = null, attachments = null }) {
+function buildMessages({ title, description, issueType, stricterJson = false, parentContext = null, attachments = null, documentTexts = null, linkedIssues = null }) {
   const persona = getPersona(issueType);
   const typeCriteria = getTypeCriteria(issueType);
 
@@ -108,6 +110,14 @@ function buildMessages({ title, description, issueType, stricterJson = false, pa
 
   const attachmentInstruction = (attachments && attachments.length > 0)
     ? `\nImage attachments from the ticket are included. Use them to understand visual context (screenshots of bugs, mockups, diagrams) when evaluating and improving the description. Reference what you see in images to make the description more complete.`
+    : '';
+
+  const documentInstruction = (documentTexts && documentTexts.length > 0)
+    ? `\nText content extracted from attached documents (PDF, Word, text files) is included below the ticket. Use this to understand requirements, specifications, or context that supplements the description. Incorporate relevant details into the improved description where appropriate.`
+    : '';
+
+  const linkedIssuesInstruction = (linkedIssues && linkedIssues.length > 0)
+    ? `\nLinked issues are provided for context. Use them to understand relationships, dependencies, and broader context. Do NOT duplicate content from linked issues — only reference them for understanding scope and dependencies.`
     : '';
 
   const system = `You are a ${persona}.
@@ -120,7 +130,7 @@ Score the description (0-100) based on:
 - Reproducibility: Can someone act on this without asking questions?
 - Actionability: Are next steps clear?
 
-${typeCriteria}${parentInstruction}${attachmentInstruction}
+${typeCriteria}${parentInstruction}${attachmentInstruction}${documentInstruction}${linkedIssuesInstruction}
 
 Return a JSON object with EXACTLY this structure:
 {
@@ -152,7 +162,32 @@ ${parentContext.description ? parentContext.description.slice(0, 1500) : '(no de
 `
     : '';
 
-  const userText = `${parentSection}--- BEGIN TICKET ---
+  // Build linked issues section
+  let linkedIssuesSection = '';
+  if (Array.isArray(linkedIssues) && linkedIssues.length > 0) {
+    const linkLines = linkedIssues.map(li => {
+      const desc = li.description ? `\n  Description: ${li.description.slice(0, 500)}` : '';
+      return `- [${li.linkType}] ${li.key}: ${li.title || '(no title)'} (${li.issueType || 'Issue'}, Status: ${li.status || 'unknown'})${desc}`;
+    }).join('\n');
+    linkedIssuesSection = `--- LINKED ISSUES ---
+${linkLines}
+--- END LINKED ISSUES ---
+
+`;
+  }
+
+  // Build documents section
+  let documentsSection = '';
+  if (Array.isArray(documentTexts) && documentTexts.length > 0) {
+    const docParts = documentTexts.map(d => `### ${d.filename}\n${d.text}`).join('\n\n');
+    documentsSection = `--- ATTACHED DOCUMENTS ---
+${docParts}
+--- END ATTACHED DOCUMENTS ---
+
+`;
+  }
+
+  const userText = `${parentSection}${linkedIssuesSection}${documentsSection}--- BEGIN TICKET ---
 Title: ${title}
 Description:
 ${description || '(empty)'}
