@@ -19,6 +19,13 @@ import {
   deleteProjectSettings
 } from '../services/projectSettingsService.js';
 
+import {
+  getSuggestedDomain,
+  getEmailDomains,
+  addEmailDomain,
+  removeEmailDomain
+} from '../services/emailDomainService.js';
+
 import { isJiraAdmin, checkUserPermissions, getVerifiedAdminProjectKeys } from '../utils/jira.js';
 
 /**
@@ -121,6 +128,58 @@ export function registerSettingsResolvers(resolver) {
         success: false,
         error: error.message
       };
+    }
+  });
+
+  // ============================================================================
+  // NON-JIRA EMAIL DOMAIN RESOLVERS (Google SSO self-signup allowlist)
+  // Admin-only. Maps a company email domain -> this organization.
+  // ============================================================================
+
+  /** Suggested company domain (derived from the admin's own email) for the UI to pre-fill. */
+  resolver.define('getSuggestedEmailDomain', async () => {
+    try {
+      const domain = await getSuggestedDomain();
+      return { success: true, domain };
+    } catch (error) {
+      console.error('Error getting suggested email domain:', error);
+      return { success: false, error: error.message, domain: null };
+    }
+  });
+
+  /** List the company email domains registered for this org. */
+  resolver.define('getEmailDomains', async (req) => {
+    const { cloudId } = req.context;
+    try {
+      const domains = await getEmailDomains(cloudId);
+      return { success: true, domains };
+    } catch (error) {
+      console.error('Error getting email domains:', error);
+      return { success: false, error: error.message, domains: [] };
+    }
+  });
+
+  /** Register a company email domain for non-Jira Google SSO (admin only). */
+  resolver.define('addEmailDomain', async (req) => {
+    const { payload, context } = req;
+    try {
+      const domain = await addEmailDomain(context.cloudId, payload?.domain);
+      return { success: true, domain };
+    } catch (error) {
+      console.error('Error adding email domain:', error);
+      return { success: false, error: error.message };
+    }
+  });
+
+  /** Remove a registered company email domain (admin only). */
+  resolver.define('removeEmailDomain', async (req) => {
+    const { payload, context } = req;
+    try {
+      const domain = await removeEmailDomain(context.cloudId, payload?.domain);
+      return { success: true, domain };
+    } catch (error) {
+      console.error('Error removing email domain:', error);
+      return { success: false, error: error.message };
     }
   });
 

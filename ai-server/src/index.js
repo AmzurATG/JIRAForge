@@ -7,6 +7,7 @@ const fs = require('node:fs');
 require('dotenv').config({ path: path.join(__dirname, '..', '.env') });
 
 const authController = require('./controllers/auth-controller');
+const googleAuthController = require('./controllers/google-auth-controller');
 const forgeProxyController = require('./controllers/forge-proxy-controller');
 const appVersionController = require('./controllers/app-version-controller');
 const feedbackController = require('./controllers/feedback-controller');
@@ -277,6 +278,13 @@ app.post('/api/auth/refresh-token', authLimiter, authController.refreshToken);
 
 // Exchange Atlassian token for Supabase JWT
 app.post('/api/auth/exchange-token', authLimiter, authController.exchangeToken);
+
+// Non-Jira Google SSO: exchange Google OAuth code (PKCE) for a Supabase JWT.
+// Self-signup gated by the org_email_domains allowlist (company email only).
+app.post('/api/auth/desktop-google', oauthLimiter, googleAuthController.desktopGoogleLogin);
+
+// Re-mint the (1h) Supabase JWT for a Google user from their stored refresh token.
+app.post('/api/auth/desktop-google/refresh', authLimiter, googleAuthController.desktopGoogleRefresh);
 
 // Verify Atlassian token
 app.post('/api/auth/verify', authLimiter, authController.verifyToken);
