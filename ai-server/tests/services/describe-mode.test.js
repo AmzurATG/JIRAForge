@@ -18,12 +18,17 @@ jest.mock('../../src/services/db/activity-db-service', () => ({
   updateActivityRecordAnalysis: jest.fn(),
 }));
 
+jest.mock('../../src/services/db/user-db-service', () => ({
+  getUserById: jest.fn(),
+}));
+
 jest.mock('../../src/utils/logger', () => ({
   info: jest.fn(), error: jest.fn(), warn: jest.fn(), debug: jest.fn(),
 }));
 
 const { chatCompletionWithFallback, isActivityAIEnabled } = require('../../src/services/ai/ai-client');
 const activityDbService = require('../../src/services/db/activity-db-service');
+const userDbService = require('../../src/services/db/user-db-service');
 const { analyzeBatch, _buildDescribeAnalysisPrompt } = require('../../src/services/activity-service');
 
 const makeLLMResponse = (content) => ({
@@ -49,6 +54,7 @@ describe('activity-service describe mode (no assigned issues)', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     isActivityAIEnabled.mockReturnValue(true);
+    userDbService.getUserById.mockResolvedValue({ auth_provider: 'atlassian' });
   });
 
   test('describes activity and never produces a taskKey when issue list is empty', async () => {
@@ -77,5 +83,40 @@ describe('activity-service describe mode (no assigned issues)', () => {
     const prompt = _buildDescribeAnalysisPrompt(records);
     expect(prompt).toMatch(/do not produce any issue\/ticket keys/i);
     expect(prompt).toMatch(/activitySummary/);
+  });
+
+  test('default (non-Google) describe summary cap is 140 chars', () => {
+    const prompt = _buildDescribeAnalysisPrompt(records);
+    expect(prompt).toMatch(/<= 140 characters/);
+  });
+
+  test('Google describe summary cap is 200 chars when explicitly built', () => {
+    const prompt = _buildDescribeAnalysisPrompt(records, 200);
+    expect(prompt).toMatch(/<= 200 characters/);
+  });
+
+  test('Google user gets the 200-char prompt via analyzeBatch (auth_provider lookup)', async () => {
+    userDbService.getUserById.mockResolvedValue({ auth_provider: 'google' });
+    chatCompletionWithFallback.mockResolvedValue(makeLLMResponse(JSON.stringify([
+      { recordIndex: 0, activitySummary: 'Writing onboarding documentation in VS Code', activityCategory: 'documentation', workType: 'office' }
+    ])));
+
+    await analyzeBatch(records, [], 'google-user-1', 'org-1');
+
+    const userPrompt = chatCompletionWithFallback.mock.calls[0][0].messages[1].content;
+    expect(userPrompt).toMatch(/<= 200 characters/);
+    expect(userDbService.getUserById).toHaveBeenCalledWith('google-user-1');
+  });
+
+  test('non-Google describe user keeps the 140-char prompt via analyzeBatch', async () => {
+    userDbService.getUserById.mockResolvedValue({ auth_provider: 'atlassian' });
+    chatCompletionWithFallback.mockResolvedValue(makeLLMResponse(JSON.stringify([
+      { recordIndex: 0, activitySummary: 'Writing docs', activityCategory: 'documentation', workType: 'office' }
+    ])));
+
+    await analyzeBatch(records, [], 'atlassian-user-1', 'org-1');
+
+    const userPrompt = chatCompletionWithFallback.mock.calls[0][0].messages[1].content;
+    expect(userPrompt).toMatch(/<= 140 characters/);
   });
 });
