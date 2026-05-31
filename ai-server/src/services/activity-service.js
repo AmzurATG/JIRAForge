@@ -11,7 +11,13 @@
 const { chatCompletionWithFallback, isActivityAIEnabled } = require('./ai/ai-client');
 const { formatAssignedIssues, APP_IDENTIFICATION_SYSTEM_PROMPT, buildAppIdentificationPrompt } = require('./ai/prompts');
 const activityDbService = require('./db/activity-db-service');
+const userDbService = require('./db/user-db-service');
 const logger = require('../utils/logger');
+
+// Describe-mode summary length caps (characters). Google-SSO (non-Jira) users get
+// a richer description; everyone else in describe mode keeps the terse default.
+const DESCRIBE_SUMMARY_CHARS_DEFAULT = 140;
+const DESCRIBE_SUMMARY_CHARS_GOOGLE = 200;
 
 // ============================================================================
 // SERVER-SIDE OCR TEXT SANITIZATION (Defense-in-depth)
@@ -292,9 +298,10 @@ const DESCRIBE_ANALYSIS_SYSTEM_PROMPT = `You are an expert at summarizing comput
 /**
  * Build the describe-mode prompt: summarize what the user is working on, no issue matching.
  * @param {Array} records - Activity records with OCR text
+ * @param {number} [maxSummaryChars=140] - Max length for activitySummary (Google users get more).
  * @returns {string} Complete user prompt
  */
-function buildDescribeAnalysisPrompt(records) {
+function buildDescribeAnalysisPrompt(records, maxSummaryChars = DESCRIBE_SUMMARY_CHARS_DEFAULT) {
   const recordDescriptions = records.map((record, index) => {
     const ocrSnippet = record.ocr_text
       ? sanitizeOcrText(record.ocr_text.substring(0, 1000))
@@ -318,7 +325,7 @@ Activity Records:
 ${recordDescriptions}
 
 For EACH record return:
-1. activitySummary: a concise (<= 140 chars) description of what the user is doing (e.g. "Editing onboarding slides in Google Slides", "Reading API docs in Chrome", "Replying to email in Outlook").
+1. activitySummary: a description of what the user is doing in <= ${maxSummaryChars} characters (1-2 sentences naming the app, the task, and the specific file/page/subject when present, e.g. "Editing onboarding slides in Google Slides", "Reading API docs in Chrome", "Replying to email in Outlook").
 2. activityCategory: one of "development", "communication", "meeting", "documentation", "design", "research", "browsing", "other".
 3. workType: "office" for any work-related activity (incl. meetings, email, docs, research); "non-office" only for clearly personal/entertainment activity.
 
@@ -326,7 +333,7 @@ Return ONLY valid JSON (no markdown, no extra text) — exactly one JSON array:
 [
   {
     "recordIndex": 0,
-    "activitySummary": "<= 140 chars",
+    "activitySummary": "<= ${maxSummaryChars} chars",
     "activityCategory": "development",
     "workType": "office"
   }
@@ -590,9 +597,21 @@ async function analyzeBatch(records, userAssignedIssues, userId, organizationId,
 
   let messages;
   if (describeMode) {
+    // Google-SSO (non-Jira) users get a richer summary. Look up the provider only
+    // here (describe mode) so the normal matching path adds no extra DB call; a
+    // lookup failure falls back to the default length rather than blocking analysis.
+    let maxSummaryChars = DESCRIBE_SUMMARY_CHARS_DEFAULT;
+    try {
+      const user = await userDbService.getUserById(userId);
+      if (user && user.auth_provider === 'google') {
+        maxSummaryChars = DESCRIBE_SUMMARY_CHARS_GOOGLE;
+      }
+    } catch (provErr) {
+      logger.debug(`[ActivityService] auth_provider lookup failed for ${userId}; using default summary length: ${provErr.message}`);
+    }
     messages = [
       { role: 'system', content: DESCRIBE_ANALYSIS_SYSTEM_PROMPT },
-      { role: 'user', content: buildDescribeAnalysisPrompt(records) }
+      { role: 'user', content: buildDescribeAnalysisPrompt(records, maxSummaryChars) }
     ];
   } else {
     const assignedIssuesText = formatAssignedIssues(userAssignedIssues);

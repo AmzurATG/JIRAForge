@@ -9826,11 +9826,21 @@ class TimeTracker:
         return ''
 
     def _get_auth_headers(self):
-        """Get authentication headers for AI server requests."""
+        """Get authentication headers for AI server requests.
+
+        Jira users authenticate with their Atlassian OAuth token. Google
+        (non-Jira) users have no Atlassian token, so they authenticate with their
+        Supabase JWT instead — the AI server's desktop-auth middleware accepts
+        either. Without this, Google sessions send no token and the server 401s
+        (e.g. AI app classification on /api/classify-app would be skipped).
+        """
         headers = {'Content-Type': 'application/json'}
-        # Use Atlassian OAuth token for AI server authentication
         if hasattr(self, 'auth_manager') and self.auth_manager:
-            token = self.auth_manager.tokens.get('access_token')
+            am = self.auth_manager
+            if getattr(am, 'auth_provider', 'atlassian') == 'google':
+                token = am.get_valid_supabase_token()
+            else:
+                token = am.tokens.get('access_token')
             if token:
                 headers['Authorization'] = f'Bearer {token}'
         return headers
