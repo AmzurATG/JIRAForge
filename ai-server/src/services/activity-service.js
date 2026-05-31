@@ -333,7 +333,7 @@ Return ONLY valid JSON (no markdown, no extra text) — exactly one JSON array:
 [
   {
     "recordIndex": 0,
-    "activitySummary": "<= 140 chars",
+    "activitySummary": "<= ${maxSummaryChars} chars",
     "activityCategory": "development",
     "workType": "office"
   }

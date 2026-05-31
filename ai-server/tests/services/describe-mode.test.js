@@ -119,4 +119,15 @@ describe('activity-service describe mode (no assigned issues)', () => {
     const userPrompt = chatCompletionWithFallback.mock.calls[0][0].messages[1].content;
     expect(userPrompt).toMatch(/<= 140 characters/);
   });
+
+  test('JSON example cap matches the instruction cap (no stale hardcoded 140)', () => {
+    // Guards the Copilot finding: the structural JSON example must use the same
+    // cap as the instruction, else the LLM anchors on a stale hardcoded value.
+    const googlePrompt = _buildDescribeAnalysisPrompt(records, 200);
+    expect(googlePrompt).toMatch(/"activitySummary": "<= 200 chars"/);
+    expect(googlePrompt).not.toMatch(/"activitySummary": "<= 140 chars"/);
+
+    const defaultPrompt = _buildDescribeAnalysisPrompt(records);
+    expect(defaultPrompt).toMatch(/"activitySummary": "<= 140 chars"/);
+  });
 });
