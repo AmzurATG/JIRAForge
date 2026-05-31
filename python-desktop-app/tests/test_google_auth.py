@@ -124,6 +124,26 @@ class TestSecureStorageKeySync:
         assert set(desktop_app.SENSITIVE_TOKEN_KEYS) <= set(ss.SENSITIVE_TOKEN_KEYS)
 
 
+class TestAuthHeadersByProvider:
+    """_get_auth_headers must send the right credential per login type so the AI
+    server's desktop-auth middleware accepts the caller (e.g. /api/classify-app).
+    Google users have no Atlassian token, so they must send their Supabase JWT."""
+
+    def test_google_user_sends_supabase_jwt(self, tracker):
+        tracker.auth_manager.auth_provider = 'google'
+        tracker.auth_manager.get_valid_supabase_token.return_value = 'sb-jwt-123'
+        headers = tracker._get_auth_headers()
+        assert headers['Authorization'] == 'Bearer sb-jwt-123'
+        tracker.auth_manager.get_valid_supabase_token.assert_called_once()
+
+    def test_atlassian_user_sends_access_token(self, tracker):
+        tracker.auth_manager.auth_provider = 'atlassian'
+        tracker.auth_manager.tokens = {'access_token': 'atl-token-456'}
+        headers = tracker._get_auth_headers()
+        assert headers['Authorization'] == 'Bearer atl-token-456'
+        tracker.auth_manager.get_valid_supabase_token.assert_not_called()
+
+
 class TestJiraGuardsNoOpForGoogle:
     def test_get_jira_cloud_id_returns_none(self, tracker):
         assert tracker.get_jira_cloud_id() is None

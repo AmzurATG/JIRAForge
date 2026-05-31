@@ -21,6 +21,7 @@ const portalAppClassificationsController = require('./controllers/portal-app-cla
 const authMiddleware = require('./middleware/auth');
 const forgeAuthMiddleware = require('./middleware/forge-auth');
 const atlassianAuthMiddleware = require('./middleware/atlassian-auth');
+const desktopAuthMiddleware = require('./middleware/desktop-auth');
 const portalAuthMiddleware = require('./middleware/portal-auth');
 const logger = require('./utils/logger');
 const clusteringPollingService = require('./services/clustering-polling-service');
@@ -500,8 +501,10 @@ app.use('/api/v1/user-data', userDataController);
 // Routes — apply larger body limit for upload-heavy endpoints
 // Activity tracking endpoints (new event-based pipeline)
 app.post('/api/analyze-batch', express.json({ limit: '10mb' }), authMiddleware, activityController.analyzeBatch);
-// classify-app uses Atlassian token auth (desktop app sends OAuth token)
-app.post('/api/classify-app', atlassianAuthMiddleware, activityController.classifyApp);
+// classify-app uses desktop dual auth: Atlassian token (Jira users) OR Supabase
+// JWT (non-Jira Google users). Google users have no Atlassian token, so an
+// Atlassian-only guard would 401 them and skip AI app classification.
+app.post('/api/classify-app', desktopAuthMiddleware, activityController.classifyApp);
 // identify-app uses Forge auth (called from Forge app for admin app classification)
 app.post('/api/identify-app', ...forgeMiddleware, activityController.identifyApp);
 
