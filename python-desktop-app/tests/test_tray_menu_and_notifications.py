@@ -60,6 +60,9 @@ def _build_fake_app(update_manager, app_version="1.0.0", web_port=9876):
     app.web_port = web_port
     app.current_user = {"email": "test@example.com"}
     app.current_user_id = "user-123"
+    # tracking_active must be False so the classification window-badge branch
+    # is NOT taken; these tests only concern update-related menu items.
+    app.tracking_active = False
     app.auth_manager = MagicMock()
     app.check_for_app_updates = MagicMock(return_value=None)
 
