@@ -28,6 +28,19 @@ try:
 except (ImportError, OSError):
     SQLCIPHER_AVAILABLE = False
 
+try:
+    from app_logger import get_logger as _get_logger
+    _DB_LOGGER = _get_logger(__name__, 'DB')
+except ImportError:
+    _DB_LOGGER = None
+
+
+def _db_log(level: str, message: str) -> None:
+    """Write to app log file if available, always print to stdout."""
+    print(message, flush=True)
+    if _DB_LOGGER:
+        getattr(_DB_LOGGER, level.lower(), _DB_LOGGER.info)(message)
+
 
 class DatabaseConnectionManager:
     """Manages encrypted SQLite connections with per-thread connection pooling.
@@ -189,6 +202,42 @@ class DatabaseConnectionManager:
             print(f"[WARN] Database inaccessible ({e}), creating fresh DB")
             return False
 
+    def _migrate_app_classifications_schema(self, cursor):
+        """Migrate app_classifications_cache to schema v2 if needed.
+
+        v1 had `project_key` with no `source` column and a flat merged cache.
+        v2 stores all 3 tiers separately with `source` + `source_project_key`.
+
+        This table is a pure Supabase cache re-synced on every login, so
+        dropping and recreating it on schema change is safe.
+        """
+        cursor.execute("PRAGMA table_info(app_classifications_cache)")
+        columns = {row[1] for row in cursor.fetchall()}
+
+        if not columns:
+            # Table doesn't exist yet — fresh install, nothing to migrate
+            _db_log('info', '[DB] app_classifications_cache: fresh install, no migration needed')
+            return
+
+        if 'source' in columns:
+            # Already on v2 schema
+            _db_log('debug', '[DB] app_classifications_cache: schema v2 already present, skipping migration')
+            return
+
+        # Old v1 schema detected — drop and let _init_schema recreate with v2 DDL
+        _db_log('warning',
+            '[DB] app_classifications_cache: v1 schema detected (missing `source` column) — '
+            'migrating to v2 (safe: table is a pure Supabase cache, will be refilled on next login)')
+        try:
+            cursor.execute('DROP TABLE IF EXISTS app_classifications_cache')
+            cursor.execute('DROP INDEX IF EXISTS idx_app_class_cache_identifier')
+            cursor.execute('DROP INDEX IF EXISTS idx_app_class_cache_match_by')
+            _db_log('info', '[DB] app_classifications_cache: migration to v2 schema complete — '
+                            'classifications will be re-synced from Supabase on next login')
+        except Exception as exc:
+            _db_log('error', f'[DB] app_classifications_cache: migration failed: {exc}')
+            raise
+
     def _init_schema(self):
         """Create all tables and indexes (moved from OfflineManager._init_database)."""
         conn = self.get_connection()
@@ -252,17 +301,28 @@ class DatabaseConnectionManager:
             ON project_settings_cache(organization_id)
         ''')
 
+        # ── App Classifications Cache ──────────────────────────────────────────
+        # Schema v2: stores all 3 tiers (global / organization / project) as
+        # separate rows with a `source` tag so the web page can show which tier
+        # each rule comes from.  The in-memory merge in reload_from_cache()
+        # applies the correct precedence (project > org > global) at runtime.
+        #
+        # Migration: if an existing DB has the old schema (no `source` column),
+        # drop and recreate — this table is a pure cache re-synced on every login.
+        self._migrate_app_classifications_schema(cursor)
+
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS app_classifications_cache (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 organization_id TEXT,
-                project_key TEXT,
+                source TEXT NOT NULL DEFAULT 'global',
+                source_project_key TEXT,
                 identifier TEXT NOT NULL,
                 display_name TEXT,
                 classification TEXT NOT NULL,
                 match_by TEXT NOT NULL,
                 cached_at TEXT DEFAULT CURRENT_TIMESTAMP,
-                UNIQUE(organization_id, project_key, identifier, match_by)
+                UNIQUE(organization_id, source, source_project_key, identifier, match_by)
             )
         ''')
 

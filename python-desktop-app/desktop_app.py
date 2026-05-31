@@ -386,7 +386,7 @@ load_dotenv()
 
 # Application version - IMPORTANT: Update this when releasing new versions
 # This is used for update checking and notifications
-APP_VERSION = "1.4.5"
+APP_VERSION = "1.4.6"
 
 # Hard-disable screenshot monitoring/storage in desktop app.
 # OCR text extraction for activity records still runs via event-based flow.
@@ -395,14 +395,14 @@ SCREENSHOT_MONITORING_HARD_DISABLED = True
 # Embedded credentials (for production builds - no .env file needed)
 # SECURITY: All sensitive keys moved to AI Server - fetched at runtime after authentication
 EMBEDDED_CONFIG = {
-    'ATLASSIAN_CLIENT_ID': 'k2Xwzy8c1g3Wk6Xpbeev0x70CXEp9lJH',
+    'ATLASSIAN_CLIENT_ID': 'Q8HT4Jn205AuTiAarj088oWNDrOqwvM5',
     # Google OAuth (non-Jira users). PUBLIC client ID only — the client SECRET
     # stays on the AI Server, never in the desktop build. Same handling as
     # ATLASSIAN_CLIENT_ID above. Must match GOOGLE_DESKTOP_CLIENT_ID on the AI server.
     'GOOGLE_DESKTOP_CLIENT_ID': '508843846019-glrru7r3m622vt75e215lmf5ih1bcgju.apps.googleusercontent.com',
     # REMOVED: ATLASSIAN_CLIENT_SECRET - now on AI Server only (security fix)
     # REMOVED: SUPABASE_URL, SUPABASE_ANON_KEY, SUPABASE_SERVICE_ROLE_KEY - fetched from AI Server
-    'AI_SERVER_URL': 'https://timetracker-forge.amzur.com',  # AI Server for secure token exchange & config
+    'AI_SERVER_URL': 'https://forgesync.amzur.com',  # AI Server for secure token exchange & config
     'CAPTURE_INTERVAL': '300',
     'WEB_PORT': '51777',
 }
@@ -1924,7 +1924,7 @@ class AtlassianAuthManager:
         self.google_authorization_url = 'https://accounts.google.com/o/oauth2/v2/auth'
         self.google_redirect_uri = f'http://127.0.0.1:{web_port}/auth/google/callback'
         # Token exchange now goes through AI Server
-        self.ai_server_url = get_env_var('AI_SERVER_URL', 'https://timetracker-forge.amzur.com')
+        self.ai_server_url = get_env_var('AI_SERVER_URL', 'https://forgesync.amzur.com')
         self.store_path = store_path or os.path.join(get_app_data_dir(), 'time_tracker_auth.json')
         self.metadata_path = os.path.join(get_app_data_dir(), 'auth_metadata.json')  # For non-sensitive data
 
@@ -2882,7 +2882,7 @@ class AtlassianAuthManager:
             print("[ERROR] No valid Atlassian token - cannot fetch OCR config")
             return False
 
-        ai_server_url = get_env_var('AI_SERVER_URL', 'https://timetracker-forge.amzur.com')
+        ai_server_url = get_env_var('AI_SERVER_URL', 'https://forgesync.amzur.com')
         
         try:
             print("[INFO] Fetching OCR config from AI Server...")
@@ -4400,8 +4400,14 @@ class AppClassificationManager:
 
     def reload_from_cache(self):
         """Load classifications from SQLite into memory for fast lookup.
+
+        Applies 3-tier merge precedence: global < organization < project.
+        Rows are fetched in ascending priority order so that later writes
+        into the in-memory dicts naturally override earlier (lower-priority) ones.
+
         Uses copy-on-write pattern: builds new dicts in locals, then atomically
-        swaps references (single assignment is GIL-atomic)."""
+        swaps references (single assignment is GIL-atomic).
+        """
         new_process = {}
         new_normalized = {}
         new_url = {}
@@ -4409,7 +4415,18 @@ class AppClassificationManager:
         try:
             conn = self.db_manager.get_connection()
             cursor = conn.cursor()
-            cursor.execute('SELECT identifier, classification, match_by FROM app_classifications_cache')
+            # ORDER BY source priority ASC so higher-priority tiers overwrite lower ones
+            cursor.execute('''
+                SELECT identifier, classification, match_by
+                FROM app_classifications_cache
+                ORDER BY
+                    CASE source
+                        WHEN 'global'       THEN 0
+                        WHEN 'organization' THEN 1
+                        WHEN 'project'      THEN 2
+                        ELSE 0
+                    END ASC
+            ''')
             for identifier, classification, match_by in cursor.fetchall():
                 key = (identifier or '').lower().strip()
                 if match_by == 'process':
@@ -4419,6 +4436,8 @@ class AppClassificationManager:
                         new_normalized[canonical_key] = classification
                 elif match_by == 'url':
                     if '*' in identifier:
+                        # Rebuild wildcard list: remove stale entry for same pattern
+                        new_wildcard = [(p, c) for p, c in new_wildcard if p != key]
                         new_wildcard.append((key, classification))
                     else:
                         new_url[key] = classification
@@ -4483,20 +4502,21 @@ class AppClassificationManager:
         return ('unknown', None)
 
     def sync_classifications(self, supabase_client, organization_id, project_key=None, all_project_keys=None):
-        """Fetch classifications from Supabase and write results to SQLite cache.
+        """Fetch classifications from Supabase and write all 3 tiers to SQLite cache.
 
-        Strategy:
-        Merge all tiers in order:
-        1) Global defaults
-        2) Organization overrides
-        3) Project overrides (for ALL known projects, not just the current one)
+        Schema v2 strategy — store each tier as SEPARATE rows with a `source` tag:
+          Tier 1 → source='global',       source_project_key=NULL
+          Tier 2 → source='organization', source_project_key=NULL
+          Tier 3 → source='project',      source_project_key=<project_key>
 
-        Later tiers override earlier ones by (identifier, match_by).
-        When all_project_keys is provided, loads project-level overrides for
-        every project the user works on, so multi-project tracking is accurate.
+        The DB is NOT pre-merged; reload_from_cache() applies tier precedence
+        (project > org > global) in memory at classify() time.
+
+        This preserves full tier history so the /classifications page can show
+        which tier each rule comes from and flag overridden rules.
         """
         try:
-            merged = {}  # key = (identifier_lower, match_by) -> row dict
+            all_rows = []   # list of (source, source_project_key, row_dict)
             defaults_count = 0
             org_count = 0
             project_count = 0
@@ -4508,8 +4528,7 @@ class AppClassificationManager:
             defaults_rows = result.data or []
             defaults_count = len(defaults_rows)
             for row in defaults_rows:
-                key = ((row.get('identifier') or '').lower(), row.get('match_by'))
-                merged[key] = row
+                all_rows.append(('global', None, row))
 
             # Tier 2: Organization overrides
             if organization_id:
@@ -4519,8 +4538,7 @@ class AppClassificationManager:
                 org_rows = result.data or []
                 org_count = len(org_rows)
                 for row in org_rows:
-                    key = ((row.get('identifier') or '').lower(), row.get('match_by'))
-                    merged[key] = row
+                    all_rows.append(('organization', None, row))
 
             # Tier 3: Project overrides — load for ALL known projects so
             # multi-project users get correct classifications regardless of
@@ -4540,22 +4558,24 @@ class AppClassificationManager:
                         project_rows = project_result.data or []
                         project_count += len(project_rows)
                         for row in project_rows:
-                            key = ((row.get('identifier') or '').lower(), row.get('match_by'))
-                            merged[key] = row
+                            all_rows.append(('project', pk, row))
                     except Exception as project_err:
                         print(f"[WARN] Project-level classification fetch failed for {pk}: {project_err}")
 
-            # Write merged results to SQLite cache
+            # Write all tiers to SQLite — each row keeps its source tag
             conn = self.db_manager.get_connection()
             cursor = conn.cursor()
             cursor.execute('DELETE FROM app_classifications_cache')
-            for (identifier_lower, match_by), row in merged.items():
+            for (source, source_project_key, row) in all_rows:
                 cursor.execute('''
                     INSERT OR REPLACE INTO app_classifications_cache
-                    (organization_id, identifier, display_name, classification, match_by, cached_at)
-                    VALUES (?, ?, ?, ?, ?, datetime('now'))
+                    (organization_id, source, source_project_key,
+                     identifier, display_name, classification, match_by, cached_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))
                 ''', (
                     organization_id,
+                    source,
+                    source_project_key,
                     row['identifier'],
                     row.get('display_name', ''),
                     row['classification'],
@@ -4563,15 +4583,17 @@ class AppClassificationManager:
                 ))
             conn.commit()
 
+            total = len(all_rows)
             if project_keys_to_load:
                 print(
-                    f"[OK] Synced {len(merged)} app classifications from Supabase "
-                    f"({defaults_count} defaults, {org_count} org, {project_count} project for {sorted(project_keys_to_load)})"
+                    f"[OK] Synced {total} app classification rows from Supabase "
+                    f"({defaults_count} global, {org_count} org, {project_count} project "
+                    f"for {sorted(project_keys_to_load)})"
                 )
             else:
                 print(
-                    f"[OK] Synced {len(merged)} app classifications from Supabase "
-                    f"({defaults_count} defaults, {org_count} org)"
+                    f"[OK] Synced {total} app classification rows from Supabase "
+                    f"({defaults_count} global, {org_count} org)"
                 )
             self.reload_from_cache()
 
@@ -6576,6 +6598,17 @@ class TimeTracker:
                     return jsonify({'success': False, 'error': str(e)}), 500
 
         # ============================================================================
+        # APP CLASSIFICATION VIEWER PAGE
+        # ============================================================================
+
+        @self.app.route('/classifications')
+        def classifications_page():
+            """Display the app classification rules page."""
+            if not self.current_user:
+                return redirect('/login')
+            return self.render_classifications_page()
+
+        # ============================================================================
         # CONSENT ROUTES (GDPR/Privacy Compliance)
         # ============================================================================
 
@@ -6674,6 +6707,129 @@ class TimeTracker:
                 return auto_close_page(f'Download in progress ({progress}%)', 'The update will install automatically when complete.'), 200
             else:
                 return auto_close_page('No update available', 'You are running the latest version.'), 200
+
+        # ============================================================================
+        # APP CLASSIFICATION VIEWER API
+        # ============================================================================
+
+        @self.app.route('/api/classifications')
+        def api_classifications():
+            """Return all cached app classification rules grouped by source tier.
+
+            Response shape:
+              {
+                success: true,
+                data: {
+                  global: [...],
+                  organization: [...],
+                  project: { "ATG": [...], "PROJ": [...] }
+                },
+                current_window: { app, classification },
+                summary: { total_effective, productive, non_productive, url_rules, process_rules },
+                current_project: "ATG",
+                known_projects: ["ATG", "PROJ"],
+                last_synced: <epoch_seconds>
+              }
+            """
+            if not self.current_user:
+                return jsonify({'error': 'Not authenticated'}), 401
+
+            try:
+                conn = self.db_manager.get_connection()
+                cursor = conn.cursor()
+                cursor.execute('''
+                    SELECT identifier, display_name, classification, match_by,
+                           source, source_project_key, cached_at
+                    FROM app_classifications_cache
+                    ORDER BY source, classification, match_by, identifier
+                ''')
+                rows = cursor.fetchall()
+
+                grouped = {'global': [], 'organization': [], 'project': {}}
+                for (ident, disp, cls, mby, src, sproj, cat) in rows:
+                    entry = {
+                        'identifier': ident,
+                        'display_name': disp or ident,
+                        'classification': cls,
+                        'match_by': mby,
+                        'source': src,
+                        'source_project_key': sproj,
+                        'cached_at': cat,
+                    }
+                    if src == 'project':
+                        pk = sproj or 'unknown'
+                        grouped['project'].setdefault(pk, []).append(entry)
+                    elif src == 'organization':
+                        grouped['organization'].append(entry)
+                    else:
+                        grouped['global'].append(entry)
+
+                # Live current-window classification from active_sessions
+                current_app = None
+                current_cls = None
+                try:
+                    active_cursor = conn.cursor()
+                    active_cursor.execute('''
+                        SELECT application_name, classification
+                        FROM active_sessions
+                        ORDER BY last_seen DESC LIMIT 1
+                    ''')
+                    row = active_cursor.fetchone()
+                    if row:
+                        current_app, current_cls = row
+                except Exception:
+                    pass
+
+                # Summary from in-memory dicts (reflect effective merged state)
+                proc_map = self.classification_manager.process_classifications
+                url_map = self.classification_manager.url_classifications
+                wildcards = self.classification_manager.url_wildcard_patterns
+                productive = sum(1 for v in proc_map.values() if v == 'productive')
+                non_productive = sum(1 for v in proc_map.values() if v == 'non_productive')
+
+                return jsonify({
+                    'success': True,
+                    'data': grouped,
+                    'current_window': {
+                        'app': current_app,
+                        'classification': current_cls,
+                    },
+                    'summary': {
+                        'total_effective': len(proc_map) + len(url_map) + len(wildcards),
+                        'productive': productive,
+                        'non_productive': non_productive,
+                        'process_rules': len(proc_map),
+                        'url_rules': len(url_map) + len(wildcards),
+                    },
+                    'current_project': self.current_project_key,
+                    'known_projects': sorted(self._get_known_project_keys()),
+                    'last_synced': self.last_classification_sync,
+                })
+
+            except Exception as e:
+                print(f"[ERROR] /api/classifications failed: {e}")
+                return jsonify({'error': str(e)}), 500
+
+        @self.app.route('/api/classifications/refresh', methods=['POST'])
+        def api_classifications_refresh():
+            """Trigger an on-demand sync of classification rules from Supabase."""
+            if not self.current_user:
+                return jsonify({'error': 'Not authenticated'}), 401
+            if not self.supabase:
+                return jsonify({'error': 'Not connected to Supabase'}), 503
+
+            try:
+                self.classification_manager.sync_classifications(
+                    self.supabase,
+                    self.organization_id,
+                    self.current_project_key,
+                    all_project_keys=list(self._get_known_project_keys()),
+                )
+                self.last_classification_sync = time.time()
+                return jsonify({'success': True, 'message': 'Classifications refreshed'})
+            except Exception as e:
+                print(f"[ERROR] /api/classifications/refresh failed: {e}")
+                return jsonify({'error': str(e)}), 500
 
         # ============================================================================
         # APPLICATION DETECTION API (for Admin App Classification)
@@ -11708,6 +11864,43 @@ class TimeTracker:
             )
         ]
 
+        # ── Current-window badge + "View All App Rules…" link ────────────────
+        # Only shown when a user is logged in and tracking is active.
+        if self.current_user and getattr(self, 'tracking_active', False):
+            def _get_window_label():
+                try:
+                    cursor = self.db_manager.get_connection().cursor()
+                    cursor.execute(
+                        'SELECT application_name, classification '
+                        'FROM active_sessions ORDER BY last_seen DESC LIMIT 1'
+                    )
+                    row = cursor.fetchone()
+                    if row:
+                        app_name, classification = row
+                        emoji = {
+                            'productive': '\U0001f7e2',       # 🟢
+                            'non_productive': '\U0001f534',   # 🔴
+                            'private': '\u26ab',              # ⚫
+                        }.get(classification, '\u26aa')       # ⚪
+                        return f"{emoji} {(app_name or 'Unknown')[:25]}"
+                except Exception:
+                    pass
+                return '\u26aa No active window'
+
+            def _open_classifications(icon=None, it=None):
+                webbrowser.open(f'http://localhost:{self.web_port}/classifications')
+
+            menu_items.append(pystray.Menu.SEPARATOR)
+            menu_items.append(item(
+                lambda text: _get_window_label(),
+                lambda icon, it: None,
+                enabled=False,
+            ))
+            menu_items.append(item(
+                '  View All App Rules\u2026',
+                _open_classifications,
+            ))
+
         # Add separator and update-related menu items
         menu_items.append(pystray.Menu.SEPARATOR)
 
@@ -12215,7 +12408,486 @@ class TimeTracker:
 </body>
 </html>'''
         return html
-    
+
+    def render_classifications_page(self):
+        """Render the App Classification Viewer page.
+
+        Fetches all 3 tiers from /api/classifications and displays them in a
+        filterable table.  Effective rules (the one that wins the in-memory
+        merge) are computed in JS by buildEffectiveMap().
+        """
+        port = self.web_port
+        html = f'''<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>App Classification Rules</title>
+    <style>
+        *, *::before, *::after {{ box-sizing: border-box; margin: 0; padding: 0; }}
+        body {{
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen, Ubuntu, sans-serif;
+            background: #0f1117;
+            color: #e2e8f0;
+            min-height: 100vh;
+        }}
+        /* ── Nav ── */
+        nav {{
+            background: #1a1d27;
+            border-bottom: 1px solid #2d3149;
+            padding: 0 24px;
+            display: flex;
+            align-items: center;
+            gap: 16px;
+            height: 56px;
+        }}
+        nav a {{ color: #94a3b8; text-decoration: none; font-size: 14px; padding: 4px 8px; border-radius: 4px; }}
+        nav a:hover {{ background: #2d3149; color: #e2e8f0; }}
+        nav .brand {{ font-weight: 700; font-size: 16px; color: #6366f1; margin-right: auto; }}
+        /* ── Header ── */
+        .page-header {{
+            background: #1a1d27;
+            border-bottom: 1px solid #2d3149;
+            padding: 20px 24px;
+        }}
+        .page-header h1 {{ font-size: 22px; font-weight: 700; color: #f1f5f9; }}
+        .page-header .subtitle {{ font-size: 13px; color: #64748b; margin-top: 4px; }}
+        /* ── Current window banner ── */
+        #current-banner {{
+            margin: 16px 24px 0;
+            background: #1e2233;
+            border: 1px solid #2d3149;
+            border-radius: 8px;
+            padding: 12px 16px;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            font-size: 14px;
+        }}
+        #current-banner .label {{ color: #64748b; min-width: 100px; }}
+        #current-app-name {{ font-weight: 600; color: #f1f5f9; }}
+        #current-app-cls  {{ font-weight: 600; }}
+        .cls-productive   {{ color: #22c55e; }}
+        .cls-non_productive {{ color: #ef4444; }}
+        .cls-private      {{ color: #94a3b8; }}
+        /* ── Summary cards ── */
+        .summary-bar {{
+            display: flex;
+            gap: 12px;
+            margin: 16px 24px;
+            flex-wrap: wrap;
+        }}
+        .summary-card {{
+            background: #1e2233;
+            border: 1px solid #2d3149;
+            border-radius: 8px;
+            padding: 12px 20px;
+            flex: 1;
+            min-width: 120px;
+            text-align: center;
+        }}
+        .summary-card .num {{ font-size: 24px; font-weight: 700; color: #6366f1; }}
+        .summary-card .lbl {{ font-size: 12px; color: #64748b; margin-top: 2px; }}
+        /* ── Controls ── */
+        .controls {{
+            display: flex;
+            gap: 10px;
+            padding: 0 24px 16px;
+            flex-wrap: wrap;
+            align-items: center;
+        }}
+        .controls input[type=text] {{
+            background: #1e2233;
+            border: 1px solid #2d3149;
+            border-radius: 6px;
+            color: #e2e8f0;
+            font-size: 13px;
+            padding: 7px 12px;
+            flex: 1;
+            min-width: 200px;
+        }}
+        .controls select {{
+            background: #1e2233;
+            border: 1px solid #2d3149;
+            border-radius: 6px;
+            color: #e2e8f0;
+            font-size: 13px;
+            padding: 7px 12px;
+            min-width: 160px;
+        }}
+        .btn {{
+            background: #6366f1;
+            color: #fff;
+            border: none;
+            border-radius: 6px;
+            padding: 7px 14px;
+            font-size: 13px;
+            cursor: pointer;
+            white-space: nowrap;
+        }}
+        .btn:hover  {{ background: #4f46e5; }}
+        .btn:active {{ background: #4338ca; }}
+        .btn-secondary {{
+            background: #2d3149;
+            color: #e2e8f0;
+        }}
+        .btn-secondary:hover {{ background: #374151; }}
+        /* ── Tab strip ── */
+        .tabs {{
+            display: flex;
+            gap: 4px;
+            padding: 0 24px 12px;
+            border-bottom: 1px solid #2d3149;
+            margin-bottom: 0;
+        }}
+        .tab {{
+            padding: 6px 14px;
+            border-radius: 6px;
+            font-size: 13px;
+            cursor: pointer;
+            color: #64748b;
+            border: 1px solid transparent;
+        }}
+        .tab.active {{ background: #2d3149; color: #f1f5f9; border-color: #3d4566; }}
+        .tab:hover:not(.active) {{ color: #94a3b8; background: #1e2233; }}
+        /* ── Table ── */
+        .table-wrap {{
+            padding: 16px 24px 40px;
+            overflow-x: auto;
+        }}
+        table {{
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 13px;
+        }}
+        th {{
+            background: #1e2233;
+            color: #64748b;
+            font-weight: 600;
+            text-align: left;
+            padding: 10px 12px;
+            border-bottom: 1px solid #2d3149;
+            white-space: nowrap;
+        }}
+        td {{
+            padding: 9px 12px;
+            border-bottom: 1px solid #1a1d27;
+            vertical-align: middle;
+        }}
+        tr:hover td {{ background: #1e2233; }}
+        .mono {{ font-family: "SFMono-Regular", Consolas, monospace; font-size: 12px; }}
+        /* ── Badges ── */
+        .badge {{
+            display: inline-block;
+            border-radius: 4px;
+            padding: 2px 8px;
+            font-size: 11px;
+            font-weight: 600;
+            text-transform: uppercase;
+        }}
+        .badge-productive  {{ background: #14532d; color: #22c55e; }}
+        .badge-non_productive {{ background: #450a0a; color: #ef4444; }}
+        .badge-private     {{ background: #1e293b; color: #94a3b8; }}
+        .badge-global      {{ background: transparent; color: #94a3b8; border: 1px solid #374151; }}
+        .badge-organization {{ background: #1e1b4b; color: #a5b4fc; }}
+        .badge-project     {{ background: #431407; color: #fb923c; }}
+        .badge-effective   {{ background: #14532d; color: #22c55e; }}
+        .badge-overridden  {{ background: #1e293b; color: #64748b; font-style: italic; }}
+        /* ── Empty state ── */
+        .empty-state {{
+            text-align: center;
+            padding: 60px 20px;
+            color: #64748b;
+        }}
+        .empty-state h3 {{ font-size: 18px; margin-bottom: 8px; color: #94a3b8; }}
+        /* ── Loading ── */
+        #loading {{
+            text-align: center;
+            padding: 60px;
+            color: #64748b;
+        }}
+    </style>
+</head>
+<body>
+<nav>
+    <span class="brand">&#x23F1; TimeTracker</span>
+    <a href="/">Dashboard</a>
+    <a href="/admin">Admin</a>
+    <a href="/classifications" style="color:#6366f1">App Rules</a>
+</nav>
+
+<div class="page-header">
+    <h1>App Classification Rules</h1>
+    <p class="subtitle">Rules are applied in priority order: Project &gt; Organization &gt; Global</p>
+</div>
+
+<div id="current-banner">
+    <span class="label">Current window:</span>
+    <span id="current-app-name">&#x2014;</span>
+    <span id="current-app-cls"></span>
+    <span style="margin-left:auto;font-size:12px;color:#475569" id="sync-info"></span>
+    <button class="btn btn-secondary" id="refresh-btn" onclick="refreshRules()">&#x21bb; Refresh Rules</button>
+</div>
+
+<div class="summary-bar" id="summary-bar">
+    <div class="summary-card"><div class="num" id="s-total">&#x2026;</div><div class="lbl">Total Effective</div></div>
+    <div class="summary-card"><div class="num" style="color:#22c55e" id="s-prod">&#x2026;</div><div class="lbl">Productive</div></div>
+    <div class="summary-card"><div class="num" style="color:#ef4444" id="s-nonprod">&#x2026;</div><div class="lbl">Non-Productive</div></div>
+    <div class="summary-card"><div class="num" style="color:#94a3b8" id="s-proc">&#x2026;</div><div class="lbl">Process Rules</div></div>
+    <div class="summary-card"><div class="num" style="color:#94a3b8" id="s-url">&#x2026;</div><div class="lbl">URL Rules</div></div>
+</div>
+
+<div class="controls">
+    <input type="text" id="search-input" placeholder="Search by app name or URL pattern&#x2026;"
+           oninput="renderTable()">
+    <select id="filter-cls" onchange="renderTable()">
+        <option value="">All Classifications</option>
+        <option value="productive">Productive</option>
+        <option value="non_productive">Non-Productive</option>
+        <option value="private">Private</option>
+    </select>
+    <select id="filter-source" onchange="renderTable()">
+        <option value="">All Sources</option>
+        <option value="global">Global</option>
+        <option value="organization">Organization</option>
+        <option value="project">Project</option>
+    </select>
+    <select id="filter-project" onchange="renderTable()" style="display:none">
+        <option value="">All Projects</option>
+    </select>
+    <select id="filter-type" onchange="renderTable()">
+        <option value="">All Types</option>
+        <option value="process">Process</option>
+        <option value="url">URL</option>
+    </select>
+</div>
+
+<div class="tabs">
+    <span class="tab active" data-tab="all" onclick="switchTab('all')">All Rules</span>
+    <span class="tab" data-tab="productive" onclick="switchTab('productive')">Productive</span>
+    <span class="tab" data-tab="non_productive" onclick="switchTab('non_productive')">Non-Productive</span>
+    <span class="tab" data-tab="private" onclick="switchTab('private')">Private</span>
+</div>
+
+<div class="table-wrap">
+    <div id="loading">Loading classification rules&#x2026;</div>
+    <table id="rules-table" style="display:none">
+        <thead>
+            <tr>
+                <th>App / URL Pattern</th>
+                <th>Display Name</th>
+                <th>Type</th>
+                <th>Classification</th>
+                <th>Source</th>
+                <th>Project</th>
+                <th>Status</th>
+            </tr>
+        </thead>
+        <tbody id="table-body"></tbody>
+    </table>
+    <div id="empty-state" class="empty-state" style="display:none">
+        <h3>No rules found</h3>
+        <p>Try adjusting your filters or refreshing the rules.</p>
+    </div>
+</div>
+
+<script>
+/* ── State ───────────────────────────────────────────────── */
+let allRows = [];   // flat array of rule objects with .source, .source_project_key etc.
+let effectiveMap = {{}};  // key -> true if this row is the "winning" rule
+let currentTab = 'all';
+
+/* ── Boot ────────────────────────────────────────────────── */
+async function loadData() {{
+    try {{
+        const resp = await fetch('/api/classifications');
+        if (!resp.ok) throw new Error(await resp.text());
+        const json = await resp.json();
+
+        // Populate project filter
+        const proj = json.known_projects || [];
+        const projSel = document.getElementById('filter-project');
+        proj.forEach(pk => {{
+            const o = document.createElement('option');
+            o.value = pk; o.textContent = pk;
+            projSel.appendChild(o);
+        }});
+        if (proj.length > 0) projSel.style.display = '';
+
+        // Flatten all tiers into allRows
+        const data = json.data || {{}};
+        allRows = [];
+        (data.global || []).forEach(r => allRows.push(r));
+        (data.organization || []).forEach(r => allRows.push(r));
+        Object.entries(data.project || {{}}).forEach(([pk, rows]) => rows.forEach(r => allRows.push(r)));
+
+        // Build effective map — project wins over org wins over global
+        effectiveMap = buildEffectiveMap(allRows);
+
+        // Summary
+        const s = json.summary || {{}};
+        document.getElementById('s-total').textContent = s.total_effective ?? '-';
+        document.getElementById('s-prod').textContent = s.productive ?? '-';
+        document.getElementById('s-nonprod').textContent = s.non_productive ?? '-';
+        document.getElementById('s-proc').textContent = s.process_rules ?? '-';
+        document.getElementById('s-url').textContent = s.url_rules ?? '-';
+
+        // Current window
+        const cw = json.current_window || {{}};
+        updateCurrentWindow(cw.app, cw.classification);
+
+        // Sync timestamp
+        if (json.last_synced) {{
+            const d = new Date(json.last_synced * 1000);
+            document.getElementById('sync-info').textContent = 'Last synced: ' + d.toLocaleTimeString();
+        }}
+
+        document.getElementById('loading').style.display = 'none';
+        renderTable();
+
+    }} catch(e) {{
+        document.getElementById('loading').textContent = 'Failed to load: ' + e.message;
+    }}
+}}
+
+/* Build a map of rule unique-key -> true for the winning (highest-priority) entry.
+   Priority: project (2) > organization (1) > global (0).
+   Within a tier, last-writer-wins is acceptable; ties are resolved alphabetically. */
+function buildEffectiveMap(rows) {{
+    const PRIORITY = {{ global: 0, organization: 1, project: 2 }};
+    const best = {{}};  // canonical_key -> {{ priority, row_ref }}
+    rows.forEach(r => {{
+        const ck = (r.identifier || '').toLowerCase() + '|' + r.match_by;
+        const p = PRIORITY[r.source] ?? 0;
+        if (best[ck] === undefined || p > best[ck].priority) {{
+            best[ck] = {{ priority: p, row: r }};
+        }}
+    }});
+    const map = {{}};
+    Object.values(best).forEach(b => {{
+        const rk = rowKey(b.row);
+        map[rk] = true;
+    }});
+    return map;
+}}
+
+function rowKey(r) {{
+    return (r.identifier || '') + '|' + r.match_by + '|' + r.source + '|' + (r.source_project_key || '');
+}}
+
+/* ── Render table ────────────────────────────────────────── */
+function renderTable() {{
+    const search  = (document.getElementById('search-input').value || '').toLowerCase();
+    const fCls    = document.getElementById('filter-cls').value;
+    const fSrc    = document.getElementById('filter-source').value;
+    const fProj   = document.getElementById('filter-project').value;
+    const fType   = document.getElementById('filter-type').value;
+
+    const filtered = allRows.filter(r => {{
+        if (currentTab !== 'all' && r.classification !== currentTab) return false;
+        if (fCls    && r.classification !== fCls) return false;
+        if (fSrc    && r.source !== fSrc) return false;
+        if (fProj   && r.source_project_key !== fProj) return false;
+        if (fType   && r.match_by !== fType) return false;
+        if (search) {{
+            const hay = ((r.identifier || '') + ' ' + (r.display_name || '')).toLowerCase();
+            if (!hay.includes(search)) return false;
+        }}
+        return true;
+    }});
+
+    const tbody = document.getElementById('table-body');
+    tbody.innerHTML = '';
+
+    if (filtered.length === 0) {{
+        document.getElementById('rules-table').style.display = 'none';
+        document.getElementById('empty-state').style.display = '';
+        return;
+    }}
+    document.getElementById('rules-table').style.display = '';
+    document.getElementById('empty-state').style.display = 'none';
+
+    filtered.forEach(r => {{
+        const isEffective = effectiveMap[rowKey(r)];
+        const clsBadge = `<span class="badge badge-${{r.classification}}">${{clsLabel(r.classification)}}</span>`;
+        const srcBadge = `<span class="badge badge-${{r.source}}">${{r.source}}</span>`;
+        const statusBadge = isEffective
+            ? '<span class="badge badge-effective">&#x2713; Effective</span>'
+            : '<span class="badge badge-overridden">Overridden</span>';
+
+        const tr = document.createElement('tr');
+        if (!isEffective) tr.style.opacity = '0.55';
+        tr.innerHTML = `
+            <td class="mono">${{esc(r.identifier)}}</td>
+            <td>${{esc(r.display_name || r.identifier)}}</td>
+            <td><span style="color:#94a3b8;font-size:12px">${{r.match_by}}</span></td>
+            <td>${{clsBadge}}</td>
+            <td>${{srcBadge}}</td>
+            <td style="color:#94a3b8;font-size:12px">${{esc(r.source_project_key || '—')}}</td>
+            <td>${{statusBadge}}</td>
+        `;
+        tbody.appendChild(tr);
+    }});
+}}
+
+/* ── Helpers ─────────────────────────────────────────────── */
+function clsLabel(c) {{
+    return {{ productive: 'Productive', non_productive: 'Non-Productive', private: 'Private' }}[c] || c;
+}}
+
+function esc(s) {{
+    return (s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}}
+
+function switchTab(tab) {{
+    currentTab = tab;
+    document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === tab));
+    renderTable();
+}}
+
+function updateCurrentWindow(app, cls) {{
+    const nameEl = document.getElementById('current-app-name');
+    const clsEl  = document.getElementById('current-app-cls');
+    if (app) {{
+        nameEl.textContent = app;
+        clsEl.textContent  = clsLabel(cls);
+        clsEl.className = 'cls-' + (cls || 'private');
+    }} else {{
+        nameEl.textContent = 'No active window';
+        clsEl.textContent  = '';
+    }}
+}}
+
+async function refreshRules() {{
+    const btn = document.getElementById('refresh-btn');
+    btn.disabled = true;
+    btn.textContent = 'Refreshing\u2026';
+    try {{
+        await fetch('/api/classifications/refresh', {{ method: 'POST' }});
+        await loadData();
+        btn.textContent = '\u2713 Refreshed';
+        setTimeout(() => {{ btn.disabled = false; btn.textContent = '\u21bb Refresh Rules'; }}, 2000);
+    }} catch(e) {{
+        btn.textContent = 'Error';
+        setTimeout(() => {{ btn.disabled = false; btn.textContent = '\u21bb Refresh Rules'; }}, 3000);
+    }}
+}}
+
+/* Auto-refresh current window every 30s */
+setInterval(async () => {{
+    try {{
+        const r = await fetch('/api/classifications');
+        const j = await r.json();
+        if (j.current_window) updateCurrentWindow(j.current_window.app, j.current_window.classification);
+    }} catch (_) {{}}
+}}, 30000);
+
+loadData();
+</script>
+</body>
+</html>'''
+        return html
+
     def render_success_page(self):
         html = '''<!DOCTYPE html>
 <html>

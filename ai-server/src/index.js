@@ -107,7 +107,9 @@ const limiter = rateLimit({
 // Apply general rate limiter to all /api/ routes EXCEPT /api/forge/* and /api/auth/*
 // Forge routes have their own forgeLimiter. All Forge calls come from Atlassian's
 // shared infrastructure IPs so a shared IP-based bucket would block all tenants.
-// Auth routes have their own authLimiter to prevent background ops from starving login attempts.
+// Auth routes are split between loginLimiter (login) and backgroundAuthLimiter
+// (token refresh and other background ops) to prevent running app instances
+// from exhausting the budget for new logins.
 app.use('/api/', (req, res, next) => {
   if (req.path.startsWith('/forge/')) return next();
   if (req.path.startsWith('/auth/'))  return next();
@@ -126,10 +128,12 @@ const publicLimiter = rateLimit({
   }
 });
 
-// Rate limiter specifically for auth endpoints (stricter to prevent abuse)
-const authLimiter = rateLimit({
-  windowMs: 10 * 60 * 1000, // 10 minutes
-  max: 100, // 100 requests per 10 minutes per IP
+// Strict rate limiter for the actual login endpoint (/api/auth/atlassian/callback).
+// Prevents brute-force auth-code replay. Users rarely log in more than a handful
+// of times in 15 minutes, so 30 is generous without opening abuse surface.
+const loginLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 30, // 30 login attempts per 15 minutes per IP
   message: 'Too many authentication attempts, please try again later.',
   standardHeaders: true,
   legacyHeaders: false,
@@ -137,6 +141,26 @@ const authLimiter = rateLimit({
     return req.ip || req.headers['x-forwarded-for'] || req.connection.remoteAddress || 'unknown';
   }
 });
+
+// Generous rate limiter for background auth operations (token refresh, config
+// fetches, diagnostics). These run continuously in every running desktop app
+// instance and must NOT share a bucket with the login flow — otherwise
+// background refreshes from logged-in users exhaust the budget for new logins.
+// 500 req/10 min covers ~10 users each doing a token refresh every ~1 min.
+const backgroundAuthLimiter = rateLimit({
+  windowMs: 10 * 60 * 1000, // 10 minutes
+  max: 500, // 500 requests per 10 minutes per IP
+  message: 'Too many requests, please try again later.',
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => {
+    return req.ip || req.headers['x-forwarded-for'] || req.connection.remoteAddress || 'unknown';
+  }
+});
+
+// Keep authLimiter as an alias used by admin dashboard login and other
+// misc auth endpoints that are not background operations.
+const authLimiter = loginLimiter;
 
 // Lenient rate limiter for OAuth callbacks (Google already rate-limits their OAuth flow)
 const oauthLimiter = rateLimit({
@@ -275,14 +299,20 @@ app.get('/terms-of-service', (req, res) => res.redirect('/legal/terms'));
 // Public OAuth config (exposes only the client ID — safe for browsers)
 app.get('/api/auth/config', authLimiter, authController.getOAuthConfig);
 
-// Exchange OAuth code for tokens (Atlassian OAuth callback proxy)
-app.post('/api/auth/atlassian/callback', authLimiter, authController.atlassianCallback);
+// Exchange OAuth code for tokens (Atlassian OAuth callback proxy).
+// Strict loginLimiter: this is the actual login step; keep it isolated from
+// background ops so refresh-token floods can never block a fresh login.
+app.post('/api/auth/atlassian/callback', loginLimiter, authController.atlassianCallback);
 
-// Refresh Atlassian access token
-app.post('/api/auth/refresh-token', authLimiter, authController.refreshToken);
+// Background auth operations — use the generous backgroundAuthLimiter so that
+// token refreshes from many concurrent logged-in users don't exhaust the budget
+// for new login attempts.
+
+// Refresh Atlassian access token (runs continuously while app is open)
+app.post('/api/auth/refresh-token', backgroundAuthLimiter, authController.refreshToken);
 
 // Exchange Atlassian token for Supabase JWT
-app.post('/api/auth/exchange-token', authLimiter, authController.exchangeToken);
+app.post('/api/auth/exchange-token', backgroundAuthLimiter, authController.exchangeToken);
 
 // Non-Jira Google SSO: exchange Google OAuth code (PKCE) for a Supabase JWT.
 // Self-signup gated by the org_email_domains allowlist (company email only).
@@ -292,16 +322,16 @@ app.post('/api/auth/desktop-google', oauthLimiter, googleAuthController.desktopG
 app.post('/api/auth/desktop-google/refresh', authLimiter, googleAuthController.desktopGoogleRefresh);
 
 // Verify Atlassian token
-app.post('/api/auth/verify', authLimiter, authController.verifyToken);
+app.post('/api/auth/verify', backgroundAuthLimiter, authController.verifyToken);
 
 // Get Supabase configuration (returns credentials after verifying Atlassian token)
-app.post('/api/auth/supabase-config', authLimiter, authController.getSupabaseConfig);
+app.post('/api/auth/supabase-config', backgroundAuthLimiter, authController.getSupabaseConfig);
 
 // Get OCR configuration (returns OCR settings after verifying Atlassian token)
-app.post('/api/auth/ocr-config', authLimiter, authController.getOcrConfig);
+app.post('/api/auth/ocr-config', backgroundAuthLimiter, authController.getOcrConfig);
 
 // Submit client diagnostics (OCR status, login events, errors)
-app.post('/api/auth/diagnostics', authLimiter, authController.submitDiagnostics);
+app.post('/api/auth/diagnostics', backgroundAuthLimiter, authController.submitDiagnostics);
 
 
 
