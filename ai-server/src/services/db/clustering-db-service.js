@@ -101,7 +101,41 @@ async function getUsersWithUnassignedWork() {
       }
     }
 
-    return Array.from(uniqueCombos.values());
+    const combos = Array.from(uniqueCombos.values());
+    if (combos.length === 0) {
+      return combos;
+    }
+
+    // Step 4: Exclude non-Jira (Google SSO) users. Clustering only prepares Jira
+    // worklogs (suggests Jira issues, filters to Jira's 60s minimum, surfaced in
+    // the in-Jira Forge UI), so it is meaningless for Google users and would burn
+    // LLM tokens nightly. One batched lookup keeps them out of the whole loop.
+    // (processUserUnassignedWork has the same guard as a per-user safety net for
+    // the single-user trigger path that bypasses this list.)
+    // Fail-open: if the provider lookup errors, return the unfiltered combos so a
+    // transient DB issue never silently halts clustering for real Jira users.
+    try {
+      const userIds = combos.map(c => c.id);
+      const { data: googleUsers, error: provErr } = await supabase
+        .from('users')
+        .select('id')
+        .in('id', userIds)
+        .eq('auth_provider', 'google');
+
+      if (provErr) {
+        logger.warn('[Clustering] auth_provider filter failed; proceeding unfiltered (fail-open):', provErr.message);
+        return combos;
+      }
+
+      const googleIdSet = new Set((googleUsers || []).map(u => u.id));
+      if (googleIdSet.size > 0) {
+        logger.info(`[Clustering] Excluding ${googleIdSet.size} google (non-Jira) user(s) from clustering`);
+      }
+      return combos.filter(c => !googleIdSet.has(c.id));
+    } catch (filterErr) {
+      logger.warn('[Clustering] auth_provider filter threw; proceeding unfiltered (fail-open):', filterErr.message);
+      return combos;
+    }
   } catch (error) {
     logger.error('Error fetching users with unassigned work:', error);
     return [];

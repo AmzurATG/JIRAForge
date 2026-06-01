@@ -86,6 +86,26 @@ async function runClustering() {
 async function processUserUnassignedWork(userId, organizationId) {
   logger.info(`[Clustering] Processing user ${userId} in org ${organizationId}`);
 
+  // 0. Skip non-Jira (Google SSO) users. Clustering exists solely to prepare
+  //    Jira worklogs: it fetches the user's Jira issues for matching suggestions
+  //    and filters groups to Jira's 60s worklog minimum, and its output is read
+  //    only by the in-Jira Forge UI. Google users have no Jira account, so this
+  //    would burn LLM tokens nightly producing groups nothing can consume.
+  //    This guard is the choke point every caller funnels through (nightly job,
+  //    org-wide trigger, AND the single-user /api/trigger-clustering), so it is
+  //    the authoritative exclusion even when the entry-point list is bypassed.
+  //    Fail-open: if the provider lookup errors, proceed with clustering rather
+  //    than silently skipping a real Jira user.
+  try {
+    const user = await dbService.getUserById(userId);
+    if (user && user.auth_provider === 'google') {
+      logger.info(`[Clustering] Skipping google (non-Jira) user ${userId} — clustering is Jira-worklog-only`);
+      return;
+    }
+  } catch (provErr) {
+    logger.warn(`[Clustering] auth_provider lookup failed for ${userId}; proceeding with clustering (fail-open): ${provErr.message}`);
+  }
+
   // 1. Get unassigned activities for this user - filter by organization
   const sessions = await supabaseService.getUnassignedActivities(userId, organizationId);
 

@@ -12950,6 +12950,24 @@ loadData();
             font-size: 15px;
             line-height: 1.5;
         }
+        .close-hint {
+            margin-top: 20px;
+            color: #6B778C;
+            font-size: 14px;
+        }
+        .close-btn {
+            margin-top: 20px;
+            padding: 12px 28px;
+            font-size: 15px;
+            font-weight: 600;
+            color: white;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: opacity 0.2s ease;
+        }
+        .close-btn:hover { opacity: 0.9; }
     </style>
 </head>
 <body>
@@ -12961,7 +12979,30 @@ loadData();
         </div>
         <h1>Login Successful!</h1>
         <p>You're all set. Time tracking will start automatically in the background.</p>
+        <p class="close-hint">You can safely close this tab.</p>
+        <button id="closeBtn" class="close-btn" type="button">Close this tab</button>
     </div>
+    <script>
+        // The browser opened (navigated to) this tab — it was NOT opened by
+        // window.open(). Chrome/Edge/Firefox therefore block window.close() here
+        // ("Scripts may close only the windows that were opened by them"). So we
+        // ATTEMPT to close, and if the tab is still here shortly after, we tell the
+        // user the truth (close manually) instead of leaving a dead button.
+        (function () {
+            var btn = document.getElementById('closeBtn');
+            var hint = document.querySelector('.close-hint');
+            btn.addEventListener('click', function () {
+                window.close();
+                // Best-effort fallback for some Chromium builds.
+                try { window.open('', '_self'); window.close(); } catch (e) {}
+                // If still open after the attempt, be honest about it.
+                setTimeout(function () {
+                    btn.style.display = 'none';
+                    hint.textContent = 'Please close this tab manually (Ctrl+W).';
+                }, 300);
+            });
+        })();
+    </script>
 </body>
 </html>'''
         return html
