@@ -223,8 +223,11 @@ def get_configured_engines() -> List[str]:
     - OCR_PRIMARY_ENGINE: Primary OCR engine (default: rapidocr)
     - OCR_FALLBACK_ENGINES: Comma-separated fallback engines (default: winrtocr)
     
+    Platform-aware: Filters out engines incompatible with current OS
+    (e.g., winrtocr on Linux)
+    
     Returns:
-        List of engine names (e.g., ['rapidocr', 'winrtocr'])
+        List of engine names compatible with current platform
     """
     engines = []
     
@@ -242,6 +245,14 @@ def get_configured_engines() -> List[str]:
             engine = engine.strip().lower()
             if engine and engine not in engines:
                 engines.append(engine)
+    
+    # Filter out engines incompatible with current platform
+    # (e.g., winrtocr on Linux/macOS - requires Windows SDK)
+    try:
+        from .config import filter_engines_by_platform
+        engines = filter_engines_by_platform(engines)
+    except Exception as e:
+        logger.warning(f"Could not apply platform filtering: {e}")
     
     return engines
 

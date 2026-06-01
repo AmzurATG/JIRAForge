@@ -26,6 +26,65 @@ from datetime import datetime, timezone, timedelta
 from io import BytesIO
 from enum import Enum
 
+_LINUX_TRAY_BOOTSTRAP_STATUS = 'not-linux'
+
+
+def _bootstrap_linux_tray_backend():
+    """Expose distro GI bindings to the app before pystray selects a backend."""
+    global _LINUX_TRAY_BOOTSTRAP_STATUS
+
+    if not sys.platform.startswith('linux'):
+        return
+
+    candidate_paths = [
+        '/usr/lib/python3/dist-packages',
+        f'/usr/lib/python{sys.version_info.major}/dist-packages',
+        f'/usr/lib/python{sys.version_info.major}.{sys.version_info.minor}/dist-packages',
+        '/usr/local/lib/python3/dist-packages',
+        f'/usr/local/lib/python{sys.version_info.major}/dist-packages',
+        f'/usr/local/lib/python{sys.version_info.major}.{sys.version_info.minor}/dist-packages',
+    ]
+
+    added_paths = []
+    for path in candidate_paths:
+        if os.path.isdir(path) and path not in sys.path:
+            sys.path.append(path)
+            added_paths.append(path)
+
+    try:
+        import gi
+    except ImportError as exc:
+        _LINUX_TRAY_BOOTSTRAP_STATUS = f'gi-unavailable:{exc}'
+        return
+
+    try:
+        gi.require_version('Gtk', '3.0')
+        from gi.repository import Gtk  # noqa: F401
+    except Exception as exc:
+        _LINUX_TRAY_BOOTSTRAP_STATUS = f'gtk-unavailable:{exc}'
+        return
+
+    indicator_name = None
+    indicator_error = None
+    for module_name in ('AppIndicator3', 'AyatanaAppIndicator3'):
+        try:
+            gi.require_version(module_name, '0.1')
+            __import__('gi.repository', fromlist=[module_name])
+            indicator_name = module_name
+            break
+        except Exception as exc:
+            indicator_error = exc
+
+    if indicator_name:
+        os.environ.setdefault('PYSTRAY_BACKEND', 'appindicator')
+        added_suffix = f" via {', '.join(added_paths)}" if added_paths else ''
+        _LINUX_TRAY_BOOTSTRAP_STATUS = f'appindicator-ready:{indicator_name}{added_suffix}'
+    else:
+        _LINUX_TRAY_BOOTSTRAP_STATUS = f'appindicator-unavailable:{indicator_error}'
+
+
+_bootstrap_linux_tray_backend()
+
 # Fix broken TLS CA-bundle env vars before any HTTPS library is imported.
 # The PostgreSQL Windows installer (v14-17) sets CURL_CA_BUNDLE to a path
 # that doesn't exist, which makes every Python requests HTTPS call fail.
@@ -58,6 +117,9 @@ from flask_cors import CORS
 import pystray
 from pystray import MenuItem as item
 from PIL import Image as PILImage
+
+if sys.platform.startswith('linux'):
+    print(f"[INFO] Linux tray bootstrap: {_LINUX_TRAY_BOOTSTRAP_STATUS}")
 
 # Supabase
 from supabase import create_client, Client
@@ -329,10 +391,28 @@ def _acquire_lock_file():
             if psutil.pid_exists(pid):
                 try:
                     proc = psutil.Process(pid)
-                    if 'timetracker' in proc.name().lower() or 'python' in proc.name().lower():
+                    # Check if it's actually our app by looking at command line
+                    cmdline = ' '.join(proc.cmdline()).lower()
+                    if 'desktop_app.py' in cmdline or 'timetracker' in proc.name().lower():
                         print(f"[WARN] Another instance is running (PID: {pid})")
                         return False
+                    else:
+                        # Different app with same PID - remove stale lock
+                        print(f"[INFO] Removing stale lock file (PID {pid} is not TimeTracker)")
+                        os.remove(lock_file)
                 except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    # Process doesn't exist or we can't access it - remove stale lock
+                    print(f"[INFO] Removing stale lock file (PID {pid} no longer exists)")
+                    try:
+                        os.remove(lock_file)
+                    except:
+                        pass
+            else:
+                # Process doesn't exist - remove stale lock
+                print(f"[INFO] Removing stale lock file (PID {pid} not running)")
+                try:
+                    os.remove(lock_file)
+                except:
                     pass
 
         # Write our PID to lock file
@@ -1035,7 +1115,7 @@ def is_running_from_install_location():
     return current_path == install_path
 
 def install_application():
-    """
+    r"""
     Self-install the application to %LOCALAPPDATA%\TimeTracker\
     Handles both fresh installation and updates (replacing old version).
 
@@ -11851,8 +11931,43 @@ class TimeTracker:
         except Exception as e:
             print(f"[ERROR] Manual update trigger failed: {e}")
 
+    def _tray_backend_name(self):
+        """Return the active pystray backend module name."""
+        return getattr(pystray.Icon, '__module__', 'pystray.unknown').rsplit('.', 1)[-1]
+
+    def _tray_supports_menu(self):
+        """Return whether the active tray backend supports popup menus."""
+        return bool(getattr(pystray.Icon, 'HAS_MENU', True))
+
+    def _open_tray_fallback(self, icon=None, menu_item=None):
+        """Fallback action for tray backends that do not support popup menus."""
+        target = '/login' if not self.current_user else '/'
+        webbrowser.open(f'http://localhost:{self.web_port}{target}')
+
+    def _get_tray_fallback_label(self):
+        """Label for menu-less tray backends where only default click is supported."""
+        if not self.current_user:
+            return 'Open Login'
+        return 'Open Dashboard'
+
     def _build_tray_menu(self):
         """Build the tray menu with current state"""
+        print("[DEBUG] _build_tray_menu() called")
+
+        if not self._tray_supports_menu():
+            backend_name = self._tray_backend_name()
+            print(
+                f"[WARN] Tray backend '{backend_name}' does not support popup menus. "
+                "Right-click actions are unavailable; left-click will open the web UI instead."
+            )
+            return pystray.Menu(
+                item(
+                    lambda text: self._get_tray_fallback_label(),
+                    self._open_tray_fallback,
+                    default=True,
+                )
+            )
+        
         def get_menu_label():
             if self.current_user:
                 return f"Logged in as: {self.current_user.get('email', 'User')}"
@@ -11861,18 +11976,26 @@ class TimeTracker:
             else:
                 return "Login"
 
-        def users_action():
+        def users_action(icon, item):  # Fixed: Added parameters
             # Only open login page if not logged in
             if not self.current_user:
                 webbrowser.open(f'http://localhost:{self.web_port}/login')
 
         # Build menu items list dynamically based on current state
-        menu_items = [
-            item(
-                lambda text: get_menu_label(),
-                users_action
+        menu_items = []
+        
+        try:
+            menu_items.append(
+                item(
+                    lambda text: get_menu_label(),
+                    users_action
+                )
             )
-        ]
+            print(f"[DEBUG] Added user status item")
+        except Exception as e:
+            print(f"[ERROR] Failed to add user status item: {e}")
+            import traceback
+            traceback.print_exc()
 
         # ── Current-window badge + "View All App Rules…" link ────────────────
         # Only shown when a user is logged in and tracking is active.
@@ -11934,7 +12057,36 @@ class TimeTracker:
             # Show "Check for Updates" button when no update activity
             menu_items.append(item(lambda text: f"✓ Up to Date (v{self.app_version}) - Click to Check", self._manual_update_trigger, enabled=True))
 
-        return pystray.Menu(*menu_items)
+        # Add separator before main actions
+        menu_items.append(pystray.Menu.SEPARATOR)
+
+        # Tracking controls (dynamic based on state)
+        if self.running and self.tracking_active:
+            # Tracking is active - show Pause option
+            menu_items.append(item('⏸ Pause Tracking', lambda icon, item: self.show_pause_selection_popup()))
+        elif self.running and not self.tracking_active:
+            # Paused - show Resume option
+            menu_items.append(item('▶ Resume Tracking', lambda icon, item: self.resume_tracking()))
+        elif self.current_user or (self.current_user_id and not self.current_user_id.startswith('anonymous_')):
+            # Stopped but can start - show Start option
+            menu_items.append(item('▶ Start Tracking', lambda icon, item: self.start_tracking()))
+
+        # Stop tracking (only if running)
+        if self.running:
+            menu_items.append(item('⏹ Stop Tracking', lambda icon, item: self.stop_tracking()))
+
+        # Dashboard link
+        menu_items.append(pystray.Menu.SEPARATOR)
+        menu_items.append(item('🌐 Open Dashboard', lambda icon, item: webbrowser.open(f'http://localhost:{self.web_port}')))
+
+        # Exit
+        menu_items.append(pystray.Menu.SEPARATOR)
+        menu_items.append(item('❌ Exit', lambda icon, item: self.quit_app()))
+
+        print(f"[DEBUG] Menu built with {len(menu_items)} items")
+        menu = pystray.Menu(*menu_items)
+        print(f"[DEBUG] Menu object created: {menu}")
+        return menu
 
     def _shutdown_cleanup(self):
         """Gracefully shut down OCR worker, flush sessions, and close DB connections."""
@@ -11978,18 +12130,29 @@ class TimeTracker:
     
     def setup_system_tray(self):
         """Setup system tray icon"""
+        print("[DEBUG] setup_system_tray() called")
         try:
             # Create initial icon based on current state
             initial_state = self.get_tray_icon_state()
             show_badge = getattr(self, 'update_available', False)
             icon_image = self.create_tray_icon(initial_state, show_update_badge=show_badge)
+            print(f"[DEBUG] Icon image created: {icon_image}")
 
             # Create menu using helper method
             menu = self._build_tray_menu()
+            print(f"[DEBUG] Menu created in setup_system_tray: {menu}")
 
             self.tray = pystray.Icon("Time Tracker", icon_image, menu=menu)
+            print(f"[DEBUG] pystray.Icon created with menu: {self.tray.menu}")
             
             self.tray.title = "TimeTracker"
+            if not self._tray_supports_menu():
+                backend_name = self._tray_backend_name()
+                print(
+                    f"[WARN] Running on pystray backend '{backend_name}' without menu support. "
+                    "Login, app rules, update controls, tracking controls, and exit are not available via right-click. "
+                    "Use left-click to open the local web UI, or install AppIndicator/Ayatana support to restore menus."
+                )
 
             # Use pystray's setup callback to start periodic icon updates
             # AFTER the tray is visible. Without this, the update thread exits
@@ -12012,9 +12175,13 @@ class TimeTracker:
                 update_thread = threading.Thread(target=update_icon_periodically, daemon=True)
                 update_thread.start()
 
+            print(f"[DEBUG] About to call tray.run() with menu: {self.tray.menu}")
             self.tray.run(setup=on_tray_ready)
+            print("[DEBUG] tray.run() returned (app closing)")
         except Exception as e:
             print(f"[WARN] System tray setup failed: {e}")
+            import traceback
+            traceback.print_exc()
             # Fallback to simple colored icon
             try:
                 state = self.get_tray_icon_state()
@@ -12052,19 +12219,25 @@ class TimeTracker:
     
     def run(self):
         """Main application entry point"""
-        print("[OK] Starting Time Tracker...")
+        print("[DEBUG-RUN] run() method called", flush=True)
+        print("[OK] Starting Time Tracker...", flush=True)
 
+        print("[DEBUG-RUN] Checking self-install...", flush=True)
         # Self-install on first run (copies exe to %LOCALAPPDATA%\TimeTracker\)
         if not install_application():
             # Installation happened - this instance should exit
             # The installed version has been started
             print("[INFO] Exiting installer instance...")
             sys.exit(0)
+        print("[DEBUG-RUN] Self-install check complete", flush=True)
 
+        print("[DEBUG-RUN] Clearing shutdown signals...", flush=True)
         # Clean up any stale shutdown signals from previous failed updates
         # This ensures we don't immediately shut down due to an old signal
         clear_shutdown_signal()
+        print("[DEBUG-RUN] Shutdown signals cleared", flush=True)
 
+        print("[DEBUG-RUN] Acquiring single instance lock...", flush=True)
         # Acquire single instance lock - prevent multiple instances
         if not acquire_single_instance_lock():
             print("[ERROR] Another instance is already running. Exiting...")
@@ -12223,22 +12396,31 @@ class TimeTracker:
                 print("[INFO] Screenshots will be saved locally and associated when you login")
                 self.current_user_id = f"anonymous_{secrets.token_hex(8)}"
         
+        print("[DEBUG] About to start web server...")
         # Start web server
         web_thread = threading.Thread(target=self.run_web_server, daemon=True)
         web_thread.start()
         time.sleep(2)
+        print("[DEBUG] Web server thread started")
 
+        print("[DEBUG] Checking for staged updates...")
         if self.update_manager and self.update_manager.load_staged_update_if_exists():
             print("[INFO] Found staged update from previous session")
+        print("[DEBUG] Update check complete")
+        print("[DEBUG] Update check complete")
         
+        print("[DEBUG] Checking connectivity for updates...")
         # Check for updates on startup (only if online)
         # Re-check connectivity here (don't trust the is_online from startup - it may be stale after auth)
         if self.offline_manager.check_connectivity(force=True):
             print("[INFO] Checking for app updates...")
+            print("[DEBUG] About to call check_for_app_updates...")
             self.check_for_app_updates(show_notification=True, force=True)
+            print("[DEBUG] check_for_app_updates returned")
         else:
             print("[INFO] Offline after authentication - will check for updates when network is available")
         
+        print("[DEBUG] Starting tracking checks...")
         # Determine if we should start tracking
         should_track = self.current_user is not None or self.current_user_id is not None
 
@@ -12268,10 +12450,13 @@ class TimeTracker:
 
         # Start tracking only if user has consent (or is anonymous)
         if should_track and has_consent:
+            print("[DEBUG] Starting tracking...")
             self.start_tracking()
+            print("[DEBUG] Tracking started")
         elif should_track and not has_consent:
             print("[INFO] Waiting for user consent before starting screenshot capture")
         
+        print("[DEBUG] Preparing final status messages...")
         print(f"[OK] Application running at http://localhost:{self.web_port}")
         if not is_online:
             print("[INFO] OFFLINE MODE - Screenshots will be synced when online")
@@ -12279,6 +12464,7 @@ class TimeTracker:
             print("[INFO] ANONYMOUS MODE - Login to associate screenshots with your account")
         print("[OK] Check system tray for application icon")
         
+        print("[DEBUG] About to setup system tray...")
         # Setup system tray (blocking)
         try:
             self.setup_system_tray()
@@ -14386,7 +14572,7 @@ loadData();
                 icon = '📸';
                 category = 'screenshot';
                 // Format: "Screenshot captured: chrome.exe (10s)"
-                const match = message.match(/Screenshot captured: (.+?) \((\d+)s\)/);
+                const match = message.match(/Screenshot captured: (.+?) \\((\\d+)s\\)/);
                 if (match) {
                     formattedMsg = `Screenshot captured: <span class="app-name">${match[1]}</span> <span class="duration">(${match[2]}s)</span>`;
                 }
@@ -14400,14 +14586,14 @@ loadData();
             } else if (message.includes('Settings loaded:')) {
                 icon = '⚙️';
                 category = 'settings';
-                const match = message.match(/Settings loaded: interval=(\d+)s/);
+                const match = message.match(/Settings loaded: interval=(\\d+)s/);
                 if (match) {
                     formattedMsg = `Settings loaded: interval = <span class="setting-value">${match[1]}s</span>`;
                 }
             } else if (message.includes('Tracking started')) {
                 icon = '▶️';
                 category = 'tracking';
-                const match = message.match(/Tracking started \(interval: (\d+)s\)/);
+                const match = message.match(/Tracking started \\(interval: (\\d+)s\\)/);
                 if (match) {
                     formattedMsg = `Tracking started (interval: <span class="setting-value">${match[1]}s</span>)`;
                 }
@@ -14417,7 +14603,7 @@ loadData();
             } else if (message.includes('User idle')) {
                 icon = '💤';
                 category = 'tracking';
-                const match = message.match(/User idle \(no activity for (\d+)s\)/);
+                const match = message.match(/User idle \\(no activity for (\\d+)s\\)/);
                 if (match) {
                     formattedMsg = `User idle (no activity for <span class="duration">${match[1]}s</span>)`;
                 }
@@ -14725,19 +14911,24 @@ def main():
         print("[WARN] Application logging disabled - app_logger module not available")
     
     try:
+        print("[DEBUG-MAIN] Starting TimeTracker initialization...")
         if APP_LOGGER_AVAILABLE:
             logger.info("Initializing TimeTracker application...")
         
         # Log display/monitor environment at startup (P1-6, P1-7 diagnostics)
         log_display_environment()
         
+        print("[DEBUG-MAIN] Creating TimeTracker instance...")
         app = TimeTracker()
+        print("[DEBUG-MAIN] TimeTracker instance created")
         
         if APP_LOGGER_AVAILABLE:
             logger.info("TimeTracker initialized successfully")
             logger.info("Starting main application loop...")
         
+        print("[DEBUG-MAIN] Calling app.run()...")
         app.run()
+        print("[DEBUG-MAIN] app.run() returned")
         
     except KeyboardInterrupt:
         if APP_LOGGER_AVAILABLE:

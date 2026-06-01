@@ -14,7 +14,7 @@ from typing import Dict, Any, Optional, List
 import numpy as np
 from PIL import Image
 
-from .config import OCRConfig, OCREngineConfig
+from .config import OCRConfig, OCREngineConfig, apply_platform_filters
 from .engine_factory import EngineFactory
 from .base_engine import BaseOCREngine
 from .image_processor import preprocess_image, preprocess_screenshot, resize_if_needed
@@ -32,6 +32,7 @@ class OCRFacade:
         - Graceful fallback when engines fail
         - Preprocessing pipeline integration
         - Metadata fallback as last resort
+        - Platform-aware engine filtering (skips incompatible engines)
     
     Usage:
         # Simple usage (uses environment config)
@@ -57,7 +58,9 @@ class OCRFacade:
         Args:
             config: OCR configuration (loads from environment if None)
         """
+        # Load config and apply platform filters
         self.config = config or OCRConfig.from_env()
+        self.config = apply_platform_filters(self.config)
         self._primary_engine: Optional[BaseOCREngine] = None
         self._fallback_engines: List[BaseOCREngine] = []
         # Auto-heal guardrails for unstable engines.

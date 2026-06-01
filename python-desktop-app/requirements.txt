@@ -33,6 +33,11 @@ jaraco.context>=6.0.0
 pywin32==306; sys_platform == 'win32'
 winotify==1.1.0; sys_platform == 'win32'
 
+# Linux-specific dependencies (optional - most Linux features work without these)
+# python-xlib - For X11 window tracking (installed only if needed)
+# notify2 - For native Linux notifications (graceful fallback if missing)
+# Note: Core functionality works without these; they enhance the experience
+
 # =============================================================================
 # OCR Dependencies
 # =============================================================================

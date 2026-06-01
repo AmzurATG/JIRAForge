@@ -39,6 +39,7 @@ class FakeMenuItem:
             self.text = text
         self.action = action
         self.enabled = enabled
+        self.default = kwargs.get("default", False)
 
 
 class FakeMenu:
@@ -243,7 +244,54 @@ class TestTrayMenuInstallAction:
 
 
 # ---------------------------------------------------------------------------
-# 5. Notification: "Install Now" action for ready / mandatory_ready
+# 5. Tray Menu: Menu-less backend fallback
+# ---------------------------------------------------------------------------
+
+class TestTrayMenuBackendFallback:
+
+    def test_menu_less_backend_uses_single_default_action(self, tmp_path):
+        """Backends without menu support should expose a default left-click action."""
+        manager = UpdateManager(str(tmp_path), "1.0.0")
+
+        with patch.object(desktop_app, "pystray") as mock_pystray:
+            mock_pystray.Menu = FakeMenu
+            mock_pystray.Menu.SEPARATOR = FakeMenu.SEPARATOR
+            mock_pystray.Icon = types.SimpleNamespace(
+                HAS_MENU=False,
+                __module__="pystray._xorg",
+            )
+            with patch.object(desktop_app, "item", FakeMenuItem):
+                app = _build_fake_app(manager)
+                menu = app._build_tray_menu()
+
+        menu_items = [i for i in menu.items if isinstance(i, FakeMenuItem)]
+        assert len(menu_items) == 1
+        assert menu_items[0].default is True
+        assert menu_items[0].text == "Open Dashboard"
+
+    def test_menu_less_backend_opens_login_for_logged_out_user(self, tmp_path):
+        """Fallback left-click should open login when no user is authenticated."""
+        manager = UpdateManager(str(tmp_path), "1.0.0")
+
+        with patch.object(desktop_app, "pystray") as mock_pystray:
+            mock_pystray.Menu = FakeMenu
+            mock_pystray.Menu.SEPARATOR = FakeMenu.SEPARATOR
+            mock_pystray.Icon = types.SimpleNamespace(
+                HAS_MENU=False,
+                __module__="pystray._xorg",
+            )
+            with patch.object(desktop_app, "item", FakeMenuItem):
+                app = _build_fake_app(manager)
+                app.current_user = None
+                menu = app._build_tray_menu()
+
+        menu_items = [i for i in menu.items if isinstance(i, FakeMenuItem)]
+        assert len(menu_items) == 1
+        assert menu_items[0].text == "Open Login"
+
+
+# ---------------------------------------------------------------------------
+# 6. Notification: "Install Now" action for ready / mandatory_ready
 # ---------------------------------------------------------------------------
 
 class TestNotificationInstallAction:

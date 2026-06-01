@@ -1,12 +1,18 @@
 # -*- mode: python ; coding: utf-8 -*-
 """
 PyInstaller spec file for Time Tracker Desktop App
-Generates a single-file Windows executable with all dependencies bundled.
+Generates a standalone executable with all dependencies bundled.
 
-OCR engines are now DYNAMICALLY detected from .env configuration:
+Cross-platform support:
+- Windows: Full support (win32gui, winotify, WinRTOCR)
+- Linux: Full support (automatic engine fallback from WinRT to RapidOCR)
+- macOS: Planned (similar to Linux)
+
+OCR engines are DYNAMICALLY detected from .env configuration:
 - Reads OCR_PRIMARY_ENGINE and OCR_FALLBACK_ENGINES from .env
 - Only bundles engines that are configured and installed
 - Automatically discovers hidden imports for each engine
+- Platform filtering: incompatible engines are skipped automatically
 
 """
 
@@ -19,6 +25,21 @@ from PyInstaller.utils.hooks import collect_submodules, collect_data_files, coll
 sys.setrecursionlimit(sys.getrecursionlimit() * 5)
 
 block_cipher = None
+
+# ==============================================================================
+# PLATFORM DETECTION
+# ==============================================================================
+IS_WINDOWS = sys.platform == 'win32'
+IS_LINUX = sys.platform.startswith('linux')
+IS_MACOS = sys.platform == 'darwin'
+
+print(f"[INFO] Building for platform: {sys.platform}")
+if IS_WINDOWS:
+    print("[INFO] Windows build - including pywin32, winotify, WinRTOCR")
+elif IS_LINUX:
+    print("[INFO] Linux build - excluding Windows-specific dependencies")
+elif IS_MACOS:
+    print("[INFO] macOS build - excluding Windows-specific dependencies")
 
 # ==============================================================================
 # READ OCR ENGINE CONFIGURATION FROM .env
@@ -101,7 +122,7 @@ else:
 # ==============================================================================
 # WINRTOCR DETECTION (only if configured) — Windows-only OCR via WinRT
 # ==============================================================================
-if 'winrtocr' in configured_engines or 'winrt' in configured_engines:
+if IS_WINDOWS and ('winrtocr' in configured_engines or 'winrt' in configured_engines):
     print("[INFO] WinRTocr engine configured - bundling WinRT dependencies...")
     # Our native winrtocr_engine.py uses winsdk directly — always try to bundle it
     try:
@@ -151,6 +172,9 @@ if 'winrtocr' in configured_engines or 'winrt' in configured_engines:
     # Always include the native engine module
     engine_hiddenimports.append('ocr.engines.winrtocr_engine')
     print("[INFO] WinRTocr bundled successfully")
+elif not IS_WINDOWS and ('winrtocr' in configured_engines or 'winrt' in configured_engines):
+    print("[INFO] WinRTocr engine configured but not available on this platform - will use fallback")
+    engine_excludes += ['winrtocr', 'winsdk']
 else:
     print("[INFO] WinRTocr engine NOT configured - skipping WinRT bundling")
     engine_excludes += ['winrtocr']
@@ -476,6 +500,10 @@ a = Analysis(
         # Exclude unnecessary packages to reduce size
         'matplotlib',
         ] + (['pandas'] if ('winrtocr' not in configured_engines and 'winrt' not in configured_engines) else []) + [
+        # Platform-specific excludes (Windows-only libraries on Linux/macOS)
+    ] + (['pywin32', 'win32gui', 'win32process', 'win32con', 'win32event', 
+          'win32api', 'win32file', 'win32pipe', 'win32security', 'winotify',
+          'winsdk'] if not IS_WINDOWS else []) + [
         # Exclude pandas test modules (dramatically speeds up build)
         'pandas.tests',
         'pandas.tests.test_algos',

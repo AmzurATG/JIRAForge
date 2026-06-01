@@ -220,3 +220,114 @@ class OCRConfig:
                 for name, cfg in self.engines.items()
             }
         }
+
+
+# =============================================================================
+# PLATFORM-SPECIFIC ENGINE COMPATIBILITY
+# =============================================================================
+
+def get_platform_compatible_engines() -> List[str]:
+    """
+    Return list of OCR engines compatible with the current platform.
+    
+    Returns:
+        list: Engine names that work on this platform
+    """
+    import sys
+    
+    # Common engines that work on all platforms
+    common_engines = ['rapidocr', 'easyocr', 'tesseract']
+    
+    # Platform-specific engines
+    if sys.platform == 'win32':
+        # Windows: all common engines + native WinRT
+        return common_engines + ['winrtocr']
+    elif sys.platform.startswith('linux'):
+        # Linux: all common engines (no WinRT)
+        return common_engines
+    elif sys.platform == 'darwin':
+        # macOS: all common engines (no WinRT)
+        return common_engines
+    else:
+        # Unknown platform: use common engines only
+        logger.warning(f"Unknown platform: {sys.platform}, using common OCR engines")
+        return common_engines
+
+
+def filter_engines_by_platform(engine_list: List[str]) -> List[str]:
+    """
+    Filter a list of engine names to only include platform-compatible ones.
+    
+    Args:
+        engine_list: List of engine names from config
+        
+    Returns:
+        list: Filtered list containing only compatible engines
+    """
+    compatible = get_platform_compatible_engines()
+    filtered = [e for e in engine_list if e in compatible]
+    
+    # Log filtered engines for diagnostics
+    removed = [e for e in engine_list if e not in filtered]
+    if removed:
+        import sys
+        logger.info(
+            f"Filtered incompatible engines for {sys.platform}: {removed}. "
+            f"Using compatible engines: {filtered}"
+        )
+    
+    return filtered
+
+
+def apply_platform_filters(config: OCRConfig) -> OCRConfig:
+    """
+    Apply platform compatibility filters to an OCR configuration.
+    
+    - Filters out incompatible engines from primary and fallback lists
+    - If primary engine is incompatible, switches to first compatible fallback
+    - Logs all changes for transparency
+    
+    Args:
+        config: Original OCR configuration
+        
+    Returns:
+        OCRConfig: Filtered configuration with only compatible engines
+    """
+    import sys
+    
+    compatible = get_platform_compatible_engines()
+    original_primary = config.primary_engine
+    original_fallbacks = config.fallback_engines.copy()
+    
+    # Check if primary engine is compatible
+    if config.primary_engine not in compatible:
+        logger.warning(
+            f"Primary OCR engine '{config.primary_engine}' is not compatible "
+            f"with {sys.platform}. Switching to fallback."
+        )
+        
+        # Find first compatible fallback
+        for fallback in config.fallback_engines:
+            if fallback in compatible:
+                logger.info(f"Using '{fallback}' as primary OCR engine on {sys.platform}")
+                config.primary_engine = fallback
+                break
+        else:
+            # No compatible fallback found - use rapidocr as default
+            logger.warning(
+                "No compatible fallback found. Using 'rapidocr' as default primary engine."
+            )
+            config.primary_engine = 'rapidocr'
+    
+    # Filter fallback engines
+    config.fallback_engines = filter_engines_by_platform(config.fallback_engines)
+    
+    # Log summary if anything changed
+    if (original_primary != config.primary_engine or 
+        original_fallbacks != config.fallback_engines):
+        logger.info(
+            f"OCR engine configuration adjusted for {sys.platform}: "
+            f"primary={config.primary_engine}, fallbacks={config.fallback_engines}"
+        )
+    
+    return config
