@@ -159,6 +159,21 @@ export function validateADF(adf) {
 }
 
 /**
+ * Extract all top-level media nodes (mediaSingle, mediaGroup) from an ADF
+ * document. These nodes contain inline image/file references that must be
+ * preserved when the description text is rewritten by AI.
+ *
+ * @param {*} adf - The original ADF document
+ * @returns {Array} Array of mediaSingle/mediaGroup nodes (empty if none found)
+ */
+export function extractMediaNodes(adf) {
+  if (!adf || !Array.isArray(adf.content)) return [];
+  return adf.content.filter(
+    node => node && (node.type === 'mediaSingle' || node.type === 'mediaGroup')
+  );
+}
+
+/**
  * Extract plain text from an ADF document. Used to convert a Jira
  * description back to text so the AI server can analyze it.
  *

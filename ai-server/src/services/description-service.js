@@ -16,6 +16,7 @@ const crypto = require('node:crypto');
 const logger = require('../utils/logger');
 const { chatCompletionWithFallback, isPortkeyEnabled } = require('./ai/ai-client');
 const { buildMessages } = require('./ai/description-prompts');
+const { extractAllDocuments } = require('./document-extractor');
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -297,13 +298,15 @@ function withTimeout(promise, ms, label) {
   });
 }
 
-async function invokeLLMOnce({ title, description, issueType, stricterJson }) {
-  const messages = buildMessages({ title, description, issueType, stricterJson });
+async function invokeLLMOnce({ title, description, issueType, stricterJson, parentContext, attachments, documentTexts, linkedIssues }) {
+  const messages = buildMessages({ title, description, issueType, stricterJson, parentContext, attachments, documentTexts, linkedIssues });
+  const hasImages = Array.isArray(attachments) && attachments.length > 0;
   const { response } = await withTimeout(
     chatCompletionWithFallback({
       messages,
       max_tokens: LLM_MAX_TOKENS,
       temperature: LLM_TEMPERATURE,
+      isVision: hasImages,
       response_format: { type: 'json_object' }
     }),
     LLM_TIMEOUT_MS,
@@ -317,7 +320,7 @@ async function invokeLLMOnce({ title, description, issueType, stricterJson }) {
  * Run an LLM analysis with up to one retry on malformed/invalid JSON.
  * Returns null if both attempts fail or LLM is unavailable.
  */
-async function runLLMAnalysis({ sanitizedTitle, sanitizedDescription, issueType }) {
+async function runLLMAnalysis({ sanitizedTitle, sanitizedDescription, issueType, parentContext, attachments, documentTexts, linkedIssues }) {
   if (!isPortkeyEnabled()) {
     logger.warn('[DescQuality] LLM unavailable: Portkey not enabled');
     return null;
@@ -328,7 +331,11 @@ async function runLLMAnalysis({ sanitizedTitle, sanitizedDescription, issueType 
       title: sanitizedTitle,
       description: sanitizedDescription,
       issueType,
-      stricterJson: false
+      stricterJson: false,
+      parentContext,
+      attachments,
+      documentTexts,
+      linkedIssues
     });
     if (validateLLMResponse(first)) return first;
 
@@ -337,7 +344,11 @@ async function runLLMAnalysis({ sanitizedTitle, sanitizedDescription, issueType 
       title: sanitizedTitle,
       description: sanitizedDescription,
       issueType,
-      stricterJson: true
+      stricterJson: true,
+      parentContext,
+      attachments,
+      documentTexts,
+      linkedIssues
     });
     if (validateLLMResponse(second)) return second;
 
@@ -465,6 +476,10 @@ async function analyzeDescription(params) {
     requestImprovement = false,
     orgId,
     accountId,
+    parentContext = null,
+    attachments = null,
+    documents = null,
+    linkedIssues = null,
     deps = {}
   } = params || {};
 
@@ -488,10 +503,47 @@ async function analyzeDescription(params) {
   if (shouldInvokeLLM) {
     const sanitizedTitle = sanitizePII(title);
     const sanitizedDescription = sanitizePII(description);
+    // Sanitize parent context description (title is less likely to have PII but sanitize anyway)
+    const sanitizedParent = parentContext ? {
+      ...parentContext,
+      title: sanitizePII(parentContext.title || ''),
+      description: sanitizePII(parentContext.description || '')
+    } : null;
+
+    // Extract text from document attachments (PDF, DOCX, text files)
+    let documentTexts = null;
+    if (Array.isArray(documents) && documents.length > 0) {
+      try {
+        const extracted = await extractAllDocuments(documents);
+        if (extracted.length > 0) {
+          documentTexts = extracted.map(d => ({
+            filename: d.filename,
+            text: sanitizePII(d.text)
+          }));
+          logger.info('[DescQuality] Extracted text from %d/%d documents for %s', documentTexts.length, documents.length, issueKey);
+        }
+      } catch (docErr) {
+        logger.warn('[DescQuality] Document extraction failed for %s: %s', issueKey, docErr.message);
+      }
+    }
+
+    // Sanitize linked issues context
+    const sanitizedLinkedIssues = Array.isArray(linkedIssues) && linkedIssues.length > 0
+      ? linkedIssues.map(li => ({
+          ...li,
+          title: sanitizePII(li.title || ''),
+          description: sanitizePII(li.description || '')
+        }))
+      : null;
+
     const llm = await runLLM({
       sanitizedTitle,
       sanitizedDescription,
-      issueType
+      issueType,
+      parentContext: sanitizedParent,
+      attachments,
+      documentTexts,
+      linkedIssues: sanitizedLinkedIssues
     });
     if (llm) {
       // Only adopt the LLM score when the LLM was invoked for scoring purposes

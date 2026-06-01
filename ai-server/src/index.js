@@ -213,7 +213,12 @@ app.get('/health', publicLimiter, (req, res) => {
   res.json({
     status: 'healthy',
     timestamp: new Date().toISOString(),
-    uptime: process.uptime()
+    uptime: process.uptime(),
+    features: {
+      descriptionContextEnrichment: true,
+      imageAttachments: true,
+      parentContext: true
+    }
   });
 });
 

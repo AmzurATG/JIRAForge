@@ -180,7 +180,11 @@ describe('updateDescription resolver', () => {
 
     expect(result.success).toBe(true);
     expect(mockRequestJira).toHaveBeenCalled();
-    const [routeArg, opts] = mockRequestJira.mock.calls[0];
+    // First call is GET to fetch original ADF for media preservation,
+    // second call is the actual PUT update
+    const putCall = mockRequestJira.mock.calls.find(([, opts]) => opts && opts.method === 'PUT');
+    expect(putCall).toBeTruthy();
+    const [routeArg, opts] = putCall;
     expect(routeArg).toContain('/rest/api/3/issue/PROJ-9');
     expect(opts.method).toBe('PUT');
     const body = JSON.parse(opts.body);
@@ -188,6 +192,51 @@ describe('updateDescription resolver', () => {
     expect(body.fields.description.type).toBe('doc');
     expect(body.fields.description.version).toBe(1);
     expect(Array.isArray(body.fields.description.content)).toBe(true);
+  });
+
+  test('preserves media nodes from original description when updating', async () => {
+    const r = makeResolver();
+    registerDescriptionResolvers(r);
+
+    const mediaNode = {
+      type: 'mediaSingle',
+      attrs: { layout: 'center' },
+      content: [{
+        type: 'media',
+        attrs: { id: 'abc-123', type: 'file', collection: 'coll', width: 800, height: 600 }
+      }]
+    };
+    const originalAdf = {
+      type: 'doc', version: 1,
+      content: [
+        { type: 'paragraph', content: [{ type: 'text', text: 'Original text' }] },
+        mediaNode
+      ]
+    };
+
+    // First call: GET to fetch original description (returns ADF with media)
+    // Second call: PUT to update (succeeds)
+    mockRequestJira
+      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ fields: { description: originalAdf } }), text: async () => '' })
+      .mockResolvedValueOnce({ ok: true, status: 204, text: async () => '', json: async () => ({}) });
+
+    const result = await r.invoke('updateDescription', {
+      payload: {
+        issueKey: 'PROJ-10',
+        improvedTitle: 'Title',
+        improvedDescription: '## Improved\n\nNew content',
+        updateTitle: true,
+        updateDescription: true
+      }
+    });
+
+    expect(result.success).toBe(true);
+    const putCall = mockRequestJira.mock.calls.find(([, opts]) => opts && opts.method === 'PUT');
+    const body = JSON.parse(putCall[1].body);
+    // The media node from the original should be appended
+    const mediaNodes = body.fields.description.content.filter(n => n.type === 'mediaSingle');
+    expect(mediaNodes).toHaveLength(1);
+    expect(mediaNodes[0].content[0].attrs.id).toBe('abc-123');
   });
 
   test('rejects empty improved title when title update requested', async () => {
