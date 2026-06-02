@@ -180,10 +180,31 @@ else:
     engine_excludes += ['winrtocr']
 
 # ==============================================================================
+# RAPIDOCR DETECTION (only if configured) — cross-platform lightweight OCR
+# rapidocr has a first-class engine module (ocr/engines/rapidocr_engine.py).
+# The PyPI package is 'rapidocr_onnxruntime' (NOT 'rapidocr'), so the generic
+# dynamic-engine path would silently fail.  Handle it here explicitly.
+# ==============================================================================
+if 'rapidocr' in configured_engines:
+    print("[INFO] RapidOCR engine configured - bundling rapidocr_onnxruntime dependencies...")
+    try:
+        import rapidocr_onnxruntime
+        engine_hiddenimports += collect_submodules('rapidocr_onnxruntime')
+        engine_datas += collect_data_files('rapidocr_onnxruntime')
+        engine_hiddenimports += ['ocr.engines.rapidocr_engine']
+        print("[INFO] RapidOCR (rapidocr_onnxruntime) bundled successfully")
+    except ImportError:
+        print("[WARN] rapidocr_onnxruntime not installed - RapidOCR engine will not work in AppImage/EXE")
+        print("[WARN] Install it first: pip install rapidocr-onnxruntime")
+else:
+    print("[INFO] RapidOCR engine NOT configured - skipping RapidOCR bundling")
+    engine_excludes += ['rapidocr_onnxruntime', 'ocr.engines.rapidocr_engine']
+
+# ==============================================================================
 # DYNAMIC ENGINE DETECTION (for any other configured engine)
 # Attempts to collect submodules/data for arbitrary OCR packages
 # ==============================================================================
-known_engines = {'easyocr', 'winrtocr', 'winrt', 'mock', 'demo'}
+known_engines = {'easyocr', 'winrtocr', 'winrt', 'mock', 'demo', 'rapidocr'}
 dynamic_engines = [e for e in configured_engines if e not in known_engines]
 
 for engine_name in dynamic_engines:

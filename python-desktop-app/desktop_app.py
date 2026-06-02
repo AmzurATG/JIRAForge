@@ -597,7 +597,7 @@ load_dotenv()
 
 # Application version - IMPORTANT: Update this when releasing new versions
 # This is used for update checking and notifications
-APP_VERSION = "1.0.3"
+APP_VERSION = "1.0.4"
 
 # True when the process is running inside an AppImage bundle.
 # The AppImage runtime sets the $APPIMAGE env var to the path of the .AppImage
