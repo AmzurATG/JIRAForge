@@ -5836,8 +5836,8 @@ class TimeTracker:
         self.default_tracking_settings = {
             'screenshot_monitoring_enabled': False,
             'screenshot_interval_seconds': 900,  # 15 minutes default
-            'tracking_mode': 'interval',  # 'interval' or 'event'
-            'event_tracking_enabled': False,
+            'tracking_mode': 'event',  # event-only monitoring
+            'event_tracking_enabled': True,
             'track_window_changes': True,
             'track_idle_time': True,
             'idle_threshold_seconds': 300,  # 5 minutes
@@ -9090,6 +9090,10 @@ class TimeTracker:
                     'work_days': _nvl(settings.get('work_days'), [1, 2, 3, 4, 5]),
                 }
 
+                # Product decision: enforce event-based monitoring only.
+                fetched_settings['tracking_mode'] = 'event'
+                fetched_settings['event_tracking_enabled'] = True
+
                 if SCREENSHOT_MONITORING_HARD_DISABLED:
                     fetched_settings['screenshot_monitoring_enabled'] = False
 
@@ -9101,9 +9105,7 @@ class TimeTracker:
                 self.capture_interval = fetched_settings['screenshot_interval_seconds']
                 self.idle_timeout = fetched_settings['idle_threshold_seconds']
                 
-                tracking_mode = fetched_settings.get('tracking_mode', 'interval')
-                event_enabled = fetched_settings.get('event_tracking_enabled', False)
-                mode_str = "interval + event" if (event_enabled or tracking_mode == 'event') else "interval-only"
+                mode_str = "event-only"
                 
                 project_info = f" for project '{project_key}'" if project_key else ""
                 total_classifications = len(self.classification_manager.process_classifications) + len(self.classification_manager.url_classifications) + len(self.classification_manager.url_wildcard_patterns)
@@ -11513,13 +11515,8 @@ class TimeTracker:
         project_key = self.current_project_key
         self.fetch_tracking_settings(project_key=project_key)
         
-        # Log actual tracking mode from settings
-        tracking_mode = self.tracking_settings.get('tracking_mode', 'interval')
-        event_enabled = self.tracking_settings.get('event_tracking_enabled', False)
-        if event_enabled or tracking_mode == 'event':
-            print("[OK] Tracking started (interval + event-based)")
-        else:
-            print("[OK] Tracking started (interval-only mode)")
+        # Tracking mode is enforced as event-only.
+        print("[OK] Tracking started (event-only mode)")
         
         # Track last screenshot time to prevent too frequent captures (for window switches)
         last_screenshot_time = 0
@@ -11860,7 +11857,7 @@ class TimeTracker:
                         should_capture = True
                         capture_reason = "window_switch"
                 
-                if time_since_last_interval >= current_capture_interval:
+                if time_since_last_interval >= current_capture_interval and not (event_tracking_enabled or tracking_mode == 'event'):
                     # Interval reached (using dynamic interval from settings)
                     # This ensures clean, non-overlapping time periods
                     updated_existing_record = False  # Track if we updated a previous record
