@@ -9,6 +9,7 @@ import { Clock, TrendingUp, Users, Activity } from 'lucide-react';
 import { dashboardApi } from '../api/dashboard';
 import KPICard from '../components/common/KPICard';
 import DateRangePicker from '../components/common/DateRangePicker';
+import LobFilter from '../components/common/LobFilter';
 import ProductivityTrendChart from '../components/charts/ProductivityTrendChart';
 import ProductivityDonutChart from '../components/charts/ProductivityDonutChart';
 import LoadingSpinner from '../components/common/LoadingSpinner';
@@ -19,7 +20,8 @@ function DashboardPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [dashboardData, setDashboardData] = useState(null);
-  
+  const [lobId, setLobId] = useState('');
+
   // Default to last 7 days
   const [dateRange, setDateRange] = useState(() => {
     const to = new Date();
@@ -33,14 +35,14 @@ function DashboardPage() {
 
   useEffect(() => {
     loadDashboardData();
-  }, [dateRange]);
+  }, [dateRange, lobId]);
 
   const loadDashboardData = async () => {
     setLoading(true);
     setError(null);
-    
+
     try {
-      const response = await dashboardApi.getData(dateRange.from, dateRange.to);
+      const response = await dashboardApi.getData(dateRange.from, dateRange.to, lobId);
       setDashboardData(response.data);
     } catch (err) {
       console.error('Failed to load dashboard:', err);
@@ -76,14 +78,17 @@ function DashboardPage() {
         <ErrorBanner message={error} onClose={() => setError(null)} />
       )}
 
-      {/* Date Range Filter */}
-      <div className="card">
-        <label className="filter-label">Date Range</label>
-        <DateRangePicker
-          from={dateRange.from}
-          to={dateRange.to}
-          onChange={handleDateRangeChange}
-        />
+      {/* Filters */}
+      <div className="card grid grid-cols-1 sm:grid-cols-2 gap-4">
+        <div>
+          <label className="filter-label">Date Range</label>
+          <DateRangePicker
+            from={dateRange.from}
+            to={dateRange.to}
+            onChange={handleDateRangeChange}
+          />
+        </div>
+        <LobFilter value={lobId} onChange={setLobId} />
       </div>
 
       {/* KPI Cards */}

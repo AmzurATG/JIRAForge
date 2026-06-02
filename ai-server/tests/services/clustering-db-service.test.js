@@ -26,7 +26,7 @@ jest.mock('../../src/utils/datetime', () => ({
 // Imports
 // ---------------------------------------------------------------------------
 
-const { computeIsIdleOnly } = require('../../src/services/db/clustering-db-service');
+const { computeIsIdleOnly, getUsersWithUnassignedWork } = require('../../src/services/db/clustering-db-service');
 
 // ---------------------------------------------------------------------------
 // computeIsIdleOnly Helper Function Tests
@@ -151,5 +151,106 @@ describe('computeIsIdleOnly', () => {
 
     const result = computeIsIdleOnly(sessions);
     expect(result).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// getUsersWithUnassignedWork — Google (non-Jira) user exclusion
+// ---------------------------------------------------------------------------
+// Builds a minimal chainable Supabase stub. The function makes these calls, in
+// order: unassigned_group_members.select(); unassigned_activity.select().eq().eq().order();
+// activity_records.select().is().in().in().eq(); then (new) users.select().in().eq().
+// We drive results per-table so we can assert the final provider filter.
+
+describe('getUsersWithUnassignedWork — excludes google users', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  // Returns a thenable query builder whose chain methods all return `this`,
+  // resolving to `{ data, error }` when awaited.
+  function makeQuery(result) {
+    const q = {
+      select: () => q,
+      eq: () => q,
+      is: () => q,
+      in: () => q,
+      order: () => q,
+      then: (resolve) => resolve(result),
+    };
+    return q;
+  }
+
+  function buildClient({ activityRecords, googleUsers, usersError = null }) {
+    return {
+      from: (table) => {
+        switch (table) {
+          case 'unassigned_group_members':
+            return makeQuery({ data: [], error: null }); // nothing grouped yet
+          case 'unassigned_activity':
+            return makeQuery({ data: [], error: null }); // no legacy rows
+          case 'activity_records':
+            return makeQuery({ data: activityRecords, error: null });
+          case 'users':
+            return makeQuery({ data: googleUsers, error: usersError });
+          default:
+            return makeQuery({ data: [], error: null });
+        }
+      },
+    };
+  }
+
+  it('removes users whose auth_provider is google, keeps the rest', async () => {
+    mockGetClient.mockReturnValue(buildClient({
+      activityRecords: [
+        { id: 'r1', user_id: 'google-user', organization_id: 'org-1' },
+        { id: 'r2', user_id: 'jira-user', organization_id: 'org-1' },
+      ],
+      googleUsers: [{ id: 'google-user' }], // users table says this one is google
+    }));
+
+    const result = await getUsersWithUnassignedWork();
+
+    const ids = result.map(u => u.id);
+    expect(ids).toContain('jira-user');
+    expect(ids).not.toContain('google-user');
+    expect(result).toHaveLength(1);
+  });
+
+  it('keeps everyone when there are no google users', async () => {
+    mockGetClient.mockReturnValue(buildClient({
+      activityRecords: [
+        { id: 'r1', user_id: 'jira-1', organization_id: 'org-1' },
+        { id: 'r2', user_id: 'jira-2', organization_id: 'org-1' },
+      ],
+      googleUsers: [],
+    }));
+
+    const result = await getUsersWithUnassignedWork();
+    expect(result.map(u => u.id).sort()).toEqual(['jira-1', 'jira-2']);
+  });
+
+  it('fails OPEN: if the provider lookup errors, returns the unfiltered combos', async () => {
+    mockGetClient.mockReturnValue(buildClient({
+      activityRecords: [
+        { id: 'r1', user_id: 'maybe-google', organization_id: 'org-1' },
+      ],
+      googleUsers: null,
+      usersError: { message: 'users query failed' },
+    }));
+
+    const result = await getUsersWithUnassignedWork();
+    // Must not silently drop a user on a transient DB error.
+    expect(result.map(u => u.id)).toEqual(['maybe-google']);
+  });
+
+  it('returns empty (and skips the provider query) when there is no unassigned work', async () => {
+    mockGetClient.mockReturnValue(buildClient({
+      activityRecords: [],
+      googleUsers: [],
+    }));
+
+    const result = await getUsersWithUnassignedWork();
+    expect(result).toEqual([]);
   });
 });

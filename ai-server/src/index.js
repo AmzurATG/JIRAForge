@@ -18,6 +18,9 @@ const portalController = require('./controllers/portal-controller');
 const portalReportsController = require('./controllers/portal-reports-controller');
 const portalAdminUsersController = require('./controllers/portal-admin-users-controller');
 const portalAppClassificationsController = require('./controllers/portal-app-classifications-controller');
+const portalLobController = require('./controllers/portal-lob-controller');
+const portalAppCatalogController = require('./controllers/portal-app-catalog-controller');
+const portalLobAppClassificationsController = require('./controllers/portal-lob-app-classifications-controller');
 const authMiddleware = require('./middleware/auth');
 const forgeAuthMiddleware = require('./middleware/forge-auth');
 const atlassianAuthMiddleware = require('./middleware/atlassian-auth');
@@ -710,6 +713,40 @@ app.post('/api/portal/app-classifications', portalAuthMiddleware.verifyPortalTok
 app.post('/api/portal/app-classifications/bulk-import', portalAuthMiddleware.verifyPortalToken, portalAppClassificationsController.bulkImportAppClassifications);
 app.put('/api/portal/app-classifications/:id', portalAuthMiddleware.verifyPortalToken, portalAppClassificationsController.updateAppClassification);
 app.delete('/api/portal/app-classifications/:id', portalAuthMiddleware.verifyPortalToken, portalAppClassificationsController.deleteAppClassification);
+
+// =============================================================================
+// LOB SEGMENTATION & RBAC (Phase 1) — all authenticated; role/scope enforced in
+// controllers. Analytics scoping itself is gated by PORTAL_LOB_ENFORCEMENT.
+// =============================================================================
+
+// LOB management (create/update/delete: superadmin; list: superadmin or head)
+app.get('/api/portal/lobs', portalAuthMiddleware.verifyPortalToken, portalLobController.getLobs);
+app.post('/api/portal/lobs', portalAuthMiddleware.verifyPortalToken, portalLobController.createLob);
+app.put('/api/portal/lobs/:lobId', portalAuthMiddleware.verifyPortalToken, portalLobController.updateLob);
+app.delete('/api/portal/lobs/:lobId', portalAuthMiddleware.verifyPortalToken, portalLobController.deleteLob);
+
+// LOB members (employees) — manage: superadmin; list: superadmin or head of LOB
+app.get('/api/portal/lobs/:lobId/members', portalAuthMiddleware.verifyPortalToken, portalLobController.getMembers);
+app.post('/api/portal/lobs/:lobId/members', portalAuthMiddleware.verifyPortalToken, portalLobController.addMembers);
+app.delete('/api/portal/lobs/:lobId/members/:userId', portalAuthMiddleware.verifyPortalToken, portalLobController.removeMember);
+
+// LOB heads — superadmin only
+app.get('/api/portal/lobs/:lobId/heads', portalAuthMiddleware.verifyPortalToken, portalLobController.getHeads);
+app.post('/api/portal/lobs/:lobId/heads', portalAuthMiddleware.verifyPortalToken, portalLobController.addHeads);
+app.delete('/api/portal/lobs/:lobId/heads/:adminId', portalAuthMiddleware.verifyPortalToken, portalLobController.removeHead);
+
+// Per-LOB app classifications — superadmin or head of the LOB
+app.get('/api/portal/lobs/:lobId/app-classifications', portalAuthMiddleware.verifyPortalToken, portalLobAppClassificationsController.getClassifications);
+app.put('/api/portal/lobs/:lobId/app-classifications', portalAuthMiddleware.verifyPortalToken, portalLobAppClassificationsController.setClassification);
+app.post('/api/portal/lobs/:lobId/app-classifications/bulk', portalAuthMiddleware.verifyPortalToken, portalLobAppClassificationsController.bulkSet);
+app.delete('/api/portal/lobs/:lobId/app-classifications/:appId', portalAuthMiddleware.verifyPortalToken, portalLobAppClassificationsController.deleteClassification);
+
+// Shared application catalog — read: any portal user; write: superadmin
+app.get('/api/portal/app-catalog', portalAuthMiddleware.verifyPortalToken, portalAppCatalogController.getCatalog);
+app.post('/api/portal/app-catalog', portalAuthMiddleware.verifyPortalToken, portalAppCatalogController.createApp);
+app.post('/api/portal/app-catalog/bulk-import', portalAuthMiddleware.verifyPortalToken, portalAppCatalogController.bulkImport);
+app.put('/api/portal/app-catalog/:id', portalAuthMiddleware.verifyPortalToken, portalAppCatalogController.updateApp);
+app.delete('/api/portal/app-catalog/:id', portalAuthMiddleware.verifyPortalToken, portalAppCatalogController.deleteApp);
 
 // Error handling middleware
 app.use((err, req, res, next) => {

@@ -94,6 +94,71 @@ def test_refresh_reauth_error_code_is_permanent_failure():
     assert manager._refresh_token_invalid is False
 
 
+def test_refresh_text_match_underscore_phrasing_is_permanent():
+    """
+    Fallback path (no errorCode in body): Atlassian's exact wording
+    'refresh_token is invalid' (underscore) must be classified permanent.
+    The previous list only had the space variant and missed this.
+    """
+    manager = _make_manager()
+
+    response = _MockResponse(
+        403,
+        {
+            'success': False,
+            'error': 'Token refresh failed: refresh_token is invalid'
+            # NOTE: deliberately no 'errorCode' — exercises the text-match branch
+        }
+    )
+
+    with patch('desktop_app.requests.post', return_value=response):
+        ok = manager.refresh_access_token()
+
+    assert ok is False
+    assert manager._refresh_fail_count == 1  # permanent → counter incremented
+
+
+def test_refresh_text_match_unauthorized_client_is_permanent():
+    """
+    Fallback path: Atlassian's 'unauthorized_client' error code in the body text
+    (no explicit errorCode field) must be classified permanent.
+    """
+    manager = _make_manager()
+
+    response = _MockResponse(
+        403,
+        {
+            'success': False,
+            'error': 'Token refresh failed: unauthorized_client'
+        }
+    )
+
+    with patch('desktop_app.requests.post', return_value=response):
+        ok = manager.refresh_access_token()
+
+    assert ok is False
+    assert manager._refresh_fail_count == 1
+
+
+def test_refresh_text_match_globally_revoked_is_permanent():
+    """Fallback path: 'Token was globally revoked' must be classified permanent."""
+    manager = _make_manager()
+
+    response = _MockResponse(
+        403,
+        {
+            'success': False,
+            'error': 'Token refresh failed: Token was globally revoked'
+        }
+    )
+
+    with patch('desktop_app.requests.post', return_value=response):
+        ok = manager.refresh_access_token()
+
+    assert ok is False
+    assert manager._refresh_fail_count == 1
+
+
 def test_refresh_failure_logs_root_cause_details():
     """
     Auth expiration diagnostics must include machine-readable root cause context

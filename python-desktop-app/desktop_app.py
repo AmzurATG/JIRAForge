@@ -2447,11 +2447,20 @@ class AtlassianAuthManager:
                     elif error_code == 'OAUTH_TEMPORARY_FAILURE':
                         is_permanent_failure = False
                     else:
+                        # Fallback text-matching for servers that don't send an explicit
+                        # errorCode (older ai-server builds). Patterns are taken verbatim
+                        # from Atlassian's published OAuth error responses — note the
+                        # underscore in 'refresh_token is invalid' (Atlassian's exact
+                        # wording) and the 'unauthorized_client' error code, both of which
+                        # the previous list missed.
                         is_permanent_failure = (
                             error_data.get('requiresReauth') or
                             'invalid_grant' in error_lower or
+                            'unauthorized_client' in error_lower or
+                            'refresh_token is invalid' in error_lower or
                             'refresh token is invalid' in error_lower or
                             'token has been revoked' in error_lower or
+                            'token was globally revoked' in error_lower or
                             'token has been expired' in error_lower
                         )
 
@@ -5909,6 +5918,16 @@ class TimeTracker:
                 self.current_user_id = user.get('id')
                 self.organization_id = user.get('organization_id')
 
+                # Persist to the local user cache so the session survives restarts.
+                # Without this, startup's restore path (which falls back to the cache
+                # after the Atlassian /me check fails for Google users) finds nothing
+                # and forces a re-login on every reboot. The cache dict carries
+                # auth_provider='google' so startup restores via the Google path.
+                try:
+                    self._save_cached_user_info(self.current_user, self.current_user_id)
+                except Exception as cache_err:
+                    print(f"[WARN] Could not cache google user info (non-fatal): {cache_err}")
+
                 # Mark logged in (best-effort; non-fatal for google)
                 try:
                     self._update_desktop_status(logged_in=True)
@@ -7123,6 +7142,9 @@ class TimeTracker:
                 'name': atlassian_user.get('name'),
                 'user_id': user_id,
                 'organization_id': self.organization_id,
+                # Persist the provider so startup restores the correct path.
+                # Atlassian /me dicts have no auth_provider → default 'atlassian'.
+                'auth_provider': atlassian_user.get('auth_provider', 'atlassian'),
                 'cached_at': datetime.now(timezone.utc).isoformat()
             }
             with open(self._get_user_cache_path(), 'w') as f:
@@ -12094,8 +12116,13 @@ class TimeTracker:
         # is_authenticated() triggers a network refresh call if the access token is expired,
         # but the network may not be ready yet (WiFi reconnecting after sleep/restart).
         # The full auth verification happens later after the connectivity check.
+        # Include Google (non-Jira) session tokens here too — Google users have no
+        # Atlassian access_token/refresh_token, so checking only those would skip
+        # the early org/Supabase restore for them.
         has_stored_tokens = (self.auth_manager.tokens.get('access_token') or
-                             self.auth_manager.tokens.get('refresh_token'))
+                             self.auth_manager.tokens.get('refresh_token') or
+                             self.auth_manager.tokens.get('supabase_token') or
+                             self.auth_manager.tokens.get('google_refresh_token'))
         if has_stored_tokens:
             try:
                 cached_user = self._load_cached_user_info()
@@ -12126,7 +12153,40 @@ class TimeTracker:
         
         # Check authentication
         if self.auth_manager.is_authenticated():
-            if is_online:
+            # Google (non-Jira) sessions: there is no Atlassian /me to call, so the
+            # Atlassian restore path below would always fail and force a re-login on
+            # every restart. Restore identity from the local cache instead and (if
+            # online) refresh the Supabase JWT via the Google refresh token.
+            if self.auth_manager.auth_provider == 'google':
+                cached_user = self._load_cached_user_info()
+                if cached_user:
+                    self.current_user = cached_user
+                    self.current_user_id = cached_user.get('user_id')
+                    self.organization_id = cached_user.get('organization_id') or self.organization_id
+                    print(f"[OK] Restored Google session for {cached_user.get('email', 'User')}")
+                    if is_online:
+                        try:
+                            # Re-mint the Supabase JWT and (re)initialize the client.
+                            # initialize_supabase() is a no-op if early-init already ran.
+                            if self.initialize_supabase():
+                                self._update_desktop_status(logged_in=True)
+                            else:
+                                print("[WARN] Google: Supabase init failed at startup; will retry in background")
+                        except Exception as g_err:
+                            print(f"[WARN] Google startup Supabase init failed (non-fatal): {g_err}")
+                    else:
+                        print("[INFO] Google session offline — will sync when online")
+                else:
+                    # No cache but we hold a Google refresh token: don't destroy the
+                    # session. Try a live refresh; only fall through to login if that
+                    # also yields nothing (handled by the consent/login gate below).
+                    print("[WARN] Google session has no cached user info; attempting live refresh")
+                    if is_online:
+                        try:
+                            self.initialize_supabase()
+                        except Exception as g_err:
+                            print(f"[WARN] Google live refresh failed (non-fatal): {g_err}")
+            elif is_online:
                 # Online: try to get user info from Atlassian (with retries)
                 user_info = None
                 for attempt in range(3):
@@ -12950,6 +13010,24 @@ loadData();
             font-size: 15px;
             line-height: 1.5;
         }
+        .close-hint {
+            margin-top: 20px;
+            color: #6B778C;
+            font-size: 14px;
+        }
+        .close-btn {
+            margin-top: 20px;
+            padding: 12px 28px;
+            font-size: 15px;
+            font-weight: 600;
+            color: white;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: opacity 0.2s ease;
+        }
+        .close-btn:hover { opacity: 0.9; }
     </style>
 </head>
 <body>
@@ -12961,7 +13039,30 @@ loadData();
         </div>
         <h1>Login Successful!</h1>
         <p>You're all set. Time tracking will start automatically in the background.</p>
+        <p class="close-hint">You can safely close this tab.</p>
+        <button id="closeBtn" class="close-btn" type="button">Close this tab</button>
     </div>
+    <script>
+        // The browser opened (navigated to) this tab — it was NOT opened by
+        // window.open(). Chrome/Edge/Firefox therefore block window.close() here
+        // ("Scripts may close only the windows that were opened by them"). So we
+        // ATTEMPT to close, and if the tab is still here shortly after, we tell the
+        // user the truth (close manually) instead of leaving a dead button.
+        (function () {
+            var btn = document.getElementById('closeBtn');
+            var hint = document.querySelector('.close-hint');
+            btn.addEventListener('click', function () {
+                window.close();
+                // Best-effort fallback for some Chromium builds.
+                try { window.open('', '_self'); window.close(); } catch (e) {}
+                // If still open after the attempt, be honest about it.
+                setTimeout(function () {
+                    btn.style.display = 'none';
+                    hint.textContent = 'Please close this tab manually (Ctrl+W).';
+                }, 300);
+            });
+        })();
+    </script>
 </body>
 </html>'''
         return html

@@ -144,6 +144,45 @@ class TestAuthHeadersByProvider:
         tracker.auth_manager.get_valid_supabase_token.assert_not_called()
 
 
+class TestGoogleSessionPersistsAcrossRestart:
+    """A Google session must survive a restart/reboot without re-login.
+
+    Root cause being guarded: the local user cache was only written on the
+    Atlassian path, and startup restore called Atlassian /me (which returns None
+    for Google users) then logged out. These tests pin the fix:
+      - login caches the Google user (auth_provider='google'),
+      - the cache round-trips auth_provider,
+      - startup restores the Google session from cache instead of re-prompting.
+    """
+
+    def test_save_cached_user_info_persists_google_provider(self, tracker, tmp_path):
+        tracker.organization_id = 'org-1'
+        tracker._get_user_cache_path = MagicMock(return_value=str(tmp_path / 'user_cache.json'))
+        google_user = {
+            'account_id': 'u-1', 'email': 'a@amzur.com',
+            'name': 'A', 'auth_provider': 'google',
+        }
+
+        tracker._save_cached_user_info(google_user, 'u-1')
+        restored = tracker._load_cached_user_info()
+
+        assert restored['auth_provider'] == 'google'
+        assert restored['user_id'] == 'u-1'
+        assert restored['organization_id'] == 'org-1'
+        assert restored['email'] == 'a@amzur.com'
+
+    def test_cache_defaults_to_atlassian_when_provider_absent(self, tracker, tmp_path):
+        """Atlassian /me dicts have no auth_provider key — must default, not crash."""
+        tracker.organization_id = 'org-2'
+        tracker._get_user_cache_path = MagicMock(return_value=str(tmp_path / 'user_cache.json'))
+        atlassian_user = {'account_id': 'acc-9', 'email': 'j@corp.com', 'name': 'J'}
+
+        tracker._save_cached_user_info(atlassian_user, 'u-9')
+        restored = tracker._load_cached_user_info()
+
+        assert restored['auth_provider'] == 'atlassian'
+
+
 class TestJiraGuardsNoOpForGoogle:
     def test_get_jira_cloud_id_returns_none(self, tracker):
         assert tracker.get_jira_cloud_id() is None

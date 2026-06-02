@@ -10,6 +10,7 @@ import { timeLogsApi } from '../api/timeLogs';
 import { employeesApi } from '../api/employees';
 import DataTable from '../components/common/DataTable';
 import DateRangePicker from '../components/common/DateRangePicker';
+import LobFilter from '../components/common/LobFilter';
 import ErrorBanner from '../components/common/ErrorBanner';
 import { formatDate, formatDuration, formatDateTime } from '../utils/formatters';
 import { useDebounce } from '../hooks/useDebounce';
@@ -32,6 +33,7 @@ function TimeLogsPage() {
   const [appFilter, setAppFilter] = useState('');
   const debouncedAppFilter = useDebounce(appFilter, 500);
   const [durationMax, setDurationMax] = useState('');
+  const [lobId, setLobId] = useState('');
   
   // Column visibility
   const [visibleColumns, setVisibleColumns] = useState({
@@ -60,11 +62,11 @@ function TimeLogsPage() {
 
   useEffect(() => {
     loadEmployees();
-  }, []);
+  }, [lobId]);
 
   useEffect(() => {
     loadTimeLogs();
-  }, [page, classification, selectedEmployee, debouncedAppFilter, durationMax, dateRange]);
+  }, [page, classification, selectedEmployee, debouncedAppFilter, durationMax, dateRange, lobId]);
 
   // Close column selector when clicking outside
   useEffect(() => {
@@ -84,7 +86,7 @@ function TimeLogsPage() {
 
   const loadEmployees = async () => {
     try {
-      const response = await employeesApi.getSimpleList();
+      const response = await employeesApi.getSimpleList(undefined, lobId || undefined);
       setEmployees(response.data || []);
     } catch (err) {
       console.error('Failed to load employees:', err);
@@ -100,6 +102,7 @@ function TimeLogsPage() {
         classification: classification || undefined,
         employee: selectedEmployee || undefined,
         app: debouncedAppFilter || undefined,
+        lobId: lobId || undefined,
         durationMax: durationMax ? parseInt(durationMax, 10) * 60 : undefined, // Convert minutes to seconds
         from: dateRange.from,
         to: dateRange.to,
@@ -364,6 +367,9 @@ function TimeLogsPage() {
                 onChange={handleDateRangeChange}
               />
             </div>
+
+            {/* LOB Filter */}
+            <LobFilter value={lobId} onChange={(v) => { setLobId(v); setSelectedEmployee(''); setPage(1); }} />
           </div>
         </div>
       )}

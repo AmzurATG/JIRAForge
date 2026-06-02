@@ -278,7 +278,10 @@ describe('Auth Controller', () => {
       });
     });
 
-    it('should treat 400 status as temporary failure', async () => {
+    it('should treat 400 + invalid_grant as permanent (re-auth required)', async () => {
+      // invalid_grant is terminal per RFC 6749 regardless of the HTTP status
+      // Atlassian wraps it in. It must NOT be classified as a transient/retryable
+      // failure (that is what caused the refresh-token retry storm).
       req.body = {
         refresh_token: 'invalid-token'
       };
@@ -292,16 +295,60 @@ describe('Auth Controller', () => {
 
       await authController.refreshToken(req, res);
 
-      expect(res.status).toHaveBeenCalledWith(400);
+      expect(res.status).toHaveBeenCalledWith(401);
+      expect(res.json).toHaveBeenCalledWith({
+        success: false,
+        error: expect.stringContaining('re-authenticate'),
+        requiresReauth: true,
+        errorCode: 'OAUTH_REAUTH_REQUIRED'
+      });
+    });
+
+    it('should treat 403 + unauthorized_client (rotated refresh token) as permanent', async () => {
+      // Exact production payload from the 2026-05/06 log storm: Atlassian returns
+      // HTTP 403 with this body when a refresh token has rotated out of the chain.
+      req.body = { refresh_token: 'rotated-token' };
+
+      axios.post.mockRejectedValue({
+        response: {
+          status: 403,
+          data: { error: 'unauthorized_client', error_description: 'refresh_token is invalid' }
+        }
+      });
+
+      await authController.refreshToken(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(401);
+      expect(res.json).toHaveBeenCalledWith({
+        success: false,
+        error: expect.stringContaining('re-authenticate'),
+        requiresReauth: true,
+        errorCode: 'OAUTH_REAUTH_REQUIRED'
+      });
+    });
+
+    it('should treat 403 + invalid_grant (globally revoked) as permanent', async () => {
+      req.body = { refresh_token: 'revoked-token' };
+
+      axios.post.mockRejectedValue({
+        response: {
+          status: 403,
+          data: { error: 'invalid_grant', error_description: 'Token was globally revoked' }
+        }
+      });
+
+      await authController.refreshToken(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(401);
       expect(res.json).toHaveBeenCalledWith(
         expect.objectContaining({
-          success: false,
-          errorCode: 'OAUTH_TEMPORARY_FAILURE'
+          requiresReauth: true,
+          errorCode: 'OAUTH_REAUTH_REQUIRED'
         })
       );
     });
 
-    it('should include temporary error code for 403 failures', async () => {
+    it('should include temporary error code for 403 failures without a terminal OAuth code', async () => {
       req.body = { refresh_token: 'refresh-123' };
 
       axios.post.mockRejectedValue({
@@ -311,6 +358,26 @@ describe('Auth Controller', () => {
       await authController.refreshToken(req, res);
 
       expect(res.status).toHaveBeenCalledWith(403);
+      expect(res.json).toHaveBeenCalledWith(
+        expect.objectContaining({
+          success: false,
+          errorCode: 'OAUTH_TEMPORARY_FAILURE'
+        })
+      );
+    });
+
+    it('should keep a 400 with no terminal OAuth code as a transient failure', async () => {
+      // Guard against over-classifying: a malformed-request 400 that is NOT one of
+      // the terminal OAuth codes must remain retryable, not force a re-auth.
+      req.body = { refresh_token: 'refresh-123' };
+
+      axios.post.mockRejectedValue({
+        response: { status: 400, data: { error: 'invalid_request' } }
+      });
+
+      await authController.refreshToken(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(400);
       expect(res.json).toHaveBeenCalledWith(
         expect.objectContaining({
           success: false,
