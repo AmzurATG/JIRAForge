@@ -10,6 +10,7 @@ import { reportsApi } from '../api/reports';
 import { employeesApi } from '../api/employees';
 import DataTable from '../components/common/DataTable';
 import DateRangePicker from '../components/common/DateRangePicker';
+import LobFilter from '../components/common/LobFilter';
 import ErrorBanner from '../components/common/ErrorBanner';
 import { formatDate, formatDuration, formatDateTime } from '../utils/formatters';
 
@@ -48,6 +49,7 @@ function ReportsPage() {
   // Filters
   const [classification, setClassification] = useState('');
   const [selectedEmployee, setSelectedEmployee] = useState('');
+  const [lobId, setLobId] = useState('');
   
   // Employee list for filter
   const [employees, setEmployees] = useState([]);
@@ -85,6 +87,7 @@ function ReportsPage() {
         type: reportType,
         classification: classification || undefined,
         employee: selectedEmployee || undefined,
+        lobId: lobId || undefined,
         from: dateRange.from,
         to: dateRange.to,
         page: newPage,
@@ -115,6 +118,7 @@ function ReportsPage() {
         type: reportType,
         classification: classification || undefined,
         employee: selectedEmployee || undefined,
+        lobId: lobId || undefined,
         from: dateRange.from,
         to: dateRange.to,
       });
@@ -147,6 +151,7 @@ function ReportsPage() {
         type: reportType,
         classification: classification || undefined,
         employee: selectedEmployee || undefined,
+        lobId: lobId || undefined,
         from: dateRange.from,
         to: dateRange.to,
       });
@@ -334,6 +339,9 @@ function ReportsPage() {
                 onChange={setDateRange}
               />
             </div>
+
+            {/* LOB Filter */}
+            <LobFilter value={lobId} onChange={(v) => { setLobId(v); setPreviewData([]); setPage(1); }} />
           </div>
           </div>
 

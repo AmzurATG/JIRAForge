@@ -8,6 +8,33 @@
 
 const logger = require('../utils/logger');
 const portalService = require('../services/portal-service');
+const lobService = require('../services/portal-lob-service');
+
+/** LOB scoping is only enforced when the flag is on (safe rollout). */
+function lobEnforced() {
+  return process.env.PORTAL_LOB_ENFORCEMENT === 'on';
+}
+
+/**
+ * Resolve the employee user_ids the caller may see.
+ * - null  → no restriction (scoping off, or superadmin)
+ * - array → restrict to these employees (empty array ⇒ sees nothing)
+ * Honors an optional ?lobId filter; throws (status 403) if it's out of scope.
+ */
+async function resolveVisibleUserIds(req) {
+  if (!lobEnforced()) return null;
+  const scope = await lobService.resolveScope(req.portalUser);
+  const { lobId } = req.query;
+  if (lobId) {
+    if (!lobService.canAccessLob(scope, lobId)) {
+      const e = new Error('Insufficient permissions for this LOB');
+      e.status = 403;
+      throw e;
+    }
+    return lobService.userIdsForLobs([lobId]);
+  }
+  return scope.visibleUserIds;
+}
 
 /**
  * Get dashboard data (KPIs + trend chart).
@@ -27,19 +54,20 @@ async function getDashboard(req, res) {
       });
     }
     
-    // Get dashboard data
-    const dashboardData = await portalService.getDashboardData(orgId, from, to);
-    
-    return res.json({ 
-      success: true, 
+    // Get dashboard data (scoped to the caller's LOB employees when enforced)
+    const visibleUserIds = await resolveVisibleUserIds(req);
+    const dashboardData = await portalService.getDashboardData(orgId, from, to, visibleUserIds);
+
+    return res.json({
+      success: true,
       data: dashboardData
     });
-    
+
   } catch (error) {
     logger.error('[Portal] Get dashboard failed', error);
-    return res.status(500).json({ 
-      success: false, 
-      error: error.message 
+    return res.status(error.status || 500).json({
+      success: false,
+      error: error.message
     });
   }
 }
@@ -56,20 +84,21 @@ async function getEmployeesList(req, res) {
     
     logger.info('[Portal] getEmployeesList called', { orgId, search });
     
-    const employees = await portalService.getEmployeesList(orgId, search);
-    
+    const visibleUserIds = await resolveVisibleUserIds(req);
+    const employees = await portalService.getEmployeesList(orgId, search, visibleUserIds);
+
     logger.info('[Portal] getEmployeesList success', { orgId, count: employees.length });
-    
-    return res.json({ 
-      success: true, 
+
+    return res.json({
+      success: true,
       data: employees
     });
-    
+
   } catch (error) {
     logger.error('[Portal] Get employees list failed', error);
-    return res.status(500).json({ 
-      success: false, 
-      error: error.message 
+    return res.status(error.status || 500).json({
+      success: false,
+      error: error.message
     });
   }
 }
@@ -89,9 +118,10 @@ async function getEmployees(req, res) {
     const pagination = { page: parseInt(page), limit: parseInt(limit) };
     
     logger.info('[Portal] getEmployees called', { orgId, filters, pagination });
-    
-    const result = await portalService.getEmployees(orgId, filters, pagination);
-    
+
+    const visibleUserIds = await resolveVisibleUserIds(req);
+    const result = await portalService.getEmployees(orgId, filters, pagination, visibleUserIds);
+
     const duration = Date.now() - startTime;
     logger.info('[Portal] getEmployees success', { orgId, count: result.data?.length, duration: `${duration}ms` });
     
@@ -103,9 +133,9 @@ async function getEmployees(req, res) {
   } catch (error) {
     const duration = Date.now() - startTime;
     logger.error('[Portal] Get employees failed', { error: error.message, duration: `${duration}ms` });
-    return res.status(500).json({ 
-      success: false, 
-      error: error.message 
+    return res.status(error.status || 500).json({
+      success: false,
+      error: error.message
     });
   }
 }
@@ -135,18 +165,24 @@ async function getEmployeeDetail(req, res) {
       });
     }
     
+    // Enforce that the requested employee is within the caller's LOB scope.
+    const visibleUserIds = await resolveVisibleUserIds(req);
+    if (Array.isArray(visibleUserIds) && !visibleUserIds.includes(userId)) {
+      return res.status(403).json({ success: false, error: 'Insufficient permissions for this employee' });
+    }
+
     const employeeDetail = await portalService.getEmployeeDetail(orgId, userId, from, to);
-    
-    return res.json({ 
-      success: true, 
+
+    return res.json({
+      success: true,
       data: employeeDetail
     });
-    
+
   } catch (error) {
     logger.error('[Portal] Get employee detail failed', error);
-    return res.status(500).json({ 
-      success: false, 
-      error: error.message 
+    return res.status(error.status || 500).json({
+      success: false,
+      error: error.message
     });
   }
 }
@@ -169,22 +205,28 @@ async function getEmployeeLogs(req, res) {
       });
     }
     
+    // Enforce that the requested employee is within the caller's LOB scope.
+    const visibleUserIds = await resolveVisibleUserIds(req);
+    if (Array.isArray(visibleUserIds) && !visibleUserIds.includes(userId)) {
+      return res.status(403).json({ success: false, error: 'Insufficient permissions for this employee' });
+    }
+
     // Reuse getTimeLogs with employee filter
     const filters = { classification, employee: userId, from, to };
     const pagination = { page: parseInt(page), limit: parseInt(limit) };
-    
-    const result = await portalService.getTimeLogs(orgId, filters, pagination);
-    
-    return res.json({ 
-      success: true, 
+
+    const result = await portalService.getTimeLogs(orgId, filters, pagination, visibleUserIds);
+
+    return res.json({
+      success: true,
       ...result
     });
-    
+
   } catch (error) {
     logger.error('[Portal] Get employee logs failed', error);
-    return res.status(500).json({ 
-      success: false, 
-      error: error.message 
+    return res.status(error.status || 500).json({
+      success: false,
+      error: error.message
     });
   }
 }
@@ -203,21 +245,22 @@ async function getTimeLogs(req, res) {
     
     const filters = { classification, employee, app, from, to, durationMin, durationMax, confidenceMin, confidenceMax };
     const pagination = { page: parseInt(page), limit: parseInt(limit) };
-    
-    const result = await portalService.getTimeLogs(orgId, filters, pagination);
-    
+
+    const visibleUserIds = await resolveVisibleUserIds(req);
+    const result = await portalService.getTimeLogs(orgId, filters, pagination, visibleUserIds);
+
     logger.info('[Portal] getTimeLogs success', { orgId, count: result.data?.length });
-    
-    return res.json({ 
-      success: true, 
+
+    return res.json({
+      success: true,
       ...result
     });
-    
+
   } catch (error) {
     logger.error('[Portal] Get time logs failed', error);
-    return res.status(500).json({ 
-      success: false, 
-      error: error.message 
+    return res.status(error.status || 500).json({
+      success: false,
+      error: error.message
     });
   }
 }

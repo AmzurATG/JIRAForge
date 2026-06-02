@@ -8,23 +8,48 @@
 
 const logger = require('../utils/logger');
 const portalService = require('../services/portal-service');
+const lobService = require('../services/portal-lob-service');
 const PDFDocument = require('pdfkit');
 
 const SUPPORTED_REPORT_TYPES = ['activity-logs', 'daily-summary', 'employee-summary', 'application-usage'];
 
+/** LOB scoping is only enforced when the flag is on (safe rollout). */
+function lobEnforced() {
+  return process.env.PORTAL_LOB_ENFORCEMENT === 'on';
+}
+
+/**
+ * Resolve the employee user_ids the caller may see for reports.
+ * null → no restriction; array → restrict (empty ⇒ nothing). Honors ?lobId.
+ */
+async function resolveVisibleUserIds(req) {
+  if (!lobEnforced()) return null;
+  const scope = await lobService.resolveScope(req.portalUser);
+  const { lobId } = req.query;
+  if (lobId) {
+    if (!lobService.canAccessLob(scope, lobId)) {
+      const e = new Error('Insufficient permissions for this LOB');
+      e.status = 403;
+      throw e;
+    }
+    return lobService.userIdsForLobs([lobId]);
+  }
+  return scope.visibleUserIds;
+}
+
 /**
  * Get report data based on type.
  */
-async function getReportDataByType(orgId, type, filters) {
+async function getReportDataByType(orgId, type, filters, visibleUserIds) {
   switch (type) {
     case 'daily-summary':
-      return getDailySummaryData(orgId, filters);
+      return getDailySummaryData(orgId, filters, visibleUserIds);
     case 'employee-summary':
-      return getEmployeeSummaryData(orgId, filters);
+      return getEmployeeSummaryData(orgId, filters, visibleUserIds);
     case 'application-usage':
-      return getApplicationUsageData(orgId, filters);
+      return getApplicationUsageData(orgId, filters, visibleUserIds);
     default: // activity-logs
-      return portalService.getTimeLogs(orgId, filters, { page: 1, limit: 10000 });
+      return portalService.getTimeLogs(orgId, filters, { page: 1, limit: 10000 }, visibleUserIds);
   }
 }
 
@@ -32,12 +57,12 @@ async function getReportDataByType(orgId, type, filters) {
  * Get daily summary data - aggregated hours per day.
  * If employee filter is provided, shows daily data for that specific employee.
  */
-async function getDailySummaryData(orgId, filters) {
+async function getDailySummaryData(orgId, filters, visibleUserIds) {
   const { from, to, employee } = filters;
-  
+
   // If employee filter is provided, get data from time logs and aggregate by day
   if (employee) {
-    const logsResult = await portalService.getTimeLogs(orgId, { employee, from, to }, { page: 1, limit: 50000 });
+    const logsResult = await portalService.getTimeLogs(orgId, { employee, from, to }, { page: 1, limit: 50000 }, visibleUserIds);
     
     const dailyData = {};
     logsResult.data.forEach(log => {
@@ -70,8 +95,8 @@ async function getDailySummaryData(orgId, filters) {
     return { data, pagination: { totalCount: data.length } };
   }
   
-  // Otherwise, use dashboard data for all employees
-  const dashboardData = await portalService.getDashboardData(orgId, from, to);
+  // Otherwise, use dashboard data for all (scoped) employees
+  const dashboardData = await portalService.getDashboardData(orgId, from, to, visibleUserIds);
   
   const data = dashboardData.dailyTrend.map(day => ({
     date: day.date,
@@ -89,9 +114,9 @@ async function getDailySummaryData(orgId, filters) {
 /**
  * Get employee summary data - aggregated hours per employee.
  */
-async function getEmployeeSummaryData(orgId, filters) {
+async function getEmployeeSummaryData(orgId, filters, visibleUserIds) {
   const { from, to, employee } = filters;
-  const employeesData = await portalService.getEmployees(orgId, { from, to }, { page: 1, limit: 1000 });
+  const employeesData = await portalService.getEmployees(orgId, { from, to }, { page: 1, limit: 1000 }, visibleUserIds);
   
   let data = employeesData.data.map(emp => ({
     employeeName: emp.name,
@@ -114,8 +139,8 @@ async function getEmployeeSummaryData(orgId, filters) {
 /**
  * Get application usage data - time spent per application.
  */
-async function getApplicationUsageData(orgId, filters) {
-  const logsResult = await portalService.getTimeLogs(orgId, filters, { page: 1, limit: 50000 });
+async function getApplicationUsageData(orgId, filters, visibleUserIds) {
+  const logsResult = await portalService.getTimeLogs(orgId, filters, { page: 1, limit: 50000 }, visibleUserIds);
   
   const appUsage = {};
   logsResult.data.forEach(log => {
@@ -172,9 +197,10 @@ async function getReportData(req, res) {
       });
     }
     
-    // Get report data
+    // Get report data (scoped to the caller's LOB employees when enforced)
     const filters = { classification, employee, from, to };
-    const result = await getReportDataByType(orgId, type, filters);
+    const visibleUserIds = await resolveVisibleUserIds(req);
+    const result = await getReportDataByType(orgId, type, filters, visibleUserIds);
     
     // Apply pagination
     const pageNum = parseInt(page, 10) || 1;
@@ -193,9 +219,9 @@ async function getReportData(req, res) {
     
   } catch (error) {
     logger.error('[PortalReports] Get report data failed', error);
-    return res.status(500).json({ 
-      success: false, 
-      error: error.message 
+    return res.status(error.status || 500).json({
+      success: false,
+      error: error.message
     });
   }
 }
@@ -232,9 +258,10 @@ async function exportCSV(req, res) {
       });
     }
     
-    // Get all data
+    // Get all data (scoped to the caller's LOB employees when enforced)
     const filters = { classification, employee, from, to };
-    const result = await getReportDataByType(orgId, type, filters);
+    const visibleUserIds = await resolveVisibleUserIds(req);
+    const result = await getReportDataByType(orgId, type, filters, visibleUserIds);
     
     // Generate CSV based on report type
     let headers, csvRows;
@@ -311,9 +338,9 @@ async function exportCSV(req, res) {
     
   } catch (error) {
     logger.error('[PortalReports] Export CSV failed', error);
-    return res.status(500).json({ 
-      success: false, 
-      error: error.message 
+    return res.status(error.status || 500).json({
+      success: false,
+      error: error.message
     });
   }
 }
@@ -350,9 +377,10 @@ async function exportPDF(req, res) {
       });
     }
     
-    // Get all data
+    // Get all data (scoped to the caller's LOB employees when enforced)
     const filters = { classification, employee, from, to };
-    const result = await getReportDataByType(orgId, type, filters);
+    const visibleUserIds = await resolveVisibleUserIds(req);
+    const result = await getReportDataByType(orgId, type, filters, visibleUserIds);
     
     // Create PDF document
     const doc = new PDFDocument({ margin: 50, size: 'A4', layout: 'landscape' });
@@ -416,9 +444,9 @@ async function exportPDF(req, res) {
     
   } catch (error) {
     logger.error('[PortalReports] Export PDF failed', error);
-    return res.status(500).json({ 
-      success: false, 
-      error: error.message 
+    return res.status(error.status || 500).json({
+      success: false,
+      error: error.message
     });
   }
 }

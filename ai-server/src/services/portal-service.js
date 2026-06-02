@@ -45,18 +45,20 @@ class PortalService {
    * @param {string} to - End date (YYYY-MM-DD)
    * @returns {Promise<Object>} Dashboard data
    */
-  async getDashboardData(orgId, from, to) {
+  async getDashboardData(orgId, from, to, visibleUserIds) {
     const supabase = getClient();
     if (!supabase) throw new Error('Supabase client not initialized');
-    
-    // Query activity records for the date range (no org filter)
-    // Limited to prevent full table scan
-    const { data: activities, error } = await supabase
+
+    // Query activity records for the date range.
+    // visibleUserIds: array → restrict to those employees (LOB scope); null/undefined → all.
+    let activityQuery = supabase
       .from('activity_records')
       .select('classification, duration_seconds, user_id, work_date')
       .gte('work_date', from)
       .lte('work_date', to)
-      .neq('is_idle', true)
+      .neq('is_idle', true);
+    if (Array.isArray(visibleUserIds)) activityQuery = activityQuery.in('user_id', visibleUserIds);
+    const { data: activities, error } = await activityQuery
       .order('start_time', { ascending: false })
       .limit(50000);
     
@@ -122,20 +124,24 @@ class PortalService {
    * @param {string} search - Optional search term
    * @returns {Promise<Array>} Simple user list [{userId, name, email}]
    */
-  async getEmployeesList(orgId, search) {
+  async getEmployeesList(orgId, search, visibleUserIds) {
     const supabase = getClient();
     if (!supabase) throw new Error('Supabase client not initialized');
-    
-    // Get all users (no org filter)
+
+    // visibleUserIds: array → restrict to those employees (LOB scope); null/undefined → all.
+    if (Array.isArray(visibleUserIds) && visibleUserIds.length === 0) return [];
+
     let userQuery = supabase
       .from('users')
       .select('id, display_name, email')
       .order('display_name', { ascending: true });
-    
+
+    if (Array.isArray(visibleUserIds)) userQuery = userQuery.in('id', visibleUserIds);
+
     if (search) {
       userQuery = userQuery.or(`display_name.ilike.%${search}%,email.ilike.%${search}%`);
     }
-    
+
     // Limit to reasonable number for dropdown
     userQuery = userQuery.limit(500);
     
@@ -162,12 +168,17 @@ class PortalService {
    * @param {Object} pagination - page, limit
    * @returns {Promise<Object>} Employees list and pagination
    */
-  async getEmployees(orgId, filters, pagination) {
+  async getEmployees(orgId, filters, pagination, visibleUserIds) {
     const supabase = getClient();
     if (!supabase) throw new Error('Supabase client not initialized');
-    
+
     let { search, productivityRange, from, to } = filters;
     const { page = 1, limit = 20 } = pagination;
+
+    // visibleUserIds: array → restrict to those employees (LOB scope); null/undefined → all.
+    if (Array.isArray(visibleUserIds) && visibleUserIds.length === 0) {
+      return { data: [], pagination: { page, limit, totalCount: 0 } };
+    }
     
     // Default to last 30 days if no date range provided (prevent full table scan)
     if (!from || !to) {
@@ -185,9 +196,10 @@ class PortalService {
       .select('user_id, classification, duration_seconds, start_time')
       .neq('is_idle', true)
       .gte('work_date', from)
-      .lte('work_date', to)
-      .limit(10000);  // Reduced to 10K for faster queries
-    
+      .lte('work_date', to);
+    if (Array.isArray(visibleUserIds)) activityQuery = activityQuery.in('user_id', visibleUserIds);
+    activityQuery = activityQuery.limit(10000);  // cap to keep queries fast
+
     const { data: activities, error: activityError } = await activityQuery;
     
     if (activityError) {
@@ -387,13 +399,18 @@ class PortalService {
    * @param {Object} pagination - page, limit
    * @returns {Promise<Object>} Time logs and pagination
    */
-  async getTimeLogs(orgId, filters, pagination) {
+  async getTimeLogs(orgId, filters, pagination, visibleUserIds) {
     const supabase = getClient();
     if (!supabase) throw new Error('Supabase client not initialized');
-    
+
     let { classification, employee, app, from, to, durationMin, durationMax, confidenceMin, confidenceMax } = filters;
     const { page = 1, limit = 20 } = pagination;
     const normalizedClassification = normalizeClassificationFilter(classification);
+
+    // visibleUserIds: array → restrict to those employees (LOB scope); null/undefined → all.
+    if (Array.isArray(visibleUserIds) && visibleUserIds.length === 0) {
+      return { data: [], pagination: { page, limit, totalCount: 0 } };
+    }
     
     // Default to last 7 days if no date range provided (prevent full table scan)
     if (!from || !to) {
@@ -429,7 +446,11 @@ class PortalService {
     if (employee) {
       query = query.eq('user_id', employee);
     }
-    
+
+    if (Array.isArray(visibleUserIds)) {
+      query = query.in('user_id', visibleUserIds);
+    }
+
     if (app) {
       query = query.ilike('application_name', `%${app}%`);
     }

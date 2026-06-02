@@ -539,23 +539,48 @@ exports.refreshToken = async (req, res) => {
     });
 
   } catch (error) {
-    logger.error('[Auth] Token refresh error:', error.response?.data || error.message);
+    const status = error.response?.status;
+    const oauthError = error.response?.data?.error;
+    const oauthDesc = error.response?.data?.error_description;
 
-    // Only signal requiresReauth for true 401 (token revoked/expired).
-    // HTTP 400 can be a transient malformed-request issue and should NOT
-    // permanently kill the client session.
-    if (error.response?.status === 401) {
+    // Enriched, structured log: capture the HTTP status and OAuth error code so
+    // future incidents are triageable at a glance, plus the last 8 chars of the
+    // refresh token for correlating which install is affected (a suffix alone is
+    // not a usable secret). Keep the '[Auth] Token refresh error:' prefix so
+    // existing log greps still match.
+    logger.error('[Auth] Token refresh error:', {
+      status,
+      oauthError,
+      oauthDesc,
+      refreshTokenSuffix: typeof refresh_token === 'string' ? refresh_token.slice(-8) : undefined
+    });
+
+    // Classify by the OAuth error CODE in the response body, not by HTTP status.
+    // Atlassian wraps a permanently-dead refresh token in HTTP 400 OR 403 (not
+    // always 401), but the body always carries a terminal OAuth error code:
+    //   - invalid_grant       (RFC 6749: refresh token expired or revoked)
+    //   - unauthorized_client  (Atlassian: token rotated out of the active chain)
+    // Both are permanent — the only recovery is a fresh OAuth login. Classifying
+    // them as transient makes the desktop client retry indefinitely (log-flood)
+    // and never prompt the user to re-authenticate.
+    const isPermanent =
+      status === 401 ||
+      oauthError === 'invalid_grant' ||
+      oauthError === 'unauthorized_client';
+
+    if (isPermanent) {
       return res.status(401).json({
         success: false,
-        error: 'Refresh token expired or invalid. User must re-authenticate.',
+        error: 'Refresh token expired, revoked, or rotated out. User must re-authenticate.',
         requiresReauth: true,
         errorCode: 'OAUTH_REAUTH_REQUIRED'
       });
     }
 
-    // For 400 and other errors, return the status as-is without requiresReauth
-    // so the client treats them as transient/retryable failures.
-    res.status(error.response?.status || 500).json({
+    // Genuinely transient (5xx, network blip, or a malformed request that carries
+    // no terminal OAuth code). Preserve the upstream status so the client treats
+    // it as retryable.
+    res.status(status || 500).json({
       success: false,
       error: `Token refresh failed: ${formatAtlassianError(error)}`,
       errorCode: 'OAUTH_TEMPORARY_FAILURE'

@@ -1,26 +1,32 @@
 import { NavLink } from 'react-router-dom';
-import { 
-  LayoutDashboard, 
-  Users, 
-  Clock, 
-  FileText, 
+import {
+  LayoutDashboard,
+  Users,
+  Clock,
+  FileText,
   Settings,
   Activity,
   ChevronLeft,
   ChevronRight,
-  ListChecks
+  ListChecks,
+  Building2
 } from 'lucide-react';
 import { useState } from 'react';
+import { useAuth } from '../../contexts/AuthContext';
 
 function Sidebar({ collapsed, onToggle }) {
+  const { user } = useAuth();
+  const isSuperadmin = user?.role === 'superadmin';
+
   const menuItems = [
     { path: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
     { path: '/employees', label: 'Employees', icon: Users },
     { path: '/time-logs', label: 'Time Logs', icon: Clock },
     { path: '/reports', label: 'Reports', icon: FileText },
+    { path: '/lobs', label: 'Line of Businesses', icon: Building2, superadminOnly: true },
     { path: '/app-classifications', label: 'App Classifications', icon: ListChecks },
     { path: '/settings', label: 'Settings', icon: Settings },
-  ];
+  ].filter((item) => !item.superadminOnly || isSuperadmin);
 
   return (
     <aside className={`${

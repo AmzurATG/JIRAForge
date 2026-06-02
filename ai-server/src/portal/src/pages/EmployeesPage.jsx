@@ -10,6 +10,7 @@ import { Search } from 'lucide-react';
 import { employeesApi } from '../api/employees';
 import DataTable from '../components/common/DataTable';
 import DateRangePicker from '../components/common/DateRangePicker';
+import LobFilter from '../components/common/LobFilter';
 import ErrorBanner from '../components/common/ErrorBanner';
 import { formatDate } from '../utils/formatters';
 import { useDebounce } from '../hooks/useDebounce';
@@ -24,6 +25,7 @@ function EmployeesPage() {
   const [search, setSearch] = useState('');
   const debouncedSearch = useDebounce(search, 500);
   const [productivityRange, setProductivityRange] = useState('');
+  const [lobId, setLobId] = useState('');
   
   // Default to last 7 days
   const [dateRange, setDateRange] = useState(() => {
@@ -38,7 +40,7 @@ function EmployeesPage() {
 
   useEffect(() => {
     loadEmployees();
-  }, [page, debouncedSearch, productivityRange, dateRange]);
+  }, [page, debouncedSearch, productivityRange, dateRange, lobId]);
 
   const loadEmployees = async () => {
     setLoading(true);
@@ -48,6 +50,7 @@ function EmployeesPage() {
       const response = await employeesApi.getList({
         search: debouncedSearch,
         productivityRange: productivityRange || undefined,
+        lobId: lobId || undefined,
         from: dateRange.from,
         to: dateRange.to,
         page,
@@ -218,14 +221,17 @@ function EmployeesPage() {
           </div>
         </div>
 
-        {/* Date Range */}
-        <div>
-          <label className="filter-label">Date Range</label>
-          <DateRangePicker
-            from={dateRange.from}
-            to={dateRange.to}
-            onChange={handleDateRangeChange}
-          />
+        {/* Date Range + LOB */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          <div>
+            <label className="filter-label">Date Range</label>
+            <DateRangePicker
+              from={dateRange.from}
+              to={dateRange.to}
+              onChange={handleDateRangeChange}
+            />
+          </div>
+          <LobFilter value={lobId} onChange={(v) => { setLobId(v); setPage(1); }} />
         </div>
         </div>
       </div>
