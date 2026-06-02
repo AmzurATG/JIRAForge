@@ -27,6 +27,11 @@ wheels/
 *.spec.bak
 *.manifest
 
+# Linux/AppImage build artifacts (generated binaries)
+python-desktop-app/AppDir/usr/bin/TimeTracker
+AppDir/usr/bin/TimeTracker
+appimage/*.AppImage
+
 
 # IDE
 .vscode/
