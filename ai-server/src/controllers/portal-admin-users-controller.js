@@ -8,6 +8,7 @@
 
 const logger = require('../utils/logger');
 const portalDbService = require('../services/db/portal-db-service');
+const lobService = require('../services/portal-lob-service');
 const bcrypt = require('bcrypt');
 const notifmeWrapper = require('../services/notifications/notifme-wrapper');
 const templates = require('../services/notifications/templates');
@@ -35,10 +36,14 @@ async function getAdminUsers(req, res) {
       parseInt(page),
       parseInt(limit)
     );
-    
-    return res.json({ 
-      success: true, 
-      data: result.data,
+
+    // Attach the LOB(s) each admin heads (for display + edit pre-fill)
+    const lobMap = await lobService.getLobsForAdmins((result.data || []).map((a) => a.id));
+    const data = (result.data || []).map((a) => ({ ...a, lobs: lobMap[a.id] || [] }));
+
+    return res.json({
+      success: true,
+      data,
       pagination: {
         page: parseInt(page),
         limit: parseInt(limit),

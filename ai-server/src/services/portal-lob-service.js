@@ -164,6 +164,26 @@ async function removeMember(lobId, userId) {
 // Heads
 // ---------------------------------------------------------------------------
 
+/**
+ * Map of adminId -> [{ id, name }] LOBs each admin heads.
+ * Used to show/edit an admin's LOB assignments in the Settings page.
+ */
+async function getLobsForAdmins(adminIds) {
+  if (!Array.isArray(adminIds) || adminIds.length === 0) return {};
+  const rows = await db.getHeadRowsForAdmins(adminIds);
+  if (rows.length === 0) return {};
+  const lobIds = [...new Set(rows.map((r) => r.lob_id))];
+  const lobs = await db.listLobsByIds(lobIds, { includeInactive: true });
+  const lobById = new Map(lobs.map((l) => [l.id, l]));
+  const map = {};
+  for (const r of rows) {
+    const lob = lobById.get(r.lob_id);
+    if (!lob) continue; // tolerate orphan
+    (map[r.admin_id] = map[r.admin_id] || []).push({ id: lob.id, name: lob.name });
+  }
+  return map;
+}
+
 async function listHeads(lobId) {
   const rows = await db.getLobHeadRows(lobId);
   if (rows.length === 0) return [];
@@ -368,6 +388,7 @@ module.exports = {
   addMembers,
   removeMember,
   listHeads,
+  getLobsForAdmins,
   addHeads,
   removeHead,
   listCatalog,

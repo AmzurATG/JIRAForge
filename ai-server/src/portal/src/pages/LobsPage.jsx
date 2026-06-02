@@ -7,7 +7,7 @@
 
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Plus, Edit2, Trash2, Shield, Settings2 } from 'lucide-react';
+import { Plus, Edit2, Trash2, Settings2 } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { lobsApi } from '../api/lobs';
 import DataTable from '../components/common/DataTable';
@@ -34,15 +34,16 @@ function LobsPage() {
   const isSuperadmin = user?.role === 'superadmin';
 
   useEffect(() => {
-    if (isSuperadmin) loadLobs();
-    else setLoading(false);
+    // Superadmin sees all LOBs (full management); a head sees only their LOB(s)
+    // (read-only list → open to manage that LOB's app classifications).
+    loadLobs();
   }, [isSuperadmin]);
 
   const loadLobs = async () => {
     setLoading(true);
     setError(null);
     try {
-      const response = await lobsApi.list({ includeInactive: true });
+      const response = await lobsApi.list(isSuperadmin ? { includeInactive: true } : undefined);
       setLobs(response.data || []);
     } catch (err) {
       setError(err.response?.data?.error || 'Failed to load LOBs');
@@ -125,38 +126,32 @@ function LobsPage() {
           <button
             onClick={(e) => { e.stopPropagation(); navigate(`/lobs/${lob.id}`); }}
             className="p-1 hover:bg-gray-100 dark:hover:bg-gray-800 rounded text-primary-600"
-            title="Manage members, heads & apps"
+            title={isSuperadmin ? 'Manage members, heads & apps' : 'Manage app classifications'}
           >
             <Settings2 className="w-4 h-4" />
           </button>
-          <button
-            onClick={(e) => { e.stopPropagation(); handleEdit(lob); }}
-            className="p-1 hover:bg-gray-100 dark:hover:bg-gray-800 rounded"
-            title="Edit"
-          >
-            <Edit2 className="w-4 h-4" />
-          </button>
-          <button
-            onClick={(e) => { e.stopPropagation(); setDeleting(lob); setShowDeleteDialog(true); }}
-            className="p-1 hover:bg-red-100 dark:hover:bg-red-900 rounded text-red-600"
-            title="Delete"
-          >
-            <Trash2 className="w-4 h-4" />
-          </button>
+          {isSuperadmin && (
+            <>
+              <button
+                onClick={(e) => { e.stopPropagation(); handleEdit(lob); }}
+                className="p-1 hover:bg-gray-100 dark:hover:bg-gray-800 rounded"
+                title="Edit"
+              >
+                <Edit2 className="w-4 h-4" />
+              </button>
+              <button
+                onClick={(e) => { e.stopPropagation(); setDeleting(lob); setShowDeleteDialog(true); }}
+                className="p-1 hover:bg-red-100 dark:hover:bg-red-900 rounded text-red-600"
+                title="Delete"
+              >
+                <Trash2 className="w-4 h-4" />
+              </button>
+            </>
+          )}
         </div>
       ),
     },
   ];
-
-  if (!isSuperadmin) {
-    return (
-      <div className="card text-center py-12">
-        <Shield className="w-12 h-12 mx-auto mb-4 text-red-500" />
-        <h2 className="text-xl font-semibold mb-2">Access Denied</h2>
-        <p className="text-gray-600 dark:text-gray-400">Only superadmin users can manage Line of Businesses.</p>
-      </div>
-    );
-  }
 
   if (loading && lobs.length === 0) {
     return (
@@ -168,15 +163,17 @@ function LobsPage() {
     <div>
       <div className="flex justify-between items-center mb-6">
         <div>
-          <h1 className="text-2xl font-bold">Line of Businesses</h1>
+          <h1 className="text-2xl font-bold">{isSuperadmin ? 'Line of Businesses' : 'My LOBs'}</h1>
           <p className="text-sm text-gray-600 dark:text-gray-400 mt-1">
-            Create LOBs, then assign employees and heads
+            {isSuperadmin ? 'Create LOBs, then assign employees and heads' : 'Open an LOB to manage its app classifications'}
           </p>
         </div>
-        <button onClick={handleCreate} className="flex items-center gap-2 px-4 py-2 rounded bg-primary-600 text-white hover:bg-primary-700">
-          <Plus className="w-4 h-4" />
-          Add LOB
-        </button>
+        {isSuperadmin && (
+          <button onClick={handleCreate} className="flex items-center gap-2 px-4 py-2 rounded bg-primary-600 text-white hover:bg-primary-700">
+            <Plus className="w-4 h-4" />
+            Add LOB
+          </button>
+        )}
       </div>
 
       {error && <ErrorBanner message={error} onClose={() => setError(null)} />}
@@ -192,7 +189,7 @@ function LobsPage() {
           columns={columns}
           data={lobs}
           loading={loading}
-          emptyMessage="No LOBs yet — create one to get started"
+          emptyMessage={isSuperadmin ? 'No LOBs yet — create one to get started' : 'No LOBs assigned to you yet'}
           onRowClick={(lob) => navigate(`/lobs/${lob.id}`)}
         />
       </div>

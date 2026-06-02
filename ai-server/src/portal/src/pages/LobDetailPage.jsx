@@ -49,7 +49,7 @@ function LobDetailPage() {
     <div className="space-y-3">
       <div className="flex items-center gap-4">
         <button
-          onClick={() => navigate(isSuperadmin ? '/lobs' : '/dashboard')}
+          onClick={() => navigate('/lobs')}
           className="p-2.5 bg-white dark:bg-gray-800 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-xl border border-gray-200 dark:border-gray-700"
         >
           <ArrowLeft className="w-5 h-5" />
