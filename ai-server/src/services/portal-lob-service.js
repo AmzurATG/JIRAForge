@@ -321,18 +321,24 @@ async function listLobClassifications(lobId, { search, classification } = {}) {
 async function setLobClassification(lobId, appId, classification, createdBy) {
   if (!appId) throw httpError('appId is required', 400);
   if (!CLASSIFICATIONS.includes(classification)) throw httpError('Invalid classification', 400);
+  const lob = await db.getLobById(lobId);
+  if (!lob) throw httpError('LOB not found', 404);
   const app = await db.getCatalogById(appId);
   if (!app) throw httpError('Catalog app not found', 404);
   return db.setLobClassification(lobId, appId, classification, createdBy);
 }
 
 async function deleteLobClassification(lobId, appId) {
+  const lob = await db.getLobById(lobId);
+  if (!lob) throw httpError('LOB not found', 404);
   const removed = await db.deleteLobClassification(lobId, appId);
   if (!removed) throw httpError('No classification set for this app in this LOB', 404);
 }
 
 async function bulkSetLobClassifications(lobId, items, createdBy) {
   if (!Array.isArray(items) || items.length === 0) throw httpError('items array is required', 400);
+  const lob = await db.getLobById(lobId);
+  if (!lob) throw httpError('LOB not found', 404);
   const results = { success: [], failed: [] };
   for (const item of items) {
     try {

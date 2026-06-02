@@ -120,12 +120,20 @@ describe('setLobClassification', () => {
     await expect(lobService.setLobClassification('L1', 'a', 'banana', 'admin1')).rejects.toMatchObject({ status: 400 });
   });
 
+  test('404 when LOB missing', async () => {
+    db.getLobById.mockResolvedValue(null);
+    await expect(lobService.setLobClassification('missing', 'a', 'productive', 'admin1')).rejects.toMatchObject({ status: 404 });
+    expect(db.setLobClassification).not.toHaveBeenCalled();
+  });
+
   test('404 when catalog app missing', async () => {
+    db.getLobById.mockResolvedValue({ id: 'L1' });
     db.getCatalogById.mockResolvedValue(null);
     await expect(lobService.setLobClassification('L1', 'missing', 'productive', 'admin1')).rejects.toMatchObject({ status: 404 });
   });
 
   test('happy path upserts via db', async () => {
+    db.getLobById.mockResolvedValue({ id: 'L1' });
     db.getCatalogById.mockResolvedValue({ id: 'a' });
     db.setLobClassification.mockResolvedValue({ id: 'x', lob_id: 'L1', app_id: 'a', classification: 'productive' });
     const row = await lobService.setLobClassification('L1', 'a', 'productive', 'admin1');

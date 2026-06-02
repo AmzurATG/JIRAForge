@@ -9,7 +9,7 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { ArrowLeft, Plus, Trash2, Search, Shield } from 'lucide-react';
+import { ArrowLeft, Plus, Trash2, Search } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { lobsApi } from '../api/lobs';
 import { employeesApi } from '../api/employees';
@@ -155,10 +155,14 @@ function MembersTab({ lobId, setError, flash }) {
             return (res.data || []).map((e) => ({ id: e.userId, name: e.name, email: e.email }));
           }}
           onAdd={async (ids) => {
-            const res = await lobsApi.addMembers(lobId, ids);
-            flash(`Added ${res.addedCount} employee(s)`);
-            setShowAdd(false);
-            load();
+            try {
+              const res = await lobsApi.addMembers(lobId, ids);
+              flash(`Added ${res.addedCount} employee(s)`);
+              setShowAdd(false);
+              load();
+            } catch (err) {
+              setError(err.response?.data?.error || 'Failed to add employees');
+            }
           }}
           onClose={() => setShowAdd(false)}
           setError={setError}
@@ -240,10 +244,14 @@ function HeadsTab({ lobId, setError, flash }) {
             return (res.data || []).map((a) => ({ id: a.id, name: a.display_name, email: a.email }));
           }}
           onAdd={async (ids) => {
-            const res = await lobsApi.addHeads(lobId, ids);
-            flash(`Added ${res.addedCount} head(s)`);
-            setShowAdd(false);
-            load();
+            try {
+              const res = await lobsApi.addHeads(lobId, ids);
+              flash(`Added ${res.addedCount} head(s)`);
+              setShowAdd(false);
+              load();
+            } catch (err) {
+              setError(err.response?.data?.error || 'Failed to add heads');
+            }
           }}
           onClose={() => setShowAdd(false)}
           setError={setError}

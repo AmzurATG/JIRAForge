@@ -49,6 +49,14 @@ class PortalService {
     const supabase = getClient();
     if (!supabase) throw new Error('Supabase client not initialized');
 
+    // Empty scope (e.g. a head with no members) → zeroed dashboard, never .in('user_id', []).
+    if (Array.isArray(visibleUserIds) && visibleUserIds.length === 0) {
+      return {
+        summary: { totalProductiveHours: 0, totalNonProductiveHours: 0, productivityPercentage: 0, employeeCount: 0 },
+        dailyTrend: []
+      };
+    }
+
     // Query activity records for the date range.
     // visibleUserIds: array → restrict to those employees (LOB scope); null/undefined → all.
     let activityQuery = supabase

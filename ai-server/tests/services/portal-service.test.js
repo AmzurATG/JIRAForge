@@ -54,6 +54,17 @@ describe('getDashboardData — LOB scoping', () => {
 });
 
 describe('empty scope short-circuits (head with no employees sees nothing)', () => {
+  test('getDashboardData returns a zeroed dashboard without touching the DB', async () => {
+    const from = jest.fn();
+    getClient.mockReturnValue({ from });
+
+    const res = await portalService.getDashboardData('org', '2026-06-01', '2026-06-02', []);
+
+    expect(res.summary).toEqual({ totalProductiveHours: 0, totalNonProductiveHours: 0, productivityPercentage: 0, employeeCount: 0 });
+    expect(res.dailyTrend).toEqual([]);
+    expect(from).not.toHaveBeenCalled();
+  });
+
   test('getEmployees returns empty without touching the DB', async () => {
     const from = jest.fn();
     getClient.mockReturnValue({ from });
