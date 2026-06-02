@@ -597,7 +597,7 @@ load_dotenv()
 
 # Application version - IMPORTANT: Update this when releasing new versions
 # This is used for update checking and notifications
-APP_VERSION = "1.4.7"
+APP_VERSION = "1.0.2"
 
 # True when the process is running inside an AppImage bundle.
 # The AppImage runtime sets the $APPIMAGE env var to the path of the .AppImage
@@ -918,6 +918,11 @@ def verify_download_checksum(file_path, expected_checksum):
     Returns:
         bool: True if checksum matches, False otherwise
     """
+    # Accept common checksum formats from APIs (plain hash or sha256:<hash>).
+    expected_checksum = (expected_checksum or '').strip()
+    if expected_checksum.lower().startswith('sha256:'):
+        expected_checksum = expected_checksum.split(':', 1)[1].strip()
+
     if not expected_checksum:
         print("[INFO] No checksum provided, skipping verification")
         return True  # No checksum to verify against
@@ -950,9 +955,32 @@ def show_update_notification(update_info, callback=None, state='available', web_
         install_callback: Callable to trigger update installation directly (no browser)
     """
     if not WINOTIFY_AVAILABLE:
-        version = update_info.get('latest_version', 'unknown')
-        _linux_notify("Time Tracker Update", f"Update v{version} is available")
-        print(f"[INFO] Update available: v{version} (notifications not available)")
+        latest_version = (update_info or {}).get('latest_version', 'unknown')
+        is_mandatory = (update_info or {}).get('is_mandatory', False)
+
+        if state == 'downloading':
+            title = "Update Downloading"
+            message = f"Downloading update v{latest_version} in background..."
+            urgency = "normal"
+        elif state == 'ready':
+            title = "Update Ready"
+            message = f"Update v{latest_version} downloaded and ready to install."
+            urgency = "normal"
+        elif state == 'mandatory_ready':
+            title = "Update Required"
+            message = f"Required update v{latest_version} is ready to install."
+            urgency = "critical"
+        elif state == 'failed':
+            title = "Update Failed"
+            message = "Update download failed. The app will retry later."
+            urgency = "normal"
+        else:
+            title = "Update Required" if is_mandatory else "Update Available"
+            message = f"Update v{latest_version} is available"
+            urgency = "normal"
+
+        _linux_notify(title, message, urgency=urgency)
+        print(f"[INFO] Linux update notification: {title} - {message}")
         return
     
     try:
@@ -1772,9 +1800,11 @@ class UpdateManager:
         try:
             response = requests.get(download_url, stream=True, timeout=(10, 30))
             response.raise_for_status()
+            server_content_len = 0
             content_len = response.headers.get('Content-Length')
             if content_len and content_len.isdigit() and int(content_len) > 0:
-                self.total_bytes = int(content_len)
+                server_content_len = int(content_len)
+                self.total_bytes = server_content_len
             elif expected_size > 0:
                 self.total_bytes = expected_size
 
@@ -1795,8 +1825,24 @@ class UpdateManager:
                 self._set_state('idle')
                 return
 
+            # First trust transport-level size from the file host itself.
+            if server_content_len > 0 and self.downloaded_bytes != server_content_len:
+                raise ValueError(
+                    f"Downloaded size mismatch from server: expected={server_content_len}, actual={self.downloaded_bytes}"
+                )
+
+            # API metadata can be stale during release rollouts; do not hard-fail
+            # solely on metadata mismatch when checksum is available.
             if expected_size > 0 and self.downloaded_bytes != expected_size:
-                raise ValueError(f"Downloaded size mismatch: expected={expected_size}, actual={self.downloaded_bytes}")
+                if expected_checksum:
+                    print(
+                        f"[WARN] Update metadata size mismatch: api_expected={expected_size}, "
+                        f"actual={self.downloaded_bytes}. Continuing with checksum verification."
+                    )
+                else:
+                    raise ValueError(
+                        f"Downloaded size mismatch: expected={expected_size}, actual={self.downloaded_bytes}"
+                    )
 
             if not verify_download_checksum(temp_path, expected_checksum):
                 raise ValueError('Checksum verification failed')
@@ -11756,13 +11802,6 @@ class TimeTracker:
                 # Check if window switched
                 window_switched = window_info.get('is_new_window', False)
                 time_since_last_screenshot = current_time - last_screenshot_time
-                time_since_last_interval = current_time - self.last_interval_time
-
-                # Debug: Log interval progress every 60 seconds
-                if int(time_since_last_interval) % 60 == 0 and int(time_since_last_interval) > 0:
-                    remaining = current_capture_interval - time_since_last_interval
-                    if remaining > 0:
-                        print(f"[INTERVAL] {int(time_since_last_interval)}s elapsed, {int(remaining)}s until next interval capture")
 
                 # IMPORTANT: Always update the previous window record when switching, regardless of interval
                 # The interval check only applies to creating NEW screenshots, not updating existing ones
@@ -11844,95 +11883,21 @@ class TimeTracker:
 
                 # Decide whether to capture a new screenshot
                 should_capture = False
-                capture_reason = None
+                capture_reason = "window_switch"
                 
-                # Check if event-based tracking is enabled (window switch captures)
+                # Event mode: capture only on window switch (no interval-based capture).
                 event_tracking_enabled = self.tracking_settings.get('event_tracking_enabled', False)
                 tracking_mode = self.tracking_settings.get('tracking_mode', 'interval')
                 
-                # Only capture on window switch if event tracking is enabled
                 if window_switched and time_since_last_screenshot >= min_screenshot_interval:
                     if event_tracking_enabled or tracking_mode == 'event':
-                        # Window switch + event tracking enabled + enough time passed - capture new screenshot
                         should_capture = True
-                        capture_reason = "window_switch"
-                
-                if time_since_last_interval >= current_capture_interval and not (event_tracking_enabled or tracking_mode == 'event'):
-                    # Interval reached (using dynamic interval from settings)
-                    # This ensures clean, non-overlapping time periods
-                    updated_existing_record = False  # Track if we updated a previous record
-                    if self.current_window_screenshot_id is not None and self.current_window_db_start_time is not None:
-                        # IMPORTANT: Capture timestamp BEFORE any operations
-                        # This exact timestamp will be used for both:
-                        # 1. Current record's end_time
-                        # 2. Next record's start_time (via last_screenshot_end_time)
-                        end_time = datetime.now(timezone.utc)
-
-                        # Set last_screenshot_end_time IMMEDIATELY so upload_screenshot uses this exact value
-                        self.last_screenshot_end_time = end_time
-
-                        # Use the ACTUAL start_time from database for accurate duration calculation
-                        duration_seconds = int((end_time - self.current_window_db_start_time).total_seconds())
-
-                        # Sanity check: cap duration to prevent inflated records after suspension
-                        max_duration = max(current_capture_interval * 2, 600)
-                        if duration_seconds > max_duration:
-                            print(f"[WARN] Record duration {duration_seconds}s exceeds max {max_duration}s — capping")
-                            duration_seconds = max_duration
-                            end_time = self.current_window_db_start_time + timedelta(seconds=duration_seconds)
-                            self.last_screenshot_end_time = end_time
-
-                        if duration_seconds < 1:
-                            duration_seconds = 1
-                            end_time = self.current_window_db_start_time + timedelta(seconds=1)
-                            self.last_screenshot_end_time = end_time  # Update with adjusted time
-
-                        try:
-                            db_client = self.supabase
-                            update_result = db_client.table('screenshots').update({
-                                'end_time': end_time.isoformat(),
-                                'timestamp': end_time.isoformat(),
-                                'duration_seconds': duration_seconds
-                            }).eq('id', self.current_window_screenshot_id).execute()
-
-                            if update_result.data:
-                                print(f"[OK] Updated current window record (interval):")
-                                print(f"     - Record ID: {self.current_window_screenshot_id}")
-                                print(f"     - Start: {self.current_window_db_start_time.strftime('%H:%M:%S')} (from DB)")
-                                print(f"     - End:   {end_time.strftime('%H:%M:%S')}")
-                                print(f"     - Duration: {duration_seconds}s")
-                                updated_existing_record = True  # Mark that we successfully updated a record
-                        except Exception as e:
-                            print(f"[ERROR] Error updating record before interval: {e}")
-
-                        # Reset tracking - the new screenshot will start fresh from now
-                        self.current_window_start_time = end_time
-                        self.current_window_db_start_time = None  # Will be set when new screenshot is uploaded
-                        self.current_window_screenshot_id = None
-                        self.current_window_record_created_at = None  # Will be set when new screenshot is uploaded
-
-                    should_capture = True
-                    capture_reason = "interval"
                 
                 if should_capture and not self.is_idle:
-                    if should_skip:
-                        # App is private/non-productive — skip the actual screenshot
-                        # but still reset the interval timer so we don't re-trigger immediately
-                        if capture_reason == "interval":
-                            self.last_interval_time = time.time()
-                    else:
+                    if not should_skip:
                         screenshot = self.capture_screenshot()
                         if screenshot:
                             self.upload_screenshot(screenshot, window_info)
-                            
-                            if capture_reason == "interval":
-                                self.last_interval_time = time.time()
-
-                                if not updated_existing_record:
-                                    print(f"[INFO] Fresh interval capture - record is final (won't be extended)")
-                                    self.current_window_screenshot_id = None
-                                    self.current_window_db_start_time = None
-                                    self.current_window_record_created_at = None
 
                             last_screenshot_time = time.time()
                             print(f"[OK] Screenshot captured ({capture_reason})")
@@ -12449,6 +12414,8 @@ class TimeTracker:
                         notification.show()
                     except Exception:
                         pass
+                else:
+                    _linux_notify("Checking for Updates", "Checking for available updates...")
                 
                 # Force update check in background thread to avoid blocking tray UI
                 def check_in_background():
@@ -12478,6 +12445,26 @@ class TimeTracker:
                                 )
                                 notification.set_audio(audio.Default, loop=False)
                                 notification.show()
+                        except Exception:
+                            pass
+                    else:
+                        try:
+                            update_state = self.update_manager.get_status().get('state', 'idle') if self.update_manager else 'idle'
+                            if update_state not in ('downloading', 'ready', 'mandatory_ready', 'installing'):
+                                if result is None:
+                                    _linux_notify(
+                                        "Update Check Failed",
+                                        "Could not reach the update server. Check network and try again.",
+                                        urgency="normal"
+                                    )
+                                elif not (result or {}).get('update_available', False):
+                                    _linux_notify(
+                                        "App is Up to Date",
+                                        f"You are running the latest version (v{self.app_version}).",
+                                        urgency="normal"
+                                    )
+                                # If update is available, _on_update_manager_state_changed
+                                # sends the downloading/ready notifications.
                         except Exception:
                             pass
 

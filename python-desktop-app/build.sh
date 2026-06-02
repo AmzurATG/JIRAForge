@@ -219,8 +219,13 @@ cp dist/TimeTracker "${APPDIR}/usr/bin/TimeTracker"
 echo "  Installing AppRun and desktop metadata..."
 cp appimage/AppRun "${APPDIR}/AppRun"
 chmod +x "${APPDIR}/AppRun"
-cp appimage/timetracker.desktop "${APPDIR}/timetracker.desktop"
-cp appimage/timetracker.desktop "${APPDIR}/usr/share/applications/timetracker.desktop"
+
+DESKTOP_TEMPLATE="appimage/timetracker.desktop"
+DESKTOP_FILE="${APPDIR}/timetracker.desktop"
+DESKTOP_APP_FILE="${APPDIR}/usr/share/applications/timetracker.desktop"
+
+sed "s/^X-AppImage-Version=.*/X-AppImage-Version=${APP_VERSION}/" "$DESKTOP_TEMPLATE" > "$DESKTOP_FILE"
+cp "$DESKTOP_FILE" "$DESKTOP_APP_FILE"
 
 # Generate the icon if it doesn't exist yet
 if [ ! -f "appimage/timetracker.png" ]; then
@@ -281,8 +286,16 @@ else
     if [ -f "$APPIMAGE_OUT" ]; then
         chmod +x "$APPIMAGE_OUT"
         APPIMAGE_SIZE=$(du -h "$APPIMAGE_OUT" | cut -f1)
+        if command -v sha256sum &>/dev/null; then
+            APPIMAGE_SHA256=$(sha256sum "$APPIMAGE_OUT" | awk '{print $1}')
+        elif command -v shasum &>/dev/null; then
+            APPIMAGE_SHA256=$(shasum -a 256 "$APPIMAGE_OUT" | awk '{print $1}')
+        else
+            APPIMAGE_SHA256="unavailable"
+        fi
         echo ""
         echo "  [OK] AppImage : $APPIMAGE_OUT ($APPIMAGE_SIZE)"
+        echo "  [OK] SHA256   : $APPIMAGE_SHA256"
     else
         echo ""
         echo "  [WARN] AppImage packaging failed — check build_log.txt for details."
@@ -301,6 +314,9 @@ echo ""
 echo "  Standalone : dist/TimeTracker"
 if [ -f "$APPIMAGE_OUT" ]; then
 echo "  AppImage   : $APPIMAGE_OUT"
+if [ -n "${APPIMAGE_SHA256:-}" ]; then
+echo "  SHA256     : $APPIMAGE_SHA256"
+fi
 fi
 echo ""
 echo "Next steps:"
