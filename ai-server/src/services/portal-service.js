@@ -57,71 +57,52 @@ class PortalService {
       };
     }
 
-    // Query activity records for the date range.
-    // visibleUserIds: array → restrict to those employees (LOB scope); null/undefined → all.
-    let activityQuery = supabase
-      .from('activity_records')
-      .select('classification, duration_seconds, user_id, work_date')
-      .gte('work_date', from)
-      .lte('work_date', to)
-      .neq('is_idle', true);
-    if (Array.isArray(visibleUserIds)) activityQuery = activityQuery.in('user_id', visibleUserIds);
-    const { data: activities, error } = await activityQuery
-      .order('start_time', { ascending: false })
-      .limit(50000);
-    
+    // Aggregate server-side via RPC. Summing raw rows in Node hit the PostgREST
+    // 1000-row response cap and silently undercounted any range with >1000 rows;
+    // the function returns a handful of per-day rows and the exact totals.
+    // p_user_ids: array → restrict to those employees (LOB scope); null → all.
+    const { data, error } = await supabase.rpc('portal_dashboard_summary', {
+      p_from: from,
+      p_to: to,
+      p_user_ids: Array.isArray(visibleUserIds) ? visibleUserIds : null
+    });
+
     if (error) {
-      logger.error('[PortalService] Dashboard query failed', { orgId, from, to, error });
+      logger.error('[PortalService] Dashboard summary RPC failed', { orgId, from, to, error });
       throw error;
     }
-    
-    // Calculate KPIs
+
+    const summary = data || {};
+    const daily = Array.isArray(summary.daily) ? summary.daily : [];
+
+    // The function already orders `daily` by work_date ascending.
     let productiveSeconds = 0;
     let nonProductiveSeconds = 0;
-    const uniqueEmployees = new Set();
-    const dailyTrend = {};
-    
-    activities.forEach(activity => {
-      const seconds = activity.duration_seconds || 0;
-      
-      if (activity.classification === 'productive') {
-        productiveSeconds += seconds;
-      } else if (isNonProductiveClassification(activity.classification)) {
-        nonProductiveSeconds += seconds;
-      }
-      
-      uniqueEmployees.add(activity.user_id);
-      
-      // Aggregate by day
-      const date = activity.work_date;
-      if (!dailyTrend[date]) {
-        dailyTrend[date] = { date, productiveSeconds: 0, nonProductiveSeconds: 0 };
-      }
-      
-      if (activity.classification === 'productive') {
-        dailyTrend[date].productiveSeconds += seconds;
-      } else if (isNonProductiveClassification(activity.classification)) {
-        dailyTrend[date].nonProductiveSeconds += seconds;
-      }
+    const dailyTrend = daily.map(day => {
+      const prod = Number(day.productive_seconds) || 0;
+      const nonProd = Number(day.nonproductive_seconds) || 0;
+      productiveSeconds += prod;
+      nonProductiveSeconds += nonProd;
+      return {
+        date: day.work_date,
+        productiveHours: prod / 3600,
+        nonProductiveHours: nonProd / 3600
+      };
     });
-    
+
     const totalSeconds = productiveSeconds + nonProductiveSeconds;
-    const productivityPercentage = totalSeconds > 0 
-      ? (productiveSeconds / totalSeconds) * 100 
+    const productivityPercentage = totalSeconds > 0
+      ? (productiveSeconds / totalSeconds) * 100
       : 0;
-    
+
     return {
       summary: {
         totalProductiveHours: productiveSeconds / 3600,
         totalNonProductiveHours: nonProductiveSeconds / 3600,
         productivityPercentage: Math.round(productivityPercentage * 10) / 10,
-        employeeCount: uniqueEmployees.size
+        employeeCount: Number(summary.employeeCount) || 0
       },
-      dailyTrend: Object.values(dailyTrend).map(day => ({
-        date: day.date,
-        productiveHours: day.productiveSeconds / 3600,
-        nonProductiveHours: day.nonProductiveSeconds / 3600
-      })).sort((a, b) => a.date.localeCompare(b.date))
+      dailyTrend
     };
   }
   
@@ -197,91 +178,51 @@ class PortalService {
       to = to || formatDate(toDate);
     }
     
-    // First get activity data for the date range (no org filter)
-    // Use a smaller limit and no ORDER BY to avoid full table scan
-    let activityQuery = supabase
-      .from('activity_records')
-      .select('user_id, classification, duration_seconds, start_time')
-      .neq('is_idle', true)
-      .gte('work_date', from)
-      .lte('work_date', to);
-    if (Array.isArray(visibleUserIds)) activityQuery = activityQuery.in('user_id', visibleUserIds);
-    activityQuery = activityQuery.limit(10000);  // cap to keep queries fast
-
-    const { data: activities, error: activityError } = await activityQuery;
-    
-    if (activityError) {
-      logger.error('[PortalService] Employees activity query failed', { orgId, error: activityError });
-      throw activityError;
-    }
-    
-    // Aggregate by user
-    const userMetrics = {};
-    activities.forEach(activity => {
-      const userId = activity.user_id;
-      if (!userMetrics[userId]) {
-        userMetrics[userId] = {
-          productiveSeconds: 0,
-          nonProductiveSeconds: 0,
-          lastActivity: activity.start_time
-        };
-      }
-      
-      if (activity.classification === 'productive') {
-        userMetrics[userId].productiveSeconds += activity.duration_seconds || 0;
-      } else if (isNonProductiveClassification(activity.classification)) {
-        userMetrics[userId].nonProductiveSeconds += activity.duration_seconds || 0;
-      }
-      
-      if (activity.start_time > userMetrics[userId].lastActivity) {
-        userMetrics[userId].lastActivity = activity.start_time;
-      }
+    // Aggregate per-employee server-side via RPC. Summing raw rows in Node hit
+    // the PostgREST 1000-row cap and undercounted; the function joins users so a
+    // second (also cap-prone) lookup is not needed.
+    // p_user_ids: array → LOB scope; null → all employees.
+    const { data: rows, error } = await supabase.rpc('portal_employee_summary', {
+      p_from: from,
+      p_to: to,
+      p_user_ids: Array.isArray(visibleUserIds) ? visibleUserIds : null
     });
-    
-    // Get user details
-    const userIds = Object.keys(userMetrics);
-    if (userIds.length === 0) {
-      return { data: [], pagination: { page, limit, totalCount: 0 } };
+
+    if (error) {
+      logger.error('[PortalService] Employee summary RPC failed', { orgId, from, to, error });
+      throw error;
     }
-    
-    let userQuery = supabase
-      .from('users')
-      .select('id, display_name, email')
-      .in('id', userIds);
-    
-    if (search) {
-      userQuery = userQuery.or(`display_name.ilike.%${search}%,email.ilike.%${search}%`);
-    }
-    
-    const { data: users, error: userError } = await userQuery;
-    
-    if (userError) {
-      logger.error('[PortalService] Users query failed', { orgId, error: userError });
-      throw userError;
-    }
-    
-    // Combine data
-    let employees = (users || []).map(user => {
-      const metrics = userMetrics[user.id];
-      const totalSeconds = metrics.productiveSeconds + metrics.nonProductiveSeconds;
-      const productivityPercentage = totalSeconds > 0 
-        ? (metrics.productiveSeconds / totalSeconds) * 100 
+
+    let employees = (rows || []).map(row => {
+      const prod = Number(row.productive_seconds) || 0;
+      const nonProd = Number(row.nonproductive_seconds) || 0;
+      const totalSeconds = prod + nonProd;
+      const productivityPercentage = totalSeconds > 0
+        ? (prod / totalSeconds) * 100
         : 0;
-      
-      const displayName = user.display_name || user.email || 'Unknown User';
 
       return {
-        userId: user.id,
-        name: displayName,
-        email: user.email,
-        productiveHours: metrics.productiveSeconds / 3600,
-        nonProductiveHours: metrics.nonProductiveSeconds / 3600,
+        userId: row.user_id,
+        name: row.name || row.email || 'Unknown User',
+        email: row.email,
+        productiveHours: prod / 3600,
+        nonProductiveHours: nonProd / 3600,
         productivityPercentage: Math.round(productivityPercentage * 10) / 10,
-        lastActivityAt: metrics.lastActivity
+        lastActivityAt: row.last_activity
       };
     });
-    
-    // Filter by productivity range (aligned with frontend: high >70%, medium 50-70%, low <50%)
+
+    // Search by name/email — applied in Node since the function returns the full
+    // (already LOB-scoped) employee set.
+    if (search) {
+      const needle = String(search).toLowerCase();
+      employees = employees.filter(emp =>
+        (emp.name && emp.name.toLowerCase().includes(needle)) ||
+        (emp.email && emp.email.toLowerCase().includes(needle))
+      );
+    }
+
+    // Filter by productivity range (aligned with frontend: high >=70%, medium 50-70%, low <50%)
     if (productivityRange && productivityRange !== 'all') {
       employees = employees.filter(emp => {
         const pct = emp.productivityPercentage;
@@ -291,15 +232,15 @@ class PortalService {
         return true;
       });
     }
-    
+
     // Sort by name
     employees.sort((a, b) => (a.name || '').localeCompare(b.name || ''));
-    
+
     // Paginate
     const totalCount = employees.length;
     const offset = (page - 1) * limit;
     const paginatedEmployees = employees.slice(offset, offset + limit);
-    
+
     return {
       data: paginatedEmployees,
       pagination: { page, limit, totalCount }
@@ -331,18 +272,33 @@ class PortalService {
       throw userError;
     }
     
-    // Get activity data (no org filter)
-    const { data: activities, error: activityError } = await supabase
-      .from('activity_records')
-      .select('classification, duration_seconds, work_date')
-      .eq('user_id', userId)
-      .gte('work_date', from)
-      .lte('work_date', to)
-      .neq('is_idle', true);
-    
-    if (activityError) {
-      logger.error('[PortalService] Activity query failed', { orgId, userId, error: activityError });
-      throw activityError;
+    // Get activity data (no org filter), fetched in pages. A single request is
+    // capped at 1000 rows by PostgREST, which would undercount an active
+    // employee over a longer range. Order by the primary key for stable paging.
+    const activities = [];
+    const PAGE_SIZE = 1000;
+    const MAX_ROWS = 100000; // bound memory on pathological ranges
+    let pageStart = 0;
+    for (;;) {
+      const { data: batch, error: activityError } = await supabase
+        .from('activity_records')
+        .select('classification, duration_seconds, work_date')
+        .eq('user_id', userId)
+        .gte('work_date', from)
+        .lte('work_date', to)
+        .neq('is_idle', true)
+        .order('id', { ascending: true })
+        .range(pageStart, pageStart + PAGE_SIZE - 1);
+
+      if (activityError) {
+        logger.error('[PortalService] Activity query failed', { orgId, userId, error: activityError });
+        throw activityError;
+      }
+
+      if (!batch || batch.length === 0) break;
+      activities.push(...batch);
+      if (batch.length < PAGE_SIZE || activities.length >= MAX_ROWS) break;
+      pageStart += PAGE_SIZE;
     }
     
     // Calculate summary
@@ -533,6 +489,103 @@ class PortalService {
       data: formattedData,
       pagination: { page, limit, totalCount: count || 0 }
     };
+  }
+
+  /**
+   * Fetch ALL matching time logs across pages (raw rows for CSV export).
+   *
+   * getTimeLogs returns a single page; a single PostgREST request is capped at
+   * 1000 rows, so exports were silently truncated. This walks pages until the
+   * result is exhausted, bounded by `maxRecords` to protect memory.
+   *
+   * @param {string} orgId
+   * @param {Object} filters - same shape as getTimeLogs
+   * @param {Array|null} visibleUserIds - LOB scope (null = all)
+   * @param {number} maxRecords - hard ceiling (default 50000)
+   * @returns {Promise<{data: Array, pagination: {totalCount: number}}>}
+   */
+  async getAllTimeLogs(orgId, filters, visibleUserIds, maxRecords = 50000) {
+    const PAGE_SIZE = 1000;
+    let all = [];
+    let page = 1;
+
+    for (;;) {
+      const result = await this.getTimeLogs(orgId, filters, { page, limit: PAGE_SIZE }, visibleUserIds);
+      const batch = result.data || [];
+      all = all.concat(batch);
+      if (batch.length < PAGE_SIZE || all.length >= maxRecords) break;
+      page += 1;
+    }
+
+    if (all.length > maxRecords) all = all.slice(0, maxRecords);
+    return { data: all, pagination: { totalCount: all.length } };
+  }
+
+  /**
+   * Get application-usage totals (per-application time, sessions, distinct
+   * employees), aggregated server-side via RPC to avoid the 1000-row cap.
+   *
+   * @param {string} orgId
+   * @param {Object} filters - { from, to, classification, employee }
+   * @param {Array|null} visibleUserIds - LOB scope (null = all)
+   * @returns {Promise<{data: Array, pagination: {totalCount: number}}>}
+   */
+  async getApplicationUsage(orgId, filters, visibleUserIds) {
+    const supabase = getClient();
+    if (!supabase) throw new Error('Supabase client not initialized');
+
+    let { from, to, classification, employee } = filters || {};
+
+    // Fold an explicit employee filter into the scoped user set. If the employee
+    // is outside the caller's LOB scope, the result is empty.
+    let userIds;
+    if (employee) {
+      userIds = Array.isArray(visibleUserIds)
+        ? (visibleUserIds.includes(employee) ? [employee] : [])
+        : [employee];
+    } else {
+      userIds = visibleUserIds;
+    }
+
+    if (Array.isArray(userIds) && userIds.length === 0) {
+      return { data: [], pagination: { totalCount: 0 } };
+    }
+
+    // Default to last 7 days if no range provided (matches the old getTimeLogs path).
+    if (!from || !to) {
+      const toDate = new Date();
+      const fromDate = new Date();
+      fromDate.setDate(toDate.getDate() - 7);
+      from = from || formatDate(fromDate);
+      to = to || formatDate(toDate);
+    }
+
+    const normalizedClassification = normalizeClassificationFilter(classification);
+
+    const { data, error } = await supabase.rpc('portal_app_usage_summary', {
+      p_from: from,
+      p_to: to,
+      p_user_ids: Array.isArray(userIds) ? userIds : null,
+      p_classification: (normalizedClassification && normalizedClassification !== 'all')
+        ? normalizedClassification
+        : null
+    });
+
+    if (error) {
+      logger.error('[PortalService] Application usage RPC failed', { orgId, from, to, error });
+      throw error;
+    }
+
+    const result = (data || []).map(row => ({
+      application: row.application_name,
+      applicationName: row.application_name,
+      totalHours: (Number(row.total_seconds) || 0) / 3600,
+      totalSeconds: Number(row.total_seconds) || 0,
+      sessionCount: Number(row.session_count) || 0,
+      employeeCount: Number(row.employee_count) || 0
+    }));
+
+    return { data: result, pagination: { totalCount: result.length } };
   }
 }
 

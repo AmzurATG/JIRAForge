@@ -47,11 +47,17 @@ const PORT = process.env.PORT || 3001;
 // Trust proxy - required for ngrok tunnel
 app.set('trust proxy', 1);
 
-// CORS configuration - whitelist trusted origins
+// CORS configuration - whitelist trusted origins.
+// CORS_ALLOWED_ORIGIN accepts a single origin OR a comma-separated list, so the
+// separately-deployed portal frontend (Vercel) plus any preview/custom domains
+// can all be whitelisted via env without a code change. Example:
+//   CORS_ALLOWED_ORIGIN=https://jira-forge-ualc.vercel.app,https://portal.amzur.com
 const allowedOrigins = [
-  // Production domains (add your actual domain)
+  // Production domains (set via env)
   process.env.AI_SERVER_URL,
-  process.env.CORS_ALLOWED_ORIGIN,
+  ...(process.env.CORS_ALLOWED_ORIGIN || '')
+    .split(',')
+    .map((o) => o.trim()),
   // Development
   'http://localhost:3000',
   'http://localhost:3001',
@@ -59,7 +65,7 @@ const allowedOrigins = [
   'http://127.0.0.1:3000',
   'http://127.0.0.1:3001',
   'http://127.0.0.1:3002', // Portal frontend
-].filter(Boolean); // Remove undefined values
+].filter(Boolean); // Remove undefined/empty values
 
 const corsOptions = {
   origin: (origin, callback) => {
@@ -71,10 +77,9 @@ const corsOptions = {
     if (allowedOrigins.includes(origin)) {
       return callback(null, true);
     }
-    // Log rejected origins in development for debugging
-    if (process.env.NODE_ENV === 'development') {
-      logger.warn(`[CORS] Rejected origin: ${origin}`);
-    }
+    // Always log the rejected origin (the Origin header is not sensitive) so a
+    // CORS misconfiguration is diagnosable in production, not only in dev.
+    logger.warn(`[CORS] Rejected origin: ${origin}`);
     callback(new Error('Not allowed by CORS'));
   },
   credentials: true,
