@@ -40,7 +40,8 @@ async function resolveVisibleUserIds(req) {
 /**
  * Get report data based on type.
  */
-async function getReportDataByType(orgId, type, filters, visibleUserIds) {
+async function getReportDataByType(orgId, type, filters, visibleUserIds, options = {}) {
+  const { fetchAll = false } = options;
   switch (type) {
     case 'daily-summary':
       return getDailySummaryData(orgId, filters, visibleUserIds);
@@ -48,8 +49,12 @@ async function getReportDataByType(orgId, type, filters, visibleUserIds) {
       return getEmployeeSummaryData(orgId, filters, visibleUserIds);
     case 'application-usage':
       return getApplicationUsageData(orgId, filters, visibleUserIds);
-    default: // activity-logs
-      return portalService.getTimeLogs(orgId, filters, { page: 1, limit: 10000 }, visibleUserIds);
+    default: // activity-logs (raw rows)
+      // fetchAll → walk pages for a complete export; otherwise one page is enough
+      // for the on-screen preview (which slices to the requested page anyway).
+      return fetchAll
+        ? portalService.getAllTimeLogs(orgId, filters, visibleUserIds)
+        : portalService.getTimeLogs(orgId, filters, { page: 1, limit: 10000 }, visibleUserIds);
   }
 }
 
@@ -60,54 +65,30 @@ async function getReportDataByType(orgId, type, filters, visibleUserIds) {
 async function getDailySummaryData(orgId, filters, visibleUserIds) {
   const { from, to, employee } = filters;
 
-  // If employee filter is provided, get data from time logs and aggregate by day
+  // Both the all-employees and single-employee cases now use the server-side
+  // dashboard aggregate (which fixed the 1000-row undercount and gives a
+  // consistent productive-vs-non-productive ratio). When an employee is
+  // requested, scope to just that user; if they're outside the caller's LOB
+  // scope, the user set is empty and the result is empty.
+  let userIds = visibleUserIds;
   if (employee) {
-    const logsResult = await portalService.getTimeLogs(orgId, { employee, from, to }, { page: 1, limit: 50000 }, visibleUserIds);
-    
-    const dailyData = {};
-    logsResult.data.forEach(log => {
-      const date = log.startTime ? log.startTime.split('T')[0] : null;
-      if (!date) return;
-      
-      if (!dailyData[date]) {
-        dailyData[date] = { productiveSeconds: 0, nonProductiveSeconds: 0 };
-      }
-      
-      if (log.classification === 'productive') {
-        dailyData[date].productiveSeconds += log.durationSeconds || 0;
-      } else {
-        dailyData[date].nonProductiveSeconds += log.durationSeconds || 0;
-      }
-    });
-    
-    const data = Object.entries(dailyData)
-      .map(([date, stats]) => ({
-        date,
-        productiveHours: stats.productiveSeconds / 3600,
-        nonProductiveHours: stats.nonProductiveSeconds / 3600,
-        totalHours: (stats.productiveSeconds + stats.nonProductiveSeconds) / 3600,
-        productivityPercentage: (stats.productiveSeconds + stats.nonProductiveSeconds) > 0
-          ? (stats.productiveSeconds / (stats.productiveSeconds + stats.nonProductiveSeconds)) * 100
-          : 0
-      }))
-      .sort((a, b) => a.date.localeCompare(b.date));
-    
-    return { data, pagination: { totalCount: data.length } };
+    userIds = Array.isArray(visibleUserIds)
+      ? (visibleUserIds.includes(employee) ? [employee] : [])
+      : [employee];
   }
-  
-  // Otherwise, use dashboard data for all (scoped) employees
-  const dashboardData = await portalService.getDashboardData(orgId, from, to, visibleUserIds);
-  
+
+  const dashboardData = await portalService.getDashboardData(orgId, from, to, userIds);
+
   const data = dashboardData.dailyTrend.map(day => ({
     date: day.date,
     productiveHours: day.productiveHours,
     nonProductiveHours: day.nonProductiveHours,
     totalHours: day.productiveHours + day.nonProductiveHours,
-    productivityPercentage: (day.productiveHours + day.nonProductiveHours) > 0 
-      ? (day.productiveHours / (day.productiveHours + day.nonProductiveHours)) * 100 
+    productivityPercentage: (day.productiveHours + day.nonProductiveHours) > 0
+      ? (day.productiveHours / (day.productiveHours + day.nonProductiveHours)) * 100
       : 0
   }));
-  
+
   return { data, pagination: { totalCount: data.length } };
 }
 
@@ -140,29 +121,9 @@ async function getEmployeeSummaryData(orgId, filters, visibleUserIds) {
  * Get application usage data - time spent per application.
  */
 async function getApplicationUsageData(orgId, filters, visibleUserIds) {
-  const logsResult = await portalService.getTimeLogs(orgId, filters, { page: 1, limit: 50000 }, visibleUserIds);
-  
-  const appUsage = {};
-  logsResult.data.forEach(log => {
-    const app = log.application || 'Unknown';
-    if (!appUsage[app]) {
-      appUsage[app] = { totalSeconds: 0, sessionCount: 0, employees: new Set() };
-    }
-    appUsage[app].totalSeconds += log.durationSeconds || 0;
-    appUsage[app].sessionCount += 1;
-    if (log.userName) appUsage[app].employees.add(log.userName);
-  });
-  
-  const data = Object.entries(appUsage)
-    .map(([app, stats]) => ({
-      application: app,
-      totalHours: stats.totalSeconds / 3600,
-      sessionCount: stats.sessionCount,
-      employeeCount: stats.employees.size
-    }))
-    .sort((a, b) => b.totalHours - a.totalHours);
-  
-  return { data, pagination: { totalCount: data.length } };
+  // Aggregated server-side via RPC (the old getTimeLogs path hit the 1000-row
+  // cap and undercounted). Returns rows already sorted by total time desc.
+  return portalService.getApplicationUsage(orgId, filters, visibleUserIds);
 }
 
 /**
@@ -258,11 +219,12 @@ async function exportCSV(req, res) {
       });
     }
     
-    // Get all data (scoped to the caller's LOB employees when enforced)
+    // Get all data (scoped to the caller's LOB employees when enforced).
+    // fetchAll → walk pages so the activity-logs CSV is complete, not capped at 1000.
     const filters = { classification, employee, from, to };
     const visibleUserIds = await resolveVisibleUserIds(req);
-    const result = await getReportDataByType(orgId, type, filters, visibleUserIds);
-    
+    const result = await getReportDataByType(orgId, type, filters, visibleUserIds, { fetchAll: true });
+
     // Generate CSV based on report type
     let headers, csvRows;
     

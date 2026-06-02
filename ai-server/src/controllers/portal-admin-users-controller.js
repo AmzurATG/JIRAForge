@@ -145,7 +145,11 @@ async function createAdminUser(req, res) {
     // Send email asynchronously (don't block response)
     setImmediate(async () => {
       try {
-        const portalUrl = process.env.PORTAL_BASE_URL || 'https://jira-forge-toz8.vercel.app/login';
+        // Portal login URL the invitee clicks. Driven entirely by PORTAL_BASE_URL
+        // so each environment points at its own portal (dev/prod). Falls back to
+        // localhost for local dev only, matching the convention used elsewhere
+        // (e.g. the password-reset link). Never hardcode a deployed Vercel URL here.
+        const portalUrl = `${process.env.PORTAL_BASE_URL || 'http://localhost:3002'}/login`;
         const template = templates.adminInvite;
         
         const templateData = {
