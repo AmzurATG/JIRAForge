@@ -8,6 +8,7 @@ import { useState, useEffect } from 'react';
 import { UserPlus, Edit2, Trash2, Shield } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { adminUsersApi } from '../api/adminUsers';
+import { lobsApi } from '../api/lobs';
 import DataTable from '../components/common/DataTable';
 import ConfirmDialog from '../components/common/ConfirmDialog';
 import LoadingSpinner from '../components/common/LoadingSpinner';
@@ -21,7 +22,8 @@ function SettingsPage() {
   const [admins, setAdmins] = useState([]);
   const [totalCount, setTotalCount] = useState(0);
   const [page, setPage] = useState(1);
-  
+  const [lobs, setLobs] = useState([]); // all LOBs (for assignment)
+
   // Create/Edit modal
   const [showModal, setShowModal] = useState(false);
   const [modalMode, setModalMode] = useState('create'); // 'create' or 'edit'
@@ -29,7 +31,8 @@ function SettingsPage() {
   const [formData, setFormData] = useState({
     email: '',
     displayName: '',
-    role: 'admin'
+    role: 'admin',
+    lobIds: []
   });
   
   // Delete confirmation
@@ -44,6 +47,13 @@ function SettingsPage() {
       setLoading(false);
     }
   }, [page, user?.role]);
+
+  // Load all LOBs once (for the assignment multi-select)
+  useEffect(() => {
+    if (user?.role === 'superadmin') {
+      lobsApi.list().then((res) => setLobs(res.data || [])).catch(() => {});
+    }
+  }, [user?.role]);
 
   const loadAdmins = async () => {
     setLoading(true);
@@ -64,7 +74,7 @@ function SettingsPage() {
   const handleCreate = () => {
     setModalMode('create');
     setEditingAdmin(null);
-    setFormData({ email: '', displayName: '', role: 'admin' });
+    setFormData({ email: '', displayName: '', role: 'admin', lobIds: [] });
     setShowModal(true);
   };
 
@@ -74,7 +84,8 @@ function SettingsPage() {
     setFormData({
       email: admin.email,
       displayName: admin.display_name,
-      role: admin.role
+      role: admin.role,
+      lobIds: (admin.lobs || []).map((l) => l.id)
     });
     setShowModal(true);
   };
@@ -100,28 +111,51 @@ function SettingsPage() {
   const handleSubmit = async (e) => {
     e.preventDefault();
     setError(null);
-    
+
+    const isSuper = formData.role === 'superadmin';
+    // Superadmins see everything, so LOB assignment doesn't apply to them.
+    const lobIds = isSuper ? [] : formData.lobIds;
+
+    if (!isSuper && lobIds.length === 0) {
+      setError('Select at least one LOB — a non-superadmin with no LOB would see nothing.');
+      return;
+    }
+
     try {
       if (modalMode === 'create') {
         if (!formData.email || !formData.displayName) {
           setError('Email and display name are required');
           return;
         }
-        
-        await adminUsersApi.create({
+
+        const res = await adminUsersApi.create({
           email: formData.email,
           displayName: formData.displayName,
           role: formData.role
         });
+        const newId = res.data?.id;
+        if (newId && lobIds.length) {
+          await Promise.all(lobIds.map((lobId) => lobsApi.addHeads(lobId, [newId])));
+        }
         setSuccess('Admin user created successfully. They can sign in with Google SSO.');
       } else {
         await adminUsersApi.update(editingAdmin.id, {
           displayName: formData.displayName,
           role: formData.role
         });
+
+        // Reconcile LOB head assignments (add newly selected, remove deselected).
+        // If promoted to superadmin, lobIds is [] so all existing heads are removed.
+        const current = (editingAdmin.lobs || []).map((l) => l.id);
+        const toAdd = lobIds.filter((id) => !current.includes(id));
+        const toRemove = current.filter((id) => !lobIds.includes(id));
+        await Promise.all([
+          ...toAdd.map((lobId) => lobsApi.addHeads(lobId, [editingAdmin.id])),
+          ...toRemove.map((lobId) => lobsApi.removeHead(lobId, editingAdmin.id)),
+        ]);
         setSuccess('Admin user updated successfully');
       }
-      
+
       setShowModal(false);
       loadAdmins();
     } catch (err) {
@@ -158,6 +192,17 @@ function SettingsPage() {
           {value}
         </span>
       ),
+    },
+    {
+      key: 'lobs',
+      label: 'LOBs',
+      sortable: false,
+      render: (_, admin) =>
+        admin.role === 'superadmin'
+          ? <span className="text-xs text-gray-500">All (superadmin)</span>
+          : (admin.lobs && admin.lobs.length
+              ? <span className="text-xs">{admin.lobs.map((l) => l.name).join(', ')}</span>
+              : <span className="text-xs text-amber-600 dark:text-amber-400">None — sees nothing</span>),
     },
     {
       key: 'last_login_at',
@@ -313,7 +358,44 @@ function SettingsPage() {
                   <option value="viewer">Viewer</option>
                 </select>
               </div>
-              
+
+              {/* LOB assignment — only for non-superadmins (superadmin sees all) */}
+              {formData.role !== 'superadmin' && (
+                <div>
+                  <label className="block text-sm font-medium mb-2">
+                    Heads which LOB(s) <span className="text-red-500">*</span>
+                  </label>
+                  <div className="max-h-40 overflow-y-auto border border-gray-300 dark:border-gray-600 rounded p-2 space-y-1">
+                    {lobs.length === 0 ? (
+                      <p className="text-xs text-gray-500 dark:text-gray-400">
+                        No LOBs yet — create one first under "Line of Businesses".
+                      </p>
+                    ) : (
+                      lobs.map((lob) => (
+                        <label key={lob.id} className="flex items-center gap-2 text-sm cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={formData.lobIds.includes(lob.id)}
+                            onChange={(e) =>
+                              setFormData((f) => ({
+                                ...f,
+                                lobIds: e.target.checked
+                                  ? [...f.lobIds, lob.id]
+                                  : f.lobIds.filter((id) => id !== lob.id),
+                              }))
+                            }
+                          />
+                          {lob.name}
+                        </label>
+                      ))
+                    )}
+                  </div>
+                  <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                    This user will only see data for the LOB(s) selected here.
+                  </p>
+                </div>
+              )}
+
               <div className="flex gap-2 justify-end">
                 <button
                   type="button"

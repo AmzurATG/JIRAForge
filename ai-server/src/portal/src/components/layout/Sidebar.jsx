@@ -11,21 +11,35 @@ import {
   ListChecks,
   Building2
 } from 'lucide-react';
+import { useState, useEffect } from 'react';
 import { useAuth } from '../../contexts/AuthContext';
+import { lobsApi } from '../../api/lobs';
 
 function Sidebar({ collapsed, onToggle }) {
   const { user } = useAuth();
   const isSuperadmin = user?.role === 'superadmin';
+
+  // A non-superadmin who heads ≥1 LOB gets a scoped "My LOBs" entry.
+  const [isHead, setIsHead] = useState(false);
+  useEffect(() => {
+    if (isSuperadmin) return;
+    let active = true;
+    lobsApi.list().then((res) => { if (active) setIsHead((res.data || []).length > 0); }).catch(() => {});
+    return () => { active = false; };
+  }, [isSuperadmin]);
 
   const menuItems = [
     { path: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
     { path: '/employees', label: 'Employees', icon: Users },
     { path: '/time-logs', label: 'Time Logs', icon: Clock },
     { path: '/reports', label: 'Reports', icon: FileText },
-    { path: '/lobs', label: 'Line of Businesses', icon: Building2, superadminOnly: true },
-    { path: '/app-classifications', label: 'App Classifications', icon: ListChecks },
-    { path: '/settings', label: 'Settings', icon: Settings },
-  ].filter((item) => !item.superadminOnly || isSuperadmin);
+    // Superadmin: full LOB management. Head: scoped "My LOBs". Others: hidden.
+    isSuperadmin
+      ? { path: '/lobs', label: 'Line of Businesses', icon: Building2 }
+      : (isHead ? { path: '/lobs', label: 'My LOBs', icon: Building2 } : null),
+    { path: '/app-classifications', label: 'App Classifications', icon: ListChecks, superadminOnly: true },
+    { path: '/settings', label: 'Settings', icon: Settings, superadminOnly: true },
+  ].filter(Boolean).filter((item) => !item.superadminOnly || isSuperadmin);
 
   return (
     <aside className={`${

@@ -115,6 +115,28 @@ describe('listLobClassifications — precedence (per-LOB rule → default → ne
   });
 });
 
+describe('getLobsForAdmins', () => {
+  test('maps each admin to the LOB(s) they head', async () => {
+    db.getHeadRowsForAdmins.mockResolvedValue([
+      { admin_id: 'a1', lob_id: 'L1' },
+      { admin_id: 'a1', lob_id: 'L2' },
+      { admin_id: 'a2', lob_id: 'L1' },
+    ]);
+    db.listLobsByIds.mockResolvedValue([{ id: 'L1', name: 'Cloud' }, { id: 'L2', name: 'Data' }]);
+
+    const map = await lobService.getLobsForAdmins(['a1', 'a2']);
+
+    expect(map.a1.map((l) => l.name).sort()).toEqual(['Cloud', 'Data']);
+    expect(map.a2.map((l) => l.name)).toEqual(['Cloud']);
+  });
+
+  test('empty input returns {} without DB calls', async () => {
+    const map = await lobService.getLobsForAdmins([]);
+    expect(map).toEqual({});
+    expect(db.getHeadRowsForAdmins).not.toHaveBeenCalled();
+  });
+});
+
 describe('setLobClassification', () => {
   test('rejects invalid classification value', async () => {
     await expect(lobService.setLobClassification('L1', 'a', 'banana', 'admin1')).rejects.toMatchObject({ status: 400 });

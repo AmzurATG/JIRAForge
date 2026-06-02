@@ -237,6 +237,23 @@ async function getLobHeadRows(lobId) {
   return data || [];
 }
 
+/** Head rows for a set of admins (for showing each admin's LOBs). */
+async function getHeadRowsForAdmins(adminIds) {
+  const supabase = getClient();
+  if (!supabase) throw new Error('Supabase client not initialized');
+  if (!Array.isArray(adminIds) || adminIds.length === 0) return [];
+
+  const { data, error } = await supabase
+    .from('portal_lob_heads')
+    .select('admin_id, lob_id')
+    .in('admin_id', adminIds);
+  if (error) {
+    logger.error('[PortalLobDB] getHeadRowsForAdmins failed', { error });
+    throw error;
+  }
+  return data || [];
+}
+
 async function getAdminsByIds(adminIds) {
   const supabase = getClient();
   if (!supabase) throw new Error('Supabase client not initialized');
@@ -438,6 +455,7 @@ module.exports = {
   removeLobMember,
   // heads
   getLobHeadRows,
+  getHeadRowsForAdmins,
   getAdminsByIds,
   addLobHeads,
   removeLobHead,
