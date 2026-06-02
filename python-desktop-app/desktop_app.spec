@@ -255,6 +255,25 @@ except Exception as e:
 engine_hiddenimports.append('ocr.engines.dynamic_engine')
 
 # ==============================================================================
+# OPENCV (cv2) — only bundle if actually installed as a real extension module.
+# hook-cv2.py crashes with TypeError when cv2 is a namespace package (no __file__
+# / origin). This happens with some opencv-python builds on Linux where the
+# compiled .so is missing. Use importlib.util.find_spec to verify it has a real
+# origin before marking it as available.
+# ==============================================================================
+CV2_AVAILABLE = False
+try:
+    import importlib.util as _ilu
+    _cv2_spec = _ilu.find_spec('cv2')
+    if _cv2_spec is not None and _cv2_spec.origin is not None:
+        CV2_AVAILABLE = True
+        print(f"[INFO] OpenCV (cv2) found at {_cv2_spec.origin} — will bundle")
+    else:
+        print("[INFO] OpenCV (cv2) is a namespace/broken package (no origin) — excluding")
+except Exception as _cv2_err:
+    print(f"[INFO] OpenCV (cv2) not importable — excluding: {_cv2_err}")
+
+# ==============================================================================
 # COLLECT OCR MODULE FILES
 # ==============================================================================
 ocr_datas = []
@@ -355,6 +374,13 @@ print("=" * 70)
 print("")
 
 runtime_hooks_list = []
+# On Linux, pre-import optparse (needed by gi/GTK) and cv2 before sys.path is
+# modified by the tray bootstrap, preventing PyInstaller's recursion guard.
+if IS_LINUX:
+    runtime_hooks_list.append('pyinstaller_hooks/pyi_rth_cv2.py')
+    # Wayland tray hook: adds system gi to sys.path and forces
+    # PYSTRAY_BACKEND=appindicator before `import pystray` runs.
+    runtime_hooks_list.append('pyinstaller_hooks/pyi_rth_pystray_wayland.py')
 
 a = Analysis(
     ['desktop_app.py'],
@@ -399,6 +425,15 @@ a = Analysis(
         # System tray
         'pystray',
         'pystray._win32',
+        # Linux tray backends — collected explicitly so PyInstaller bundles them
+        # even if pystray's hook doesn't detect them automatically.
+        'pystray._xorg',
+        'pystray._appindicator',
+        'pystray._gtk',
+        'pystray._info',
+        # optparse is stdlib but must be in hiddenimports so gi's GTK loader
+        # can find it inside the frozen bundle (otherwise gtk-unavailable error).
+        'optparse',
         # Windows APIs
         'win32gui',
         'win32process',
@@ -477,10 +512,10 @@ a = Analysis(
         'setuptools._distutils.command',
         'setuptools._distutils.command.sdist',
         # Image/Math
-        'cv2',
         'numpy',
         'numpy.core',
         'numpy.core.multiarray',
+    ] + (['cv2'] if CV2_AVAILABLE else []) + [
         # Standard library
         'ctypes',
         'json',
@@ -493,7 +528,7 @@ a = Analysis(
         'socket',
         'logging',
     ] + dynamic_hiddenimports + engine_hiddenimports,
-    hookspath=[],
+    hookspath=['pyinstaller_hooks'],
     hooksconfig={},
     runtime_hooks=runtime_hooks_list,
     excludes=[
@@ -531,7 +566,9 @@ a = Analysis(
         '.env',
         '.env.local',
         '.env.production',
-    ] + engine_excludes,
+        # cv2 (opencv) is excluded on Linux to avoid namespace-package recursion
+        # inside PyInstaller bundles. image_processor.py has PIL-only fallbacks.
+    ] + (['cv2'] if IS_LINUX else []) + ([] if CV2_AVAILABLE else ['cv2']) + engine_excludes,
     noarchive=False,
     cipher=block_cipher,
 )

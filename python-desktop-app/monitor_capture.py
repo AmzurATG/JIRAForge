@@ -23,8 +23,11 @@ import os
 import sys
 import time
 import logging
+import shutil
+import subprocess
+import tempfile
 
-from PIL import ImageGrab
+from PIL import Image as _PILImage, ImageGrab
 
 logger = logging.getLogger(__name__)
 
@@ -329,6 +332,190 @@ def get_capture_stats():
     return dict(_capture_stats)
 
 
+def _is_wayland_session():
+    """Return True when the running session is Wayland (not pure X11)."""
+    return bool(
+        os.environ.get('WAYLAND_DISPLAY') or
+        os.environ.get('XDG_SESSION_TYPE', '').lower() == 'wayland'
+    )
+
+
+def _clean_env_for_screenshot():
+    """Return a copy of os.environ with snap-injected GTK/GIO variables stripped.
+
+    When running inside a snap-packaged host app (e.g. VS Code snap), certain
+    environment variables are overridden to point inside the snap bundle:
+
+        GTK_PATH, GTK_IM_MODULE_FILE, GTK_EXE_PREFIX,
+        GIO_MODULE_DIR, GSETTINGS_SCHEMA_DIR, LOCPATH, XDG_DATA_HOME
+
+    These cause native binaries like gnome-screenshot to load GTK modules
+    from the snap's runtime (core20), which links against a different libc/
+    libpthread than the system, resulting in:
+
+        symbol lookup error: .../snap/core20/.../libpthread.so.0:
+            undefined symbol: __libc_pthread_init, version GLIBC_PRIVATE
+
+    Fix: strip all known snap-injected GTK/GIO variables so gnome-screenshot
+    uses its system-default paths. The _VSCODE_SNAP_ORIG backup variables
+    that VS Code creates are used to restore the pre-snap values where present.
+    """
+    # Variables that snap-packaged VS Code (and similar) override
+    _SNAP_OVERRIDDEN_VARS = frozenset({
+        'GTK_PATH',
+        'GTK_IM_MODULE_FILE',
+        'GTK_EXE_PREFIX',
+        'GIO_MODULE_DIR',
+        'GSETTINGS_SCHEMA_DIR',
+        'LOCPATH',
+        'XDG_DATA_HOME',
+    })
+
+    env = {}
+    for key, val in os.environ.items():
+        # Skip snap-injected vars; skip the "_ORIG" backups (they're internal)
+        if key in _SNAP_OVERRIDDEN_VARS:
+            continue
+        if key.endswith('_VSCODE_SNAP_ORIG'):
+            continue
+        env[key] = val
+
+    # Restore pre-snap values for XDG_CONFIG_DIRS and XDG_DATA_DIRS if VS Code
+    # snap stored the originals in *_VSCODE_SNAP_ORIG backup variables.
+    for xdg_var in ('XDG_CONFIG_DIRS', 'XDG_DATA_DIRS'):
+        orig_key = f'{xdg_var}_VSCODE_SNAP_ORIG'
+        if orig_key in os.environ and os.environ[orig_key]:
+            env[xdg_var] = os.environ[orig_key]
+
+    return env
+
+
+def _capture_gnome_screenshot():
+    """Capture the full screen via gnome-screenshot with a snap-safe clean env.
+
+    gnome-screenshot is the standard screenshot tool on GNOME and works on
+    both X11 and Wayland sessions.  When running inside VS Code snap (or any
+    other snap-packaged host), snap injects GTK_PATH / GTK_IM_MODULE_FILE /
+    etc. that redirect GTK module loading into the snap bundle's runtime
+    (core20).  Those modules link against a different libpthread, triggering
+    "undefined symbol: __libc_pthread_init, version GLIBC_PRIVATE".
+
+    Fix: pass a clean copy of os.environ that strips the snap-injected vars,
+    so gnome-screenshot uses the system GTK paths.
+
+    Returns PIL.Image on success, None on failure.
+    """
+    if not shutil.which('gnome-screenshot'):
+        return None
+
+    fh, filepath = tempfile.mkstemp('.png')
+    os.close(fh)
+    try:
+        result = subprocess.run(
+            ['gnome-screenshot', '--file', filepath],
+            capture_output=True,
+            timeout=8,
+            env=_clean_env_for_screenshot(),
+        )
+        if result.returncode == 0 and os.path.exists(filepath) and os.path.getsize(filepath) > 0:
+            im = _PILImage.open(filepath)
+            im.load()  # read into memory before the temp file is deleted
+            # Sanity-check: reject all-black captures (compositor not ready)
+            import array as _array
+            bands = im.split()
+            if any(max(_array.array('B', b.tobytes())) > 0 for b in bands):
+                return im.copy()
+            logger.warning("gnome-screenshot produced an all-black image — skipping")
+            return None
+        stderr_msg = result.stderr.decode('utf-8', errors='replace')[:300] if result.stderr else ''
+        logger.warning(f"gnome-screenshot failed (rc={result.returncode}): {stderr_msg}")
+    except subprocess.TimeoutExpired:
+        logger.warning("gnome-screenshot timed out")
+    except Exception as e:
+        logger.warning(f"gnome-screenshot error: {e}")
+    finally:
+        try:
+            os.unlink(filepath)
+        except OSError:
+            pass
+    return None
+
+
+def _capture_linux():
+    """Capture the full screen on Linux.
+
+    On GNOME/Wayland, scrot and Pillow XCB capture via XWayland whose root
+    window is entirely black (the compositor does not expose Wayland content
+    through XComposite).  gnome-screenshot uses the GNOME Shell D-Bus
+    screenshot service, which has access to the Wayland compositor buffers
+    and produces a real, pixel-accurate screenshot.
+
+    Fallback order (fastest / most-reliable first):
+
+    Wayland session:
+      1. gnome-screenshot (clean env)  — GNOME/Ubuntu Wayland; uses D-Bus
+                compositor API; requires a snap-safe environment (see
+                _clean_env_for_screenshot).
+      2. scrot                         — X11 / XWayland fallback.  Gives a
+                black image on pure Wayland but is harmless (caller checks).
+      3. Pillow XCB                    — last resort; same caveat as scrot.
+
+    X11 session:
+      1. scrot                         — pure X11, fast, no snap issues.
+      2. Pillow XCB                    — fallback when scrot is absent.
+    """
+    is_wayland = _is_wayland_session()
+
+    # --- Wayland Method 1: gnome-screenshot with snap-safe clean env ---
+    if is_wayland:
+        img = _capture_gnome_screenshot()
+        if img is not None:
+            logger.debug("Linux capture: gnome-screenshot (Wayland)")
+            return img
+
+    # --- Method 2: scrot (X11 / XWayland) ---
+    if shutil.which('scrot'):
+        fh, filepath = tempfile.mkstemp('.png')
+        os.close(fh)
+        os.unlink(filepath)   # scrot won't overwrite an existing file
+        try:
+            result = subprocess.run(
+                ['scrot', '--silent', filepath],
+                capture_output=True, timeout=5
+            )
+            if result.returncode == 0 and os.path.exists(filepath):
+                im = _PILImage.open(filepath)
+                im.load()   # read into memory before the temp file is deleted
+                # On Wayland, scrot captures the XWayland root which is black.
+                # Detect and skip those to avoid feeding blank images to OCR.
+                import array as _array
+                bands = im.split()
+                if any(max(_array.array('B', b.tobytes())) > 0 for b in bands):
+                    logger.debug("Linux capture: scrot")
+                    return im.copy()
+                logger.warning("scrot produced an all-black image (Wayland XWayland root) — skipping")
+            else:
+                logger.warning(f"scrot exited with rc={result.returncode}: {result.stderr[:200]}")
+        except (subprocess.TimeoutExpired, Exception) as e:
+            logger.warning(f"scrot capture failed: {e}")
+        finally:
+            try:
+                os.unlink(filepath)
+            except OSError:
+                pass
+
+    # --- Method 3: Pillow XCB (only when confirmed available) ---
+    try:
+        if getattr(_PILImage.core, 'HAVE_XCB', False):
+            img = ImageGrab.grab()
+            logger.debug("Linux capture: Pillow XCB")
+            return img
+    except Exception as e:
+        logger.warning(f"ImageGrab.grab() (XCB) failed: {e}")
+
+    return None
+
+
 def capture_focused_monitor():
     """Capture the monitor containing the current foreground window.
     
@@ -346,12 +533,9 @@ def capture_focused_monitor():
     """
     _capture_stats['total'] += 1
 
-    # Non-Windows: passthrough to default capture (P1-5)
+    # Non-Windows: use Linux-specific capture (P1-5)
     if not _WIN32_AVAILABLE:
-        try:
-            return ImageGrab.grab()
-        except Exception:
-            return None
+        return _capture_linux()
 
     # --- Tier 1: Focused-monitor capture ---
     hwnd = _get_stable_foreground_hwnd()
@@ -457,7 +641,20 @@ def log_display_environment():
     """Log the current display environment for support diagnostics.
     Call once at startup."""
     if not _WIN32_AVAILABLE:
-        logger.info("Display environment: non-Windows platform, multi-monitor N/A")
+        import sys as _sys
+        session_type = os.environ.get('XDG_SESSION_TYPE', 'unknown')
+        wayland = os.environ.get('WAYLAND_DISPLAY', '')
+        display = os.environ.get('DISPLAY', '')
+        logger.info(
+            f"Display environment: Linux, session={session_type}, "
+            f"DISPLAY={display!r}, WAYLAND_DISPLAY={wayland!r}"
+        )
+        logger.info(
+            f"Screenshot backend: "
+            f"gnome-screenshot={'available' if shutil.which('gnome-screenshot') else 'not found'}, "
+            f"scrot={'available' if shutil.which('scrot') else 'not found'}, "
+            f"PIL_XCB={getattr(_PILImage.core, 'HAVE_XCB', False)}"
+        )
         return
 
     try:

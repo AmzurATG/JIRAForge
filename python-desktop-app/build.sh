@@ -54,8 +54,8 @@ do
 done
 
 if [ -n "$SYSTEM_DIST_PACKAGES" ]; then
-    export PYTHONPATH="${PYTHONPATH:+$PYTHONPATH:}$SYSTEM_DIST_PACKAGES"
-    echo "[INFO] Added system dist-packages to PYTHONPATH: $SYSTEM_DIST_PACKAGES"
+    echo "[INFO] Detected system dist-packages: $SYSTEM_DIST_PACKAGES"
+    echo "[INFO] (scoped to tray validation only — avoids version conflicts with venv packages)"
 fi
 
 # Check for virtual environment
@@ -76,9 +76,38 @@ if ! $PYTHON_CMD -c "import PyInstaller" 2>/dev/null; then
     pip install pyinstaller>=6.2.0
 fi
 
+# Ensure runtime-critical packages are present in the venv.
+# platformdirs is required by pkg_resources (setuptools) at runtime inside the
+# PyInstaller bundle — if it is missing the app crashes on startup with
+# ModuleNotFoundError: No module named 'platformdirs'.
+echo "[INFO] Checking critical runtime dependencies..."
+MISSING_DEPS=()
+for pkg in platformdirs tzlocal; do
+    if ! $PYTHON_CMD -c "import $pkg" 2>/dev/null; then
+        MISSING_DEPS+=("$pkg")
+    fi
+done
+# cv2 must be a real extension module (origin != None), not a broken namespace package.
+# opencv-python ships a namespace package without the .so on some Linux installs —
+# replace it with opencv-python-headless which always includes the real extension.
+CV2_OK=$($PYTHON_CMD -c "
+import importlib.util, sys
+spec = importlib.util.find_spec('cv2')
+print('ok' if spec and spec.origin else 'bad')
+" 2>/dev/null)
+if [ "$CV2_OK" != "ok" ]; then
+    echo "[INFO] opencv-python-headless not properly installed — fixing..."
+    pip uninstall -y opencv-python opencv-python-headless 2>/dev/null || true
+    MISSING_DEPS+=("opencv-python-headless")
+fi
+if [ ${#MISSING_DEPS[@]} -gt 0 ]; then
+    echo "[INFO] Installing missing runtime deps: ${MISSING_DEPS[*]}"
+    pip install "${MISSING_DEPS[@]}"
+fi
+
 echo ""
-echo "[0/4] Validating Linux tray runtime..."
-$PYTHON_CMD - <<'PY'
+echo "[0/5] Validating Linux tray runtime..."
+PYTHONPATH="${SYSTEM_DIST_PACKAGES}${PYTHONPATH:+:$PYTHONPATH}" $PYTHON_CMD - <<'PY'
 import importlib
 checks = [
     ('gi', 'PyGObject'),
@@ -108,14 +137,15 @@ PY
 
 # Clean previous build
 echo ""
-echo "[1/4] Cleaning previous build..."
+echo "[1/5] Cleaning previous build..."
 rm -rf build/
 rm -rf dist/
+rm -rf AppDir/
 rm -f *.spec.backup
 
 # Validate configuration embed
 echo ""
-echo "[2/4] Validating embedded configuration..."
+echo "[2/5] Validating embedded configuration..."
 $PYTHON_CMD -c "
 import sys
 sys.path.insert(0, '.')
@@ -135,7 +165,7 @@ fi
 
 # Build with PyInstaller
 echo ""
-echo "[3/4] Building executable with PyInstaller..."
+echo "[3/5] Building executable with PyInstaller..."
 echo "      This may take 5-10 minutes..."
 echo ""
 
@@ -151,17 +181,132 @@ fi
 
 # Get file size
 FILE_SIZE=$(du -h "dist/TimeTracker" | cut -f1)
+echo "  [OK] Standalone binary: dist/TimeTracker ($FILE_SIZE)"
 
+# ============================================================================
+# [4/5] Package AppImage
+# ============================================================================
+echo ""
+echo "[4/5] Packaging AppImage..."
+echo ""
+
+# Resolve the app version
+# Use tail -1 to grab only the printed version line, discarding INFO/WARN
+# messages that desktop_app.py emits to stdout during import.
+APP_VERSION=$($PYTHON_CMD -c "
+import sys
+sys.path.insert(0, '.')
+from desktop_app import APP_VERSION
+print(APP_VERSION)
+" 2>/dev/null | tail -1)
+ARCH=$(uname -m)
+APPIMAGE_OUT="dist/TimeTracker-v${APP_VERSION}-${ARCH}.AppImage"
+
+echo "  Version : ${APP_VERSION}"
+echo "  Arch    : ${ARCH}"
+echo "  Output  : ${APPIMAGE_OUT}"
+echo ""
+
+# Build the AppDir skeleton
+APPDIR="$(pwd)/AppDir"
+mkdir -p "${APPDIR}/usr/bin"
+mkdir -p "${APPDIR}/usr/share/applications"
+mkdir -p "${APPDIR}/usr/share/icons/hicolor/256x256/apps"
+
+echo "  Copying binary into AppDir..."
+cp dist/TimeTracker "${APPDIR}/usr/bin/TimeTracker"
+
+echo "  Installing AppRun and desktop metadata..."
+cp appimage/AppRun "${APPDIR}/AppRun"
+chmod +x "${APPDIR}/AppRun"
+cp appimage/timetracker.desktop "${APPDIR}/timetracker.desktop"
+cp appimage/timetracker.desktop "${APPDIR}/usr/share/applications/timetracker.desktop"
+
+# Generate the icon if it doesn't exist yet
+if [ ! -f "appimage/timetracker.png" ]; then
+    echo "  Generating app icon..."
+    $PYTHON_CMD appimage/generate_icon.py || echo "  [WARN] Icon generation failed — continuing without icon"
+fi
+
+if [ -f "appimage/timetracker.png" ]; then
+    cp appimage/timetracker.png "${APPDIR}/timetracker.png"
+    cp appimage/timetracker.png "${APPDIR}/usr/share/icons/hicolor/256x256/apps/timetracker.png"
+else
+    echo "  [WARN] No icon found — AppImage will use the default icon"
+fi
+
+# Locate or download appimagetool
+APPIMAGETOOL=""
+if command -v appimagetool &>/dev/null; then
+    APPIMAGETOOL="appimagetool"
+    echo "  Using system appimagetool: $(command -v appimagetool)"
+elif [ -f "./appimagetool-${ARCH}.AppImage" ]; then
+    APPIMAGETOOL="./appimagetool-${ARCH}.AppImage"
+    echo "  Using cached appimagetool: ${APPIMAGETOOL}"
+else
+    echo "  Downloading appimagetool for ${ARCH}..."
+    TOOL_URL="https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-${ARCH}.AppImage"
+    if command -v wget &>/dev/null; then
+        wget -q --show-progress -O "./appimagetool-${ARCH}.AppImage" "$TOOL_URL"
+    elif command -v curl &>/dev/null; then
+        curl -fSL -o "./appimagetool-${ARCH}.AppImage" "$TOOL_URL"
+    else
+        echo "[ERROR] Neither wget nor curl is available — cannot download appimagetool."
+        echo "        Install manually: sudo apt install appimagetool"
+        echo "        Standalone binary is still at dist/TimeTracker"
+        APPIMAGETOOL=""
+    fi
+    if [ -n "$APPIMAGETOOL" ] || [ -f "./appimagetool-${ARCH}.AppImage" ]; then
+        chmod +x "./appimagetool-${ARCH}.AppImage"
+        APPIMAGETOOL="./appimagetool-${ARCH}.AppImage"
+    fi
+fi
+
+if [ -z "$APPIMAGETOOL" ]; then
+    echo "  [WARN] appimagetool not available — skipping AppImage packaging."
+    echo "         The standalone binary dist/TimeTracker is still usable."
+else
+    # Support FUSE-less environments (Docker / CI / no fusermount)
+    FUSE_AVAILABLE=0
+    command -v fusermount &>/dev/null && FUSE_AVAILABLE=1
+
+    echo "  Running appimagetool..."
+    if [ "$FUSE_AVAILABLE" -eq 0 ] && [ "${APPIMAGE_EXTRACT_AND_RUN:-0}" != "1" ]; then
+        echo "  [INFO] FUSE not detected — using extract-and-run mode"
+        APPIMAGE_EXTRACT_AND_RUN=1 ARCH="$ARCH" "$APPIMAGETOOL" "$APPDIR" "$APPIMAGE_OUT" 2>&1 | tee -a build_log.txt
+    else
+        ARCH="$ARCH" "$APPIMAGETOOL" "$APPDIR" "$APPIMAGE_OUT" 2>&1 | tee -a build_log.txt
+    fi
+
+    if [ -f "$APPIMAGE_OUT" ]; then
+        chmod +x "$APPIMAGE_OUT"
+        APPIMAGE_SIZE=$(du -h "$APPIMAGE_OUT" | cut -f1)
+        echo ""
+        echo "  [OK] AppImage : $APPIMAGE_OUT ($APPIMAGE_SIZE)"
+    else
+        echo ""
+        echo "  [WARN] AppImage packaging failed — check build_log.txt for details."
+        echo "         Standalone binary dist/TimeTracker is still available."
+    fi
+fi
+
+# ============================================================================
+# Final summary
+# ============================================================================
 echo ""
 echo "============================================"
 echo "  Build Complete!"
 echo "============================================"
 echo ""
-echo "  Executable: dist/TimeTracker"
-echo "  Size: $FILE_SIZE"
+echo "  Standalone : dist/TimeTracker"
+if [ -f "$APPIMAGE_OUT" ]; then
+echo "  AppImage   : $APPIMAGE_OUT"
+fi
 echo ""
 echo "Next steps:"
-echo "  1. Test the build: ./dist/TimeTracker"
-echo "  2. Check OCR engines work correctly"
-echo "  3. Verify no WinRT errors in logs"
+echo "  1. Test standalone   : ./dist/TimeTracker"
+if [ -f "$APPIMAGE_OUT" ]; then
+echo "  2. Test AppImage     : ./$APPIMAGE_OUT"
+echo "  3. Upload AppImage to storage and run publish-linux-release.sql"
+fi
 echo ""

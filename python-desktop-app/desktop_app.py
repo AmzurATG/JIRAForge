@@ -45,9 +45,38 @@ def _bootstrap_linux_tray_backend():
         f'/usr/local/lib/python{sys.version_info.major}.{sys.version_info.minor}/dist-packages',
     ]
 
+    # In frozen / AppImage mode (PyInstaller), adding system dist-package paths
+    # can shadow bundled extensions (especially cv2) and cause recursion errors.
+    is_frozen = getattr(sys, 'frozen', False)
+
     added_paths = []
-    for path in candidate_paths:
-        if os.path.isdir(path) and path not in sys.path:
+    if not is_frozen:
+        for path in candidate_paths:
+            if not os.path.isdir(path) or path in sys.path:
+                continue
+            # Skip paths that would shadow bundled cv2 (directory OR .so file).
+            has_cv2 = (
+                os.path.exists(os.path.join(path, 'cv2')) or
+                os.path.exists(os.path.join(path, 'cv2.py')) or
+                any(f.startswith('cv2') for f in os.listdir(path))
+            )
+            if has_cv2:
+                continue
+            sys.path.append(path)
+            added_paths.append(path)
+    else:
+        # Frozen / AppImage mode: cv2 is excluded from bundle to avoid namespace
+        # package recursion. Only add system paths that don't shadow bundled libs.
+        for path in candidate_paths:
+            if not os.path.isdir(path) or path in sys.path:
+                continue
+            try:
+                entries = os.listdir(path)
+            except OSError:
+                continue
+            # Skip any system path that contains cv2 (would cause import recursion)
+            if any(e.startswith('cv2') for e in entries):
+                continue
             sys.path.append(path)
             added_paths.append(path)
 
@@ -66,7 +95,18 @@ def _bootstrap_linux_tray_backend():
 
     indicator_name = None
     indicator_error = None
-    for module_name in ('AppIndicator3', 'AyatanaAppIndicator3'):
+
+    # On Wayland, AppIndicator3 uses X11 XEmbed which is invisible.
+    # AyatanaAppIndicator3 uses the D-Bus SNI protocol which works on Wayland.
+    # Prefer Ayatana on Wayland sessions; keep AppIndicator3 first on X11.
+    is_wayland = bool(os.environ.get('WAYLAND_DISPLAY') or
+                      os.environ.get('XDG_SESSION_TYPE', '').lower() == 'wayland')
+    if is_wayland:
+        indicator_candidates = ('AyatanaAppIndicator3', 'AppIndicator3')
+    else:
+        indicator_candidates = ('AppIndicator3', 'AyatanaAppIndicator3')
+
+    for module_name in indicator_candidates:
         try:
             gi.require_version(module_name, '0.1')
             __import__('gi.repository', fromlist=[module_name])
@@ -76,10 +116,38 @@ def _bootstrap_linux_tray_backend():
             indicator_error = exc
 
     if indicator_name:
-        os.environ.setdefault('PYSTRAY_BACKEND', 'appindicator')
+        # On Wayland, pystray._appindicator always tries AppIndicator3 (XEmbed)
+        # first, regardless of which indicator was detected here.  AppIndicator3
+        # uses X11 XEmbed which is invisible on GNOME/Wayland even when
+        # XWayland is running.  AyatanaAppIndicator3 uses the D-Bus SNI
+        # StatusNotifierItem protocol which IS visible via the
+        # ubuntu-appindicators GNOME Shell extension.
+        #
+        # Fix: when AyatanaAppIndicator3 is selected on Wayland, pre-register
+        # AppIndicator3 in gi with a deliberately wrong version ('99.0').
+        # pystray._appindicator then calls gi.require_version('AppIndicator3',
+        # '0.1') which raises ValueError (99.0 ≠ 0.1), and pystray falls back
+        # to gi.require_version('AyatanaAppIndicator3', '0.1') — exactly what
+        # we want.  This avoids the need for a fragile post-import monkey-patch.
+        if is_wayland and indicator_name == 'AyatanaAppIndicator3':
+            try:
+                gi.require_version('AppIndicator3', '99.0')
+            except Exception:
+                # If AppIndicator3 was already required with a different version
+                # (shouldn't happen here), ignore — the Wayland patch below acts
+                # as a safety net.
+                pass
+
+        # Force-set the backend — do NOT use setdefault, because AppRun or the
+        # user's environment may have pre-set PYSTRAY_BACKEND to something else
+        # (e.g. 'xorg') which setdefault would silently leave in place.
+        os.environ['PYSTRAY_BACKEND'] = 'appindicator'
         added_suffix = f" via {', '.join(added_paths)}" if added_paths else ''
         _LINUX_TRAY_BOOTSTRAP_STATUS = f'appindicator-ready:{indicator_name}{added_suffix}'
     else:
+        # AppIndicator not available — fall back to xorg (requires a system tray
+        # like trayer/stalonetray to be running; no-op on plain GNOME).
+        os.environ.setdefault('PYSTRAY_BACKEND', 'xorg')
         _LINUX_TRAY_BOOTSTRAP_STATUS = f'appindicator-unavailable:{indicator_error}'
 
 
@@ -116,6 +184,50 @@ from flask import Flask, render_template_string, jsonify, request, session, redi
 from flask_cors import CORS
 import pystray
 from pystray import MenuItem as item
+
+# --- Wayland: safety-net to guarantee AyatanaAppIndicator3 (D-Bus SNI) -------
+# The venv's pystray/_appindicator.py has been patched to prefer
+# AyatanaAppIndicator3 on Wayland, so normally this block is a no-op.
+#
+# Edge cases this handles:
+#  (a) pystray fell back to _xorg because gi was not yet on sys.path when
+#      `import pystray` ran (shouldn't happen — bootstrap adds it first —
+#      but defensive in case of import ordering surprises).
+#  (b) pystray._appindicator somehow loaded AppIndicator3 (XEmbed) instead of
+#      AyatanaAppIndicator3 (D-Bus SNI) — we replace the module-level binding
+#      so all subsequent Icon creation / update calls use the patched library.
+#
+# In case (a) we also switch pystray.Icon to _appindicator.Icon and set
+# PYSTRAY_BACKEND so any future re-init also picks the right backend.
+if sys.platform.startswith('linux') and (
+    os.environ.get('WAYLAND_DISPLAY') or
+    os.environ.get('XDG_SESSION_TYPE', '').lower() == 'wayland'
+):
+    try:
+        import gi as _gi_patch
+        _gi_patch.require_version('AyatanaAppIndicator3', '0.1')
+        from gi.repository import AyatanaAppIndicator3 as _Ayatana
+
+        import pystray._appindicator as _pai
+
+        # Case (b): _appindicator loaded but with the wrong (XEmbed) lib
+        _current_indicator = getattr(_pai, 'AppIndicator', None)
+        _is_ayatana = _current_indicator is not None and 'Ayatana' in repr(_current_indicator)
+        if not _is_ayatana:
+            _pai.AppIndicator = _Ayatana
+            print('[INFO] Wayland safety-net: pystray._appindicator patched to AyatanaAppIndicator3 (SNI)')
+
+        # Case (a): pystray.Icon is _xorg.Icon — force switch to appindicator
+        if 'xorg' in getattr(pystray.Icon, '__module__', ''):
+            pystray.Icon = _pai.Icon
+            os.environ['PYSTRAY_BACKEND'] = 'appindicator'
+            print('[INFO] Wayland safety-net: pystray.Icon forced to _appindicator backend')
+        else:
+            print('[INFO] Wayland: pystray is using AyatanaAppIndicator3 (SNI/D-Bus) — OK')
+
+    except Exception as _patch_err:
+        print(f'[WARN] Wayland AyatanaAppIndicator3 safety-net failed: {_patch_err}')
+
 from PIL import Image as PILImage
 
 if sys.platform.startswith('linux'):
@@ -454,6 +566,25 @@ except ImportError:
     WINOTIFY_AVAILABLE = False
     print("[WARN] winotify not available - desktop notifications disabled")
 
+# Linux desktop notifications via notify-send (libnotify)
+import shutil as _shutil
+_NOTIFY_SEND = _shutil.which("notify-send")
+NOTIFY_SEND_AVAILABLE = _NOTIFY_SEND is not None
+
+def _linux_notify(title: str, msg: str, urgency: str = "normal") -> None:
+    """Send a desktop notification on Linux using notify-send.
+    No-op when notify-send is not available or on non-Linux platforms."""
+    if not NOTIFY_SEND_AVAILABLE:
+        return
+    try:
+        import subprocess as _sp
+        _sp.run(
+            [_NOTIFY_SEND, "--urgency", urgency, "--app-name", "Time Tracker", title, msg],
+            timeout=3, check=False, capture_output=True
+        )
+    except Exception:
+        pass
+
 # Note: AI analysis is now handled by the separate AI server
 # Desktop app only captures and uploads screenshots to Supabase
 
@@ -466,7 +597,12 @@ load_dotenv()
 
 # Application version - IMPORTANT: Update this when releasing new versions
 # This is used for update checking and notifications
-APP_VERSION = "1.4.6"
+APP_VERSION = "1.4.7"
+
+# True when the process is running inside an AppImage bundle.
+# The AppImage runtime sets the $APPIMAGE env var to the path of the .AppImage
+# file on disk, which is the file we replace during auto-update.
+IS_APPIMAGE = bool(os.environ.get('APPIMAGE'))
 
 # Hard-disable screenshot monitoring/storage in desktop app.
 # OCR text extraction for activity records still runs via event-based flow.
@@ -686,7 +822,8 @@ def check_for_updates(ai_server_url=None):
         print("[WARN] AI Server URL not configured, skipping update check")
         return None
     
-    url = f"{server_url}/api/app-version/check?platform=windows&current={APP_VERSION}"
+    _platform = 'linux' if sys.platform.startswith('linux') else 'windows'
+    url = f"{server_url}/api/app-version/check?platform={_platform}&current={APP_VERSION}"
     
     # Retry logic with exponential backoff for transient network failures
     max_attempts = 3
@@ -813,7 +950,9 @@ def show_update_notification(update_info, callback=None, state='available', web_
         install_callback: Callable to trigger update installation directly (no browser)
     """
     if not WINOTIFY_AVAILABLE:
-        print(f"[INFO] Update available: v{update_info.get('latest_version')} (notifications not available)")
+        version = update_info.get('latest_version', 'unknown')
+        _linux_notify("Time Tracker Update", f"Update v{version} is available")
+        print(f"[INFO] Update available: v{version} (notifications not available)")
         return
     
     try:
@@ -944,6 +1083,23 @@ def get_installed_exe_path():
     """Get the path where the exe should be installed"""
     return os.path.join(get_app_data_dir(), 'TimeTracker.exe')
 
+def get_linux_installed_binary_path():
+    """Get the canonical install path for the Linux binary (~/.local/share/TimeTracker/TimeTracker)."""
+    return os.path.join(get_app_data_dir(), 'TimeTracker')
+
+def get_linux_installed_appimage_path():
+    """Return the on-disk path of the running (or to-be-installed) AppImage.
+
+    When running inside an AppImage the runtime sets $APPIMAGE to the actual
+    .AppImage file path.  That is the file we overwrite during auto-update.
+    Falls back to a fixed location inside the app data directory if the env
+    var is absent (e.g. first-time install or development mode).
+    """
+    appimage_env = os.environ.get('APPIMAGE', '')
+    if appimage_env and os.path.isfile(appimage_env):
+        return appimage_env
+    return os.path.join(get_app_data_dir(), 'TimeTracker.AppImage')
+
 def get_shutdown_signal_path():
     """Get the path to the shutdown signal file"""
     return os.path.join(get_app_data_dir(), '.shutdown_signal')
@@ -954,12 +1110,25 @@ def find_running_timetracker_processes():
     Returns list of psutil.Process objects.
     """
     current_pid = os.getpid()
+
+    # Collect ancestor PIDs to avoid accidentally killing our own AppImage runner.
+    # On Linux AppImages the FUSE mount helper is a *parent* of the Python
+    # interpreter and has 'TimeTracker' in its exe path.  Without this guard
+    # terminate_old_version() would send SIGTERM to that parent, which then
+    # propagates to the current Python process → exit 143 "Terminated".
+    ancestor_pids = set()
+    try:
+        for ancestor in psutil.Process(current_pid).parents():
+            ancestor_pids.add(ancestor.pid)
+    except (psutil.NoSuchProcess, psutil.AccessDenied):
+        pass
+
     running_processes = []
 
     for proc in psutil.process_iter(['pid', 'name', 'exe']):
         try:
-            # Skip current process
-            if proc.pid == current_pid:
+            # Skip current process and its ancestor processes
+            if proc.pid == current_pid or proc.pid in ancestor_pids:
                 continue
 
             proc_name = proc.info['name'].lower() if proc.info['name'] else ''
@@ -1109,6 +1278,11 @@ def is_running_from_install_location():
         # Running as script (development mode) - always return True
         return True
 
+    # AppImages are self-contained executables — there is no separate "install"
+    # location to compare against (sys.executable points inside a FUSE mount).
+    if IS_APPIMAGE:
+        return True
+
     current_path = os.path.normpath(get_app_executable_path()).lower()
     install_path = os.path.normpath(get_installed_exe_path()).lower()
 
@@ -1125,6 +1299,18 @@ def install_application():
     if not getattr(sys, 'frozen', False):
         # Running as script (development mode) - skip installation
         print("[INFO] Running in development mode - skipping self-installation")
+        return True
+
+    # AppImages are self-contained — no installation step is needed.
+    # sys.executable points inside a FUSE mount (/tmp/.mount_*/usr/bin/TimeTracker)
+    # and cannot be copied with shutil.  Autostart is handled separately by
+    # add_to_linux_autostart() in run(), and updates replace the .AppImage file
+    # directly via UpdateManager.  Running install_application() here would kill
+    # the AppImage's squashfuse daemon (detected as a "running instance"), which
+    # unmounts /tmp/.mount_*/ and causes PyInstaller to exit with
+    # "moved or deleted since this application was launched".
+    if IS_APPIMAGE:
+        print("[INFO] Running as AppImage - skipping self-installation")
         return True
 
     # Check if already running from install location
@@ -1348,6 +1534,95 @@ def create_update_script(app_data_dir, current_pid, staged_exe, installed_exe):
     return updater_script
 
 
+def create_linux_update_script(app_data_dir, current_pid, staged_binary, installed_binary):
+    """Create a detached shell script that atomically applies a staged Linux update.
+
+    Mirrors the Windows create_update_script() bat logic:
+      1. Wait up to 5 s for current process to exit, then SIGKILL it.
+      2. Verify the staged binary exists.
+      3. Replace the installed binary (up to 15 retries), making it executable.
+      4. Relaunch the new binary detached.
+      5. Clean up staged file + self-delete the script.
+    """
+    updates_dir = os.path.join(app_data_dir, 'updates')
+    os.makedirs(updates_dir, exist_ok=True)
+
+    updater_script = os.path.join(updates_dir, 'apply_update.sh')
+    backup_binary = installed_binary + '.bak'
+    install_dir = os.path.dirname(installed_binary)
+    update_log = os.path.join(updates_dir, 'update_install.log')
+
+    script = f"""#!/bin/bash
+# Time Tracker Linux Auto-Updater
+# Auto-generated — do not edit.
+set -e
+
+LOG="{update_log}"
+STAGED="{staged_binary}"
+INSTALLED="{installed_binary}"
+BACKUP="{backup_binary}"
+INSTALL_DIR="{install_dir}"
+OLD_PID={current_pid}
+
+log() {{ echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" >> "$LOG"; }}
+
+log "=== Update apply script started ==="
+log "Staged:    $STAGED"
+log "Installed: $INSTALLED"
+
+# === Phase 1: Wait for the old process to exit, then force-kill ===
+log "Waiting up to 5s for PID $OLD_PID to exit..."
+for i in $(seq 1 5); do
+    kill -0 "$OLD_PID" 2>/dev/null || {{ log "PID $OLD_PID exited."; break; }}
+    sleep 1
+done
+if kill -0 "$OLD_PID" 2>/dev/null; then
+    log "PID $OLD_PID still alive — force killing."
+    kill -9 "$OLD_PID" 2>/dev/null || true
+    sleep 2
+fi
+
+# === Phase 2: Verify staged file ===
+if [ ! -f "$STAGED" ]; then
+    log "ERROR: staged binary missing — aborting."
+    exit 1
+fi
+
+# === Phase 3: Replace binary (up to 15 retries) ===
+REPLACED=0
+for i in $(seq 1 15); do
+    log "Replace attempt $i..."
+    rm -f "$BACKUP" 2>/dev/null || true
+    [ -f "$INSTALLED" ] && mv -f "$INSTALLED" "$BACKUP" 2>/dev/null || true
+    cp -f "$STAGED" "$INSTALLED" && chmod +x "$INSTALLED" && {{ REPLACED=1; break; }}
+    log "Attempt $i failed — retrying..."
+    sleep 1
+done
+
+if [ "$REPLACED" -eq 0 ]; then
+    log "ERROR: could not replace binary after 15 retries — rolling back."
+    [ -f "$BACKUP" ] && mv -f "$BACKUP" "$INSTALLED" && log "Rolled back to previous version."
+    [ -f "$INSTALLED" ] && nohup "$INSTALLED" >/dev/null 2>&1 &
+    rm -f "$STAGED" "$BACKUP" "$0" 2>/dev/null || true
+    exit 1
+fi
+
+# === Phase 4: Launch updated binary ===
+log "Binary replaced. Launching new version..."
+nohup "$INSTALLED" >/dev/null 2>&1 &
+disown
+
+# === Phase 5: Cleanup ===
+rm -f "$STAGED" "$BACKUP" 2>/dev/null || true
+log "Update complete."
+rm -f "$0"
+"""
+    with open(updater_script, 'w') as f:
+        f.write(script)
+    os.chmod(updater_script, 0o755)
+    return updater_script
+
+
 class UpdateManager:
     """Manages background download and installation of desktop app updates."""
 
@@ -1397,9 +1672,15 @@ class UpdateManager:
         if not os.path.exists(updates_dir):
             return False
 
+        if IS_APPIMAGE:
+            _ext = '.AppImage'
+        elif sys.platform.startswith('linux'):
+            _ext = '.bin'
+        else:
+            _ext = '.exe'
         candidates = []
         for name in os.listdir(updates_dir):
-            if not (name.startswith('TimeTracker_v') and name.endswith('.exe')):
+            if not (name.startswith('TimeTracker_v') and name.endswith(_ext)):
                 continue
             full_path = os.path.join(updates_dir, name)
             if os.path.isfile(full_path):
@@ -1410,7 +1691,7 @@ class UpdateManager:
 
         staged_path = max(candidates, key=os.path.getmtime)
         staged_name = os.path.basename(staged_path)
-        version = staged_name.replace('TimeTracker_v', '').replace('.exe', '')
+        version = staged_name.replace('TimeTracker_v', '').replace(_ext, '')
 
         self.download_path = staged_path
         self.update_info = {
@@ -1472,8 +1753,14 @@ class UpdateManager:
 
         updates_dir = os.path.join(self.app_data_dir, 'updates')
         os.makedirs(updates_dir, exist_ok=True)
-        temp_path = os.path.join(updates_dir, f"TimeTracker_v{version}.exe.tmp")
-        final_path = os.path.join(updates_dir, f"TimeTracker_v{version}.exe")
+        if IS_APPIMAGE:
+            _ext = '.AppImage'
+        elif sys.platform.startswith('linux'):
+            _ext = '.bin'
+        else:
+            _ext = '.exe'
+        temp_path = os.path.join(updates_dir, f"TimeTracker_v{version}{_ext}.tmp")
+        final_path = os.path.join(updates_dir, f"TimeTracker_v{version}{_ext}")
 
         for stale in (temp_path, final_path):
             if os.path.exists(stale):
@@ -1542,6 +1829,10 @@ class UpdateManager:
                 except Exception as notify_error:
                     # Don't let notification failure break the app
                     print(f"[WARN] Failed to show download failure notification: {notify_error}")
+            else:
+                _linux_notify("Update Download Failed",
+                              f"Failed to download update: {str(e)[:100]}. Will retry automatically.",
+                              urgency="normal")
         finally:
             if os.path.exists(temp_path):
                 try:
@@ -1593,6 +1884,44 @@ class UpdateManager:
             return False
 
         try:
+            # ── Linux path ──────────────────────────────────────────────────
+            if sys.platform.startswith('linux'):
+                if IS_APPIMAGE:
+                    installed_binary = get_linux_installed_appimage_path()
+                else:
+                    installed_binary = get_linux_installed_binary_path()
+                updater_script = create_linux_update_script(
+                    self.app_data_dir,
+                    os.getpid(),
+                    self.download_path,
+                    installed_binary,
+                )
+                try:
+                    updates_dir = os.path.join(self.app_data_dir, 'updates')
+                    os.makedirs(updates_dir, exist_ok=True)
+                    launcher_log = os.path.join(updates_dir, 'update_launcher.log')
+                    with open(launcher_log, 'a') as f:
+                        f.write(f"[{datetime.now().isoformat()}] apply_update called (linux)\n")
+                        f.write(f"pid={os.getpid()}\n")
+                        f.write(f"script={updater_script}\n")
+                        f.write(f"staged={self.download_path}\n")
+                        f.write(f"installed={installed_binary}\n")
+                except Exception as log_err:
+                    print(f"[WARN] Could not write update launcher log: {log_err}")
+
+                subprocess.Popen(
+                    ['bash', updater_script],
+                    start_new_session=True,
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+                if callable(self._on_apply_update):
+                    self._on_apply_update()
+                self._set_state('installing')
+                return True
+
+            # ── Windows path ────────────────────────────────────────────────
             installed_exe = get_installed_exe_path()
             updater_script = create_update_script(
                 self.app_data_dir,
@@ -1848,8 +2177,70 @@ def is_in_startup():
     except Exception as e:
         return False
 
+
 # ============================================================================
-# ATLASSIAN OAUTH MANAGER
+# LINUX XDG AUTOSTART (equivalent of Windows registry startup entry)
+# ============================================================================
+
+_LINUX_AUTOSTART_DIR = os.path.expanduser('~/.config/autostart')
+_LINUX_AUTOSTART_FILE = os.path.join(_LINUX_AUTOSTART_DIR, 'timetracker.desktop')
+
+
+def add_to_linux_autostart():
+    """Register the app as an XDG autostart entry so it launches on login.
+
+    Creates ~/.config/autostart/timetracker.desktop pointing to the installed
+    binary.  Equivalent of the Windows registry HKCU Run entry.
+    """
+    if not sys.platform.startswith('linux'):
+        return False
+
+    try:
+        if IS_APPIMAGE:
+            binary_path = get_linux_installed_appimage_path()
+        else:
+            binary_path = get_linux_installed_binary_path()
+            # Fall back to current executable if install binary doesn't exist yet
+            if not os.path.isfile(binary_path):
+                binary_path = get_app_executable_path()
+
+        os.makedirs(_LINUX_AUTOSTART_DIR, exist_ok=True)
+        desktop_content = (
+            '[Desktop Entry]\n'
+            'Type=Application\n'
+            f'Name={APP_NAME}\n'
+            'Comment=Automatic time tracking for JIRA\n'
+            f'Exec={binary_path}\n'
+            'Terminal=false\n'
+            'Hidden=false\n'
+            'X-GNOME-Autostart-enabled=true\n'
+        )
+        with open(_LINUX_AUTOSTART_FILE, 'w') as f:
+            f.write(desktop_content)
+        print(f'[OK] Added to Linux autostart: {binary_path}')
+        return True
+    except Exception as e:
+        print(f'[ERROR] Failed to add to Linux autostart: {e}')
+        return False
+
+
+def remove_from_linux_autostart():
+    """Remove the XDG autostart entry."""
+    if not sys.platform.startswith('linux'):
+        return False
+    try:
+        if os.path.exists(_LINUX_AUTOSTART_FILE):
+            os.remove(_LINUX_AUTOSTART_FILE)
+            print('[OK] Removed from Linux autostart')
+        return True
+    except Exception as e:
+        print(f'[ERROR] Failed to remove from Linux autostart: {e}')
+        return False
+
+
+def is_in_linux_autostart():
+    """Return True if an XDG autostart entry exists for the app."""
+    return os.path.isfile(_LINUX_AUTOSTART_FILE)
 # ============================================================================
 
 # Keyring service name for secure credential storage
@@ -5678,6 +6069,9 @@ class TimeTracker:
                     notification.show()
                 except Exception:
                     pass
+            else:
+                _linux_notify("Updating Time Tracker",
+                              f"Installing v{latest}. The app will restart shortly.")
             self.update_manager.auto_apply()
             return  # app is shutting down, skip tray updates
 
@@ -8838,20 +9232,23 @@ class TimeTracker:
             return None
     
     def show_unassigned_work_notification(self, summary):
-        """Show Windows toast notification for unassigned work"""
-        if not WINOTIFY_AVAILABLE:
-            print("[INFO] Notifications not available (winotify not installed)")
-            return
-
+        """Show desktop notification for unassigned work"""
         if not summary or summary['pending_groups'] == 0:
             return
 
         try:
-            # Format the notification message
             if summary['total_hours'] >= 1:
                 time_str = f"{summary['total_hours']}h"
             else:
                 time_str = f"{summary['total_minutes']}m"
+
+            msg = (f"You have {summary['pending_groups']} work session(s) ({time_str}) "
+                   f"that need to be assigned to Jira issues.")
+
+            if not WINOTIFY_AVAILABLE:
+                _linux_notify("📋 Unassigned Work Reminder", msg)
+                print(f"[INFO] Notifications not available (winotify not installed)")
+                return
 
             notification = Notification(
                 app_id="Time Tracker",
@@ -8891,8 +9288,10 @@ class TimeTracker:
 
         if not WINOTIFY_AVAILABLE:
             if is_temporary:
+                _linux_notify("Time Tracker", "Temporary authentication issue – sync will retry automatically.")
                 print("[WARN] Temporary authentication issue (notification unavailable)")
             else:
+                _linux_notify("Time Tracker", "Your session has expired. Please open Time Tracker and log in again.", urgency="critical")
                 print("[WARN] Re-authentication required (notification unavailable)")
             log_auth_diagnostic(
                 'auth_notification_unavailable',
@@ -8945,6 +9344,8 @@ class TimeTracker:
         self._login_reminder_last_shown = now
 
         if not WINOTIFY_AVAILABLE:
+            _linux_notify("Time Tracker – Not Logged In",
+                          "You are not logged in. Please open Time Tracker and log in.")
             print("[WARN] Login reminder skipped - winotify not available")
             return
 
@@ -8964,6 +9365,7 @@ class TimeTracker:
     def show_pause_reminder_notification(self):
         """Show notification reminding user they have paused tracking"""
         if not WINOTIFY_AVAILABLE:
+            _linux_notify("Tracking Paused", "You've had tracking paused for a while. Resume from the system tray.")
             print("[INFO] Pause reminder skipped - winotify not available")
             return
 
@@ -9628,26 +10030,31 @@ class TimeTracker:
             force_ocr = (classification == 'unknown') or issue_key_in_title or (app_name.lower() in spreadsheet_processes)
 
             if not self.ocr_processor:
-                return
-            capture_result = self.ocr_processor.capture_screenshot_only(force=force_ocr)
-            screenshot = capture_result.get('screenshot')
-            throttled = capture_result.get('throttled', False)
+                # OCR unavailable — still create the session for time tracking, just without screenshot data
+                if classification == 'productive':
+                    print(f"[PROD] {app_name} — {window_title[:50]} (no OCR)")
+                elif classification == 'unknown':
+                    print(f"[UNKNOWN] {app_name} (no OCR)")
+            else:
+                capture_result = self.ocr_processor.capture_screenshot_only(force=force_ocr)
+                screenshot = capture_result.get('screenshot')
+                throttled = capture_result.get('throttled', False)
 
-            if throttled and screenshot:
-                # Throttled: save screenshot for batch backfill
-                ocr_result = {
-                    'text': None, 'method': None, 'confidence': 0.0,
-                    'error_message': None, 'throttled': True,
-                    'screenshot': screenshot
-                }
-            elif not screenshot:
-                if classification == 'unknown':
-                    self._maybe_classify_unknown_app(app_name, window_title, None)
+                if throttled and screenshot:
+                    # Throttled: save screenshot for batch backfill
+                    ocr_result = {
+                        'text': None, 'method': None, 'confidence': 0.0,
+                        'error_message': None, 'throttled': True,
+                        'screenshot': screenshot
+                    }
+                elif not screenshot:
+                    if classification == 'unknown':
+                        self._maybe_classify_unknown_app(app_name, window_title, None)
 
-            if classification == 'productive':
-                print(f"[PROD] {app_name} — {window_title[:50]}")
-            elif classification == 'unknown':
-                print(f"[UNKNOWN] {app_name}")
+                if classification == 'productive':
+                    print(f"[PROD] {app_name} — {window_title[:50]}")
+                elif classification == 'unknown':
+                    print(f"[UNKNOWN] {app_name}")
 
         # CRITICAL: Create session FIRST so it exists when async OCR callback fires.
         # This fixes race condition where OCR completes before session is created.
@@ -9945,35 +10352,144 @@ class TimeTracker:
             return None
     
     def _is_screen_locked(self):
-        """Check if the screen is currently locked by inspecting the foreground window.
-        Returns True when the foreground process is a Windows lock/logon screen."""
-        if not WIN32_AVAILABLE:
-            return False
+        """Check if the screen is currently locked.
+
+        Windows: inspects the foreground window's process name.
+        Linux:   queries the GNOME ScreenSaver D-Bus interface (gdbus).
+                 Falls back to False (not locked) if the interface is unavailable.
+        Returns True when the lock/login screen is active.
+        """
+        if WIN32_AVAILABLE:
+            try:
+                hwnd = win32gui.GetForegroundWindow()
+                _, pid = win32process.GetWindowThreadProcessId(hwnd)
+                process = psutil.Process(pid)
+                return process.name().lower() in LOCK_SCREEN_APPS
+            except Exception:
+                return False
+        # Linux: ask the GNOME ScreenSaver whether the session is locked
         try:
-            hwnd = win32gui.GetForegroundWindow()
-            _, pid = win32process.GetWindowThreadProcessId(hwnd)
-            process = psutil.Process(pid)
-            return process.name().lower() in LOCK_SCREEN_APPS
+            result = subprocess.run(
+                [
+                    'gdbus', 'call', '--session',
+                    '--dest', 'org.gnome.ScreenSaver',
+                    '--object-path', '/org/gnome/ScreenSaver',
+                    '--method', 'org.gnome.ScreenSaver.GetActive',
+                ],
+                capture_output=True, text=True, timeout=1
+            )
+            if result.returncode == 0:
+                # Output looks like "(true,)\n" or "(false,)\n"
+                return 'true' in result.stdout.lower()
         except Exception:
-            return False
+            pass
+        return False
+
+    def _get_active_window_linux(self):
+        """Get (title, app_name) for the currently focused window on Linux.
+
+        Tries in order:
+          1. xdotool  — X11 and XWayland (most common; zero extra Python deps)
+          2. gdbus GNOME Shell eval — pure Wayland / GNOME Shell
+          3. Returns ('Unknown', 'Unknown') when both methods are unavailable.
+
+        The method is intentionally lightweight: two short-lived subprocesses
+        (or one, if the first succeeds) with 1-second timeouts each so they
+        never block the 2-second tracking loop.
+        """
+        # --- Method 1: xdotool (X11 / XWayland) ---
+        try:
+            # Fetch the active window ID
+            wid_res = subprocess.run(
+                ['xdotool', 'getactivewindow'],
+                capture_output=True, text=True, timeout=1
+            )
+            if wid_res.returncode == 0:
+                wid = wid_res.stdout.strip()
+
+                # Window title
+                title = 'Unknown'
+                name_res = subprocess.run(
+                    ['xdotool', 'getwindowname', wid],
+                    capture_output=True, text=True, timeout=1
+                )
+                if name_res.returncode == 0:
+                    title = name_res.stdout.strip() or 'Unknown'
+
+                # Process name via PID
+                app_name = 'Unknown'
+                try:
+                    pid_res = subprocess.run(
+                        ['xdotool', 'getwindowpid', wid],
+                        capture_output=True, text=True, timeout=1
+                    )
+                    if pid_res.returncode == 0:
+                        pid = int(pid_res.stdout.strip())
+                        proc = psutil.Process(pid)
+                        app_name = proc.name()
+                except (ValueError, psutil.NoSuchProcess, psutil.AccessDenied):
+                    pass
+
+                return title, app_name
+        except FileNotFoundError:
+            # xdotool is not installed — fall through to Method 2
+            pass
+        except subprocess.TimeoutExpired:
+            pass
+        except Exception:
+            pass
+
+        # --- Method 2: gdbus GNOME Shell eval (pure Wayland / GNOME) ---
+        # Works on GNOME 40+ without any extra packages; gdbus ships with glib.
+        try:
+            result = subprocess.run(
+                [
+                    'gdbus', 'call', '--session',
+                    '--dest', 'org.gnome.Shell',
+                    '--object-path', '/org/gnome/Shell',
+                    '--method', 'org.gnome.Shell.Eval',
+                    (
+                        "let w=global.display.focus_window;"
+                        "w?(w.title+'|||'+(w.gtk_application_id||w.wm_class||'Unknown'))"
+                        ":'Unknown|||Unknown'"
+                    )
+                ],
+                capture_output=True, text=True, timeout=2
+            )
+            if result.returncode == 0 and result.stdout:
+                import re as _re
+                m = _re.search(r"'([^']*)'", result.stdout)
+                if m:
+                    raw = m.group(1)
+                    if '|||' in raw:
+                        title, app_name = raw.split('|||', 1)
+                        return title.strip() or 'Unknown', app_name.strip() or 'Unknown'
+        except FileNotFoundError:
+            pass
+        except subprocess.TimeoutExpired:
+            pass
+        except Exception:
+            pass
+
+        return 'Unknown', 'Unknown'
 
     def get_active_window(self):
         """Get active window information and detect window switches for event-based tracking"""
-        if not WIN32_AVAILABLE:
-            return {'title': 'Unknown', 'app': 'Unknown', 'window_key': 'unknown', 'is_new_window': False}
-        
         try:
-            hwnd = win32gui.GetForegroundWindow()
-            title = win32gui.GetWindowText(hwnd)
-            
-            # Get process name
-            _, pid = win32process.GetWindowThreadProcessId(hwnd)
-            process = psutil.Process(pid)
-            app_name = process.name()
-            
+            if WIN32_AVAILABLE:
+                # Windows: use Win32 API directly
+                hwnd = win32gui.GetForegroundWindow()
+                title = win32gui.GetWindowText(hwnd)
+                _, pid = win32process.GetWindowThreadProcessId(hwnd)
+                process = psutil.Process(pid)
+                app_name = process.name()
+            else:
+                # Linux: use xdotool (X11/XWayland) or GNOME D-Bus (Wayland)
+                title, app_name = self._get_active_window_linux()
+
             # Create unique window key (app + title) to detect window switches
             window_key = f"{app_name}|||{title}"
-            
+
             # Detect window switch
             is_new_window = False
             if window_key != self.current_window_key:
@@ -10005,7 +10521,7 @@ class TimeTracker:
                 self.current_window_start_time = datetime.now(timezone.utc)
                 self.current_window_screenshot_id = None  # Reset - will be set when screenshot is captured
                 self.current_window_record_created_at = None  # Reset - will be set when screenshot is captured
-                if self.current_window_key and self.current_window_key != 'unknown':
+                if self.current_window_key and self.current_window_key != 'Unknown|||Unknown':
                     print(f"[INFO] Window switched at {self.current_window_start_time.strftime('%H:%M:%S')}:")
                     print(f"     - App: {app_name}")
                     print(f"     - Title: {title[:50]}")
@@ -10014,7 +10530,7 @@ class TimeTracker:
                         'title': title[:60] if title else '',
                         'time': self.current_window_start_time.strftime('%H:%M:%S')
                     })
-            
+
             return {
                 'title': title,
                 'app': app_name,
@@ -11717,8 +12233,9 @@ class TimeTracker:
             state: 'red' (not logged in), 'blue' (logged in, not tracking), 'green' (logged in, tracking)
             show_update_badge: If True, adds a small notification dot indicating an update is available
         """
-        # Create a 16x16 icon with a clock symbol
-        size = 16
+        # Use 22x22 — GNOME panel standard (16px is too small and sometimes invisible
+        # on HiDPI displays or Wayland compositors).
+        size = 22
         icon = PILImage.new('RGBA', (size, size), (0, 0, 0, 0))  # Transparent background
         
         # Draw using PIL ImageDraw
@@ -11737,7 +12254,7 @@ class TimeTracker:
         
         # Draw a circle (clock face) with state-based color
         center = size // 2
-        radius = 6
+        radius = size // 2 - 2
         draw.ellipse(
             [center - radius, center - radius, center + radius, center + radius],
             fill=icon_color,
@@ -11746,24 +12263,25 @@ class TimeTracker:
         )
         
         # Draw clock hands (simple lines)
+        hand_color = (255, 255, 255, 255)
         # Hour hand
         draw.line(
-            [center, center, center, center - 3],
-            fill=(255, 255, 255, 255),
-            width=1
+            [center, center, center, center - radius + 4],
+            fill=hand_color,
+            width=2
         )
         # Minute hand
         draw.line(
-            [center, center, center + 2, center],
-            fill=(255, 255, 255, 255),
-            width=1
+            [center, center, center + radius - 3, center],
+            fill=hand_color,
+            width=2
         )
         
         # Draw update badge (small dot in top-right corner) if update is available
         if show_update_badge:
             badge_color = (33, 150, 243, 255)  # Blue badge color (#2196F3)
             badge_outline = (255, 255, 255, 255)  # White outline for visibility
-            badge_radius = 3
+            badge_radius = 4
             badge_x = size - badge_radius - 1  # Top-right corner
             badge_y = badge_radius + 1
             
@@ -11948,7 +12466,7 @@ class TimeTracker:
         """Label for menu-less tray backends where only default click is supported."""
         if not self.current_user:
             return 'Open Login'
-        return 'Open Dashboard'
+        return 'Open Time Tracker'
 
     def _build_tray_menu(self):
         """Build the tray menu with current state"""
@@ -12056,32 +12574,6 @@ class TimeTracker:
         else:
             # Show "Check for Updates" button when no update activity
             menu_items.append(item(lambda text: f"✓ Up to Date (v{self.app_version}) - Click to Check", self._manual_update_trigger, enabled=True))
-
-        # Add separator before main actions
-        menu_items.append(pystray.Menu.SEPARATOR)
-
-        # Tracking controls (dynamic based on state)
-        if self.running and self.tracking_active:
-            # Tracking is active - show Pause option
-            menu_items.append(item('⏸ Pause Tracking', lambda icon, item: self.show_pause_selection_popup()))
-        elif self.running and not self.tracking_active:
-            # Paused - show Resume option
-            menu_items.append(item('▶ Resume Tracking', lambda icon, item: self.resume_tracking()))
-        elif self.current_user or (self.current_user_id and not self.current_user_id.startswith('anonymous_')):
-            # Stopped but can start - show Start option
-            menu_items.append(item('▶ Start Tracking', lambda icon, item: self.start_tracking()))
-
-        # Stop tracking (only if running)
-        if self.running:
-            menu_items.append(item('⏹ Stop Tracking', lambda icon, item: self.stop_tracking()))
-
-        # Dashboard link
-        menu_items.append(pystray.Menu.SEPARATOR)
-        menu_items.append(item('🌐 Open Dashboard', lambda icon, item: webbrowser.open(f'http://localhost:{self.web_port}')))
-
-        # Exit
-        menu_items.append(pystray.Menu.SEPARATOR)
-        menu_items.append(item('❌ Exit', lambda icon, item: self.quit_app()))
 
         print(f"[DEBUG] Menu built with {len(menu_items)} items")
         menu = pystray.Menu(*menu_items)
@@ -12246,17 +12738,16 @@ class TimeTracker:
             time.sleep(3)
             sys.exit(1)
 
-        # Add to Windows startup (runs on system boot) - ONLY when running as built exe
-        # When running from source (python desktop_app.py), get_app_executable_path() returns
-        # the .py file path - Windows would open it in the editor instead of running the app.
-        # ALWAYS update registry when running as exe (overwrites any stale/wrong path from
-        # e.g. previous run from source, moved exe, or corrupted entry).
+        # Add to startup (runs on system boot) - ONLY when running as built exe
+        # Windows: registry HKCU Run entry.
+        # Linux: XDG autostart ~/.config/autostart/timetracker.desktop.
         if getattr(sys, 'frozen', False):
-            add_to_startup()
+            if sys.platform.startswith('linux'):
+                add_to_linux_autostart()
+            else:
+                add_to_startup()
         else:
-            # Development mode: do not modify Windows startup configuration.
-            # Auto-start is only configured when running the built executable.
-            # We don't remove existing entries as they may be valid (pointing to installed exe).
+            # Development mode: do not modify startup configuration.
             print("[INFO] Running in development mode - auto-start is only configured for the built exe.")
 
         # BUGFIX: Load cached user info EARLY to restore organization_id immediately
