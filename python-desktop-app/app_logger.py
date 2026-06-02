@@ -89,6 +89,9 @@ class AppLogger:
         self.log_file = None
         self.start_time = time.time()
         self._setup_complete = False
+        # Keep original streams so redirected writes can still be mirrored to console.
+        self._original_stdout = sys.stdout
+        self._original_stderr = sys.stderr
         
     def setup_logging(self, log_level=logging.INFO):
         """
@@ -130,9 +133,21 @@ class AppLogger:
         root_logger.setLevel(log_level)
         root_logger.addHandler(file_handler)
         
-        # Redirect stdout and stderr to logger
-        sys.stdout = StreamToLogger(logging.getLogger('STDOUT'), logging.INFO)
-        sys.stderr = StreamToLogger(logging.getLogger('STDERR'), logging.ERROR)
+        # Redirect stdout/stderr to logger and optionally mirror to console.
+        # Set LOG_MIRROR_TO_CONSOLE=false to disable terminal mirroring.
+        mirror_console = os.environ.get('LOG_MIRROR_TO_CONSOLE', 'true').lower() == 'true'
+        sys.stdout = StreamToLogger(
+            logging.getLogger('STDOUT'),
+            logging.INFO,
+            mirror_stream=self._original_stdout,
+            mirror_enabled=mirror_console,
+        )
+        sys.stderr = StreamToLogger(
+            logging.getLogger('STDERR'),
+            logging.ERROR,
+            mirror_stream=self._original_stderr,
+            mirror_enabled=mirror_console,
+        )
         
         self._setup_complete = True
         
@@ -206,13 +221,21 @@ class StreamToLogger:
     Redirect stdout/stderr to logger
     """
     
-    def __init__(self, logger, level):
+    def __init__(self, logger, level, mirror_stream=None, mirror_enabled=False):
         self.logger = logger
         self.level = level
         self.linebuf = ''
+        self.mirror_stream = mirror_stream
+        self.mirror_enabled = mirror_enabled
     
     def write(self, buf):
         """Write buffer to logger"""
+        if self.mirror_enabled and self.mirror_stream:
+            try:
+                self.mirror_stream.write(buf)
+            except Exception:
+                pass
+
         for line in buf.rstrip().splitlines():
             # Skip empty lines
             if line.strip():
@@ -220,7 +243,11 @@ class StreamToLogger:
     
     def flush(self):
         """Flush buffer (no-op for logger)"""
-        pass
+        if self.mirror_enabled and self.mirror_stream:
+            try:
+                self.mirror_stream.flush()
+            except Exception:
+                pass
 
 
 # Global logger instance

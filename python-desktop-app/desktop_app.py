@@ -5407,6 +5407,9 @@ class LocalOCRProcessor:
         self._min_interval = 10  # seconds between OCR calls (matches min_screenshot_interval in tracking_loop)
         print("[OCR] LocalOCRProcessor initialized - using dynamic engine selection")
 
+        # Detect a broken OpenCV install early (common in mixed opencv wheels).
+        self._validate_cv2_runtime()
+
         # Log which OCR engines are configured from environment (with defaults)
         primary = os.getenv('OCR_PRIMARY_ENGINE', 'rapidocr')
         fallback = os.getenv('OCR_FALLBACK_ENGINES', 'winrtocr')
@@ -5421,6 +5424,25 @@ class LocalOCRProcessor:
         )
         self._ocr_worker_thread.start()
         print("[OCR] Async OCR worker thread started")
+
+    def _validate_cv2_runtime(self):
+        """Log actionable diagnostics when cv2 is importable but unusable."""
+        try:
+            import cv2  # noqa: F401
+
+            has_cvt = hasattr(cv2, 'cvtColor')
+            has_split = hasattr(cv2, 'split')
+            cv2_file = getattr(cv2, '__file__', None)
+
+            if not has_cvt or not has_split:
+                print("[OCR][ERROR] OpenCV runtime is broken: cv2 is missing required functions")
+                print(f"[OCR][ERROR] cv2.__file__={cv2_file}")
+                print("[OCR][ERROR] OCR will fall back to metadata-only mode until OpenCV is fixed")
+                print("[OCR][ERROR] Fix: pip uninstall -y opencv-python opencv-python-headless && pip install opencv-python-headless==4.10.0.84")
+            else:
+                print(f"[OCR] OpenCV check OK: cv2 available ({cv2_file})")
+        except Exception as e:
+            print(f"[OCR][WARN] Could not validate cv2 runtime: {e}")
 
     def _ocr_worker(self):
         """Background worker thread that runs OCR inference at below-normal priority."""
@@ -9528,6 +9550,11 @@ class TimeTracker:
         records = None
         batch_timestamp = None
         try:
+            print(
+                f"[BATCH] Triggered at {datetime.now(timezone.utc).isoformat()} "
+                f"(last upload {int(time.time() - self.last_batch_upload_time)}s ago)"
+            )
+
             # Wait briefly for any in-flight async OCR to finish before uploading
             if self.ocr_processor and not self.ocr_processor.wait_for_ocr(timeout=5.0):
                 print("[BATCH] Async OCR still running after 5s timeout — uploading without it")
@@ -10388,26 +10415,31 @@ class TimeTracker:
     def _get_active_window_linux(self):
         """Get (title, app_name) for the currently focused window on Linux.
 
-        Tries in order:
-          1. xdotool  — X11 and XWayland (most common; zero extra Python deps)
-          2. gdbus GNOME Shell eval — pure Wayland / GNOME Shell
+                Tries in order:
+                    - Wayland session: gdbus first, then xdotool fallback
+                    - X11 session: xdotool first, then gdbus fallback
+
+                Reason: on Wayland, xdotool can return stale XWayland focus (often VS Code),
+                so we prefer GNOME Shell's compositor-aware focus API.
+
+                    1. primary method based on session type
+                    2. fallback method
           3. Returns ('Unknown', 'Unknown') when both methods are unavailable.
 
         The method is intentionally lightweight: two short-lived subprocesses
         (or one, if the first succeeds) with 1-second timeouts each so they
         never block the 2-second tracking loop.
         """
-        # --- Method 1: xdotool (X11 / XWayland) ---
-        try:
-            # Fetch the active window ID
-            wid_res = subprocess.run(
-                ['xdotool', 'getactivewindow'],
-                capture_output=True, text=True, timeout=1
-            )
-            if wid_res.returncode == 0:
+        def _from_xdotool():
+            try:
+                wid_res = subprocess.run(
+                    ['xdotool', 'getactivewindow'],
+                    capture_output=True, text=True, timeout=1
+                )
+                if wid_res.returncode != 0:
+                    return None
                 wid = wid_res.stdout.strip()
 
-                # Window title
                 title = 'Unknown'
                 name_res = subprocess.run(
                     ['xdotool', 'getwindowname', wid],
@@ -10416,7 +10448,6 @@ class TimeTracker:
                 if name_res.returncode == 0:
                     title = name_res.stdout.strip() or 'Unknown'
 
-                # Process name via PID
                 app_name = 'Unknown'
                 try:
                     pid_res = subprocess.run(
@@ -10431,45 +10462,54 @@ class TimeTracker:
                     pass
 
                 return title, app_name
-        except FileNotFoundError:
-            # xdotool is not installed — fall through to Method 2
-            pass
-        except subprocess.TimeoutExpired:
-            pass
-        except Exception:
-            pass
+            except (FileNotFoundError, subprocess.TimeoutExpired, Exception):
+                return None
 
-        # --- Method 2: gdbus GNOME Shell eval (pure Wayland / GNOME) ---
-        # Works on GNOME 40+ without any extra packages; gdbus ships with glib.
-        try:
-            result = subprocess.run(
-                [
-                    'gdbus', 'call', '--session',
-                    '--dest', 'org.gnome.Shell',
-                    '--object-path', '/org/gnome/Shell',
-                    '--method', 'org.gnome.Shell.Eval',
-                    (
-                        "let w=global.display.focus_window;"
-                        "w?(w.title+'|||'+(w.gtk_application_id||w.wm_class||'Unknown'))"
-                        ":'Unknown|||Unknown'"
-                    )
-                ],
-                capture_output=True, text=True, timeout=2
-            )
-            if result.returncode == 0 and result.stdout:
+        def _from_gdbus():
+            try:
+                result = subprocess.run(
+                    [
+                        'gdbus', 'call', '--session',
+                        '--dest', 'org.gnome.Shell',
+                        '--object-path', '/org/gnome/Shell',
+                        '--method', 'org.gnome.Shell.Eval',
+                        (
+                            "let w=global.display.focus_window;"
+                            "w?(w.title+'|||'+(w.gtk_application_id||w.wm_class||'Unknown'))"
+                            ":'Unknown|||Unknown'"
+                        )
+                    ],
+                    capture_output=True, text=True, timeout=2
+                )
+                if result.returncode != 0 or not result.stdout:
+                    return None
                 import re as _re
                 m = _re.search(r"'([^']*)'", result.stdout)
-                if m:
-                    raw = m.group(1)
-                    if '|||' in raw:
-                        title, app_name = raw.split('|||', 1)
-                        return title.strip() or 'Unknown', app_name.strip() or 'Unknown'
-        except FileNotFoundError:
-            pass
-        except subprocess.TimeoutExpired:
-            pass
-        except Exception:
-            pass
+                if not m:
+                    return None
+                raw = m.group(1)
+                if '|||' not in raw:
+                    return None
+                title, app_name = raw.split('|||', 1)
+                return title.strip() or 'Unknown', app_name.strip() or 'Unknown'
+            except (FileNotFoundError, subprocess.TimeoutExpired, Exception):
+                return None
+
+        is_wayland = bool(
+            os.environ.get('WAYLAND_DISPLAY') or
+            os.environ.get('XDG_SESSION_TYPE', '').lower() == 'wayland'
+        )
+
+        methods = (_from_gdbus, _from_xdotool) if is_wayland else (_from_xdotool, _from_gdbus)
+        for resolver in methods:
+            resolved = resolver()
+            if resolved:
+                title, app_name = resolved
+                # On Wayland, xdotool often returns stale XWayland focus (commonly VS Code).
+                # If we got no title/app signal, continue to fallback method.
+                if title == 'Unknown' and app_name == 'Unknown':
+                    continue
+                return title, app_name
 
         return 'Unknown', 'Unknown'
 
