@@ -62,7 +62,7 @@ function TimeLogsPage() {
 
   useEffect(() => {
     loadEmployees();
-  }, []);
+  }, [lobId]);
 
   useEffect(() => {
     loadTimeLogs();
@@ -86,7 +86,7 @@ function TimeLogsPage() {
 
   const loadEmployees = async () => {
     try {
-      const response = await employeesApi.getSimpleList();
+      const response = await employeesApi.getSimpleList(undefined, lobId || undefined);
       setEmployees(response.data || []);
     } catch (err) {
       console.error('Failed to load employees:', err);
@@ -369,7 +369,7 @@ function TimeLogsPage() {
             </div>
 
             {/* LOB Filter */}
-            <LobFilter value={lobId} onChange={(v) => { setLobId(v); setPage(1); }} />
+            <LobFilter value={lobId} onChange={(v) => { setLobId(v); setSelectedEmployee(''); setPage(1); }} />
           </div>
         </div>
       )}

@@ -11,7 +11,6 @@ import {
   ListChecks,
   Building2
 } from 'lucide-react';
-import { useState } from 'react';
 import { useAuth } from '../../contexts/AuthContext';
 
 function Sidebar({ collapsed, onToggle }) {

@@ -67,11 +67,11 @@ function ReportsPage() {
 
   useEffect(() => {
     loadEmployees();
-  }, []);
+  }, [lobId]);
 
   const loadEmployees = async () => {
     try {
-      const response = await employeesApi.getSimpleList();
+      const response = await employeesApi.getSimpleList(undefined, lobId || undefined);
       setEmployees(response.data || []);
     } catch (err) {
       console.error('Failed to load employees:', err);
@@ -341,7 +341,7 @@ function ReportsPage() {
             </div>
 
             {/* LOB Filter */}
-            <LobFilter value={lobId} onChange={(v) => { setLobId(v); setPreviewData([]); setPage(1); }} />
+            <LobFilter value={lobId} onChange={(v) => { setLobId(v); setSelectedEmployee(''); setPreviewData([]); setPage(1); }} />
           </div>
           </div>
 

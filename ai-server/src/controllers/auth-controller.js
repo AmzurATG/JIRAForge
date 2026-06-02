@@ -544,15 +544,14 @@ exports.refreshToken = async (req, res) => {
     const oauthDesc = error.response?.data?.error_description;
 
     // Enriched, structured log: capture the HTTP status and OAuth error code so
-    // future incidents are triageable at a glance, plus the last 8 chars of the
-    // refresh token for correlating which install is affected (a suffix alone is
-    // not a usable secret). Keep the '[Auth] Token refresh error:' prefix so
-    // existing log greps still match.
+    // future incidents are triageable at a glance. We intentionally do NOT log
+    // any part of the refresh token (even a suffix is secret-derived and the log
+    // sanitizer won't redact a short slice). Keep the '[Auth] Token refresh
+    // error:' prefix so existing log greps still match.
     logger.error('[Auth] Token refresh error:', {
       status,
       oauthError,
-      oauthDesc,
-      refreshTokenSuffix: typeof refresh_token === 'string' ? refresh_token.slice(-8) : undefined
+      oauthDesc
     });
 
     // Classify by the OAuth error CODE in the response body, not by HTTP status.
