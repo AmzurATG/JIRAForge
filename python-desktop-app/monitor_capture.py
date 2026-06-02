@@ -441,6 +441,121 @@ def _capture_gnome_screenshot():
     return None
 
 
+def _capture_gnome_dbus_silent():
+    """Capture via GNOME Shell Screenshot D-Bus with flash=false (no shutter sound).
+
+    Calls org.gnome.Shell.Screenshot.Screenshot(include_cursor=false, flash=false,
+    filename=<path>) directly via gdbus.  The gnome-screenshot binary defaults to
+    flash=true which triggers the GNOME Shell camera-shutter sound and animation;
+    calling the D-Bus service directly with flash=false skips both.
+
+    Works on GNOME 3.38+ (Ubuntu 20.04+).  Returns PIL.Image on success, None
+    on failure (e.g. GNOME Shell not running, D-Bus session unavailable).
+    """
+    fh, filepath = tempfile.mkstemp('.png')
+    os.close(fh)
+    try:
+        result = subprocess.run(
+            [
+                'gdbus', 'call', '--session',
+                '--dest', 'org.gnome.Shell',
+                '--object-path', '/org/gnome/Shell/Screenshot',
+                '--method', 'org.gnome.Shell.Screenshot.Screenshot',
+                'false',   # include_cursor
+                'false',   # flash=false → no camera-shutter sound or animation
+                filepath,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=8,
+            env=_clean_env_for_screenshot(),
+        )
+        # Response on success: "(true, '/path/to/file')\n"
+        # Response on failure: "(false, '')\n"
+        if (result.returncode == 0 and result.stdout and
+                result.stdout.strip().startswith('(true,')):
+            if os.path.exists(filepath) and os.path.getsize(filepath) > 0:
+                im = _PILImage.open(filepath)
+                im.load()  # read into memory before temp file is deleted
+                import array as _array
+                bands = im.split()
+                if any(max(_array.array('B', b.tobytes())) > 0 for b in bands):
+                    logger.debug("Linux capture: GNOME Screenshot D-Bus (silent, flash=false)")
+                    return im.copy()
+                logger.warning("GNOME D-Bus screenshot all-black — skipping")
+                return None
+        logger.debug(
+            f"GNOME Screenshot D-Bus unavailable (rc={result.returncode}): "
+            f"{result.stderr[:200] if result.stderr else ''}"
+        )
+    except subprocess.TimeoutExpired:
+        logger.warning("GNOME Screenshot D-Bus timed out")
+    except Exception as e:
+        logger.debug(f"GNOME Screenshot D-Bus error: {e}")
+    finally:
+        try:
+            os.unlink(filepath)
+        except OSError:
+            pass
+    return None
+
+
+def _capture_gnome_screenshot_muted():
+    """Capture via gnome-screenshot with the GNOME shutter sound suppressed.
+
+    When org.gnome.Shell.Screenshot.Screenshot(flash=false) is denied
+    (GNOME 46+ strict access control), this function falls back to the
+    gnome-screenshot binary.  gnome-screenshot defaults to flash=true which
+    causes GNOME Shell to play the camera-shutter sound via libcanberra.
+
+    Workaround: temporarily set org.gnome.desktop.sound event-sounds to false
+    via GSettings before invoking gnome-screenshot, then immediately restore
+    the previous value.  The GSettings change propagates to GNOME Shell's
+    canberra context before the screenshot D-Bus call is made, so the
+    `screen-capture` sound event is suppressed.
+
+    The mute window is < 300 ms — shorter than any user-perceptible audio gap.
+    The original setting is always restored in a try/finally block.
+
+    Returns PIL.Image on success, None on failure.
+    """
+    # --- Step 1: Read current event-sounds value so we can restore it ---
+    sounds_were_on = True  # conservative default: assume sounds were on
+    try:
+        res = subprocess.run(
+            ['gsettings', 'get', 'org.gnome.desktop.sound', 'event-sounds'],
+            capture_output=True, text=True, timeout=1
+        )
+        sounds_were_on = res.stdout.strip() == 'true'
+    except Exception:
+        sounds_were_on = False  # couldn't read → don't try to restore
+
+    # --- Step 2: Temporarily mute event sounds ---
+    muted = False
+    if sounds_were_on:
+        try:
+            subprocess.run(
+                ['gsettings', 'set', 'org.gnome.desktop.sound', 'event-sounds', 'false'],
+                capture_output=True, timeout=1, check=True
+            )
+            muted = True
+        except Exception as e:
+            logger.debug(f"Could not mute event-sounds: {e}")
+
+    # --- Step 3: Take screenshot and restore sound in all cases ---
+    try:
+        return _capture_gnome_screenshot()
+    finally:
+        if muted:
+            try:
+                subprocess.run(
+                    ['gsettings', 'set', 'org.gnome.desktop.sound', 'event-sounds', 'true'],
+                    capture_output=True, timeout=1
+                )
+            except Exception as e:
+                logger.warning(f"Could not restore event-sounds: {e}")
+
+
 def _capture_linux():
     """Capture the full screen on Linux.
 
@@ -453,12 +568,16 @@ def _capture_linux():
     Fallback order (fastest / most-reliable first):
 
     Wayland session:
-      1. gnome-screenshot (clean env)  — GNOME/Ubuntu Wayland; uses D-Bus
-                compositor API; requires a snap-safe environment (see
-                _clean_env_for_screenshot).
-      2. scrot                         — X11 / XWayland fallback.  Gives a
-                black image on pure Wayland but is harmless (caller checks).
-      3. Pillow XCB                    — last resort; same caveat as scrot.
+      1. GNOME Screenshot D-Bus (silent) — flash=false, no shutter sound.
+         Works when org.gnome.Shell.Screenshot is accessible (GNOME < 46 or
+         relaxed security policy).
+      2. gnome-screenshot + event-sounds muted — uses the gnome-screenshot
+         binary but temporarily sets org.gnome.desktop.sound event-sounds to
+         false to suppress the camera-shutter sound.  Restores the original
+         setting immediately after capture.
+      3. scrot                           — X11 / XWayland fallback; all-black
+                on pure Wayland (checked and skipped).
+      4. Pillow XCB                      — last resort; same caveat as scrot.
 
     X11 session:
       1. scrot                         — pure X11, fast, no snap issues.
@@ -466,11 +585,15 @@ def _capture_linux():
     """
     is_wayland = _is_wayland_session()
 
-    # --- Wayland Method 1: gnome-screenshot with snap-safe clean env ---
+    # --- Wayland Method 1: silent D-Bus call (flash=false, no shutter sound) ---
+    # --- Wayland Method 2: gnome-screenshot with event-sounds muted          ---
     if is_wayland:
-        img = _capture_gnome_screenshot()
+        img = _capture_gnome_dbus_silent()
         if img is not None:
-            logger.debug("Linux capture: gnome-screenshot (Wayland)")
+            return img
+        img = _capture_gnome_screenshot_muted()
+        if img is not None:
+            logger.debug("Linux capture: gnome-screenshot (muted)")
             return img
 
     # --- Method 2: scrot (X11 / XWayland) ---

@@ -597,7 +597,7 @@ load_dotenv()
 
 # Application version - IMPORTANT: Update this when releasing new versions
 # This is used for update checking and notifications
-APP_VERSION = "1.0.2"
+APP_VERSION = "1.0.3"
 
 # True when the process is running inside an AppImage bundle.
 # The AppImage runtime sets the $APPIMAGE env var to the path of the .AppImage
@@ -10543,12 +10543,155 @@ class TimeTracker:
             except (FileNotFoundError, subprocess.TimeoutExpired, Exception):
                 return None
 
+        def _from_gnome_introspect():
+            """Fallback for GNOME 45+ where Shell.Eval is disabled by default.
+
+            org.gnome.Shell.Introspect.GetWindows() is available on GNOME 40+
+            without unsafe mode and exposes a 'has-focus' field per window,
+            making it possible to identify the focused window title and app-id
+            even when Shell.Eval returns (false, ...).  This correctly tracks
+            browser tab switches because each tab change updates window.title.
+            Returns (title, app_id) or None on failure.
+            """
+            try:
+                result = subprocess.run(
+                    [
+                        'gdbus', 'call', '--session',
+                        '--dest', 'org.gnome.Shell',
+                        '--object-path', '/org/gnome/Shell/Introspect',
+                        '--method', 'org.gnome.Shell.Introspect.GetWindows',
+                    ],
+                    capture_output=True, text=True, timeout=2
+                )
+                if result.returncode != 0 or not result.stdout:
+                    return None
+
+                import re as _re2
+                stdout = result.stdout
+
+                # gdbus renders a{ta{sv}} roughly as:
+                #   ({'uint64 ID': {'title': <'Tab Title'>, 'app-id': <'org.app'>,
+                #                   'has-focus': <true>, 'wm-class': <'App'>}, ...},)
+                # Properties are emitted in insertion order; 'title' always appears
+                # before 'has-focus' in GNOME Shell source, so scanning forward is safe.
+                for title_m in _re2.finditer(r"'title':\s*<\s*'([^']*)'\s*>", stdout):
+                    title = title_m.group(1)
+                    # Look ahead within one window block (≤ 500 chars) for has-focus
+                    ahead_start = title_m.end()
+                    lookahead = stdout[ahead_start:ahead_start + 500]
+                    hf_m = _re2.search(r"'has-focus':\s*<\s*(true|false)\s*>", lookahead)
+                    if hf_m and hf_m.group(1) == 'true':
+                        block = stdout[title_m.start():ahead_start + 500]
+                        app_m = _re2.search(r"'app-id':\s*<\s*'([^']*)'\s*>", block)
+                        app_id = (app_m.group(1) if app_m else '') or ''
+                        # XWayland apps may have empty app-id; fall back to wm-class
+                        if not app_id:
+                            wm_m = _re2.search(r"'wm-class':\s*<\s*'([^']*)'\s*>", block)
+                            app_id = (wm_m.group(1) if wm_m else '') or 'Unknown'
+                        if title:
+                            return title, app_id or 'Unknown'
+                return None
+            except (FileNotFoundError, subprocess.TimeoutExpired, Exception):
+                return None
+
+        def _from_atspi():
+            """AT-SPI2 fallback for native Wayland apps (Chrome, Firefox, etc.).
+
+            On GNOME Wayland, apps like Chrome run natively (not via XWayland),
+            so xdotool and xprop cannot see them.  AT-SPI2 (accessibility bus)
+            is supported by Chrome, Firefox, and most modern apps and correctly
+            returns the focused window title — including the current browser tab
+            title — making in-browser tab switches trackable.
+
+            Detection order:
+              1. In-process gi/Atspi import (fast; works when python-gi is
+                 available in the running Python, e.g. development/system mode).
+              2. System python3 subprocess (works in AppImage where gi is not
+                 bundled, as long as the host has python3-gi installed).
+
+            Returns (title, app_name) for the first ACTIVE non-shell window,
+            or None on failure.
+            """
+            def _atspi_query():
+                import gi as _gi  # noqa: PLC0415
+                _gi.require_version('Atspi', '2.0')
+                from gi.repository import Atspi as _Atspi  # noqa: PLC0415
+                _Atspi.init()
+                desktop = _Atspi.get_desktop(0)
+                ACTIVE = _Atspi.StateType.ACTIVE
+                for i in range(desktop.get_child_count()):
+                    app = desktop.get_child_at_index(i)
+                    if not app or app.get_name() == 'gnome-shell':
+                        continue
+                    for j in range(app.get_child_count()):
+                        win = app.get_child_at_index(j)
+                        if not win:
+                            continue
+                        try:
+                            if win.get_state_set().contains(ACTIVE):
+                                title = win.get_name() or ''
+                                if title:
+                                    return title, app.get_name() or 'Unknown'
+                        except Exception:
+                            continue
+                return None
+
+            # Attempt 1: in-process (development / system Python with python3-gi)
+            try:
+                result = _atspi_query()
+                if result:
+                    return result
+            except (ImportError, Exception):
+                pass
+
+            # Attempt 2: spawn the system python3 (AppImage where gi is not bundled)
+            code = (
+                "import gi, sys\n"
+                "gi.require_version('Atspi','2.0')\n"
+                "from gi.repository import Atspi\n"
+                "Atspi.init()\n"
+                "d = Atspi.get_desktop(0)\n"
+                "A = Atspi.StateType.ACTIVE\n"
+                "for i in range(d.get_child_count()):\n"
+                " a = d.get_child_at_index(i)\n"
+                " if not a or a.get_name() == 'gnome-shell': continue\n"
+                " for j in range(a.get_child_count()):\n"
+                "  w = a.get_child_at_index(j)\n"
+                "  if not w: continue\n"
+                "  try:\n"
+                "   if w.get_state_set().contains(A) and w.get_name():\n"
+                "    print(w.get_name() + '|||' + (a.get_name() or 'Unknown'))\n"
+                "    sys.exit(0)\n"
+                "  except: pass\n"
+            )
+            try:
+                res = subprocess.run(
+                    ['python3', '-c', code],
+                    capture_output=True, text=True, timeout=2
+                )
+                if res.returncode == 0 and '|||' in (res.stdout or ''):
+                    parts = res.stdout.strip().split('|||', 1)
+                    title = parts[0].strip()
+                    app_name = parts[1].strip() if len(parts) > 1 else 'Unknown'
+                    if title:
+                        return title, app_name or 'Unknown'
+            except (FileNotFoundError, subprocess.TimeoutExpired, Exception):
+                pass
+            return None
+
         is_wayland = bool(
             os.environ.get('WAYLAND_DISPLAY') or
             os.environ.get('XDG_SESSION_TYPE', '').lower() == 'wayland'
         )
 
-        methods = (_from_gdbus, _from_xdotool) if is_wayland else (_from_xdotool, _from_gdbus)
+        # Wayland: try Shell.Eval first (fast, GNOME < 45), then Introspect
+        # (works on GNOME 40+ without unsafe mode), then xdotool (XWayland fallback).
+        # X11: xdotool is most reliable; D-Bus methods are secondary.
+        methods = (
+            (_from_gdbus, _from_gnome_introspect, _from_xdotool, _from_atspi)
+            if is_wayland
+            else (_from_xdotool, _from_gdbus, _from_gnome_introspect, _from_atspi)
+        )
         for resolver in methods:
             resolved = resolver()
             if resolved:
