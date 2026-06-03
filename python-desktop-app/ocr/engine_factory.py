@@ -300,6 +300,17 @@ def _auto_register():
     try:
         engines_dir = Path(__file__).parent / 'engines'
         
+        # In a PyInstaller frozen bundle __file__ for a PYZ module points to
+        # sys._MEIPASS/<module_path>.pyc, so Path(__file__).parent should
+        # already resolve correctly.  Add an explicit sys._MEIPASS fallback
+        # for edge cases where __file__ is set differently (e.g. onedir mode
+        # on some platforms).
+        if not engines_dir.exists():
+            import sys
+            if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
+                engines_dir = Path(sys._MEIPASS) / 'ocr' / 'engines'
+                logger.debug(f"Using frozen bundle engines path: {engines_dir}")
+        
         if not engines_dir.exists():
             logger.warning(f"Engines directory not found: {engines_dir}")
             return

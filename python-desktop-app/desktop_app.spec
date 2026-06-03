@@ -200,12 +200,53 @@ if 'rapidocr' in configured_engines:
         # fails at runtime and is silently caught as ImportError, causing
         # the app to fall back to metadata-only OCR.
         try:
-            engine_hiddenimports += collect_submodules('onnxruntime')
+            # onnxruntime.quantization, .tools, and .transformers all require
+            # the optional 'onnx' package at import time.  When 'onnx' is not
+            # installed, collect_submodules() emits a WARNING for each and
+            # skips them.  We filter them out explicitly here so the bundle
+            # contains only the inference-path submodules RapidOCR actually
+            # needs, and suppress the noisy build-time warnings.
+            _ORT_OPTIONAL_PKGS = {
+                'onnxruntime.quantization',
+                'onnxruntime.tools',
+                'onnxruntime.transformers',
+            }
+            _ort_all = collect_submodules('onnxruntime')
+            engine_hiddenimports += [
+                s for s in _ort_all
+                if not any(
+                    s == pkg or s.startswith(pkg + '.')
+                    for pkg in _ORT_OPTIONAL_PKGS
+                )
+            ]
             engine_datas += collect_data_files('onnxruntime')
             engine_binaries += collect_dynamic_libs('onnxruntime')
             print("[INFO] onnxruntime submodules, data files, and shared libs bundled")
         except Exception as _ort_e:
             print(f"[WARN] Could not collect onnxruntime artifacts: {_ort_e}")
+        # rapidocr_onnxruntime >= 1.4 hard-requires opencv-python (cv2).
+        # Pre-collect cv2 here so the frozen bundle contains it regardless of
+        # whether the later CV2_AVAILABLE block also picks it up.  We detect cv2
+        # via a direct import (more reliable than find_spec which can return
+        # origin=None for some Linux builds of opencv-python-headless).
+        try:
+            import cv2 as _cv2_dep
+            _cv2_file = getattr(_cv2_dep, '__file__', None)
+            if _cv2_file:
+                from PyInstaller.utils.hooks import collect_submodules as _csm, collect_data_files as _cdf
+                _cv2_subs = _csm('cv2')
+                if _cv2_subs:
+                    engine_hiddenimports += _cv2_subs
+                _cv2_dat = _cdf('cv2')
+                if _cv2_dat:
+                    engine_datas += _cv2_dat
+                print(f"[INFO] cv2 (OpenCV {_cv2_dep.__version__}) bundled as rapidocr_onnxruntime dependency")
+            else:
+                print("[WARN] cv2 __file__ is None — skipping explicit cv2 collection for rapidocr")
+        except ImportError:
+            print("[WARN] cv2 (opencv-python) not installed — rapidocr_onnxruntime will fail at runtime")
+        except Exception as _cv2_rapidocr_err:
+            print(f"[WARN] Could not pre-collect cv2 for rapidocr: {_cv2_rapidocr_err}")
         print("[INFO] RapidOCR (rapidocr_onnxruntime) bundled successfully")
     except ImportError:
         print("[WARN] rapidocr_onnxruntime not installed - RapidOCR engine will not work in AppImage/EXE")
@@ -599,13 +640,24 @@ a = Analysis(
         # Mock/demo engines never needed in EXE
         'ocr.engines.mock_engine',
         'ocr.engines.demo_engine',
+        # onnxruntime optional sub-packages that require 'onnx' (not installed).
+        # These are model-optimization utilities; RapidOCR only needs the core
+        # inference path (onnxruntime.capi).  Excluding them here prevents
+        # PyInstaller from attempting to bundle or analyze them.
+        'onnxruntime.quantization',
+        'onnxruntime.tools',
+        'onnxruntime.transformers',
         # SECURITY: Exclude .env file to prevent credential leaks
         '.env',
         '.env.local',
         '.env.production',
-        # cv2 (opencv) is excluded on Linux to avoid namespace-package recursion
-        # inside PyInstaller bundles. image_processor.py has PIL-only fallbacks.
-    ] + (['cv2'] if IS_LINUX else []) + ([] if CV2_AVAILABLE else ['cv2']) + engine_excludes,
+        # cv2: exclude only when not available. The blanket Linux exclusion was
+        # removed because rapidocr_onnxruntime>=1.4.0 hard-requires opencv-python.
+        # Excluding cv2 on Linux caused `from rapidocr_onnxruntime import RapidOCR`
+        # to fail silently at runtime, falling back to metadata-only OCR.
+        # The custom hook-cv2.py in pyinstaller_hooks/ handles the namespace-package
+        # edge case gracefully, so the blanket exclusion is no longer needed.
+    ] + ([] if CV2_AVAILABLE else ['cv2']) + engine_excludes,
     noarchive=False,
     cipher=block_cipher,
 )
