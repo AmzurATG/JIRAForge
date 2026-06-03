@@ -422,7 +422,7 @@ function AppsTab({ lobId, setError, flash }) {
         Apps stay <span className="font-medium">Unclassified</span> (excluded from productivity) until you set a rule here. "Org Default" is a hint only — it is not applied automatically.
       </p>
 
-      <UnlistedApps unlisted={unlisted} loading={unlistedLoading} onScan={scanUnlisted} onAdd={openAddFor} />
+      <UnlistedApps unlisted={unlisted} loading={unlistedLoading} onScan={scanUnlisted} onAdd={openAddFor} onClose={() => setUnlisted(null)} />
 
       <DataTable columns={columns} data={rows} loading={loading} emptyMessage="No applications in the catalog yet" />
 
@@ -440,20 +440,31 @@ function AppsTab({ lobId, setError, flash }) {
 }
 
 // "Apps used but not yet classified" — discovery from real activity.
-function UnlistedApps({ unlisted, loading, onScan, onAdd }) {
+function UnlistedApps({ unlisted, loading, onScan, onAdd, onClose }) {
   return (
     <div className="mb-3 rounded-lg border border-dashed border-gray-300 dark:border-gray-700 p-3">
       <div className="flex items-center justify-between gap-2">
         <p className="text-xs text-gray-600 dark:text-gray-400">
           Apps your team used recently that aren&apos;t in the catalog yet.
         </p>
-        <button
-          onClick={onScan}
-          disabled={loading}
-          className="flex items-center gap-1.5 px-3 py-1.5 rounded border border-gray-300 dark:border-gray-600 text-sm hover:bg-gray-50 dark:hover:bg-gray-800 disabled:opacity-50 whitespace-nowrap"
-        >
-          <Sparkles className="w-4 h-4" /> {loading ? 'Scanning…' : (unlisted ? 'Rescan' : 'Find used apps')}
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={onScan}
+            disabled={loading}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded border border-gray-300 dark:border-gray-600 text-sm hover:bg-gray-50 dark:hover:bg-gray-800 disabled:opacity-50 whitespace-nowrap"
+          >
+            <Sparkles className="w-4 h-4" /> {loading ? 'Scanning…' : (unlisted ? 'Rescan' : 'Find used apps')}
+          </button>
+          {unlisted && (
+            <button
+              onClick={onClose}
+              title="Hide suggestions"
+              className="flex items-center gap-1 px-2 py-1.5 rounded border border-gray-300 dark:border-gray-600 text-sm text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800"
+            >
+              <X className="w-4 h-4" /> Hide
+            </button>
+          )}
+        </div>
       </div>
       {unlisted && (
         unlisted.length === 0 ? (
