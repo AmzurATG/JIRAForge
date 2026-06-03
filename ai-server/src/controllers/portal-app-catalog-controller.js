@@ -10,6 +10,7 @@
 
 const logger = require('../utils/logger');
 const lobService = require('../services/portal-lob-service');
+const appSuggestService = require('../services/portal-app-suggest-service');
 
 function fail(res, error, prefix) {
   const status = error.status || 500;
@@ -81,4 +82,29 @@ async function bulkImport(req, res) {
   }
 }
 
-module.exports = { getCatalog, createApp, updateApp, deleteApp, bulkImport };
+/**
+ * AI-assisted suggestion for the "Add Application" modal. Any authenticated
+ * portal user (superadmin or LOB head) may use it — it only proposes values.
+ * Returns { available, suggestions }. When the flag is off, available=false and
+ * suggestions=null so the UI can hide the AI button. Never errors the modal:
+ * provider/parse failures resolve to suggestions=null.
+ */
+async function aiSuggest(req, res) {
+  try {
+    if (!appSuggestService.isEnabled()) {
+      return res.json({ success: true, available: false, suggestions: null });
+    }
+    const { name } = req.body || {};
+    if (!name || !String(name).trim()) {
+      return res.status(400).json({ success: false, error: 'name is required' });
+    }
+    const suggestions = await appSuggestService.suggestApp(name);
+    return res.json({ success: true, available: true, suggestions });
+  } catch (error) {
+    // Advisory feature — degrade gracefully to manual entry instead of erroring.
+    logger.warn('[PortalAppCatalog] aiSuggest failed', { error: error.message });
+    return res.json({ success: true, available: true, suggestions: null });
+  }
+}
+
+module.exports = { getCatalog, createApp, updateApp, deleteApp, bulkImport, aiSuggest };

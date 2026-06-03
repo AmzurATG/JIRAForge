@@ -774,12 +774,38 @@ app.delete('/api/portal/lobs/:lobId/heads/:adminId', portalAuthMiddleware.verify
 
 // Per-LOB app classifications — superadmin or head of the LOB
 app.get('/api/portal/lobs/:lobId/app-classifications', portalAuthMiddleware.verifyPortalToken, portalLobAppClassificationsController.getClassifications);
+// Apps used by this LOB but not yet in the catalog (discovery)
+app.get('/api/portal/lobs/:lobId/unlisted-apps', portalAuthMiddleware.verifyPortalToken, portalLobAppClassificationsController.getUnlistedApps);
+// Add a new application to this LOB (find-or-create catalog entry + classify)
+app.post('/api/portal/lobs/:lobId/apps', portalAuthMiddleware.verifyPortalToken, portalLobAppClassificationsController.addApp);
 app.put('/api/portal/lobs/:lobId/app-classifications', portalAuthMiddleware.verifyPortalToken, portalLobAppClassificationsController.setClassification);
 app.post('/api/portal/lobs/:lobId/app-classifications/bulk', portalAuthMiddleware.verifyPortalToken, portalLobAppClassificationsController.bulkSet);
 app.delete('/api/portal/lobs/:lobId/app-classifications/:appId', portalAuthMiddleware.verifyPortalToken, portalLobAppClassificationsController.deleteClassification);
 
 // Shared application catalog — read: any portal user; write: superadmin
+// AI app-suggest is LLM-backed (cost) — tighter per-user budget on top of the
+// general portal limiter. Keyed by the authenticated portal user (JWT), not IP.
+const aiSuggestLimiter = rateLimit({
+  windowMs: 60 * 1000, // 1 minute
+  max: 15,             // 15 AI suggestions/min per portal user
+  message: 'Too many AI suggestions, please slow down and try again shortly.',
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => {
+    const auth = req.headers.authorization;
+    if (auth && auth.startsWith('Bearer ')) {
+      try {
+        const decoded = jwt.decode(auth.slice(7));
+        if (decoded && decoded.userId) return `puser:${decoded.userId}`;
+      } catch (_) { /* fall through to IP */ }
+    }
+    return req.ip || 'unknown';
+  }
+});
+
 app.get('/api/portal/app-catalog', portalAuthMiddleware.verifyPortalToken, portalAppCatalogController.getCatalog);
+// AI-assisted suggestion for the Add Application modal (any portal user; gated by PORTAL_AI_APP_SUGGEST)
+app.post('/api/portal/app-catalog/ai-suggest', portalAuthMiddleware.verifyPortalToken, aiSuggestLimiter, portalAppCatalogController.aiSuggest);
 app.post('/api/portal/app-catalog', portalAuthMiddleware.verifyPortalToken, portalAppCatalogController.createApp);
 app.post('/api/portal/app-catalog/bulk-import', portalAuthMiddleware.verifyPortalToken, portalAppCatalogController.bulkImport);
 app.put('/api/portal/app-catalog/:id', portalAuthMiddleware.verifyPortalToken, portalAppCatalogController.updateApp);

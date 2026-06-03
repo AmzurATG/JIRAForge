@@ -9,24 +9,32 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { ArrowLeft, Plus, Trash2, Search } from 'lucide-react';
+import { ArrowLeft, Plus, Trash2, Search, X, Sparkles } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { lobsApi } from '../api/lobs';
 import { employeesApi } from '../api/employees';
 import { adminUsersApi } from '../api/adminUsers';
 import { lobAppClassificationsApi } from '../api/lobAppClassifications';
+import { appCatalogApi } from '../api/appCatalog';
 import DataTable from '../components/common/DataTable';
 import ConfirmDialog from '../components/common/ConfirmDialog';
 import ErrorBanner from '../components/common/ErrorBanner';
 import { useDebounce } from '../hooks/useDebounce';
 
 const CLASSIFICATION_OPTIONS = [
-  { value: '', label: 'Use default' },
+  { value: '', label: 'Unclassified' },
   { value: 'productive', label: 'Productive' },
   { value: 'non_productive', label: 'Non-Productive' },
   { value: 'private', label: 'Private' },
   { value: 'neutral', label: 'Neutral' },
 ];
+
+const CLASS_BADGE = {
+  productive: 'bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200',
+  non_productive: 'bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200',
+  private: 'bg-gray-100 text-gray-800 dark:bg-gray-900 dark:text-gray-200',
+  neutral: 'bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200',
+};
 
 function LobDetailPage() {
   const { lobId } = useParams();
@@ -286,6 +294,12 @@ function AppsTab({ lobId, setError, flash }) {
   const [search, setSearch] = useState('');
   const debouncedSearch = useDebounce(search, 400);
 
+  // Add-application modal + usage-discovery state
+  const [showAdd, setShowAdd] = useState(false);
+  const [addPrefill, setAddPrefill] = useState(null);
+  const [unlisted, setUnlisted] = useState(null); // null = not scanned yet
+  const [unlistedLoading, setUnlistedLoading] = useState(false);
+
   const load = useCallback(async () => {
     setLoading(true);
     try {
@@ -299,6 +313,33 @@ function AppsTab({ lobId, setError, flash }) {
   }, [lobId, debouncedSearch, setError]);
 
   useEffect(() => { load(); }, [load]);
+
+  const scanUnlisted = async () => {
+    setUnlistedLoading(true);
+    try {
+      const res = await lobAppClassificationsApi.listUnlisted(lobId);
+      setUnlisted(res.data || []);
+    } catch (err) {
+      setError(err.response?.data?.error || 'Failed to scan used apps');
+    } finally {
+      setUnlistedLoading(false);
+    }
+  };
+
+  const openAddFor = (app) => {
+    setAddPrefill(app ? { identifier: app.identifier, matchBy: 'process', displayName: app.identifier } : null);
+    setShowAdd(true);
+  };
+
+  const handleAdded = (row) => {
+    flash(`Added ${row.displayName}`);
+    setShowAdd(false);
+    setAddPrefill(null);
+    load();
+    if (unlisted) {
+      setUnlisted((u) => (u || []).filter((a) => a.identifier.toLowerCase() !== (row.identifier || '').toLowerCase()));
+    }
+  };
 
   const handleChange = async (row, value) => {
     try {
@@ -335,7 +376,11 @@ function AppsTab({ lobId, setError, flash }) {
       ),
     },
     { key: 'defaultClassification', label: 'Org Default', sortable: true, render: (v) => (v ? badge(v) : <span className="text-xs text-gray-400">—</span>) },
-    { key: 'effectiveClassification', label: 'Effective', sortable: true, render: (v) => badge(v) },
+    {
+      key: 'effectiveClassification', label: 'Effective', sortable: true,
+      // Unclassified until this LOB sets a rule — the org default is never applied.
+      render: (v, row) => (row.isClassified ? badge(v) : <span className="text-xs text-gray-400">Unclassified</span>),
+    },
     {
       key: 'lobClassification', label: 'This LOB', sortable: false,
       render: (v, row) => (
@@ -354,21 +399,309 @@ function AppsTab({ lobId, setError, flash }) {
     <div className="card">
       <div className="flex justify-between items-center mb-3 gap-3">
         <h3 className="section-title">App Classifications</h3>
-        <div className="relative">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
-          <input
-            type="text"
-            placeholder="Search apps..."
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            className="input-field pl-10"
-          />
+        <div className="flex items-center gap-2">
+          <div className="relative">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+            <input
+              type="text"
+              placeholder="Search apps..."
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              className="input-field pl-10"
+            />
+          </div>
+          <button
+            onClick={() => openAddFor(null)}
+            className="flex items-center gap-2 px-3 py-1.5 rounded bg-primary-600 text-white text-sm hover:bg-primary-700 whitespace-nowrap"
+          >
+            <Plus className="w-4 h-4" /> Add Application
+          </button>
         </div>
       </div>
       <p className="text-xs text-gray-500 dark:text-gray-400 mb-3">
-        Set how this LOB classifies each app. "Use default" falls back to the org default, then Neutral.
+        Apps stay <span className="font-medium">Unclassified</span> (excluded from productivity) until you set a rule here. "Org Default" is a hint only — it is not applied automatically.
       </p>
+
+      <UnlistedApps unlisted={unlisted} loading={unlistedLoading} onScan={scanUnlisted} onAdd={openAddFor} />
+
       <DataTable columns={columns} data={rows} loading={loading} emptyMessage="No applications in the catalog yet" />
+
+      {showAdd && (
+        <AddAppModal
+          lobId={lobId}
+          prefill={addPrefill}
+          onAdded={handleAdded}
+          onClose={() => { setShowAdd(false); setAddPrefill(null); }}
+          setError={setError}
+        />
+      )}
+    </div>
+  );
+}
+
+// "Apps used but not yet classified" — discovery from real activity.
+function UnlistedApps({ unlisted, loading, onScan, onAdd }) {
+  return (
+    <div className="mb-3 rounded-lg border border-dashed border-gray-300 dark:border-gray-700 p-3">
+      <div className="flex items-center justify-between gap-2">
+        <p className="text-xs text-gray-600 dark:text-gray-400">
+          Apps your team used recently that aren&apos;t in the catalog yet.
+        </p>
+        <button
+          onClick={onScan}
+          disabled={loading}
+          className="flex items-center gap-1.5 px-3 py-1.5 rounded border border-gray-300 dark:border-gray-600 text-sm hover:bg-gray-50 dark:hover:bg-gray-800 disabled:opacity-50 whitespace-nowrap"
+        >
+          <Sparkles className="w-4 h-4" /> {loading ? 'Scanning…' : (unlisted ? 'Rescan' : 'Find used apps')}
+        </button>
+      </div>
+      {unlisted && (
+        unlisted.length === 0 ? (
+          <p className="text-xs text-gray-500 mt-2">Nothing new — every app your team used is already in the catalog.</p>
+        ) : (
+          <div className="mt-2 max-h-48 overflow-y-auto divide-y divide-gray-100 dark:divide-gray-700/50">
+            {unlisted.map((a) => (
+              <div key={a.identifier} className="flex items-center justify-between gap-2 py-1.5 text-sm">
+                <div className="min-w-0">
+                  <span className="font-medium">{a.identifier}</span>
+                  <span className="text-xs text-gray-500 ml-2">
+                    {(a.totalHours || 0).toFixed(1)}h · {a.employeeCount} emp
+                  </span>
+                </div>
+                <button
+                  onClick={() => onAdd(a)}
+                  className="flex items-center gap-1 px-2 py-1 rounded bg-primary-600 text-white text-xs hover:bg-primary-700 flex-shrink-0"
+                >
+                  <Plus className="w-3 h-3" /> Add
+                </button>
+              </div>
+            ))}
+          </div>
+        )
+      )}
+    </div>
+  );
+}
+
+// Add a new application to this LOB (superadmin or head). Creates the catalog
+// entry if needed and sets this LOB's classification in one step.
+function AddAppModal({ lobId, prefill, onAdded, onClose, setError }) {
+  const [form, setForm] = useState({
+    identifier: prefill?.identifier || '',
+    displayName: prefill?.displayName || '',
+    matchBy: prefill?.matchBy || 'process',
+    classification: '',
+  });
+  const [saving, setSaving] = useState(false);
+
+  // AI lookup (assistive only; manual entry always works when off/unavailable).
+  const [lookupName, setLookupName] = useState(prefill?.displayName || prefill?.identifier || '');
+  const [aiAvailable, setAiAvailable] = useState(true);
+  const [aiLoading, setAiLoading] = useState(false);
+  const [aiTried, setAiTried] = useState(false);
+  const [suggestion, setSuggestion] = useState(null);
+
+  const runLookup = async () => {
+    const q = lookupName.trim();
+    if (!q) return;
+    setAiLoading(true);
+    setAiTried(true);
+    try {
+      const res = await appCatalogApi.aiSuggest(q);
+      if (!res || res.available === false) { setAiAvailable(false); setSuggestion(null); return; }
+      setSuggestion(res.suggestions || null);
+      if (res.suggestions) {
+        setForm((f) => ({
+          ...f,
+          displayName: f.displayName || res.suggestions.displayName || q,
+          classification: res.suggestions.suggestedClassification || f.classification,
+        }));
+      }
+    } catch (_) {
+      setSuggestion(null); // advisory — keep the modal usable
+    } finally {
+      setAiLoading(false);
+    }
+  };
+
+  const useSuggestion = (matchBy, identifier) => {
+    setForm((f) => ({
+      ...f,
+      matchBy,
+      identifier,
+      displayName: f.displayName || suggestion?.displayName || '',
+      classification: f.classification || suggestion?.suggestedClassification || '',
+    }));
+  };
+
+  const submit = async (e) => {
+    e.preventDefault();
+    if (!form.identifier.trim() || !form.displayName.trim()) {
+      setError('Identifier and display name are required');
+      return;
+    }
+    setSaving(true);
+    try {
+      const res = await lobAppClassificationsApi.addApp(lobId, {
+        identifier: form.identifier.trim(),
+        displayName: form.displayName.trim(),
+        matchBy: form.matchBy,
+        classification: form.classification, // '' = Unclassified (catalog entry only)
+      });
+      onAdded(res.data);
+    } catch (err) {
+      setError(err.response?.data?.error || 'Failed to add application');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  // Catalog rows are single-match_by, so "both" creates a desktop AND a website
+  // entry, classified the same for this LOB.
+  const addBoth = async (processName, domain) => {
+    if (!form.displayName.trim()) { setError('Display name is required'); return; }
+    setSaving(true);
+    try {
+      const dn = form.displayName.trim();
+      const cls = form.classification;
+      await lobAppClassificationsApi.addApp(lobId, { identifier: processName, displayName: dn, matchBy: 'process', classification: cls });
+      const second = await lobAppClassificationsApi.addApp(lobId, { identifier: domain, displayName: dn, matchBy: 'url', classification: cls });
+      onAdded(second.data);
+    } catch (err) {
+      setError(err.response?.data?.error || 'Failed to add applications');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const s = suggestion;
+  const hasBoth = !!(s && s.processNames && s.processNames.length && s.domains && s.domains.length);
+
+  return (
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+      <div className="bg-white dark:bg-gray-800 rounded-lg p-6 max-w-md w-full mx-4 max-h-[90vh] overflow-y-auto">
+        <div className="flex justify-between items-center mb-4">
+          <h3 className="text-lg font-semibold">Add Application</h3>
+          <button onClick={onClose} className="text-gray-500 hover:text-gray-700"><X className="w-5 h-5" /></button>
+        </div>
+
+        {aiAvailable && (
+          <div className="mb-4 rounded-lg border border-dashed border-primary-300 dark:border-primary-800 bg-primary-50/40 dark:bg-primary-900/10 p-3">
+            <label className="block text-xs font-medium text-gray-600 dark:text-gray-300 mb-1">
+              Not sure of the exact name? Let AI suggest the details
+            </label>
+            <div className="flex gap-2">
+              <input
+                type="text"
+                value={lookupName}
+                onChange={(e) => setLookupName(e.target.value)}
+                onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); runLookup(); } }}
+                placeholder="App name, e.g. Notion"
+                className="input-field"
+              />
+              <button
+                type="button"
+                onClick={runLookup}
+                disabled={aiLoading || !lookupName.trim()}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded bg-primary-600 text-white text-sm hover:bg-primary-700 disabled:opacity-50 whitespace-nowrap"
+              >
+                <Sparkles className="w-4 h-4" /> {aiLoading ? 'Looking…' : 'Look up with AI'}
+              </button>
+            </div>
+
+            {aiTried && !aiLoading && !s && (
+              <p className="text-xs text-gray-500 mt-2">No AI suggestion — fill in the fields manually below.</p>
+            )}
+
+            {s && (
+              <div className="mt-3 text-sm">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className="font-medium">{s.displayName || lookupName}</span>
+                  <span className={`px-1.5 py-0.5 rounded text-[10px] font-semibold ${CLASS_BADGE[s.suggestedClassification] || ''}`}>
+                    {s.suggestedClassification}
+                  </span>
+                  <span className="text-xs text-gray-400">{Math.round((s.confidence || 0) * 100)}% confidence</span>
+                </div>
+                {s.rationale && <p className="text-xs text-gray-500 mt-1">{s.rationale}</p>}
+
+                <div className="mt-2 flex flex-wrap gap-2">
+                  {(s.processNames || []).map((p) => (
+                    <button key={`p-${p}`} type="button" onClick={() => useSuggestion('process', p)}
+                      className="px-2 py-1 rounded border border-gray-300 dark:border-gray-600 text-xs hover:bg-white dark:hover:bg-gray-800">
+                      Use desktop: <span className="font-medium">{p}</span>
+                    </button>
+                  ))}
+                  {(s.domains || []).map((d) => (
+                    <button key={`d-${d}`} type="button" onClick={() => useSuggestion('url', d)}
+                      className="px-2 py-1 rounded border border-gray-300 dark:border-gray-600 text-xs hover:bg-white dark:hover:bg-gray-800">
+                      Use website: <span className="font-medium">{d}</span>
+                    </button>
+                  ))}
+                </div>
+
+                {hasBoth && (
+                  <button
+                    type="button"
+                    onClick={() => addBoth(s.processNames[0], s.domains[0])}
+                    disabled={saving}
+                    className="mt-2 w-full px-3 py-1.5 rounded bg-primary-600 text-white text-xs hover:bg-primary-700 disabled:opacity-50"
+                  >
+                    Add both: {s.processNames[0]} (desktop) + {s.domains[0]} (website)
+                  </button>
+                )}
+                <p className="text-[10px] text-gray-400 mt-1">AI is a suggestion — edit anything below before adding.</p>
+              </div>
+            )}
+          </div>
+        )}
+
+        <form onSubmit={submit} className="space-y-3">
+          <div>
+            <label className="block text-sm font-medium mb-1">Type</label>
+            <select value={form.matchBy} onChange={(e) => setForm({ ...form, matchBy: e.target.value })} className="select-field">
+              <option value="process">Desktop app (process)</option>
+              <option value="url">Website (domain)</option>
+            </select>
+          </div>
+          <div>
+            <label className="block text-sm font-medium mb-1">Identifier *</label>
+            <input
+              type="text"
+              value={form.identifier}
+              onChange={(e) => setForm({ ...form, identifier: e.target.value })}
+              placeholder={form.matchBy === 'url' ? 'e.g. notion.so' : 'e.g. slack.exe'}
+              className="input-field"
+              required
+            />
+            <p className="mt-1 text-xs text-gray-500">
+              {form.matchBy === 'url' ? 'Domain that appears in the browser tab/title.' : 'Process/executable name as captured.'}
+            </p>
+          </div>
+          <div>
+            <label className="block text-sm font-medium mb-1">Display name *</label>
+            <input
+              type="text"
+              value={form.displayName}
+              onChange={(e) => setForm({ ...form, displayName: e.target.value })}
+              placeholder="e.g. Slack"
+              className="input-field"
+              required
+            />
+          </div>
+          <div>
+            <label className="block text-sm font-medium mb-1">Classification for this LOB</label>
+            <select value={form.classification} onChange={(e) => setForm({ ...form, classification: e.target.value })} className="select-field">
+              {CLASSIFICATION_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+            </select>
+          </div>
+          <div className="flex gap-2 justify-end pt-1">
+            <button type="button" onClick={onClose} className="px-4 py-2 rounded border border-gray-300 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-800">Cancel</button>
+            <button type="submit" disabled={saving} className="px-4 py-2 rounded bg-primary-600 text-white hover:bg-primary-700 disabled:opacity-50">
+              {saving ? 'Adding…' : 'Add'}
+            </button>
+          </div>
+        </form>
+      </div>
     </div>
   );
 }

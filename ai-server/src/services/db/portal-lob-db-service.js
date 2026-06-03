@@ -340,6 +340,24 @@ async function getCatalogById(id) {
   return data;
 }
 
+async function getCatalogByIdentifier(identifier, matchBy) {
+  const supabase = getClient();
+  if (!supabase) throw new Error('Supabase client not initialized');
+
+  const { data, error } = await supabase
+    .from('portal_app_catalog')
+    .select('*')
+    .eq('identifier', identifier)
+    .eq('match_by', matchBy)
+    .single();
+  if (error) {
+    if (error.code === 'PGRST116') return null; // no row
+    logger.error('[PortalLobDB] getCatalogByIdentifier failed', { identifier, matchBy, error });
+    throw error;
+  }
+  return data;
+}
+
 async function createCatalogApp(appData) {
   const supabase = getClient();
   if (!supabase) throw new Error('Supabase client not initialized');
@@ -462,6 +480,7 @@ module.exports = {
   // catalog
   listCatalog,
   getCatalogById,
+  getCatalogByIdentifier,
   createCatalogApp,
   updateCatalogApp,
   deleteCatalogApp,
