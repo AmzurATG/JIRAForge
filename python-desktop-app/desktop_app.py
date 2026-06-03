@@ -601,7 +601,7 @@ load_dotenv()
 
 # Application version - IMPORTANT: Update this when releasing new versions
 # This is used for update checking and notifications
-APP_VERSION = "1.0.2"
+APP_VERSION = "1.0.3"
 
 # True when the process is running inside an AppImage bundle.
 # The AppImage runtime sets the $APPIMAGE env var to the path of the .AppImage
@@ -11391,85 +11391,325 @@ class TimeTracker:
         print(f"[IDLE] Created idle record: {self.idle_start_time.strftime('%H:%M:%S')} → {idle_end.strftime('%H:%M:%S')} ({idle_duration}s, reason: {reason})")
         self.idle_start_time = None
 
-    def monitor_user_activity(self):
-        """Monitor mouse and keyboard activity for idle detection (Linux-compatible)"""
+    # ------------------------------------------------------------------
+    # Idle-detection backend probe
+    # ------------------------------------------------------------------
 
-        # Detect display server — pynput requires X11 access; Wayland restricts global input monitoring
+    def _detect_idle_backend(self) -> str:
+        """Probe available idle-detection backends and return the best one.
+
+        Priority (highest → lowest):
+            'dbus_screensaver' — org.freedesktop.ScreenSaver (GNOME/KDE, Wayland-native)
+            'gnome_mutter'     — org.gnome.Mutter.IdleMonitor (GNOME Wayland-native)
+            'evdev'            — /dev/input/event* raw kernel input (display-server agnostic)
+            'pynput'           — X11 hooks (works on X11/XWayland; may silently fail on Wayland)
+            'none'             — no backend available; idle detection disabled
+        """
+        # Tier 1 — D-Bus ScreenSaver
+        try:
+            import dbus  # noqa: F401
+            bus = dbus.SessionBus()
+            ss = bus.get_object('org.freedesktop.ScreenSaver', '/org/freedesktop/ScreenSaver')
+            iface = dbus.Interface(ss, 'org.freedesktop.ScreenSaver')
+            iface.GetSessionIdleTime()   # probe call — will raise on failure
+            return 'dbus_screensaver'
+        except Exception:
+            pass
+
+        # Tier 2 — GNOME Mutter IdleMonitor
+        try:
+            import dbus  # noqa: F401
+            bus = dbus.SessionBus()
+            obj = bus.get_object('org.gnome.Mutter.IdleMonitor',
+                                 '/org/gnome/Mutter/IdleMonitor/Core')
+            iface = dbus.Interface(obj, 'org.gnome.Mutter.IdleMonitor')
+            iface.GetIdletime()          # probe call
+            return 'gnome_mutter'
+        except Exception:
+            pass
+
+        # Tier 3 — evdev raw input
+        import glob as _glob
+        evdev_devices = _glob.glob('/dev/input/event*')
+        if any(os.access(d, os.R_OK) for d in evdev_devices):
+            return 'evdev'
+
+        # Tier 4 — pynput (X11/XWayland)
+        try:
+            import pynput  # noqa: F401
+            return 'pynput'
+        except ImportError:
+            pass
+
+        return 'none'
+
+    # ------------------------------------------------------------------
+    # D-Bus idle-time poll helpers
+    # ------------------------------------------------------------------
+
+    def _poll_dbus_idle_time(self):
+        """Query org.freedesktop.ScreenSaver for idle milliseconds.
+
+        Returns idle time in milliseconds, or None on any failure.
+        """
+        try:
+            import dbus
+            bus = dbus.SessionBus()
+            ss = bus.get_object('org.freedesktop.ScreenSaver', '/org/freedesktop/ScreenSaver')
+            iface = dbus.Interface(ss, 'org.freedesktop.ScreenSaver')
+            return int(iface.GetSessionIdleTime())
+        except Exception:
+            return None
+
+    def _poll_gnome_mutter_idle(self):
+        """Query org.gnome.Mutter.IdleMonitor for idle milliseconds.
+
+        Returns idle time in milliseconds, or None on any failure.
+        """
+        try:
+            import dbus
+            bus = dbus.SessionBus()
+            obj = bus.get_object('org.gnome.Mutter.IdleMonitor',
+                                 '/org/gnome/Mutter/IdleMonitor/Core')
+            iface = dbus.Interface(obj, 'org.gnome.Mutter.IdleMonitor')
+            return int(iface.GetIdletime())
+        except Exception:
+            return None
+
+    # ------------------------------------------------------------------
+    # D-Bus idle poll worker (runs in its own daemon thread)
+    # ------------------------------------------------------------------
+
+    def _dbus_idle_poll_worker(self, poll_fn):
+        """Poll D-Bus idle time every IDLE_POLL_INTERVAL seconds.
+
+        Calls poll_fn() which returns idle milliseconds (int) or None.
+        Drives enter_idle / resume_from_idle via self.needs_idle_resume so
+        it integrates with the existing tracking_loop state machine.
+        """
+        IDLE_POLL_INTERVAL = int(os.environ.get('IDLE_POLL_INTERVAL', '10'))
+        was_idle = False
+
+        print(f"[OK] D-Bus idle poll worker started (poll every {IDLE_POLL_INTERVAL}s)")
+
+        while self.running:
+            try:
+                idle_ms = poll_fn()
+                if idle_ms is None:
+                    # D-Bus call failed — sleep and retry; fall through gracefully
+                    time.sleep(IDLE_POLL_INTERVAL)
+                    continue
+
+                idle_secs = idle_ms / 1000.0
+                current_timeout = self.tracking_settings.get(
+                    'idle_threshold_seconds', self.idle_timeout)
+
+                if idle_secs >= current_timeout and not was_idle:
+                    print(f"[IDLE] D-Bus: idle {idle_secs:.0f}s ≥ timeout {current_timeout}s — entering idle")
+                    self.enter_idle("idle timeout")
+                    was_idle = True
+
+                elif idle_secs < current_timeout and was_idle:
+                    # Activity resumed
+                    self.last_activity_time = time.time() - idle_secs
+                    self.needs_idle_resume = True
+                    was_idle = False
+                    print(f"[IDLE] D-Bus: activity detected — idle reset to {idle_secs:.0f}s")
+
+                else:
+                    # Normal active state — keep last_activity_time current
+                    self.last_activity_time = time.time() - idle_secs
+
+            except Exception as e:
+                print(f"[WARN] D-Bus idle poll error: {e}")
+
+            time.sleep(IDLE_POLL_INTERVAL)
+
+    # ------------------------------------------------------------------
+    # evdev raw-input listener (kernel level, display-server agnostic)
+    # ------------------------------------------------------------------
+
+    def _start_evdev_listener(self, on_activity_callback):
+        """Open all accessible /dev/input/event* devices and call on_activity_callback
+        whenever any input event is received.  Uses only stdlib (struct, select, glob).
+
+        Returns the daemon Thread, or None if no devices are accessible.
+        """
+        import glob as _glob, struct, select
+
+        INPUT_EVENT_SIZE = struct.calcsize('llHHI')   # struct input_event layout
+        devices = _glob.glob('/dev/input/event*')
+        fds = []
+        for path in sorted(devices):
+            try:
+                fds.append(open(path, 'rb'))
+            except (PermissionError, OSError):
+                pass   # skip devices we can't read
+
+        if not fds:
+            print('[WARN] evdev: no /dev/input/event* devices accessible')
+            print('[INFO] Add user to input group: sudo usermod -aG input $USER && newgrp input')
+            self.add_admin_log('WARN', 'evdev: no readable /dev/input/event* devices — check input group membership')
+            return None
+
+        print(f'[OK] evdev: monitoring {len(fds)} input device(s)')
+        self._activity_listener_started = True   # evdev is self-verifying
+
+        def reader():
+            try:
+                while self.running:
+                    try:
+                        r, _, _ = select.select(fds, [], [], 1.0)
+                    except (ValueError, OSError):
+                        break   # an fd was closed
+                    for f in r:
+                        try:
+                            data = f.read(INPUT_EVENT_SIZE)
+                            if data and len(data) == INPUT_EVENT_SIZE:
+                                on_activity_callback()
+                        except (OSError, IOError):
+                            pass   # device unplugged or gone
+            finally:
+                for f in fds:
+                    try:
+                        f.close()
+                    except Exception:
+                        pass
+
+        t = threading.Thread(target=reader, daemon=True, name='evdev-idle-listener')
+        t.start()
+        return t
+
+    # ------------------------------------------------------------------
+    # Main activity monitoring entry point (multi-tier dispatcher)
+    # ------------------------------------------------------------------
+
+    def monitor_user_activity(self):
+        """Monitor user input for idle detection using the best available backend.
+
+        Backend selection priority (auto-detected at runtime):
+          Tier 1 — D-Bus ScreenSaver  (Wayland-native; GNOME / KDE)
+          Tier 2 — GNOME Mutter       (Wayland-native; GNOME only)
+          Tier 3 — evdev              (kernel-level; display-server agnostic)
+          Tier 4 — pynput             (X11/XWayland; may silently fail on bare Wayland)
+        """
+        # Detect display server for logging / pynput-specific warnings
         session_type = os.environ.get('XDG_SESSION_TYPE', 'unknown')
         wayland_display = os.environ.get('WAYLAND_DISPLAY')
         is_wayland = session_type == 'wayland' or bool(wayland_display)
 
         print(f"[INFO] Display server detected: {session_type} (Wayland={is_wayland})")
 
-        try:
-            from pynput import mouse, keyboard
-        except ImportError:
-            print("[ERROR] pynput not installed — idle detection DISABLED")
-            print("[INFO] Install with: pip3 install pynput")
-            self.add_admin_log('ERROR', 'pynput not installed — idle detection disabled')
-            return
-
-        # Track listener health so we can detect silent failures (common on Wayland)
+        # Shared state for all tiers
         self._activity_listener_started = False
         self._activity_listener_error = None
 
+        # Probe which backend to use
+        backend = self._detect_idle_backend()
+        self._idle_backend = backend
+        print(f"[INFO] Idle detection backend selected: {backend}")
+
         def on_activity(*args, **kwargs):
-            """Called on any mouse or keyboard activity"""
+            """Common callback — update last_activity_time and signal resume."""
             if not self._activity_listener_started:
                 self._activity_listener_started = True
                 print("[OK] Activity listener confirmed working")
-
             self.last_activity_time = time.time()
-
-            # Signal that we need to resume from idle (tracking loop will handle the state reset)
             if self.is_idle:
                 self.needs_idle_resume = True
 
-        try:
-            # Start mouse listener
-            mouse_listener = mouse.Listener(
-                on_move=on_activity,
-                on_click=on_activity,
-                on_scroll=on_activity
+        # ---- Tier 1 & 2: D-Bus poll backends ----
+        if backend in ('dbus_screensaver', 'gnome_mutter'):
+            poll_fn = (self._poll_dbus_idle_time
+                       if backend == 'dbus_screensaver'
+                       else self._poll_gnome_mutter_idle)
+            self._activity_listener_started = True   # poll-based; always "working"
+            self.add_admin_log('INFO', f'Idle detection using D-Bus backend: {backend}')
+            t = threading.Thread(
+                target=self._dbus_idle_poll_worker,
+                args=(poll_fn,),
+                daemon=True,
+                name=f'idle-dbus-{backend}',
             )
-            mouse_listener.start()
+            t.start()
+            print(f"[OK] Activity monitoring started via {backend} (5-minute idle timeout)")
+            return
 
-            # Start keyboard listener
-            keyboard_listener = keyboard.Listener(
-                on_press=on_activity
-            )
-            keyboard_listener.start()
+        # ---- Tier 3: evdev ----
+        if backend == 'evdev':
+            self.add_admin_log('INFO', 'Idle detection using evdev backend')
+            self._start_evdev_listener(on_activity)
+            print("[OK] Activity monitoring started via evdev (5-minute idle timeout)")
+            return
 
-            print("[OK] Activity monitoring started (5-minute idle timeout)")
+        # ---- Tier 4: pynput (X11 / XWayland) ----
+        if backend == 'pynput':
+            try:
+                from pynput import mouse, keyboard
+            except ImportError:
+                print("[ERROR] pynput not installed — idle detection DISABLED")
+                print("[INFO] Install with: pip3 install pynput")
+                self.add_admin_log('ERROR', 'pynput not installed — idle detection disabled')
+                self._idle_backend = 'none'
+                return
 
-            if is_wayland:
-                print("[WARN] Running on Wayland — pynput may require XWayland for global input monitoring")
-                print("[INFO] If idle detection fails, verify XWayland is running: ps aux | grep Xwayland")
+            try:
+                mouse_listener = mouse.Listener(
+                    on_move=on_activity,
+                    on_click=on_activity,
+                    on_scroll=on_activity,
+                )
+                mouse_listener.start()
 
-            # Verify listeners are actually receiving events after 5 seconds.
-            # Silent failures are common on Wayland without XWayland.
-            def verify_listener():
-                time.sleep(5)
-                if not self._activity_listener_started:
-                    print("[ERROR] Activity listener NOT receiving events after 5s — idle detection may be broken")
-                    if is_wayland:
-                        print("[HELP] Wayland detected. To fix idle detection:")
-                        print("[HELP]   1. Ensure XWayland is installed and running")
-                        print("[HELP]   2. Or launch with: DISPLAY=:0 ./TimeTracker")
-                        print("[HELP]   3. Or switch to an X11 desktop session")
-                    self.add_admin_log('ERROR', 'Activity monitoring not receiving events — idle detection may be broken on this display server')
+                keyboard_listener = keyboard.Listener(on_press=on_activity)
+                keyboard_listener.start()
 
-            threading.Thread(target=verify_listener, daemon=True).start()
+                print("[OK] Activity monitoring started via pynput (5-minute idle timeout)")
 
-        except Exception as e:
-            print(f"[ERROR] Failed to start activity listeners: {e}")
-            traceback.print_exc()
-            self._activity_listener_error = str(e)
-            self.add_admin_log('ERROR', f'Activity listener failed to start: {e}')
+                if is_wayland:
+                    print("[WARN] Running on Wayland — pynput may require XWayland for global input monitoring")
+                    print("[INFO] If idle detection fails, verify XWayland is running: ps aux | grep Xwayland")
+
+                # Verify listeners actually fire after 5 seconds.
+                # Silent failures are common on Wayland without XWayland.
+                def verify_listener():
+                    time.sleep(5)
+                    if not self._activity_listener_started:
+                        print("[ERROR] Activity listener NOT receiving events after 5s — idle detection may be broken")
+                        if is_wayland:
+                            print("[HELP] Wayland detected — D-Bus or evdev backend may be needed.")
+                            print("[HELP]   • Install python-dbus for automatic Wayland support")
+                            print("[HELP]   • Or add user to input group: sudo usermod -aG input $USER")
+                            print("[HELP]   • Or ensure XWayland is running: ps aux | grep Xwayland")
+                        self.add_admin_log(
+                            'WARN',
+                            'pynput not receiving events — consider installing python-dbus or adding user to input group for reliable Wayland idle detection'
+                        )
+
+                threading.Thread(target=verify_listener, daemon=True, name='pynput-verify').start()
+                self.add_admin_log('INFO', 'Idle detection using pynput backend')
+
+            except Exception as e:
+                print(f"[ERROR] Failed to start pynput listeners: {e}")
+                traceback.print_exc()
+                self._activity_listener_error = str(e)
+                self._idle_backend = 'none'
+                self.add_admin_log('ERROR', f'Activity listener failed to start: {e}')
+            return
+
+        # ---- No backend available ----
+        print("[ERROR] No idle detection backend available — idle detection DISABLED")
+        print("[INFO] Options to enable idle detection:")
+        print("[INFO]   • Install python-dbus (recommended for Wayland)")
+        print("[INFO]   • Add user to input group: sudo usermod -aG input $USER")
+        print("[INFO]   • Install pynput and ensure XWayland is running")
+        self.add_admin_log('ERROR', 'No idle detection backend available — idle detection disabled')
 
     def get_activity_monitoring_status(self):
         """Return diagnostic info about activity monitoring health (for troubleshooting idle detection)"""
+        import glob as _glob
         status = {
+            'idle_backend': getattr(self, '_idle_backend', 'unknown'),
             'pynput_available': False,
             'listener_started': getattr(self, '_activity_listener_started', False),
             'listener_error': getattr(self, '_activity_listener_error', None),
@@ -11478,6 +11718,8 @@ class TimeTracker:
             'display_server': os.environ.get('XDG_SESSION_TYPE', 'unknown'),
             'wayland_display': os.environ.get('WAYLAND_DISPLAY'),
             'xwayland_running': False,
+            'dbus_available': False,
+            'evdev_devices_accessible': 0,
         }
         try:
             import pynput
@@ -11490,6 +11732,13 @@ class TimeTracker:
             status['xwayland_running'] = (result.returncode == 0)
         except Exception:
             pass
+        try:
+            import dbus  # noqa: F401
+            status['dbus_available'] = True
+        except ImportError:
+            pass
+        evdev_devices = _glob.glob('/dev/input/event*')
+        status['evdev_devices_accessible'] = sum(1 for d in evdev_devices if os.access(d, os.R_OK))
         return status
 
     def show_diagnostic_info(self):
@@ -11497,12 +11746,15 @@ class TimeTracker:
         status = self.get_activity_monitoring_status()
         lines = [
             "=== Activity Monitoring Status ===",
-            f"pynput installed: {status['pynput_available']}",
-            f"Listener started: {status['listener_started']}",
-            f"Listener error: {status['listener_error'] or 'None'}",
-            f"Display server: {status['display_server']}",
-            f"Wayland active: {status['wayland_display'] or 'No'}",
-            f"XWayland running: {status['xwayland_running']}",
+            f"Idle backend:    {status['idle_backend']}",
+            f"Listener active: {status['listener_started']}",
+            f"Listener error:  {status['listener_error'] or 'None'}",
+            f"Display server:  {status['display_server']}",
+            f"Wayland active:  {status['wayland_display'] or 'No'}",
+            f"XWayland running:{status['xwayland_running']}",
+            f"D-Bus available: {status['dbus_available']}",
+            f"evdev devices:   {status['evdev_devices_accessible']} accessible",
+            f"pynput installed:{status['pynput_available']}",
             "",
             f"Last activity: {status['last_activity_ago_seconds']}s ago",
             f"Currently idle: {status['is_idle']}",
@@ -11513,7 +11765,7 @@ class TimeTracker:
         ]
         for line in lines:
             print(line)
-        _linux_notify("TimeTracker Diagnostics", "\n".join(lines[:10]))
+        _linux_notify("TimeTracker Diagnostics", "\n".join(lines[:12]))
 
     def monitor_system_events(self):
         """Monitor Windows sleep/lock events to instantly detect inactivity.
