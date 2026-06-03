@@ -321,13 +321,30 @@ def apply_platform_filters(config: OCRConfig) -> OCRConfig:
     
     # Filter fallback engines
     config.fallback_engines = filter_engines_by_platform(config.fallback_engines)
-    
+
+    # If all configured fallbacks were filtered out (e.g. only 'winrtocr' was
+    # listed and we are on Linux/macOS), inject platform-safe defaults so that
+    # OCR can still fall back to something when the primary engine is
+    # unavailable.  We use easyocr first (pure-Python, cross-platform), then
+    # tesseract as a last resort.  Both are in common_engines for all platforms.
+    if not config.fallback_engines and original_fallbacks:
+        platform_safe_fallbacks = [
+            e for e in ['easyocr', 'tesseract']
+            if e != config.primary_engine
+        ]
+        config.fallback_engines = platform_safe_fallbacks
+        logger.info(
+            f"All configured fallback engines ({original_fallbacks}) are "
+            f"incompatible with {sys.platform}. "
+            f"Using platform-safe defaults: {config.fallback_engines}"
+        )
+
     # Log summary if anything changed
-    if (original_primary != config.primary_engine or 
-        original_fallbacks != config.fallback_engines):
+    if (original_primary != config.primary_engine or
+            original_fallbacks != config.fallback_engines):
         logger.info(
             f"OCR engine configuration adjusted for {sys.platform}: "
             f"primary={config.primary_engine}, fallbacks={config.fallback_engines}"
         )
-    
+
     return config

@@ -41,10 +41,7 @@ $PYTHON_CMD --version
 SYSTEM_DIST_PACKAGES=""
 for candidate in \
     "/usr/lib/python3/dist-packages" \
-    "/usr/lib/python$(python3 - <<'PY'
-import sys
-print(f"{sys.version_info.major}.{sys.version_info.minor}")
-PY)/dist-packages" \
+    "/usr/lib/python$(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')/dist-packages" \
     "/usr/local/lib/python3/dist-packages"
 do
     if [ -d "$candidate" ]; then
@@ -73,7 +70,7 @@ fi
 if ! $PYTHON_CMD -c "import PyInstaller" 2>/dev/null; then
     echo "[ERROR] PyInstaller is not installed"
     echo "Installing PyInstaller..."
-    pip install pyinstaller>=6.2.0
+    $PYTHON_CMD -m pip install pyinstaller>=6.2.0
 fi
 
 # Ensure runtime-critical packages are present in the venv.
@@ -97,12 +94,12 @@ print('ok' if spec and spec.origin else 'bad')
 " 2>/dev/null)
 if [ "$CV2_OK" != "ok" ]; then
     echo "[INFO] opencv-python-headless not properly installed — fixing..."
-    pip uninstall -y opencv-python opencv-python-headless 2>/dev/null || true
+    $PYTHON_CMD -m pip uninstall -y opencv-python opencv-python-headless 2>/dev/null || true
     MISSING_DEPS+=("opencv-python-headless")
 fi
 if [ ${#MISSING_DEPS[@]} -gt 0 ]; then
     echo "[INFO] Installing missing runtime deps: ${MISSING_DEPS[*]}"
-    pip install "${MISSING_DEPS[@]}"
+    $PYTHON_CMD -m pip install "${MISSING_DEPS[@]}"
 fi
 
 echo ""

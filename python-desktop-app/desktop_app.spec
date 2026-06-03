@@ -192,6 +192,20 @@ if 'rapidocr' in configured_engines:
         engine_hiddenimports += collect_submodules('rapidocr_onnxruntime')
         engine_datas += collect_data_files('rapidocr_onnxruntime')
         engine_hiddenimports += ['ocr.engines.rapidocr_engine']
+        # onnxruntime is rapidocr_onnxruntime's inference backend.
+        # collect_submodules only walks Python imports; the critical shared
+        # library (libonnxruntime_providers_shared.so on Linux) must be
+        # collected explicitly via collect_dynamic_libs so PyInstaller bundles
+        # it inside the AppImage/EXE.  Without this the C-extension import
+        # fails at runtime and is silently caught as ImportError, causing
+        # the app to fall back to metadata-only OCR.
+        try:
+            engine_hiddenimports += collect_submodules('onnxruntime')
+            engine_datas += collect_data_files('onnxruntime')
+            engine_binaries += collect_dynamic_libs('onnxruntime')
+            print("[INFO] onnxruntime submodules, data files, and shared libs bundled")
+        except Exception as _ort_e:
+            print(f"[WARN] Could not collect onnxruntime artifacts: {_ort_e}")
         print("[INFO] RapidOCR (rapidocr_onnxruntime) bundled successfully")
     except ImportError:
         print("[WARN] rapidocr_onnxruntime not installed - RapidOCR engine will not work in AppImage/EXE")
@@ -402,6 +416,8 @@ if IS_LINUX:
     # Wayland tray hook: adds system gi to sys.path and forces
     # PYSTRAY_BACKEND=appindicator before `import pystray` runs.
     runtime_hooks_list.append('pyinstaller_hooks/pyi_rth_pystray_wayland.py')
+    # Ensure onnxruntime/capi/ is on LD_LIBRARY_PATH before the C extension loads.
+    runtime_hooks_list.append('pyinstaller_hooks/pyi_rth_onnxruntime.py')
 
 a = Analysis(
     ['desktop_app.py'],

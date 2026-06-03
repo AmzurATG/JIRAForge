@@ -48,19 +48,40 @@ class RapidOCREngine(BaseOCREngine):
         return 'rapidocr'
 
     def is_available(self) -> bool:
+        global _RAPIDOCR_AVAILABLE
         if _RAPIDOCR_AVAILABLE:
             return True
-        self._init_error = (
-            f"rapidocr_onnxruntime not installed. "
-            f"Install with: pip install rapidocr-onnxruntime"
-        )
-        return False
+        # Re-check dynamically — the package may have been auto-installed at
+        # runtime after the module was first imported.
+        try:
+            from rapidocr_onnxruntime import RapidOCR  # noqa: F401
+            _RAPIDOCR_AVAILABLE = True
+            self._init_error = None
+            return True
+        except ImportError as e:
+            # Log the actual exception so the root cause is visible in the log.
+            actual_error = str(e)
+            logger.warning(
+                "RapidOCR unavailable — import failed: %s", actual_error
+            )
+            self._init_error = (
+                f"rapidocr_onnxruntime not installed or dependency missing "
+                f"({actual_error}). Install with: pip install rapidocr-onnxruntime"
+            )
+            return False
 
     def _get_ocr(self):
         """Lazily create and cache the RapidOCR instance."""
-        if self._ocr is None and _RAPIDOCR_AVAILABLE:
-            self._ocr = _RapidOCR()
+        if self._ocr is not None:
+            return self._ocr
+        # Use dynamic import so this works even when the module was imported
+        # before the package was installed (e.g. after runtime auto-install).
+        try:
+            from rapidocr_onnxruntime import RapidOCR
+            self._ocr = RapidOCR()
             logger.info("RapidOCR engine initialized")
+        except Exception as e:
+            logger.error(f"RapidOCR instantiation failed: {e}")
         return self._ocr
 
     def extract_text(self, image: np.ndarray) -> Dict[str, Any]:
