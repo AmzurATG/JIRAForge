@@ -35,7 +35,7 @@ INSERT INTO app_releases (
 )
 VALUES (
     'linux',
-  '1.0.2',                          -- ← replace with new version
+  '1.0.0',                          -- ← replace with new version
   'https://example.com/path/to/TimeTracker-v1.0.2-x86_64.AppImage', -- ← replace with public download URL
   'abc123deadbeef...'               -- ← replace with sha256sum output
 );
