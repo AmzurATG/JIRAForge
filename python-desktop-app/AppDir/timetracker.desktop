@@ -9,5 +9,5 @@ Categories=Office;ProjectManagement;
 Terminal=false
 StartupNotify=false
 Keywords=time;tracker;jira;productivity;
-X-AppImage-Version=1.0.3
+X-AppImage-Version=1.0.0
 X-AppImage-Name=TimeTracker

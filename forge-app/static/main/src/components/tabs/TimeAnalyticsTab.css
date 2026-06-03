@@ -170,7 +170,14 @@
   box-shadow: 0 4px 8px rgba(11, 153, 142, 0.3);
 }
 
+.download-button--linux {
+  background: #0b6e4f;
+}
 
+.download-button--linux:hover:not(:disabled) {
+  background: #0a5d43;
+  box-shadow: 0 4px 8px rgba(11, 110, 79, 0.3);
+}
 
 /* Responsive adjustments for download banner */
 @media (max-width: 600px) {

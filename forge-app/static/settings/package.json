@@ -6,8 +6,8 @@
   "dependencies": {
     "@forge/bridge": "^3.0.0",
     "ajv": "^8.18.0",
-    "react": "^19.2.6",
-    "react-dom": "^19.2.6"
+    "react": "^19.2.7",
+    "react-dom": "^19.2.7"
   },
   "scripts": {
     "start": "react-scripts start",
@@ -33,6 +33,6 @@
     ]
   },
   "devDependencies": {
-    "react-scripts": "5.0.1"
+    "react-scripts": "^5.0.1"
   }
 }
