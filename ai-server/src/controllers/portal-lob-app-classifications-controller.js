@@ -10,6 +10,11 @@
 
 const logger = require('../utils/logger');
 const lobService = require('../services/portal-lob-service');
+const portalService = require('../services/portal-service');
+
+/** Default discovery window (days) for "apps used but not yet classified". */
+const UNLISTED_LOOKBACK_DAYS = 30;
+const UNLISTED_LIMIT = 50;
 
 function fail(res, error, prefix) {
   const status = error.status || 500;
@@ -38,6 +43,71 @@ async function getClassifications(req, res) {
     return res.json({ success: true, data });
   } catch (error) {
     return fail(res, error, '[PortalLobAppClass] getClassifications');
+  }
+}
+
+/**
+ * Add an application to this LOB (find-or-create catalog entry + set this LOB's
+ * classification). Allowed for superadmin or the LOB head.
+ */
+async function addApp(req, res) {
+  try {
+    if (!(await ensureLobAccess(req, res))) return undefined;
+    const { identifier, displayName, matchBy, classification } = req.body;
+    const row = await lobService.addLobApp(
+      req.params.lobId,
+      { identifier, displayName, matchBy, classification },
+      req.portalUser.userId
+    );
+    return res.status(201).json({ success: true, data: row });
+  } catch (error) {
+    return fail(res, error, '[PortalLobAppClass] addApp');
+  }
+}
+
+/**
+ * Apps this LOB's members actually used (recent window) that are NOT yet in the
+ * catalog — so heads/superadmins can discover and classify what the seed list
+ * missed. Reuses the app-usage aggregate; excludes already-cataloged identifiers.
+ */
+async function getUnlistedApps(req, res) {
+  try {
+    if (!(await ensureLobAccess(req, res))) return undefined;
+    const lobId = req.params.lobId;
+
+    const userIds = await lobService.userIdsForLobs([lobId]);
+    if (!userIds.length) return res.json({ success: true, data: [] });
+
+    // Default to the last N days unless the caller overrides from/to.
+    let { from, to } = req.query;
+    if (!from || !to) {
+      const toDate = new Date();
+      const fromDate = new Date();
+      fromDate.setDate(toDate.getDate() - UNLISTED_LOOKBACK_DAYS);
+      const fmt = (d) => d.toISOString().split('T')[0];
+      from = from || fmt(fromDate);
+      to = to || fmt(toDate);
+    }
+
+    const usage = await portalService.getApplicationUsage(req.portalUser.orgId, { from, to }, userIds);
+
+    // Exclude anything already in the catalog (matched by identifier).
+    const catalog = await lobService.listCatalog({ includeInactive: true, limit: 1000 });
+    const known = new Set((catalog.data || []).map((a) => (a.identifier || '').toLowerCase()));
+
+    const unlisted = (usage.data || [])
+      .filter((u) => u.applicationName && !known.has(u.applicationName.toLowerCase()))
+      .slice(0, UNLISTED_LIMIT)
+      .map((u) => ({
+        identifier: u.applicationName,
+        totalHours: u.totalHours,
+        sessionCount: u.sessionCount,
+        employeeCount: u.employeeCount,
+      }));
+
+    return res.json({ success: true, data: unlisted });
+  } catch (error) {
+    return fail(res, error, '[PortalLobAppClass] getUnlistedApps');
   }
 }
 
@@ -72,4 +142,4 @@ async function bulkSet(req, res) {
   }
 }
 
-module.exports = { getClassifications, setClassification, deleteClassification, bulkSet };
+module.exports = { getClassifications, addApp, getUnlistedApps, setClassification, deleteClassification, bulkSet };

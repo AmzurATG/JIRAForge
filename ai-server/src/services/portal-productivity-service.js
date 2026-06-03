@@ -6,8 +6,9 @@
  * classification map, it resolves each activity's effective label and computes
  * totals + productivity %.
  *
- * Resolution precedence (plan §6.1): per-LOB rule → catalog default → neutral.
- * Activity that can't be matched to a catalog app is treated as `neutral`.
+ * Resolution precedence: per-LOB rule → neutral. There is NO fallback to the
+ * catalog default — an app stays Unclassified (neutral) until the LOB sets a
+ * rule. Activity that can't be matched to a catalog app is also `neutral`.
  * `neutral` and `private` are excluded from the productive ÷ (productive +
  * non_productive) ratio (time is still totaled).
  *
@@ -69,7 +70,9 @@ function matchApp(row, index) {
 function resolveEffectiveLabel(row, index, lobClassMap) {
   const app = matchApp(row, index);
   if (!app) return 'neutral';
-  return lobClassMap.get(app.id) || app.default_classification || 'neutral';
+  // Per-LOB rule is the single source of truth; no catalog-default fallback.
+  // Unclassified (and unmatched) activity is neutral and excluded from the ratio.
+  return lobClassMap.get(app.id) || 'neutral';
 }
 
 /**

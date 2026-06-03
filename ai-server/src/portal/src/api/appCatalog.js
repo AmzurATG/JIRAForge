@@ -34,6 +34,15 @@ export const appCatalogApi = {
     const response = await apiClient.post('/api/portal/app-catalog/bulk-import', { data });
     return response.data;
   },
+
+  /**
+   * AI-assisted suggestion for an app name (advisory). Returns
+   * { available, suggestions }. available=false when the feature flag is off.
+   */
+  async aiSuggest(name) {
+    const response = await apiClient.post('/api/portal/app-catalog/ai-suggest', { name });
+    return response.data;
+  },
 };
 
 export default appCatalogApi;

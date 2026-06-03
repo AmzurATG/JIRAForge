@@ -1,11 +1,13 @@
 'use strict';
 
 jest.mock('../../src/services/portal-lob-service');
+jest.mock('../../src/services/portal-app-suggest-service', () => ({ isEnabled: jest.fn(), suggestApp: jest.fn() }));
 jest.mock('../../src/utils/logger', () => ({
   info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn(),
 }));
 
 const lobService = require('../../src/services/portal-lob-service');
+const appSuggest = require('../../src/services/portal-app-suggest-service');
 const ctrl = require('../../src/controllers/portal-app-catalog-controller');
 
 function makeRes() {
@@ -52,5 +54,44 @@ describe('App catalog: read open to any portal user, writes superadmin-only', ()
     expect(lobService.updateCatalogApp).not.toHaveBeenCalled();
     expect(lobService.deleteCatalogApp).not.toHaveBeenCalled();
     expect(lobService.bulkImportCatalog).not.toHaveBeenCalled();
+  });
+});
+
+describe('aiSuggest (AI-assisted Add Application)', () => {
+  test('flag off → available:false, suggestions:null, service not called', async () => {
+    appSuggest.isEnabled.mockReturnValue(false);
+    const res = makeRes();
+    await ctrl.aiSuggest(makeReq({ role: 'admin', body: { name: 'Notion' } }), res);
+    expect(res._body).toEqual({ success: true, available: false, suggestions: null });
+    expect(appSuggest.suggestApp).not.toHaveBeenCalled();
+  });
+
+  test('flag on → calls service and returns suggestions (any portal user)', async () => {
+    appSuggest.isEnabled.mockReturnValue(true);
+    appSuggest.suggestApp.mockResolvedValue({
+      displayName: 'Notion', kinds: ['url'], processNames: [], domains: ['notion.so'],
+      suggestedClassification: 'productive', confidence: 0.7, rationale: 'x',
+    });
+    const res = makeRes();
+    await ctrl.aiSuggest(makeReq({ role: 'admin', body: { name: 'Notion' } }), res);
+    expect(appSuggest.suggestApp).toHaveBeenCalledWith('Notion');
+    expect(res._body.available).toBe(true);
+    expect(res._body.suggestions.displayName).toBe('Notion');
+  });
+
+  test('flag on + missing name → 400, service not called', async () => {
+    appSuggest.isEnabled.mockReturnValue(true);
+    const res = makeRes();
+    await ctrl.aiSuggest(makeReq({ role: 'admin', body: {} }), res);
+    expect(res._status).toBe(400);
+    expect(appSuggest.suggestApp).not.toHaveBeenCalled();
+  });
+
+  test('service failure degrades to suggestions:null (never errors the modal)', async () => {
+    appSuggest.isEnabled.mockReturnValue(true);
+    appSuggest.suggestApp.mockRejectedValue(new Error('boom'));
+    const res = makeRes();
+    await ctrl.aiSuggest(makeReq({ role: 'admin', body: { name: 'Notion' } }), res);
+    expect(res._body).toEqual({ success: true, available: true, suggestions: null });
   });
 });

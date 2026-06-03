@@ -86,8 +86,8 @@ describe('addMembers', () => {
   });
 });
 
-describe('listLobClassifications — precedence (per-LOB rule → default → neutral)', () => {
-  test('resolves effective classification per app', async () => {
+describe('listLobClassifications — per-LOB rule → neutral (no catalog-default fallback)', () => {
+  test('unclassified apps are neutral / isClassified:false even when the catalog has a default', async () => {
     db.getLobById.mockResolvedValue({ id: 'L1' });
     db.listCatalog.mockResolvedValue({
       data: [
@@ -97,21 +97,28 @@ describe('listLobClassifications — precedence (per-LOB rule → default → ne
       ],
       totalCount: 3,
     });
-    // LOB overrides app 'a' to neutral; leaves b and c unset.
+    // LOB explicitly sets app 'a' to neutral; b and c have no per-LOB rule.
     db.listLobClassifications.mockResolvedValue([{ app_id: 'a', classification: 'neutral' }]);
 
     const rows = await lobService.listLobClassifications('L1');
     const byId = Object.fromEntries(rows.map((r) => [r.appId, r]));
 
-    // per-LOB rule wins over default
+    // explicit rule (even 'neutral') ⇒ classified
     expect(byId.a.lobClassification).toBe('neutral');
     expect(byId.a.effectiveClassification).toBe('neutral');
-    // no rule, no default → neutral
+    expect(byId.a.isClassified).toBe(true);
+
+    // no rule, no default ⇒ neutral + unclassified
     expect(byId.b.lobClassification).toBeNull();
     expect(byId.b.effectiveClassification).toBe('neutral');
-    // no rule → falls back to org default
+    expect(byId.b.isClassified).toBe(false);
+
+    // no rule BUT catalog has a default ⇒ STILL neutral + unclassified
+    // (default_classification is a display hint only, never the effective value)
     expect(byId.c.lobClassification).toBeNull();
-    expect(byId.c.effectiveClassification).toBe('non_productive');
+    expect(byId.c.effectiveClassification).toBe('neutral');
+    expect(byId.c.isClassified).toBe(false);
+    expect(byId.c.defaultClassification).toBe('non_productive'); // still returned for display
   });
 });
 
@@ -161,5 +168,66 @@ describe('setLobClassification', () => {
     const row = await lobService.setLobClassification('L1', 'a', 'productive', 'admin1');
     expect(db.setLobClassification).toHaveBeenCalledWith('L1', 'a', 'productive', 'admin1');
     expect(row.classification).toBe('productive');
+  });
+});
+
+describe('addLobApp', () => {
+  test('404 when LOB missing', async () => {
+    db.getLobById.mockResolvedValue(null);
+    await expect(
+      lobService.addLobApp('missing', { identifier: 'slack.exe', displayName: 'Slack', matchBy: 'process' }, 'admin1')
+    ).rejects.toMatchObject({ status: 404 });
+  });
+
+  test('400 when identifier/displayName missing', async () => {
+    db.getLobById.mockResolvedValue({ id: 'L1' });
+    await expect(
+      lobService.addLobApp('L1', { identifier: '', displayName: '', matchBy: 'process' }, 'admin1')
+    ).rejects.toMatchObject({ status: 400 });
+  });
+
+  test('400 when matchBy invalid', async () => {
+    db.getLobById.mockResolvedValue({ id: 'L1' });
+    await expect(
+      lobService.addLobApp('L1', { identifier: 'slack.exe', displayName: 'Slack', matchBy: 'bogus' }, 'admin1')
+    ).rejects.toMatchObject({ status: 400 });
+  });
+
+  test('creates a new catalog app (no org default) and sets the LOB classification', async () => {
+    db.getLobById.mockResolvedValue({ id: 'L1' });
+    db.getCatalogByIdentifier.mockResolvedValue(null);
+    db.createCatalogApp.mockResolvedValue({ id: 'a1', identifier: 'slack.exe', display_name: 'Slack', match_by: 'process', default_classification: null });
+    db.setLobClassification.mockResolvedValue({ classification: 'productive' });
+
+    const row = await lobService.addLobApp('L1', { identifier: 'Slack.exe', displayName: ' Slack ', matchBy: 'process', classification: 'productive' }, 'admin1');
+
+    // identifier lower-cased/trimmed; created with NO org default
+    expect(db.createCatalogApp).toHaveBeenCalledWith(
+      expect.objectContaining({ identifier: 'slack.exe', display_name: 'Slack', match_by: 'process', default_classification: null })
+    );
+    expect(db.setLobClassification).toHaveBeenCalledWith('L1', 'a1', 'productive', 'admin1');
+    expect(row).toMatchObject({ appId: 'a1', created: true, lobClassification: 'productive', effectiveClassification: 'productive' });
+  });
+
+  test('reuses an existing catalog app instead of creating a duplicate', async () => {
+    db.getLobById.mockResolvedValue({ id: 'L1' });
+    db.getCatalogByIdentifier.mockResolvedValue({ id: 'a1', identifier: 'slack.exe', display_name: 'Slack', match_by: 'process', default_classification: 'productive' });
+    db.setLobClassification.mockResolvedValue({ classification: 'non_productive' });
+
+    const row = await lobService.addLobApp('L1', { identifier: 'slack.exe', displayName: 'Slack', matchBy: 'process', classification: 'non_productive' }, 'admin1');
+
+    expect(db.createCatalogApp).not.toHaveBeenCalled();
+    expect(row).toMatchObject({ appId: 'a1', created: false, lobClassification: 'non_productive' });
+  });
+
+  test('classification omitted ⇒ catalog entry only, no per-LOB rule (effective neutral)', async () => {
+    db.getLobById.mockResolvedValue({ id: 'L1' });
+    db.getCatalogByIdentifier.mockResolvedValue(null);
+    db.createCatalogApp.mockResolvedValue({ id: 'a2', identifier: 'notion.so', display_name: 'Notion', match_by: 'url', default_classification: null });
+
+    const row = await lobService.addLobApp('L1', { identifier: 'notion.so', displayName: 'Notion', matchBy: 'url' }, 'admin1');
+
+    expect(db.setLobClassification).not.toHaveBeenCalled();
+    expect(row).toMatchObject({ appId: 'a2', created: true, lobClassification: null, effectiveClassification: 'neutral' });
   });
 });

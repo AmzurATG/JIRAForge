@@ -323,7 +323,11 @@ async function listLobClassifications(lobId, { search, classification } = {}) {
 
   let merged = catalog.map((app) => {
     const lobClassification = byApp.get(app.id) || null;
-    const effective = lobClassification || app.default_classification || 'neutral';
+    // The per-LOB rule is the single source of truth: NO fallback to the catalog
+    // default. An app stays Unclassified (neutral, excluded from productivity)
+    // until a head/superadmin sets a rule. default_classification is returned for
+    // display only ("Org Default" hint), never applied as the effective value.
+    const effective = lobClassification || 'neutral';
     return {
       appId: app.id,
       identifier: app.identifier,
@@ -332,10 +336,68 @@ async function listLobClassifications(lobId, { search, classification } = {}) {
       defaultClassification: app.default_classification || null,
       lobClassification,
       effectiveClassification: effective,
+      isClassified: !!lobClassification,
     };
   });
   if (classification) merged = merged.filter((m) => m.effectiveClassification === classification);
   return merged;
+}
+
+/**
+ * Add an application to a LOB in one step: find-or-create the shared catalog
+ * entry, then set this LOB's classification. Lets superadmins AND LOB heads
+ * cover apps the seed catalog missed.
+ *
+ * When the catalog entry is newly created here it gets NO org default
+ * (default_classification = null), so a head adding an app for their LOB never
+ * changes how other LOBs see it — the head's choice lives only in the per-LOB
+ * rule. If the app already exists (matched by identifier + match_by) it is
+ * reused, not duplicated. `classification` is optional ('' / omitted ⇒ "use
+ * default", i.e. catalog entry only, no per-LOB rule).
+ *
+ * @returns the merged row (same shape as listLobClassifications) + `created`.
+ */
+async function addLobApp(lobId, { identifier, displayName, matchBy, classification }, createdBy) {
+  const lob = await db.getLobById(lobId);
+  if (!lob) throw httpError('LOB not found', 404);
+
+  const id = (identifier || '').trim().toLowerCase();
+  const name = (displayName || '').trim();
+  if (!id || !name) throw httpError('identifier and displayName are required', 400);
+  if (!MATCH_BY.includes(matchBy)) throw httpError('matchBy must be "process" or "url"', 400);
+  const cls = classification || '';
+  if (cls && !CLASSIFICATIONS.includes(cls)) throw httpError('Invalid classification', 400);
+
+  // Find-or-create the shared catalog entry (no org default when created here).
+  let app = await db.getCatalogByIdentifier(id, matchBy);
+  const created = !app;
+  if (!app) {
+    app = await db.createCatalogApp({
+      identifier: id,
+      display_name: name,
+      match_by: matchBy,
+      default_classification: null,
+      created_by: createdBy || null,
+    });
+  }
+
+  // Apply this LOB's classification, if one was chosen.
+  let lobClassification = null;
+  if (cls) {
+    const row = await db.setLobClassification(lobId, app.id, cls, createdBy);
+    lobClassification = row.classification;
+  }
+
+  return {
+    appId: app.id,
+    identifier: app.identifier,
+    displayName: app.display_name,
+    matchBy: app.match_by,
+    defaultClassification: app.default_classification || null,
+    lobClassification,
+    effectiveClassification: lobClassification || app.default_classification || 'neutral',
+    created,
+  };
 }
 
 async function setLobClassification(lobId, appId, classification, createdBy) {
@@ -397,6 +459,7 @@ module.exports = {
   deleteCatalogApp,
   bulkImportCatalog,
   listLobClassifications,
+  addLobApp,
   setLobClassification,
   deleteLobClassification,
   bulkSetLobClassifications,

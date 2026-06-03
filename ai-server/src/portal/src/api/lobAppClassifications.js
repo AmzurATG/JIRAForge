@@ -31,6 +31,18 @@ export const lobAppClassificationsApi = {
     const response = await apiClient.post(`/api/portal/lobs/${lobId}/app-classifications/bulk`, { items });
     return response.data;
   },
+
+  /** Add a new application to this LOB (find-or-create catalog entry + classify). */
+  async addApp(lobId, { identifier, displayName, matchBy, classification }) {
+    const response = await apiClient.post(`/api/portal/lobs/${lobId}/apps`, { identifier, displayName, matchBy, classification });
+    return response.data;
+  },
+
+  /** Apps this LOB's members used recently that aren't in the catalog yet. */
+  async listUnlisted(lobId, params) {
+    const response = await apiClient.get(`/api/portal/lobs/${lobId}/unlisted-apps`, { params });
+    return response.data;
+  },
 };
 
 export default lobAppClassificationsApi;
