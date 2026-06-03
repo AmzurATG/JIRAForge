@@ -255,7 +255,8 @@ async function requestPasswordReset(req, res) {
     
     // Send password reset email
     const notifmeWrapper = require('../services/notifications/notifme-wrapper');
-    const resetLink = `${process.env.PORTAL_BASE_URL || 'http://localhost:3002'}/reset-password?token=${resetToken}`;
+    const portalBase = (process.env.PORTAL_BASE_URL || 'http://localhost:3002').replace(/\/+$/, '');
+    const resetLink = `${portalBase}/reset-password?token=${resetToken}`;
     
     const emailResult = await notifmeWrapper.send({
       to: admin.email,

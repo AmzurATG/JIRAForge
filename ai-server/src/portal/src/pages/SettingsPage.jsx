@@ -23,6 +23,7 @@ function SettingsPage() {
   const [totalCount, setTotalCount] = useState(0);
   const [page, setPage] = useState(1);
   const [lobs, setLobs] = useState([]); // all LOBs (for assignment)
+  const [lobsError, setLobsError] = useState(false); // true if the LOB picker failed to load
 
   // Create/Edit modal
   const [showModal, setShowModal] = useState(false);
@@ -48,10 +49,18 @@ function SettingsPage() {
     }
   }, [page, user?.role]);
 
-  // Load all LOBs once (for the assignment multi-select)
+  // Load all LOBs (for the assignment multi-select). Include inactive LOBs so the
+  // options match the admin-table prefill (which lists inactive headships too),
+  // and surface load failures instead of showing a misleading "No LOBs yet".
   useEffect(() => {
     if (user?.role === 'superadmin') {
-      lobsApi.list().then((res) => setLobs(res.data || [])).catch(() => {});
+      setLobsError(false);
+      lobsApi.list({ includeInactive: true })
+        .then((res) => setLobs(res.data || []))
+        .catch((err) => {
+          console.error('[Settings] Failed to load LOBs for assignment', err);
+          setLobsError(true);
+        });
     }
   }, [user?.role]);
 
@@ -366,7 +375,11 @@ function SettingsPage() {
                     Heads which LOB(s) <span className="text-red-500">*</span>
                   </label>
                   <div className="max-h-40 overflow-y-auto border border-gray-300 dark:border-gray-600 rounded p-2 space-y-1">
-                    {lobs.length === 0 ? (
+                    {lobsError ? (
+                      <p className="text-xs text-red-500">
+                        Couldn't load LOBs — close this dialog and try again.
+                      </p>
+                    ) : lobs.length === 0 ? (
                       <p className="text-xs text-gray-500 dark:text-gray-400">
                         No LOBs yet — create one first under "Line of Businesses".
                       </p>

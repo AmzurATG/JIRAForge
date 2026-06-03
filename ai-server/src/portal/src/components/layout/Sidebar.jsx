@@ -22,11 +22,13 @@ function Sidebar({ collapsed, onToggle }) {
   // A non-superadmin who heads ≥1 LOB gets a scoped "My LOBs" entry.
   const [isHead, setIsHead] = useState(false);
   useEffect(() => {
-    if (isSuperadmin) return;
+    if (isSuperadmin) return undefined;
     let active = true;
-    lobsApi.list().then((res) => { if (active) setIsHead((res.data || []).length > 0); }).catch(() => {});
+    lobsApi.list()
+      .then((res) => { if (active) setIsHead((res.data || []).length > 0); })
+      .catch((err) => { if (active) console.error('[Sidebar] Failed to load LOBs for nav', err); });
     return () => { active = false; };
-  }, [isSuperadmin]);
+  }, [isSuperadmin, user?.id]);
 
   const menuItems = [
     { path: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
