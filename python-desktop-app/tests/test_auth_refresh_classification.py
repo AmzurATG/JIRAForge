@@ -72,7 +72,10 @@ def test_refresh_403_temporary_failure_does_not_mark_invalid():
 def test_refresh_reauth_error_code_is_permanent_failure():
     """
     AC3: Desktop must classify OAUTH_REAUTH_REQUIRED as a permanent failure
-    signal and increment the permanent-failure counter.
+    and mark the token invalid IMMEDIATELY (not after 5 failures).
+    
+    Updated: OAUTH_REAUTH_REQUIRED now triggers immediate invalidation to prevent
+    the log-flood of repeated "refresh_token is invalid" errors.
     """
     manager = _make_manager()
 
@@ -90,8 +93,9 @@ def test_refresh_reauth_error_code_is_permanent_failure():
         ok = manager.refresh_access_token()
 
     assert ok is False
-    assert manager._refresh_fail_count == 1
-    assert manager._refresh_token_invalid is False
+    # OAUTH_REAUTH_REQUIRED now causes IMMEDIATE invalidation (not waiting for 5 failures)
+    assert manager._refresh_fail_count == 5  # Set to threshold to prevent further retries
+    assert manager._refresh_token_invalid is True
 
 
 def test_refresh_text_match_underscore_phrasing_is_permanent():
@@ -189,3 +193,61 @@ def test_refresh_failure_logs_root_cause_details():
     assert any('http_status=401' in msg for msg in warning_messages)
     assert any('error_code=OAUTH_REAUTH_REQUIRED' in msg for msg in warning_messages)
     assert any('permanent_failure=True' in msg for msg in warning_messages)
+
+
+def test_oauth_reauth_required_immediately_invalidates_token():
+    """
+    When server returns OAUTH_REAUTH_REQUIRED, the refresh token must be
+    marked invalid IMMEDIATELY on the first failure, not after 5 retries.
+    
+    This prevents the log-flood of ~9 identical "refresh_token is invalid"
+    errors that occurs when is_authenticated() and other callers each retry
+    multiple times before the 5-failure threshold is reached.
+    """
+    manager = _make_manager()
+
+    response = _MockResponse(
+        401,
+        {
+            'success': False,
+            'error': 'Refresh token expired, revoked, or rotated out. User must re-authenticate.',
+            'requiresReauth': True,
+            'errorCode': 'OAUTH_REAUTH_REQUIRED'
+        }
+    )
+
+    with patch('desktop_app.requests.post', return_value=response):
+        # First call should fail and immediately mark token invalid
+        ok = manager.refresh_access_token()
+
+    assert ok is False
+    # Key assertion: token should be marked invalid after FIRST failure, not 5th
+    assert manager._refresh_token_invalid is True
+    assert manager._refresh_fail_count == 5  # Set to threshold to prevent further retries
+
+
+def test_non_explicit_permanent_failure_uses_5_retry_threshold():
+    """
+    When permanent failure is detected via text matching (not explicit errorCode),
+    the 5-failure threshold should still apply as a safety net.
+    """
+    manager = _make_manager()
+
+    # Simulate older server response without explicit errorCode
+    response = _MockResponse(
+        400,
+        {
+            'success': False,
+            'error': 'Token refresh failed: refresh_token is invalid'
+            # Note: no 'errorCode' field - fallback text matching will be used
+        }
+    )
+
+    with patch('desktop_app.requests.post', return_value=response):
+        # First call should fail but NOT immediately invalidate
+        ok = manager.refresh_access_token()
+
+    assert ok is False
+    # Token should NOT be marked invalid yet - need 5 failures for text-matched permanent errors
+    assert manager._refresh_token_invalid is False
+    assert manager._refresh_fail_count == 1
