@@ -601,7 +601,7 @@ load_dotenv()
 
 # Application version - IMPORTANT: Update this when releasing new versions
 # This is used for update checking and notifications
-APP_VERSION = "1.0.0"
+APP_VERSION = "1.0.6"
 
 # True when the process is running inside an AppImage bundle.
 # The AppImage runtime sets the $APPIMAGE env var to the path of the .AppImage
@@ -1120,16 +1120,14 @@ def get_linux_installed_binary_path():
     return os.path.join(get_app_data_dir(), 'TimeTracker')
 
 def get_linux_installed_appimage_path():
-    """Return the on-disk path of the running (or to-be-installed) AppImage.
+    """Return the canonical install path of the AppImage.
 
-    When running inside an AppImage the runtime sets $APPIMAGE to the actual
-    .AppImage file path.  That is the file we overwrite during auto-update.
-    Falls back to a fixed location inside the app data directory if the env
-    var is absent (e.g. first-time install or development mode).
+    Always returns ~/.local/share/TimeTracker/TimeTracker.AppImage regardless
+    of where the app was launched from ($APPIMAGE).  Auto-update and the
+    autostart entry always target this stable canonical location so the app
+    remains in a predictable place even if the user first ran it from
+    ~/Downloads or another temporary directory.
     """
-    appimage_env = os.environ.get('APPIMAGE', '')
-    if appimage_env and os.path.isfile(appimage_env):
-        return appimage_env
     return os.path.join(get_app_data_dir(), 'TimeTracker.AppImage')
 
 def get_shutdown_signal_path():
@@ -1320,6 +1318,113 @@ def is_running_from_install_location():
 
     return current_path == install_path
 
+def _install_appimage():
+    """Handle AppImage first-run install and manual version upgrades on Linux.
+
+    Called by install_application() whenever the process IS_APPIMAGE is True.
+
+    When the user double-clicks a newly-downloaded AppImage whose path differs
+    from the canonical install location (~/.local/share/TimeTracker/TimeTracker.AppImage),
+    this function:
+
+      1. Terminates any currently-running old instance gracefully.
+      2. Copies the .AppImage file to the canonical install path (atomic rename).
+      3. Makes the canonical file executable.
+      4. Generates a Linux uninstall.sh script.
+      5. Relaunches from the canonical location (detached).
+      6. Returns False so the caller (run()) exits this installer instance.
+
+    If the app is already running from the canonical location, returns True
+    immediately so startup continues normally.
+
+    Note: sys.executable points inside a FUSE mount (/tmp/.mount_*/usr/bin/TimeTracker)
+    and cannot be shutil.copy2'd.  We copy the .AppImage FILE on disk (os.environ['APPIMAGE'])
+    which is a plain regular file and can be copied safely.
+    """
+    canonical = os.path.join(get_app_data_dir(), 'TimeTracker.AppImage')
+    current_appimage = os.environ.get('APPIMAGE', '')
+
+    if not current_appimage:
+        # No $APPIMAGE env var — running in dev/test mode, nothing to do.
+        print("[INFO] AppImage install: $APPIMAGE not set — skipping install step")
+        return True
+
+    try:
+        current_norm = os.path.normpath(os.path.realpath(current_appimage))
+        canonical_norm = os.path.normpath(os.path.realpath(canonical))
+    except OSError:
+        current_norm = os.path.normpath(current_appimage)
+        canonical_norm = os.path.normpath(canonical)
+
+    if current_norm == canonical_norm:
+        # Already running from the canonical install location — nothing to do.
+        print(f"[INFO] Running from canonical AppImage location: {canonical}")
+        return True
+
+    # Running from a non-canonical path (e.g. ~/Downloads/) — install/upgrade.
+    is_upgrade = os.path.exists(canonical)
+    if is_upgrade:
+        print(f"[INFO] AppImage upgrade detected — replacing {canonical}")
+        print(f"       New AppImage: {current_appimage}")
+    else:
+        print(f"[INFO] First AppImage install — installing to {canonical}")
+
+    # Step 1: Terminate any existing running instance gracefully.
+    running_processes = find_running_timetracker_processes()
+    if running_processes:
+        print(f"[INFO] Found {len(running_processes)} running instance(s) — shutting down...")
+        request_graceful_shutdown()
+        time.sleep(1)
+        terminate_old_version(running_processes, timeout=10)
+        clear_shutdown_signal()
+
+    # Step 2: Copy the AppImage file to the canonical install location atomically.
+    try:
+        import shutil as _shutil_install
+        install_dir = get_app_data_dir()
+        os.makedirs(install_dir, exist_ok=True)
+
+        tmp = canonical + '.new'
+        _shutil_install.copy2(current_appimage, tmp)
+        os.chmod(tmp, 0o755)
+        os.replace(tmp, canonical)   # atomic rename — no partial state visible
+        print(f"[OK] AppImage {'upgraded' if is_upgrade else 'installed'}: {canonical}")
+    except Exception as e:
+        print(f"[ERROR] AppImage install failed — continuing from current location: {e}")
+        import traceback
+        traceback.print_exc()
+        # Fall back: let the app run from the Downloads path rather than crashing.
+        return True
+
+    # Step 3: Generate the Linux uninstall script.
+    try:
+        uninstall_path = os.path.join(get_app_data_dir(), 'uninstall.sh')
+        _generate_linux_uninstaller_at_path(uninstall_path, get_app_data_dir())
+        print(f"[OK] Uninstaller created: {uninstall_path}")
+    except Exception as e:
+        print(f"[WARN] Could not generate uninstaller: {e}")
+
+    # Step 4: Relaunch from the canonical location (detached) and exit this instance.
+    try:
+        import subprocess as _sub_install
+        _sub_install.Popen(
+            [canonical],
+            start_new_session=True,
+            stdin=_sub_install.DEVNULL,
+            stdout=_sub_install.DEVNULL,
+            stderr=_sub_install.DEVNULL,
+        )
+        print(f"[INFO] New instance launched from {canonical}. Exiting installer.")
+    except Exception as e:
+        print(f"[ERROR] Could not launch installed AppImage: {e}")
+        import traceback
+        traceback.print_exc()
+        # Fall back: keep running from the current path.
+        return True
+
+    return False  # Signal run() to call sys.exit(0) for this installer instance.
+
+
 def install_application():
     r"""
     Self-install the application to %LOCALAPPDATA%\TimeTracker\
@@ -1333,17 +1438,14 @@ def install_application():
         print("[INFO] Running in development mode - skipping self-installation")
         return True
 
-    # AppImages are self-contained — no installation step is needed.
-    # sys.executable points inside a FUSE mount (/tmp/.mount_*/usr/bin/TimeTracker)
-    # and cannot be copied with shutil.  Autostart is handled separately by
-    # add_to_linux_autostart() in run(), and updates replace the .AppImage file
-    # directly via UpdateManager.  Running install_application() here would kill
-    # the AppImage's squashfuse daemon (detected as a "running instance"), which
-    # unmounts /tmp/.mount_*/ and causes PyInstaller to exit with
-    # "moved or deleted since this application was launched".
+    # AppImages are self-contained — sys.executable points inside a FUSE mount
+    # (/tmp/.mount_*/usr/bin/TimeTracker) and cannot be shutil.copy2'd.
+    # _install_appimage() copies the .AppImage FILE on disk instead, which is a
+    # plain regular file.  It handles: first-run install, manual version upgrade
+    # (user double-clicks a new AppImage), and canonical-path enforcement so that
+    # auto-update and autostart always target the stable canonical location.
     if IS_APPIMAGE:
-        print("[INFO] Running as AppImage - skipping self-installation")
-        return True
+        return _install_appimage()
 
     # Check if already running from install location
     if is_running_from_install_location():
@@ -1573,8 +1675,9 @@ def create_linux_update_script(app_data_dir, current_pid, staged_binary, install
       1. Wait up to 5 s for current process to exit, then SIGKILL it.
       2. Verify the staged binary exists.
       3. Replace the installed binary (up to 15 retries), making it executable.
-      4. Relaunch the new binary detached.
-      5. Clean up staged file + self-delete the script.
+      4. Update the XDG autostart entry to point to the (canonical) installed binary.
+      5. Relaunch the new binary detached.
+      6. Clean up staged file + self-delete the script.
     """
     updates_dir = os.path.join(app_data_dir, 'updates')
     os.makedirs(updates_dir, exist_ok=True)
@@ -1583,6 +1686,8 @@ def create_linux_update_script(app_data_dir, current_pid, staged_binary, install
     backup_binary = installed_binary + '.bak'
     install_dir = os.path.dirname(installed_binary)
     update_log = os.path.join(updates_dir, 'update_install.log')
+    autostart_dir = os.path.join(os.path.expanduser('~'), '.config', 'autostart')
+    autostart_file = os.path.join(autostart_dir, 'timetracker.desktop')
 
     script = f"""#!/bin/bash
 # Time Tracker Linux Auto-Updater
@@ -1639,12 +1744,20 @@ if [ "$REPLACED" -eq 0 ]; then
     exit 1
 fi
 
-# === Phase 4: Launch updated binary ===
+# === Phase 4: Update XDG autostart entry ===
+# Always point autostart at the canonical installed binary so it survives
+# reboots even if the user has since deleted the original Downloads AppImage.
+mkdir -p "{autostart_dir}" 2>/dev/null || true
+printf '[Desktop Entry]\\nType=Application\\nName=TimeTracker\\nComment=Automatic time tracking for JIRA\\nExec=%s\\nTerminal=false\\nHidden=false\\nX-GNOME-Autostart-enabled=true\\n' "$INSTALLED" > "{autostart_file}" 2>/dev/null \\
+    && log "Autostart entry updated: $INSTALLED" \\
+    || log "WARN: could not update autostart entry"
+
+# === Phase 5: Launch updated binary ===
 log "Binary replaced. Launching new version..."
 nohup "$INSTALLED" >/dev/null 2>&1 &
 disown
 
-# === Phase 5: Cleanup ===
+# === Phase 6: Cleanup ===
 rm -f "$STAGED" "$BACKUP" 2>/dev/null || true
 log "Update complete."
 rm -f "$0"
@@ -2027,6 +2140,101 @@ class UpdateManager:
         if self.state not in ('ready', 'mandatory_ready'):
             return False
         return self.apply_update()
+
+def _generate_linux_uninstaller_at_path(uninstall_path, install_dir):
+    """Generate an executable uninstall.sh shell script at *uninstall_path*.
+
+    The script:
+      1. Kills any running TimeTracker process.
+      2. Removes the XDG autostart entry.
+      3. Deletes all application data files from *install_dir*.
+      4. Self-deletes the install directory once done.
+    """
+    autostart_file = os.path.join(os.path.expanduser('~'), '.config', 'autostart', 'timetracker.desktop')
+    script = f'''#!/bin/bash
+# ============================================================================
+# Time Tracker - Linux Uninstall Script
+# Auto-generated — removes the application and all associated data.
+# ============================================================================
+
+echo ""
+echo "============================================"
+echo " Time Tracker - Uninstaller"
+echo "============================================"
+echo ""
+echo "This will remove Time Tracker and all associated data."
+echo ""
+echo "The following will be deleted:"
+echo "  - Application binary:  {install_dir}/TimeTracker.AppImage"
+echo "  - All session/auth data in {install_dir}/"
+echo "  - Autostart entry:     {autostart_file}"
+echo ""
+read -r -p "Are you sure you want to uninstall? (y/N): " CONFIRM
+case "$CONFIRM" in
+    [yY]|[yY][eE][sS]) ;;
+    *)
+        echo ""
+        echo "Uninstall cancelled."
+        exit 0
+        ;;
+esac
+
+INSTALL_DIR="{install_dir}"
+
+echo ""
+echo "[STEP 1/4] Stopping application if running..."
+pkill -f TimeTracker 2>/dev/null && echo "  Application stopped." || echo "  Application was not running."
+sleep 1
+
+echo ""
+echo "[STEP 2/4] Removing autostart entry..."
+AUTOSTART_FILE="{autostart_file}"
+if [ -f "$AUTOSTART_FILE" ]; then
+    rm -f "$AUTOSTART_FILE"
+    echo "  Removed from autostart."
+else
+    echo "  Was not in autostart."
+fi
+
+echo ""
+echo "[STEP 3/4] Waiting for application to fully close..."
+sleep 2
+
+echo ""
+echo "[STEP 4/4] Removing application files..."
+for f in TimeTracker.AppImage TimeTracker \\
+          time_tracker_auth.json time_tracker_offline.db \\
+          time_tracker_consent.json time_tracker_user_cache.json \\
+          auth_metadata.json .lock .shutdown_signal; do
+    TARGET="$INSTALL_DIR/$f"
+    if [ -e "$TARGET" ]; then
+        rm -rf "$TARGET"
+        echo "  - Removed: $f"
+    fi
+done
+for d in updates screenshots logs; do
+    TARGET="$INSTALL_DIR/$d"
+    if [ -d "$TARGET" ]; then
+        rm -rf "$TARGET"
+        echo "  - Removed: $d/"
+    fi
+done
+
+echo ""
+echo "============================================"
+echo " Uninstall Complete!"
+echo "============================================"
+echo ""
+echo "Time Tracker has been removed from your system."
+echo ""
+
+# Self-delete: schedule removal of this script and the (now-empty) install dir.
+(sleep 1 && rm -f "{uninstall_path}" && rmdir "{install_dir}" 2>/dev/null) &
+'''
+    with open(uninstall_path, 'w') as f:
+        f.write(script)
+    os.chmod(uninstall_path, 0o755)
+
 
 def _generate_uninstaller_at_path(uninstall_path, install_dir):
     """Generate uninstall.bat at the specified path"""
