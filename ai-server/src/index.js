@@ -2,6 +2,7 @@ const express = require('express');
 const cors = require('cors');
 const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
+const jwt = require('jsonwebtoken');
 const path = require('node:path');
 const fs = require('node:fs');
 require('dotenv').config({ path: path.join(__dirname, '..', '.env') });
@@ -122,7 +123,38 @@ const limiter = rateLimit({
 app.use('/api/', (req, res, next) => {
   if (req.path.startsWith('/forge/')) return next();
   if (req.path.startsWith('/auth/'))  return next();
+  // Portal data routes have their own (per-user) limiter below — keep them out of
+  // this strict IP-keyed bucket so a shared office/NAT IP can't starve all users.
+  if (req.path.startsWith('/portal/')) return next();
   return limiter(req, res, next);
+});
+
+// Portal API limiter — generous and keyed by the authenticated portal USER (from
+// the JWT) rather than IP, so multiple portal users behind one shared office/NAT
+// IP don't drain a single bucket (the cause of intermittent 429s on the portal).
+// Portal /auth/* routes are excluded here and keep their stricter login limiters.
+const portalApiLimiter = rateLimit({
+  windowMs: 10 * 60 * 1000, // 10 minutes
+  max: 300,                 // per portal user per window (the UI fires several calls per page)
+  message: 'Too many requests, please slow down and try again shortly.',
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => {
+    const auth = req.headers.authorization;
+    if (auth && auth.startsWith('Bearer ')) {
+      try {
+        // decode only (no verify) — purely to bucket by user; the route still
+        // enforces real auth via verifyPortalToken.
+        const decoded = jwt.decode(auth.slice(7));
+        if (decoded && decoded.userId) return `puser:${decoded.userId}`;
+      } catch (_) { /* fall through to IP */ }
+    }
+    return req.ip || req.headers['x-forwarded-for'] || 'unknown';
+  }
+});
+app.use('/api/portal/', (req, res, next) => {
+  if (req.path.startsWith('/auth/')) return next(); // login/forgot/reset keep their auth limiters
+  return portalApiLimiter(req, res, next);
 });
 
 // Rate limiter for public/health endpoints — prevents abuse during DDoS
