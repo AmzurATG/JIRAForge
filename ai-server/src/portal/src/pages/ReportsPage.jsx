@@ -11,6 +11,7 @@ import { employeesApi } from '../api/employees';
 import DataTable from '../components/common/DataTable';
 import DateRangePicker from '../components/common/DateRangePicker';
 import LobFilter from '../components/common/LobFilter';
+import EmployeeSelect from '../components/common/EmployeeSelect';
 import ErrorBanner from '../components/common/ErrorBanner';
 import { formatDate, formatDuration, formatDateTime } from '../utils/formatters';
 
@@ -313,21 +314,14 @@ function ReportsPage() {
               </select>
             </div>
 
-            {/* Employee Filter */}
+            {/* Employee Filter — searchable (type to filter as you go) */}
             <div>
               <label className="filter-label text-xs">Employee</label>
-              <select
+              <EmployeeSelect
+                employees={employees}
                 value={selectedEmployee}
-                onChange={(e) => setSelectedEmployee(e.target.value)}
-                className="select-field"
-              >
-                <option value="">All Employees</option>
-                {employees.map((emp) => (
-                  <option key={emp.userId} value={emp.userId}>
-                    {emp.name}
-                  </option>
-                ))}
-              </select>
+                onChange={setSelectedEmployee}
+              />
             </div>
 
             {/* Date Range */}
