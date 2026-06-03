@@ -149,7 +149,8 @@ async function createAdminUser(req, res) {
         // so each environment points at its own portal (dev/prod). Falls back to
         // localhost for local dev only, matching the convention used elsewhere
         // (e.g. the password-reset link). Never hardcode a deployed Vercel URL here.
-        const portalUrl = `${process.env.PORTAL_BASE_URL || 'http://localhost:3002'}/login`;
+        const portalBase = (process.env.PORTAL_BASE_URL || 'http://localhost:3002').replace(/\/+$/, '');
+        const portalUrl = `${portalBase}/login`;
         const template = templates.adminInvite;
         
         const templateData = {

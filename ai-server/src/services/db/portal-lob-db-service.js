@@ -248,7 +248,7 @@ async function getHeadRowsForAdmins(adminIds) {
     .select('admin_id, lob_id')
     .in('admin_id', adminIds);
   if (error) {
-    logger.error('[PortalLobDB] getHeadRowsForAdmins failed', { error });
+    logger.error('[PortalLobDB] getHeadRowsForAdmins failed', { adminCount: adminIds.length, error });
     throw error;
   }
   return data || [];

@@ -297,7 +297,14 @@ class PortalService {
 
       if (!batch || batch.length === 0) break;
       activities.push(...batch);
-      if (batch.length < PAGE_SIZE || activities.length >= MAX_ROWS) break;
+      if (activities.length >= MAX_ROWS) {
+        // Surface the truncation rather than silently undercounting the totals.
+        logger.warn('[PortalService] getEmployeeDetail hit the row ceiling; totals may be truncated', {
+          orgId, userId, from, to, maxRows: MAX_ROWS
+        });
+        break;
+      }
+      if (batch.length < PAGE_SIZE) break;
       pageStart += PAGE_SIZE;
     }
     
@@ -506,18 +513,18 @@ class PortalService {
    */
   async getAllTimeLogs(orgId, filters, visibleUserIds, maxRecords = 50000) {
     const PAGE_SIZE = 1000;
-    let all = [];
+    const all = [];
     let page = 1;
 
     for (;;) {
       const result = await this.getTimeLogs(orgId, filters, { page, limit: PAGE_SIZE }, visibleUserIds);
       const batch = result.data || [];
-      all = all.concat(batch);
+      all.push(...batch); // append in place; batch is <= PAGE_SIZE so spread is safe
       if (batch.length < PAGE_SIZE || all.length >= maxRecords) break;
       page += 1;
     }
 
-    if (all.length > maxRecords) all = all.slice(0, maxRecords);
+    if (all.length > maxRecords) all.length = maxRecords; // truncate in place
     return { data: all, pagination: { totalCount: all.length } };
   }
 
