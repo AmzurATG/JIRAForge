@@ -206,19 +206,24 @@ if 'rapidocr' in configured_engines:
             # skips them.  We filter them out explicitly here so the bundle
             # contains only the inference-path submodules RapidOCR actually
             # needs, and suppress the noisy build-time warnings.
+            # onnxruntime.quantization, .tools, and .transformers all require
+            # the optional 'onnx' package at import time.  Use collect_submodules'
+            # filter= parameter to skip these packages BEFORE PyInstaller tries
+            # to import them — this suppresses the 'Failed to collect submodules'
+            # WARNING that appeared in earlier builds when we filtered the result
+            # post-hoc instead of pre-filtering.
             _ORT_OPTIONAL_PKGS = {
                 'onnxruntime.quantization',
                 'onnxruntime.tools',
                 'onnxruntime.transformers',
             }
-            _ort_all = collect_submodules('onnxruntime')
-            engine_hiddenimports += [
-                s for s in _ort_all
-                if not any(
-                    s == pkg or s.startswith(pkg + '.')
+            engine_hiddenimports += collect_submodules(
+                'onnxruntime',
+                filter=lambda name: not any(
+                    name == pkg or name.startswith(pkg + '.')
                     for pkg in _ORT_OPTIONAL_PKGS
                 )
-            ]
+            )
             engine_datas += collect_data_files('onnxruntime')
             engine_binaries += collect_dynamic_libs('onnxruntime')
             print("[INFO] onnxruntime submodules, data files, and shared libs bundled")

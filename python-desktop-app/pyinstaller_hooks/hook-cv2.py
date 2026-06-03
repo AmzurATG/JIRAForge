@@ -85,12 +85,16 @@ try:
                     if matches:
                         ext_file = matches[0]
                         dest = pathlib.Path('cv2') / ext_file.parent.relative_to(pkg_path)
-                        if str(dest) == 'cv2':
-                            # Extension is in the package root — collect via
-                            # hidden import so PyInstaller resolves it correctly.
-                            hiddenimports.append('cv2.cv2')
-                        else:
-                            binaries.append((str(ext_file), str(dest)))
+                        # Always add the .so as an explicit binary so PyInstaller
+                        # places it in _MEIPASS/cv2/ (the package subdirectory).
+                        # cv2's bootstrap adds _MEIPASS/cv2/ to sys.path[0] at
+                        # runtime and then calls importlib.import_module('cv2')
+                        # expecting to find cv2.abi3.so there.  Using
+                        # hiddenimports.append('cv2.cv2') was unreliable for
+                        # ABI3-tagged extensions — PyInstaller sometimes placed
+                        # the .so at the bundle root (_MEIPASS/) instead of the
+                        # cv2/ subdirectory, making the runtime lookup fail.
+                        binaries.append((str(ext_file), str(dest) if str(dest) != '.' else 'cv2'))
                         ext_collected = True
                         break
                 if ext_collected:
@@ -102,7 +106,7 @@ try:
         if not ext_collected:
             # Fallback: glob for any .so in the package dir and collect directly.
             for so in pkg_path.glob('cv2*.so'):
-                hiddenimports.append('cv2.cv2')
+                binaries.append((str(so), 'cv2'))
                 ext_collected = True
                 break
 

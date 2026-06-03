@@ -65,8 +65,11 @@ def _bootstrap_linux_tray_backend():
             sys.path.append(path)
             added_paths.append(path)
     else:
-        # Frozen / AppImage mode: cv2 is excluded from bundle to avoid namespace
-        # package recursion. Only add system paths that don't shadow bundled libs.
+        # Frozen / AppImage mode: cv2 IS bundled inside the PyInstaller onefile
+        # binary (cv2.abi3.so is extracted to _MEIPASS/cv2/ at runtime).
+        # Add system gi paths so pystray's _appindicator backend can `import gi`,
+        # but SKIP any system path that contains cv2 to prevent a namespace-package
+        # stub from shadowing the bundled cv2 before cv2's own bootstrap runs.
         for path in candidate_paths:
             if not os.path.isdir(path) or path in sys.path:
                 continue
@@ -74,7 +77,8 @@ def _bootstrap_linux_tray_backend():
                 entries = os.listdir(path)
             except OSError:
                 continue
-            # Skip any system path that contains cv2 (would cause import recursion)
+            # Skip system paths with cv2 — system cv2 may be a namespace package
+            # (no .so) that would cause `No module named 'cv2'` inside rapidocr.
             if any(e.startswith('cv2') for e in entries):
                 continue
             sys.path.append(path)
@@ -597,7 +601,7 @@ load_dotenv()
 
 # Application version - IMPORTANT: Update this when releasing new versions
 # This is used for update checking and notifications
-APP_VERSION = "1.0.6"
+APP_VERSION = "1.0.0"
 
 # True when the process is running inside an AppImage bundle.
 # The AppImage runtime sets the $APPIMAGE env var to the path of the .AppImage
@@ -9343,6 +9347,21 @@ class TimeTracker:
         now = time.time()
         reason = str(reason_code or '').upper()
         is_temporary = reason == 'OAUTH_TEMPORARY_FAILURE'
+
+        # For genuine session expiration (non-temporary), suppress the notification if the
+        # failure is actually transient — showing "session expired" when the user is simply
+        # offline or in a brief refresh-token grace period causes unnecessary alarm.
+        if not is_temporary:
+            # Suppress if device is offline — data is queuing locally, no user action required
+            if not self.offline_manager.check_connectivity():
+                print("[INFO] Auth notification suppressed — device is offline (data queuing locally)")
+                return
+            # Suppress while still within the 30-min refresh token grace period
+            invalid_since = getattr(self.auth_manager, '_refresh_invalid_set_at', 0)
+            if invalid_since and (now - invalid_since) < 1800:
+                print("[INFO] Auth notification suppressed — still in 30-min refresh token grace period")
+                return
+
         throttle_attr = '_auth_temp_notification_last_shown' if is_temporary else '_reauth_notification_last_shown'
         last_shown = getattr(self, throttle_attr, 0)
         if now - last_shown < 900:  # 15 minutes
@@ -11373,37 +11392,128 @@ class TimeTracker:
         self.idle_start_time = None
 
     def monitor_user_activity(self):
-        """Monitor mouse and keyboard activity for idle detection"""
+        """Monitor mouse and keyboard activity for idle detection (Linux-compatible)"""
+
+        # Detect display server — pynput requires X11 access; Wayland restricts global input monitoring
+        session_type = os.environ.get('XDG_SESSION_TYPE', 'unknown')
+        wayland_display = os.environ.get('WAYLAND_DISPLAY')
+        is_wayland = session_type == 'wayland' or bool(wayland_display)
+
+        print(f"[INFO] Display server detected: {session_type} (Wayland={is_wayland})")
+
         try:
             from pynput import mouse, keyboard
         except ImportError:
-            print("[WARN] pynput not installed - idle detection disabled")
-            print("[INFO] Install with: pip install pynput")
+            print("[ERROR] pynput not installed — idle detection DISABLED")
+            print("[INFO] Install with: pip3 install pynput")
+            self.add_admin_log('ERROR', 'pynput not installed — idle detection disabled')
             return
+
+        # Track listener health so we can detect silent failures (common on Wayland)
+        self._activity_listener_started = False
+        self._activity_listener_error = None
 
         def on_activity(*args, **kwargs):
             """Called on any mouse or keyboard activity"""
+            if not self._activity_listener_started:
+                self._activity_listener_started = True
+                print("[OK] Activity listener confirmed working")
+
             self.last_activity_time = time.time()
 
             # Signal that we need to resume from idle (tracking loop will handle the state reset)
             if self.is_idle:
                 self.needs_idle_resume = True
 
-        # Start mouse listener
-        mouse_listener = mouse.Listener(
-            on_move=on_activity,
-            on_click=on_activity,
-            on_scroll=on_activity
-        )
-        mouse_listener.start()
+        try:
+            # Start mouse listener
+            mouse_listener = mouse.Listener(
+                on_move=on_activity,
+                on_click=on_activity,
+                on_scroll=on_activity
+            )
+            mouse_listener.start()
 
-        # Start keyboard listener
-        keyboard_listener = keyboard.Listener(
-            on_press=on_activity
-        )
-        keyboard_listener.start()
+            # Start keyboard listener
+            keyboard_listener = keyboard.Listener(
+                on_press=on_activity
+            )
+            keyboard_listener.start()
 
-        print("[OK] Activity monitoring started (5-minute idle timeout)")
+            print("[OK] Activity monitoring started (5-minute idle timeout)")
+
+            if is_wayland:
+                print("[WARN] Running on Wayland — pynput may require XWayland for global input monitoring")
+                print("[INFO] If idle detection fails, verify XWayland is running: ps aux | grep Xwayland")
+
+            # Verify listeners are actually receiving events after 5 seconds.
+            # Silent failures are common on Wayland without XWayland.
+            def verify_listener():
+                time.sleep(5)
+                if not self._activity_listener_started:
+                    print("[ERROR] Activity listener NOT receiving events after 5s — idle detection may be broken")
+                    if is_wayland:
+                        print("[HELP] Wayland detected. To fix idle detection:")
+                        print("[HELP]   1. Ensure XWayland is installed and running")
+                        print("[HELP]   2. Or launch with: DISPLAY=:0 ./TimeTracker")
+                        print("[HELP]   3. Or switch to an X11 desktop session")
+                    self.add_admin_log('ERROR', 'Activity monitoring not receiving events — idle detection may be broken on this display server')
+
+            threading.Thread(target=verify_listener, daemon=True).start()
+
+        except Exception as e:
+            print(f"[ERROR] Failed to start activity listeners: {e}")
+            traceback.print_exc()
+            self._activity_listener_error = str(e)
+            self.add_admin_log('ERROR', f'Activity listener failed to start: {e}')
+
+    def get_activity_monitoring_status(self):
+        """Return diagnostic info about activity monitoring health (for troubleshooting idle detection)"""
+        status = {
+            'pynput_available': False,
+            'listener_started': getattr(self, '_activity_listener_started', False),
+            'listener_error': getattr(self, '_activity_listener_error', None),
+            'last_activity_ago_seconds': int(time.time() - self.last_activity_time),
+            'is_idle': self.is_idle,
+            'display_server': os.environ.get('XDG_SESSION_TYPE', 'unknown'),
+            'wayland_display': os.environ.get('WAYLAND_DISPLAY'),
+            'xwayland_running': False,
+        }
+        try:
+            import pynput
+            status['pynput_available'] = True
+            status['pynput_version'] = getattr(pynput, '__version__', 'unknown')
+        except ImportError:
+            pass
+        try:
+            result = subprocess.run(['pgrep', '-x', 'Xwayland'], capture_output=True, timeout=2)
+            status['xwayland_running'] = (result.returncode == 0)
+        except Exception:
+            pass
+        return status
+
+    def show_diagnostic_info(self):
+        """Print and notify activity monitoring diagnostics (can be exposed via tray menu)"""
+        status = self.get_activity_monitoring_status()
+        lines = [
+            "=== Activity Monitoring Status ===",
+            f"pynput installed: {status['pynput_available']}",
+            f"Listener started: {status['listener_started']}",
+            f"Listener error: {status['listener_error'] or 'None'}",
+            f"Display server: {status['display_server']}",
+            f"Wayland active: {status['wayland_display'] or 'No'}",
+            f"XWayland running: {status['xwayland_running']}",
+            "",
+            f"Last activity: {status['last_activity_ago_seconds']}s ago",
+            f"Currently idle: {status['is_idle']}",
+            "",
+            "=== Authentication ===",
+            f"Authenticated: {self.auth_manager.is_authenticated()}",
+            f"User: {self.current_user.get('email') if self.current_user else 'Not logged in'}",
+        ]
+        for line in lines:
+            print(line)
+        _linux_notify("TimeTracker Diagnostics", "\n".join(lines[:10]))
 
     def monitor_system_events(self):
         """Monitor Windows sleep/lock events to instantly detect inactivity.
@@ -11872,18 +11982,26 @@ class TimeTracker:
                 current_idle_timeout = self.tracking_settings.get('idle_threshold_seconds', self.idle_timeout)
                 if idle_duration > current_idle_timeout:
                     if self.state == TrackingState.ACTIVE:
-                        idle_start_time = datetime.now(timezone.utc)
-                        last_activity = datetime.fromtimestamp(self.last_activity_time, tz=timezone.utc)
-                        print(f"[INFO] Idle timeout ({int(idle_duration)}s) — entering idle state")
-                        
-                        # Use state machine instead of direct assignment
-                        self.enter_idle("idle timeout")
-                        
-                        # Upload accumulated data before entering idle
-                        try:
-                            self.upload_activity_batch()
-                        except Exception as e:
-                            print(f"[WARN] Pre-idle batch upload failed: {e}")
+                        # Verify idle before entering: if a screenshot was taken recently (within the
+                        # idle window), the user was likely active but pynput failed to register it.
+                        # This is the primary symptom of broken input monitoring on Wayland.
+                        time_since_last_shot = time.time() - last_screenshot_time
+                        if time_since_last_shot < current_idle_timeout:
+                            print(f"[INFO] Idle timeout ({int(idle_duration)}s) suppressed — screenshot {int(time_since_last_shot)}s ago suggests pynput may not be detecting activity")
+                            self.last_activity_time = time.time()  # Reset to prevent immediate re-check
+                        else:
+                            idle_start_time = datetime.now(timezone.utc)
+                            last_activity = datetime.fromtimestamp(self.last_activity_time, tz=timezone.utc)
+                            print(f"[INFO] Idle timeout ({int(idle_duration)}s) — entering idle state")
+
+                            # Use state machine instead of direct assignment
+                            self.enter_idle("idle timeout")
+
+                            # Upload accumulated data before entering idle
+                            try:
+                                self.upload_activity_batch()
+                            except Exception as e:
+                                print(f"[WARN] Pre-idle batch upload failed: {e}")
 
                     # While idle, check every 5 seconds for activity
                     # Don't skip if needs_idle_resume is set - we need to process the resume
@@ -11949,6 +12067,13 @@ class TimeTracker:
                 # IMPORTANT: Always update the previous window record when switching, regardless of interval
                 # The interval check only applies to creating NEW screenshots, not updating existing ones
                 if window_switched:
+                    # Update last_activity_time as a fallback when pynput fails (e.g., on Wayland).
+                    # A window switch is definitive proof the user is active at the keyboard.
+                    self.last_activity_time = time.time()
+                    if self.is_idle:
+                        print("[INFO] Window switch detected while idle — triggering resume (pynput fallback)")
+                        self.needs_idle_resume = True
+
                     # ALWAYS process window events for activity tracking (creates sessions in active_sessions table)
                     # Activity records (session-based tracking) should work regardless of screenshot capture mode
                     # The tracking_mode/event_tracking_enabled settings control SCREENSHOT capture timing,
@@ -12502,9 +12627,26 @@ class TimeTracker:
                 show_badge = getattr(self, 'update_available', False)
                 new_icon = self.create_tray_icon(state, show_update_badge=show_badge)
                 self.tray.icon = new_icon
-                
-                self.tray.title = "TimeTracker"
-                    
+
+                # Set an informative tooltip so users understand the orange/red states
+                if state == 'green':
+                    self.tray.title = "TimeTracker - Tracking & Syncing"
+                elif state == 'orange':
+                    if self.is_idle:
+                        self.tray.title = "TimeTracker - Idle (No Activity Detected)"
+                    elif self.current_user_id and self.current_user_id.startswith('anonymous_'):
+                        self.tray.title = "TimeTracker - Anonymous Mode (Tracking Locally)"
+                    else:
+                        self.tray.title = "TimeTracker - Tracking Locally (Sync Paused)"
+                elif state == 'yellow':
+                    self.tray.title = "TimeTracker - Paused"
+                elif state == 'blue':
+                    self.tray.title = "TimeTracker - Ready (Not Tracking)"
+                elif state == 'red':
+                    self.tray.title = "TimeTracker - Not Logged In"
+                else:
+                    self.tray.title = "TimeTracker"
+
             except Exception as e:
                 print(f"[WARN] Failed to update tray icon: {e}")
 
