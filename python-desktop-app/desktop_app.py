@@ -601,7 +601,7 @@ load_dotenv()
 
 # Application version - IMPORTANT: Update this when releasing new versions
 # This is used for update checking and notifications
-APP_VERSION = "1.0.6"
+APP_VERSION = "1.0.0"
 
 # True when the process is running inside an AppImage bundle.
 # The AppImage runtime sets the $APPIMAGE env var to the path of the .AppImage
@@ -2228,8 +2228,15 @@ echo ""
 echo "Time Tracker has been removed from your system."
 echo ""
 
-# Self-delete: schedule removal of this script and the (now-empty) install dir.
-(sleep 1 && rm -f "{uninstall_path}" && rmdir "{install_dir}" 2>/dev/null) &
+# Remove the entire install directory including this script.
+# On Linux, bash holds an open fd to the script file so deleting the directory
+# while the script is still running is safe — the shell keeps reading from the
+# already-open fd and the directory entry is removed immediately.
+# We do NOT use a background subshell here because when the file manager closes
+# the terminal window the background process receives SIGHUP and is killed
+# before it can run.
+rm -rf "{install_dir}"
+echo "  Installation directory removed."
 '''
     with open(uninstall_path, 'w') as f:
         f.write(script)
