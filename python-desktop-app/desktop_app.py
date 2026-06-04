@@ -4430,22 +4430,46 @@ class ConsentManager:
         self.consent_data = self._load_consent()
 
     def _load_consent(self):
-        """Load stored consent data from file"""
+        """Load stored consent data from file.
+
+        If the file exists but is empty or contains invalid JSON (e.g. corrupted
+        by a SIGTERM that arrived while _save_consent was mid-write), the corrupted
+        file is removed so a clean write can happen on the next record_consent()
+        call.  This does NOT log the user out — their auth tokens are untouched.
+        """
         try:
             if os.path.exists(self.store_path):
                 with open(self.store_path, 'r') as f:
-                    return json.load(f)
+                    data = json.load(f)
+                return data
+        except (json.JSONDecodeError, ValueError) as e:
+            print(f"[WARN] Consent file is corrupted ({e}) — removing for clean re-write")
+            try:
+                os.remove(self.store_path)
+            except OSError:
+                pass
         except Exception as e:
             print(f"[WARN] Failed to load consent data: {e}")
         return {}
 
     def _save_consent(self):
-        """Save consent data to file"""
+        """Save consent data to file atomically to prevent corruption on SIGTERM.
+
+        Uses write-to-temp + atomic rename so the consent file is never left in a
+        partially-written (0-byte) state if the process is killed mid-write, e.g.
+        by terminate_old_version() during an AppImage upgrade.
+        """
         try:
-            with open(self.store_path, 'w') as f:
+            tmp = self.store_path + '.tmp'
+            with open(tmp, 'w') as f:
                 json.dump(self.consent_data, f, indent=2)
+            os.replace(tmp, self.store_path)  # atomic on Linux/POSIX
         except Exception as e:
             print(f"[WARN] Failed to save consent data: {e}")
+            try:
+                os.remove(self.store_path + '.tmp')
+            except OSError:
+                pass
 
     def has_valid_consent(self, user_id):
         """Check if user has given valid consent for current version"""
