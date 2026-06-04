@@ -6257,6 +6257,19 @@ class TimeTracker:
                 'pause_duration_seconds': pause_duration_seconds
             })
         
+        @self.app.route('/api/debug/expire-session', methods=['POST'])
+        def debug_expire_session():
+            """DEBUG ONLY: Simulate session expiry by marking refresh token as invalid"""
+            self.auth_manager._refresh_token_invalid = True
+            self.auth_manager._refresh_invalid_set_at = time.time()
+            self.auth_manager._refresh_fail_count = 5  # Prevent retries
+            # Update tray icon to reflect auth issue (will show orange)
+            self.update_tray_icon()
+            return jsonify({
+                'success': True,
+                'message': 'Session marked as expired. Visit /login to see the session expired banner.'
+            })
+        
         @self.app.route('/api/offline/sync', methods=['POST'])
         def api_trigger_sync():
             """Manually trigger offline sync"""
