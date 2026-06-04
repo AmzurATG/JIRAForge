@@ -43,4 +43,18 @@ export const reportsApi = {
     });
     return response.data;
   },
+
+  /**
+   * Export report as XLSX.
+   *
+   * @param {Object} params - { type, ...filters }
+   * @returns {Promise<Blob>}
+   */
+  async exportXLSX(params) {
+    const response = await apiClient.get('/api/portal/reports/export/xlsx', {
+      params,
+      responseType: 'blob',
+    });
+    return response.data;
+  },
 };

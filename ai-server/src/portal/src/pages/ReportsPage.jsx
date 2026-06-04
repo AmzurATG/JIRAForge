@@ -5,7 +5,7 @@
  */
 
 import { useState, useEffect } from 'react';
-import { FileText, FileDown, File } from 'lucide-react';
+import { FileText, FileDown, File, FileSpreadsheet } from 'lucide-react';
 import { reportsApi } from '../api/reports';
 import { employeesApi } from '../api/employees';
 import DataTable from '../components/common/DataTable';
@@ -40,6 +40,7 @@ function ReportsPage() {
   const [page, setPage] = useState(1);
   const [limit] = useState(20);
   const [exportingCSV, setExportingCSV] = useState(false);
+  const [exportingXLSX, setExportingXLSX] = useState(false);
   const [exportingPDF, setExportingPDF] = useState(false);
   
   // Report type
@@ -170,6 +171,36 @@ function ReportsPage() {
     }
   };
 
+  const handleExportXLSX = async () => {
+    setExportingXLSX(true);
+    setError(null);
+
+    try {
+      const blob = await reportsApi.exportXLSX({
+        type: reportType,
+        classification: classification || undefined,
+        employee: selectedEmployee || undefined,
+        from: dateRange.from,
+        to: dateRange.to,
+      });
+
+      const url = window.URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      const timestamp = new Date().toISOString().split('T')[0];
+      link.setAttribute('download', `${reportType}-${timestamp}.xlsx`);
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.URL.revokeObjectURL(url);
+    } catch (err) {
+      console.error('Failed to export XLSX:', err);
+      setError(err.response?.data?.error || 'Failed to export XLSX');
+    } finally {
+      setExportingXLSX(false);
+    }
+  };
+
   // Dynamic columns based on report type
   const getColumns = () => {
     switch (reportType) {
@@ -245,6 +276,14 @@ function ReportsPage() {
           >
             <FileDown className="w-4 h-4" />
             {exportingCSV ? 'Exporting...' : 'Export CSV'}
+          </button>
+          <button
+            onClick={handleExportXLSX}
+            disabled={exportingXLSX || previewData.length === 0}
+            className="btn-secondary flex items-center gap-2"
+          >
+            <FileSpreadsheet className="w-4 h-4" />
+            {exportingXLSX ? 'Exporting...' : 'Export XLSX'}
           </button>
           <button
             onClick={handleExportPDF}

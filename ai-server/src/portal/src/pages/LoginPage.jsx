@@ -78,8 +78,7 @@ function LoginPage() {
           <div>
             <h2 className="text-4xl font-extrabold text-white leading-tight">
               Track work.<br />
-              <span className="text-primary-200">Sync to Jira.</span><br />
-              Ship faster.
+              <span className="text-primary-200">Ship faster.</span>
             </h2>
             <p className="mt-4 text-primary-100 text-base leading-relaxed max-w-sm">
               Automatic time capture powered by AI — no manual timesheets, no guesswork.

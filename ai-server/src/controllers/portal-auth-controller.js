@@ -259,12 +259,12 @@ async function requestPasswordReset(req, res) {
     
     const emailResult = await notifmeWrapper.send({
       to: admin.email,
-      subject: 'Password Reset Request - Productivity Portal',
+      subject: 'Password Reset Request - Time Tracking Portal',
       html: `
         <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
           <h2 style="color: #333;">Password Reset Request</h2>
           <p>Hi ${admin.display_name},</p>
-          <p>You requested a password reset for your Productivity Portal account.</p>
+          <p>You requested a password reset for your Time Tracking Portal account.</p>
           <p>Click the link below to reset your password:</p>
           <p style="margin: 20px 0;">
             <a href="${resetLink}" style="background-color: #4F46E5; color: white; padding: 12px 24px; text-decoration: none; border-radius: 6px; display: inline-block;">
@@ -277,7 +277,7 @@ async function requestPasswordReset(req, res) {
           <p>If you didn't request this password reset, you can safely ignore this email.</p>
           <hr style="margin: 30px 0; border: none; border-top: 1px solid #ddd;">
           <p style="color: #666; font-size: 12px;">
-            Productivity Portal - Time Tracking System
+            Time Tracking Portal
           </p>
         </div>
       `

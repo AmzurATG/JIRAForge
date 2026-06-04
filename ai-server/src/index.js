@@ -651,6 +651,7 @@ app.get('/api/portal/time-logs', portalAuthMiddleware.verifyPortalToken, portalC
 app.get('/api/portal/reports/data', portalAuthMiddleware.verifyPortalToken, portalReportsController.getReportData);
 app.get('/api/portal/reports/export/csv', portalAuthMiddleware.verifyPortalToken, portalReportsController.exportCSV);
 app.get('/api/portal/reports/export/pdf', portalAuthMiddleware.verifyPortalToken, portalReportsController.exportPDF);
+app.get('/api/portal/reports/export/xlsx', portalAuthMiddleware.verifyPortalToken, portalReportsController.exportXLSX);
 
 // Portal admin users endpoints (authenticated - superadmin only)
 app.get('/api/portal/admin-users', portalAuthMiddleware.verifyPortalToken, portalAdminUsersController.getAdminUsers);

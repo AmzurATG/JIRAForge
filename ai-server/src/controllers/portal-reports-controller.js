@@ -8,7 +8,9 @@
 
 const logger = require('../utils/logger');
 const portalService = require('../services/portal-service');
+const { getClient } = require('../services/db/supabase-client');
 const PDFDocument = require('pdfkit');
+const XLSX = require('xlsx');
 
 const SUPPORTED_REPORT_TYPES = ['activity-logs', 'daily-summary', 'employee-summary', 'application-usage'];
 
@@ -31,59 +33,101 @@ async function getReportDataByType(orgId, type, filters) {
 /**
  * Get daily summary data - aggregated hours per day.
  * If employee filter is provided, shows daily data for that specific employee.
+ * Otherwise, aggregates all employees' data by day with employee breakdown.
  */
 async function getDailySummaryData(orgId, filters) {
-  const { from, to, employee } = filters;
+  const { from, to, employee, classification } = filters;
+  const supabase = getClient();
+  if (!supabase) throw new Error('Supabase client not initialized');
   
-  // If employee filter is provided, get data from time logs and aggregate by day
+  // Build query to get all activity records for aggregation
+  let query = supabase
+    .from('activity_records')
+    .select(`
+      user_id,
+      start_time,
+      duration_seconds,
+      classification,
+      users!activity_records_user_id_fkey(display_name, email)
+    `)
+    .neq('is_idle', true);
+  
+  // Apply filters
   if (employee) {
-    const logsResult = await portalService.getTimeLogs(orgId, { employee, from, to }, { page: 1, limit: 50000 });
-    
-    const dailyData = {};
-    logsResult.data.forEach(log => {
-      const date = log.startTime ? log.startTime.split('T')[0] : null;
-      if (!date) return;
-      
-      if (!dailyData[date]) {
-        dailyData[date] = { productiveSeconds: 0, nonProductiveSeconds: 0 };
-      }
-      
-      if (log.classification === 'productive') {
-        dailyData[date].productiveSeconds += log.durationSeconds || 0;
-      } else {
-        dailyData[date].nonProductiveSeconds += log.durationSeconds || 0;
-      }
-    });
-    
-    const data = Object.entries(dailyData)
-      .map(([date, stats]) => ({
-        date,
-        productiveHours: stats.productiveSeconds / 3600,
-        nonProductiveHours: stats.nonProductiveSeconds / 3600,
-        totalHours: (stats.productiveSeconds + stats.nonProductiveSeconds) / 3600,
-        productivityPercentage: (stats.productiveSeconds + stats.nonProductiveSeconds) > 0
-          ? (stats.productiveSeconds / (stats.productiveSeconds + stats.nonProductiveSeconds)) * 100
-          : 0
-      }))
-      .sort((a, b) => a.date.localeCompare(b.date));
-    
-    return { data, pagination: { totalCount: data.length } };
+    query = query.eq('user_id', employee);
   }
   
-  // Otherwise, use dashboard data for all employees
-  const dashboardData = await portalService.getDashboardData(orgId, from, to);
+  if (classification && classification !== 'all') {
+    const normalized = classification === 'productive' ? 'productive' : 
+                      classification === 'non-productive' ? 'non_productive' : null;
+    if (normalized) query = query.eq('classification', normalized);
+  }
   
-  const data = dashboardData.dailyTrend.map(day => ({
-    date: day.date,
-    productiveHours: day.productiveHours,
-    nonProductiveHours: day.nonProductiveHours,
-    totalHours: day.productiveHours + day.nonProductiveHours,
-    productivityPercentage: (day.productiveHours + day.nonProductiveHours) > 0 
-      ? (day.productiveHours / (day.productiveHours + day.nonProductiveHours)) * 100 
-      : 0
-  }));
+  if (from) {
+    query = query.gte('start_time', `${from}T00:00:00Z`);
+  }
   
-  return { data, pagination: { totalCount: data.length } };
+  if (to) {
+    query = query.lte('end_time', `${to}T23:59:59Z`);
+  }
+  
+  // Fetch all matching records (no pagination limit for aggregation)
+  const { data: logs, error } = await query.order('start_time', { ascending: true });
+  
+  if (error) {
+    throw error;
+  }
+  
+  // Aggregate by date
+  const dailyData = {};
+  const uniqueEmployees = new Set();
+  
+  (logs || []).forEach(log => {
+    const date = log.start_time ? log.start_time.split('T')[0] : null;
+    if (!date) return;
+    
+    const userName = log.users?.display_name || log.users?.email || 'Unknown';
+    uniqueEmployees.add(userName);
+    
+    if (!dailyData[date]) {
+      dailyData[date] = { 
+        productiveSeconds: 0, 
+        nonProductiveSeconds: 0,
+        employees: new Set()
+      };
+    }
+    
+    dailyData[date].employees.add(userName);
+    
+    if (log.classification === 'productive') {
+      dailyData[date].productiveSeconds += log.duration_seconds || 0;
+    } else {
+      dailyData[date].nonProductiveSeconds += log.duration_seconds || 0;
+    }
+  });
+  
+  const data = Object.entries(dailyData)
+    .map(([date, stats]) => ({
+      date,
+      productiveHours: stats.productiveSeconds / 3600,
+      nonProductiveHours: stats.nonProductiveSeconds / 3600,
+      totalHours: (stats.productiveSeconds + stats.nonProductiveSeconds) / 3600,
+      productivityPercentage: (stats.productiveSeconds + stats.nonProductiveSeconds) > 0
+        ? (stats.productiveSeconds / (stats.productiveSeconds + stats.nonProductiveSeconds)) * 100
+        : 0,
+      employeeCount: stats.employees.size,
+      employees: Array.from(stats.employees).sort().join(', ')
+    }))
+    .sort((a, b) => a.date.localeCompare(b.date));
+  
+  return { 
+    data, 
+    pagination: { totalCount: data.length },
+    summary: {
+      totalEmployees: uniqueEmployees.size,
+      employeeList: Array.from(uniqueEmployees).sort()
+    }
+  };
 }
 
 /**
@@ -112,20 +156,77 @@ async function getEmployeeSummaryData(orgId, filters) {
 }
 
 /**
- * Get application usage data - time spent per application.
+ * Get application usage data - time spent per application with employee details.
  */
 async function getApplicationUsageData(orgId, filters) {
-  const logsResult = await portalService.getTimeLogs(orgId, filters, { page: 1, limit: 50000 });
+  const { from, to, employee, classification } = filters;
+  const supabase = getClient();
+  if (!supabase) throw new Error('Supabase client not initialized');
+  
+  // Build query to get application usage with user details
+  let query = supabase
+    .from('activity_records')
+    .select(`
+      user_id,
+      application_name,
+      duration_seconds,
+      users!activity_records_user_id_fkey(display_name, email)
+    `)
+    .neq('is_idle', true);
+  
+  // Apply filters
+  if (employee) {
+    query = query.eq('user_id', employee);
+  }
+  
+  if (classification && classification !== 'all') {
+    const normalized = classification === 'productive' ? 'productive' : 
+                      classification === 'non-productive' ? 'non_productive' : null;
+    if (normalized) query = query.eq('classification', normalized);
+  }
+  
+  if (from) {
+    query = query.gte('start_time', `${from}T00:00:00Z`);
+  }
+  
+  if (to) {
+    query = query.lte('end_time', `${to}T23:59:59Z`);
+  }
+  
+  const { data: logs, error } = await query.order('start_time', { ascending: true });
+  
+  if (error) {
+    throw error;
+  }
   
   const appUsage = {};
-  logsResult.data.forEach(log => {
-    const app = log.application || 'Unknown';
+  (logs || []).forEach(log => {
+    const app = log.application_name || 'Unknown';
+    const userName = log.users?.display_name || log.users?.email || 'Unknown';
+    
     if (!appUsage[app]) {
-      appUsage[app] = { totalSeconds: 0, sessionCount: 0, employees: new Set() };
+      appUsage[app] = { 
+        totalSeconds: 0, 
+        sessionCount: 0, 
+        employeeNames: new Set(),
+        employeeDetails: new Map()
+      };
     }
-    appUsage[app].totalSeconds += log.durationSeconds || 0;
+    
+    appUsage[app].totalSeconds += log.duration_seconds || 0;
     appUsage[app].sessionCount += 1;
-    if (log.userName) appUsage[app].employees.add(log.userName);
+    appUsage[app].employeeNames.add(userName);
+    
+    // Track per-employee usage for this app
+    if (!appUsage[app].employeeDetails.has(userName)) {
+      appUsage[app].employeeDetails.set(userName, { 
+        hours: 0, 
+        sessions: 0 
+      });
+    }
+    const empData = appUsage[app].employeeDetails.get(userName);
+    empData.hours += (log.duration_seconds || 0) / 3600;
+    empData.sessions += 1;
   });
   
   const data = Object.entries(appUsage)
@@ -133,7 +234,15 @@ async function getApplicationUsageData(orgId, filters) {
       application: app,
       totalHours: stats.totalSeconds / 3600,
       sessionCount: stats.sessionCount,
-      employeeCount: stats.employees.size
+      employeeCount: stats.employeeNames.size,
+      employees: Array.from(stats.employeeNames).sort().join(', '),
+      employeeBreakdown: Array.from(stats.employeeDetails.entries())
+        .map(([name, detail]) => ({
+          name,
+          hours: detail.hours,
+          sessions: detail.sessions
+        }))
+        .sort((a, b) => b.hours - a.hours)
     }))
     .sort((a, b) => b.totalHours - a.totalHours);
   
@@ -241,7 +350,7 @@ async function exportCSV(req, res) {
     
     switch (type) {
       case 'daily-summary':
-        headers = ['Date', 'Productive Hours', 'Non-Productive Hours', 'Total Hours', 'Productivity %'];
+        headers = ['Date', 'Productive Hours', 'Non-Productive Hours', 'Total Hours', 'Productivity %', 'Employee Count', 'Employees Working'];
         csvRows = [headers.join(',')];
         result.data.forEach(row => {
           csvRows.push([
@@ -249,7 +358,9 @@ async function exportCSV(req, res) {
             row.productiveHours?.toFixed(2) || '0.00',
             row.nonProductiveHours?.toFixed(2) || '0.00',
             row.totalHours?.toFixed(2) || '0.00',
-            row.productivityPercentage?.toFixed(1) || '0.0'
+            row.productivityPercentage?.toFixed(1) || '0.0',
+            row.employeeCount || 0,
+            `"${(row.employees || '').replace(/"/g, '""')}"`
           ].join(','));
         });
         break;
@@ -270,14 +381,15 @@ async function exportCSV(req, res) {
         break;
         
       case 'application-usage':
-        headers = ['Application', 'Total Hours', 'Session Count', 'Employees'];
+        headers = ['Application', 'Total Hours', 'Session Count', 'Employee Count', 'Employee Names'];
         csvRows = [headers.join(',')];
         result.data.forEach(row => {
           csvRows.push([
             `"${row.application || ''}"`,
             row.totalHours?.toFixed(2) || '0.00',
             row.sessionCount || 0,
-            row.employeeCount || 0
+            row.employeeCount || 0,
+            `"${(row.employees || '').replace(/"/g, '""')}"`
           ].join(','));
         });
         break;
@@ -353,6 +465,20 @@ async function exportPDF(req, res) {
     // Get all data
     const filters = { classification, employee, from, to };
     const result = await getReportDataByType(orgId, type, filters);
+
+    // Resolve employee name when filtered by a specific employee
+    let employeeName = null;
+    let employeeEmail = null;
+    if (employee) {
+      try {
+        const empList = await portalService.getEmployeesList(orgId);
+        const found = (empList || []).find(e => e.userId === employee || e.id === employee);
+        if (found) {
+          employeeName = found.name || found.displayName || null;
+          employeeEmail = found.email || null;
+        }
+      } catch (_) { /* non-fatal */ }
+    }
     
     // Create PDF document
     const doc = new PDFDocument({ margin: 50, size: 'A4', layout: 'landscape' });
@@ -365,35 +491,81 @@ async function exportPDF(req, res) {
     res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
     
     doc.pipe(res);
-    
-    // Report title
+
+    const pageWidth = doc.page.width;
+    const margin = 50;
+    const contentWidth = pageWidth - margin * 2;
+
+    // ── Header banner ──────────────────────────────────────────────────
+    doc.rect(margin, margin, contentWidth, 60).fill('#1a56db');
+
     const reportTitles = {
       'activity-logs': 'Activity Logs Report',
       'daily-summary': 'Daily Summary Report',
       'employee-summary': 'Employee Summary Report',
       'application-usage': 'Application Usage Report'
     };
-    
-    doc.fontSize(20).text(reportTitles[type] || 'Report', { align: 'center' });
+
+    doc.fontSize(18).fillColor('#ffffff')
+      .text(reportTitles[type] || 'Report', margin + 16, margin + 10, { width: contentWidth - 32, align: 'left' });
+    doc.fontSize(9).fillColor('rgba(255,255,255,0.8)')
+      .text('Amzur Technologies · Time Tracking Portal', margin + 16, margin + 36, { width: contentWidth - 32, align: 'left' });
+
+    doc.y = margin + 72;
+
+    // ── Meta row ───────────────────────────────────────────────────────
+    doc.fontSize(9).fillColor('#333333');
+
+    const metaItems = [];
+    if (from || to) metaItems.push(`Date Range: ${from || 'All'} to ${to || 'All'}`);
+    if (employeeName) metaItems.push(`Employee: ${employeeName}${employeeEmail ? ` (${employeeEmail})` : ''}`);
+    else if (result.summary && result.summary.totalEmployees) {
+      metaItems.push(`Employees Included: ${result.summary.totalEmployees} employee(s)`);
+    }
+    metaItems.push(`Generated: ${new Date().toLocaleString()}`);
+    metaItems.push(`Total Records: ${result.data.length}`);
+
+    metaItems.forEach(item => {
+      const currentY = doc.y;
+      doc.fillColor('#1a56db').circle(margin + 5, currentY + 5, 2).fill();
+      doc.fillColor('#333333').text(item, margin + 14, currentY, { 
+        width: contentWidth - 14,
+        lineBreak: true,
+        continued: false
+      });
+      doc.moveDown(0.4);
+    });
+
     doc.moveDown(0.5);
-    
-    // Date range
-    doc.fontSize(10).fillColor('#666666')
-      .text(`Date Range: ${from || 'All'} to ${to || 'All'}`, { align: 'center' });
-    doc.moveDown(0.5);
-    doc.text(`Generated: ${new Date().toLocaleString()}`, { align: 'center' });
-    doc.moveDown(1);
-    
-    // Draw horizontal line
-    doc.strokeColor('#cccccc').lineWidth(1)
-      .moveTo(50, doc.y)
-      .lineTo(doc.page.width - 50, doc.y)
+
+    // Divider
+    doc.strokeColor('#e2e8f0').lineWidth(1)
+      .moveTo(margin, doc.y)
+      .lineTo(pageWidth - margin, doc.y)
       .stroke();
-    doc.moveDown(1);
-    
-    // Summary section
-    doc.fontSize(12).fillColor('#000000').text(`Total Records: ${result.data.length}`);
-    doc.moveDown(1);
+    doc.moveDown(0.8);
+
+    // Employee list section (when All Employees is selected and we have summary data)
+    if (!employee && result.summary && result.summary.employeeList && result.summary.employeeList.length > 0) {
+      doc.fontSize(10).fillColor('#1a56db').text('Employees Included in Report:', margin, doc.y, { underline: true });
+      doc.moveDown(0.4);
+      doc.fontSize(8).fillColor('#555555');
+      
+      const employees = result.summary.employeeList.slice(0, 20); // Show first 20
+      const employeesText = employees.join(' · ');
+      doc.text(employeesText, margin, doc.y, { width: contentWidth, lineBreak: true });
+      
+      if (result.summary.employeeList.length > 20) {
+        doc.text(`...and ${result.summary.employeeList.length - 20} more`, margin, doc.y);
+      }
+      
+      doc.moveDown(0.8);
+      doc.strokeColor('#e2e8f0').lineWidth(1)
+        .moveTo(margin, doc.y)
+        .lineTo(pageWidth - margin, doc.y)
+        .stroke();
+      doc.moveDown(0.8);
+    }
     
     // Table headers and data based on report type
     const tableConfig = getTableConfigForType(type);
@@ -402,15 +574,21 @@ async function exportPDF(req, res) {
     if (tableData.length > 0) {
       drawTable(doc, tableConfig.headers, tableData, tableConfig.columns);
     } else {
-      doc.fontSize(12).text('No data available for the selected filters.', { align: 'center' });
+      doc.fontSize(12).fillColor('#666666').text('No data available for the selected filters.', { align: 'center' });
     }
     
     // Footer note if data was truncated
     if (result.data.length > 100) {
       doc.moveDown(1);
-      doc.fontSize(10).fillColor('#666666')
+      doc.fontSize(9).fillColor('#888888')
         .text(`Note: Showing first 100 of ${result.data.length} records. Export to CSV for full data.`);
     }
+
+    // ── Page footer ────────────────────────────────────────────────────
+    const footerY = doc.page.height - 35;
+    doc.fontSize(8).fillColor('#aaaaaa')
+      .text('Amzur Technologies – Time Tracking Portal', margin, footerY, { align: 'left', width: contentWidth })
+      .text(`Page 1`, margin, footerY, { align: 'right', width: contentWidth });
     
     doc.end();
     
@@ -424,19 +602,146 @@ async function exportPDF(req, res) {
 }
 
 /**
+ * Get headers and row values for tabular report exports.
+ */
+function getTabularRowsForType(type, data) {
+  switch (type) {
+    case 'daily-summary':
+      return {
+        headers: ['Date', 'Productive Hours', 'Non-Productive Hours', 'Total Hours', 'Productivity %', 'Employee Count', 'Employees Working'],
+        rows: data.map((row) => ([
+          row.date || '',
+          row.productiveHours?.toFixed(2) || '0.00',
+          row.nonProductiveHours?.toFixed(2) || '0.00',
+          row.totalHours?.toFixed(2) || '0.00',
+          row.productivityPercentage?.toFixed(1) || '0.0',
+          row.employeeCount || 0,
+          row.employees || ''
+        ]))
+      };
+
+    case 'employee-summary':
+      return {
+        headers: ['Employee Name', 'Email', 'Productive Hours', 'Non-Productive Hours', 'Total Hours', 'Productivity %'],
+        rows: data.map((row) => ([
+          row.employeeName || '',
+          row.employeeEmail || '',
+          row.productiveHours?.toFixed(2) || '0.00',
+          row.nonProductiveHours?.toFixed(2) || '0.00',
+          row.totalHours?.toFixed(2) || '0.00',
+          row.productivityPercentage?.toFixed(1) || '0.0'
+        ]))
+      };
+
+    case 'application-usage':
+      return {
+        headers: ['Application', 'Total Hours', 'Session Count', 'Employee Count', 'Employee Names'],
+        rows: data.map((row) => ([
+          row.application || '',
+          row.totalHours?.toFixed(2) || '0.00',
+          row.sessionCount || 0,
+          row.employeeCount || 0,
+          row.employees || ''
+        ]))
+      };
+
+    default:
+      return {
+        headers: ['Employee Name', 'Employee Email', 'Start Time', 'End Time', 'Application', 'Window Title', 'Duration (seconds)', 'Classification'],
+        rows: data.map((log) => ([
+          log.userName || '',
+          log.userEmail || '',
+          log.startTime || '',
+          log.endTime || '',
+          log.application || '',
+          log.windowTitle || '',
+          log.durationSeconds || 0,
+          log.classification || ''
+        ]))
+      };
+  }
+}
+
+/**
+ * Export report as XLSX.
+ *
+ * GET /api/portal/reports/export/xlsx?type=&filters...
+ */
+async function exportXLSX(req, res) {
+  try {
+    const { orgId, role } = req.portalUser;
+    const { type, classification, employee, from, to } = req.query;
+
+    if (role === 'viewer') {
+      return res.status(403).json({
+        success: false,
+        error: 'Insufficient permissions to export reports'
+      });
+    }
+
+    if (!type) {
+      return res.status(400).json({
+        success: false,
+        error: 'Report type is required'
+      });
+    }
+
+    if (!SUPPORTED_REPORT_TYPES.includes(type)) {
+      return res.status(400).json({
+        success: false,
+        error: `Unsupported report type. Available: ${SUPPORTED_REPORT_TYPES.join(', ')}`
+      });
+    }
+
+    const filters = { classification, employee, from, to };
+    const result = await getReportDataByType(orgId, type, filters);
+    const { headers, rows } = getTabularRowsForType(type, result.data);
+
+    const workbook = XLSX.utils.book_new();
+    const worksheet = XLSX.utils.aoa_to_sheet([headers, ...rows]);
+    XLSX.utils.book_append_sheet(workbook, worksheet, 'Report');
+
+    const xlsxBuffer = XLSX.write(workbook, {
+      type: 'buffer',
+      bookType: 'xlsx'
+    });
+
+    const timestamp = new Date().toISOString().split('T')[0];
+    const filename = `${type}-${timestamp}.xlsx`;
+
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.send(xlsxBuffer);
+  } catch (error) {
+    logger.error('[PortalReports] Export XLSX failed', error);
+    return res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+}
+
+/**
  * Get table configuration for each report type.
  */
 function getTableConfigForType(type) {
   switch (type) {
     case 'daily-summary':
       return {
-        headers: ['Date', 'Productive Hrs', 'Non-Prod Hrs', 'Total Hrs', 'Productivity %'],
+        headers: ['Date', 'Prod Hrs', 'Non-Prod', 'Total', 'Prod %', 'Emp #', 'Employees'],
         columns: [
-          { key: 'date', width: 100 },
-          { key: 'productiveHours', width: 100, format: v => v?.toFixed(2) || '0.00' },
-          { key: 'nonProductiveHours', width: 100, format: v => v?.toFixed(2) || '0.00' },
-          { key: 'totalHours', width: 100, format: v => v?.toFixed(2) || '0.00' },
-          { key: 'productivityPercentage', width: 100, format: v => `${v?.toFixed(1) || 0}%` }
+          { key: 'date', width: 75 },
+          { key: 'productiveHours', width: 60, format: v => v?.toFixed(2) || '0.00' },
+          { key: 'nonProductiveHours', width: 60, format: v => v?.toFixed(2) || '0.00' },
+          { key: 'totalHours', width: 55, format: v => v?.toFixed(2) || '0.00' },
+          { key: 'productivityPercentage', width: 55, format: v => `${v?.toFixed(1) || 0}%` },
+          { key: 'employeeCount', width: 45 },
+          { key: 'employees', width: 195, format: v => {
+            if (!v) return 'N/A';
+            const names = String(v).split(', ');
+            if (names.length <= 3) return v;
+            return `${names.slice(0, 3).join(', ')}, +${names.length - 3} more`;
+          }}
         ]
       };
     case 'employee-summary':
@@ -453,12 +758,18 @@ function getTableConfigForType(type) {
       };
     case 'application-usage':
       return {
-        headers: ['Application', 'Total Hours', 'Sessions', 'Employees'],
+        headers: ['Application', 'Total Hrs', 'Sessions', 'Emp Count', 'Employee Names'],
         columns: [
-          { key: 'application', width: 200 },
-          { key: 'totalHours', width: 100, format: v => v?.toFixed(2) || '0.00' },
-          { key: 'sessionCount', width: 100 },
-          { key: 'employeeCount', width: 100 }
+          { key: 'application', width: 150 },
+          { key: 'totalHours', width: 70, format: v => v?.toFixed(2) || '0.00' },
+          { key: 'sessionCount', width: 60 },
+          { key: 'employeeCount', width: 65 },
+          { key: 'employees', width: 200, format: v => {
+            if (!v) return 'N/A';
+            const names = String(v).split(', ');
+            if (names.length <= 3) return v;
+            return `${names.slice(0, 3).join(', ')}, +${names.length - 3} more`;
+          }}
         ]
       };
     default: // activity-logs
@@ -551,5 +862,6 @@ function drawTable(doc, headers, data, columns) {
 module.exports = {
   getReportData,
   exportCSV,
-  exportPDF
+  exportPDF,
+  exportXLSX
 };

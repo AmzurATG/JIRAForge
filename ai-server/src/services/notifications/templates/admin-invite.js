@@ -8,7 +8,7 @@
 module.exports = {
     type: 'admin_invite',
     
-    subject: 'Welcome to the Productivity Portal - Admin Access Granted',
+    subject: 'Welcome to the Time Tracking Portal - Admin Access Granted',
     
     /**
      * Generate plain text email body
@@ -23,7 +23,7 @@ module.exports = {
     text: ({ displayName, email, role, portalUrl, invitedBy }) => `
 Hello ${displayName},
 
-Welcome to the Productivity Portal! 🎉
+Welcome to the Time Tracking Portal! 🎉
 
 ${invitedBy ? `${invitedBy} has granted you admin access to the portal.` : 'You have been granted admin access to the portal.'}
 
@@ -51,10 +51,10 @@ Need Help?
 If you have any questions or need assistance, please reach out to your administrator.
 
 Best regards,
-The Productivity Portal Team
+The Time Tracking Portal Team
 
 ---
-You're receiving this because you were added as an admin user to the Productivity Portal.
+You're receiving this because you were added as an admin user to the Time Tracking Portal.
     `.trim(),
     
     /**
@@ -80,7 +80,7 @@ You're receiving this because you were added as an admin user to the Productivit
                     <tr>
                         <td align="center" style="background:linear-gradient(135deg,#1a73e8 0%,#0d47a1 100%);border-radius:10px 10px 0 0;padding:40px 40px 35px;">
                             <div style="font-size:44px;margin-bottom:14px;">🎉</div>
-                            <h1 style="margin:0;color:#ffffff;font-size:26px;font-weight:700;letter-spacing:-0.5px;">Welcome to the Productivity Portal</h1>
+                            <h1 style="margin:0;color:#ffffff;font-size:26px;font-weight:700;letter-spacing:-0.5px;">Welcome to the Time Tracking Portal</h1>
                             <p style="margin:10px 0 0;color:rgba(255,255,255,0.85);font-size:15px;">Your admin account is ready</p>
                         </td>
                     </tr>
@@ -91,7 +91,7 @@ You're receiving this because you were added as an admin user to the Productivit
 
                             <p style="margin:0 0 6px;font-size:16px;color:#333;">Hello <strong>${displayName}</strong>,</p>
                             <p style="margin:0 0 28px;font-size:15px;color:#555;">
-                                ${invitedBy ? `<strong>${invitedBy}</strong> has granted you admin access to the Productivity Portal.` : 'You have been granted admin access to the Productivity Portal.'}
+                                ${invitedBy ? `<strong>${invitedBy}</strong> has granted you admin access to the Time Tracking Portal.` : 'You have been granted admin access to the Time Tracking Portal.'}
                             </p>
 
                             <!-- Account Details -->
@@ -219,7 +219,7 @@ You're receiving this because you were added as an admin user to the Productivit
                     <tr>
                         <td align="center" style="background:#f0f4f8;border-radius:0 0 10px 10px;padding:20px 40px;border-top:1px solid #e0e0e0;">
                             <p style="margin:0 0 4px;font-size:12px;color:#888;">Need help? Contact your administrator for assistance.</p>
-                            <p style="margin:0;font-size:12px;color:#aaa;">You&rsquo;re receiving this because you were added as an admin user to the Productivity Portal.</p>
+                            <p style="margin:0;font-size:12px;color:#aaa;">You&rsquo;re receiving this because you were added as an admin user to the Time Tracking Portal.</p>
                         </td>
                     </tr>
 
