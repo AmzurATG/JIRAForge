@@ -601,7 +601,7 @@ load_dotenv()
 
 # Application version - IMPORTANT: Update this when releasing new versions
 # This is used for update checking and notifications
-APP_VERSION = "1.0.0"
+APP_VERSION = "1.0.1"
 
 # True when the process is running inside an AppImage bundle.
 # The AppImage runtime sets the $APPIMAGE env var to the path of the .AppImage
@@ -1318,6 +1318,54 @@ def is_running_from_install_location():
 
     return current_path == install_path
 
+def _cleanup_stale_user_desktop():
+    """Remove the user-level .desktop if it points to a missing AppImage.
+
+    When ~/.local/share/TimeTracker/ is deleted (uninstall, manual cleanup) the
+    user-level .desktop written by a previous self-install still exists and
+    SHADOWS the system .desktop installed by the .deb.  The shadow entry points
+    to a non-existent AppImage so double-clicking in the launcher does nothing.
+
+    This function removes the stale entry so the system .desktop (Exec=timetracker
+    → /usr/local/bin/timetracker → /opt/timetracker/TimeTracker.AppImage) takes
+    effect on the next launch.
+    """
+    if not sys.platform.startswith('linux'):
+        return
+
+    desktop_path = os.path.expanduser('~/.local/share/applications/timetracker.desktop')
+    if not os.path.isfile(desktop_path):
+        return
+
+    try:
+        with open(desktop_path) as _df:
+            content = _df.read()
+    except OSError:
+        return
+
+    # Extract the AppImage path from the Exec line (first /…/*.AppImage token)
+    import re as _re_desktop
+    match = _re_desktop.search(r'(/[^\s]+\.AppImage)', content)
+    if not match:
+        return  # No AppImage path in Exec — not our entry format
+
+    appimage_path = match.group(1)
+    if os.path.isfile(appimage_path):
+        return  # Path exists → entry is valid, leave it alone
+
+    # AppImage path is missing — remove the stale entry
+    try:
+        os.remove(desktop_path)
+        print(f'[INFO] Removed stale user .desktop (AppImage missing: {appimage_path})')
+        import subprocess as _sub_db_cleanup
+        _sub_db_cleanup.run(
+            ['update-desktop-database', os.path.dirname(desktop_path)],
+            capture_output=True, timeout=5
+        )
+    except Exception as _e_cleanup:
+        print(f'[WARN] Could not remove stale .desktop: {_e_cleanup}')
+
+
 def _install_appimage():
     """Handle AppImage first-run install and manual version upgrades on Linux.
 
@@ -1343,6 +1391,13 @@ def _install_appimage():
     """
     canonical = os.path.join(get_app_data_dir(), 'TimeTracker.AppImage')
     current_appimage = os.environ.get('APPIMAGE', '')
+
+    # Always clean up any stale user-level .desktop that points to a missing
+    # AppImage path.  This can happen when ~/.local/share/TimeTracker/ is deleted
+    # (e.g. after uninstall or re-install via .deb) while the user-level .desktop
+    # written by a previous self-install still exists.  The stale entry shadows the
+    # system .desktop and causes a silent launch failure on double-click.
+    _cleanup_stale_user_desktop()
 
     if not current_appimage:
         # No $APPIMAGE env var — running in dev/test mode, nothing to do.
@@ -1404,15 +1459,52 @@ def _install_appimage():
     except Exception as e:
         print(f"[WARN] Could not generate uninstaller: {e}")
 
+    # Step 3b: Install/update the user-level .desktop entry so the app launcher
+    # always points to the canonical AppImage path (fixes stale entries left by
+    # previous installers that used a plain binary path without .AppImage).
+    try:
+        import subprocess as _sub_desktop2
+        desktop_dir = os.path.expanduser('~/.local/share/applications')
+        os.makedirs(desktop_dir, exist_ok=True)
+        desktop_content = (
+            '[Desktop Entry]\n'
+            'Name=TimeTracker\n'
+            'GenericName=Time Tracker\n'
+            'Comment=Automatic time tracking for JIRA issues\n'
+            f'Exec=env APPIMAGE_EXTRACT_AND_RUN=1 {canonical}\n'
+            'Icon=timetracker\n'
+            'Type=Application\n'
+            'Categories=Office;ProjectManagement;\n'
+            'Terminal=false\n'
+            'StartupNotify=false\n'
+            'Keywords=time;tracker;jira;productivity;\n'
+        )
+        desktop_path = os.path.join(desktop_dir, 'timetracker.desktop')
+        with open(desktop_path, 'w') as _df:
+            _df.write(desktop_content)
+        os.chmod(desktop_path, 0o644)
+        _sub_desktop2.run(
+            ['update-desktop-database', desktop_dir],
+            capture_output=True, timeout=10
+        )
+        print(f"[OK] Desktop entry updated: {desktop_path}")
+    except Exception as e:
+        print(f"[WARN] Could not update .desktop entry: {e}")
+
     # Step 4: Relaunch from the canonical location (detached) and exit this instance.
+    # Pass APPIMAGE_EXTRACT_AND_RUN=1 so the new instance extracts without FUSE,
+    # ensuring it starts reliably even before the FUSE kernel module is active.
     try:
         import subprocess as _sub_install
+        _env_relaunch = os.environ.copy()
+        _env_relaunch['APPIMAGE_EXTRACT_AND_RUN'] = '1'
         _sub_install.Popen(
             [canonical],
             start_new_session=True,
             stdin=_sub_install.DEVNULL,
             stdout=_sub_install.DEVNULL,
             stderr=_sub_install.DEVNULL,
+            env=_env_relaunch,
         )
         print(f"[INFO] New instance launched from {canonical}. Exiting installer.")
     except Exception as e:
@@ -1668,6 +1760,117 @@ def create_update_script(app_data_dir, current_pid, staged_exe, installed_exe):
     return updater_script
 
 
+def _extract_appimage_from_deb(deb_path, output_path):
+    """Extract TimeTracker.AppImage from a .deb package without root or dpkg.
+
+    A .deb file is an `ar` archive whose entries include:
+      debian-binary   — version string
+      control.tar.*   — package metadata
+      data.tar.*      — the actual filesystem (xz, gz, or zst compressed)
+
+    This function parses the ar format in pure Python (stdlib only), decompresses
+    the data tarball, and extracts the AppImage entry directly to output_path.
+    No external tools, no root, no dpkg required.
+    """
+    import io
+    import struct
+
+    AR_MAGIC = b'!<arch>\n'
+    ENTRY_HEADER_SIZE = 60
+
+    def _read_ar_entries(f):
+        magic = f.read(8)
+        if magic != AR_MAGIC:
+            raise ValueError('Not a valid .deb — bad ar magic header')
+        while True:
+            hdr = f.read(ENTRY_HEADER_SIZE)
+            if not hdr:
+                break
+            if len(hdr) < ENTRY_HEADER_SIZE:
+                break
+            name = hdr[0:16].rstrip(b' /').decode('ascii', errors='replace')
+            size = int(hdr[48:58].rstrip(b' '))
+            data = f.read(size)
+            if size % 2:  # ar entries are padded to even byte boundaries
+                f.read(1)
+            yield name, data
+
+    with open(deb_path, 'rb') as f:
+        for name, data in _read_ar_entries(f):
+            if not name.startswith('data.tar'):
+                continue
+            # Decompress the data archive (xz is most common on modern Ubuntu)
+            import tarfile
+            if name.endswith('.xz'):
+                import lzma
+                raw = lzma.decompress(data)
+            elif name.endswith('.gz'):
+                import gzip
+                raw = gzip.decompress(data)
+            elif name.endswith('.zst'):
+                try:
+                    import zstandard
+                    raw = zstandard.ZstdDecompressor().decompress(data)
+                except ImportError:
+                    # zstandard not bundled — try system dpkg-deb as a fallback.
+                    # dpkg-deb --fsys-tarfile streams the data tarball to stdout,
+                    # handling any compression format the host dpkg supports.
+                    import subprocess as _sub_zst
+                    _dpkg = _sub_zst.which('dpkg-deb')
+                    if _dpkg:
+                        try:
+                            _result = _sub_zst.run(
+                                [_dpkg, '--fsys-tarfile', deb_path],
+                                capture_output=True, timeout=120
+                            )
+                            if _result.returncode == 0:
+                                # dpkg-deb already emits an uncompressed tar stream
+                                with tarfile.open(fileobj=io.BytesIO(_result.stdout)) as _tf2:
+                                    _member = next(
+                                        (m for m in _tf2.getmembers()
+                                         if m.name.endswith('TimeTracker.AppImage')),
+                                        None
+                                    )
+                                    if _member is None:
+                                        raise ValueError(
+                                            'TimeTracker.AppImage not found inside .deb'
+                                        )
+                                    _src = _tf2.extractfile(_member)
+                                    import shutil as _shutil_zst
+                                    with open(output_path, 'wb') as _out:
+                                        _shutil_zst.copyfileobj(_src, _out)
+                                os.chmod(output_path, 0o755)
+                                print(f'[INFO] AppImage extracted via dpkg-deb: {output_path}')
+                                return
+                        except Exception as _dpkg_err:
+                            print(f'[WARN] dpkg-deb fallback failed: {_dpkg_err}')
+                    raise ValueError(
+                        'This .deb uses zstd compression; install the "zstandard" '
+                        'Python package or use dpkg >= 1.21.18 on the target system'
+                    )
+            else:
+                raw = data  # uncompressed
+
+            with tarfile.open(fileobj=io.BytesIO(raw)) as tf:
+                member = next(
+                    (m for m in tf.getmembers() if m.name.endswith('TimeTracker.AppImage')),
+                    None
+                )
+                if member is None:
+                    raise ValueError('TimeTracker.AppImage not found inside .deb data archive')
+                src = tf.extractfile(member)
+                if src is None:
+                    raise ValueError('Could not read TimeTracker.AppImage from .deb data archive')
+                import shutil as _shutil_deb
+                with open(output_path, 'wb') as out:
+                    _shutil_deb.copyfileobj(src, out)
+            os.chmod(output_path, 0o755)
+            print(f'[INFO] AppImage extracted from .deb: {output_path}')
+            return
+
+    raise ValueError('data.tar not found in .deb — the package may be corrupt')
+
+
 def create_linux_update_script(app_data_dir, current_pid, staged_binary, installed_binary):
     """Create a detached shell script that atomically applies a staged Linux update.
 
@@ -1791,6 +1994,12 @@ class UpdateManager:
         self._last_download_attempt = 0
         self._download_retry_interval = 30 * 60  # 30 minutes
 
+        # Set to True when a bundle (.deb / .tar.gz) has already had its
+        # checksum verified during download, before extraction.  Prevents a
+        # false 'checksum mismatch' in apply_update() where the staged file is
+        # an extracted AppImage (different hash from the original bundle).
+        self._bundle_checksum_verified = False
+
     def _set_state(self, new_state, error=None):
         self.state = new_state
         self.last_error = error
@@ -1898,16 +2107,36 @@ class UpdateManager:
 
         updates_dir = os.path.join(self.app_data_dir, 'updates')
         os.makedirs(updates_dir, exist_ok=True)
-        if IS_APPIMAGE:
+
+        # Detect whether the download URL points to a bundle format.
+        # Both .deb and .tar.gz are transparently unpacked to extract the
+        # .AppImage, so the rest of the update pipeline is unchanged.
+        url_lower = (download_url or '').lower()
+        is_targz = url_lower.endswith('.tar.gz') or url_lower.endswith('.tgz')
+        is_deb   = url_lower.endswith('.deb')
+        is_bundle = (is_targz or is_deb) and sys.platform.startswith('linux')
+
+        if IS_APPIMAGE or is_bundle:
             _ext = '.AppImage'
         elif sys.platform.startswith('linux'):
             _ext = '.bin'
         else:
             _ext = '.exe'
-        temp_path = os.path.join(updates_dir, f"TimeTracker_v{version}{_ext}.tmp")
-        final_path = os.path.join(updates_dir, f"TimeTracker_v{version}{_ext}")
 
-        for stale in (temp_path, final_path):
+        # Temp path reflects the actual downloaded format.
+        if is_deb:
+            _dl_ext = '.deb'
+        elif is_targz:
+            _dl_ext = '.tar.gz'
+        else:
+            _dl_ext = _ext
+
+        temp_path   = os.path.join(updates_dir, f"TimeTracker_v{version}{_dl_ext}.tmp")
+        final_path  = os.path.join(updates_dir, f"TimeTracker_v{version}{_ext}")
+        bundle_path = os.path.join(updates_dir, f"TimeTracker_v{version}{_dl_ext}")
+        tar_path    = bundle_path  # kept for cleanup compatibility
+
+        for stale in (temp_path, final_path, bundle_path):
             if os.path.exists(stale):
                 try:
                     os.remove(stale)
@@ -1964,7 +2193,38 @@ class UpdateManager:
             if not verify_download_checksum(temp_path, expected_checksum):
                 raise ValueError('Checksum verification failed')
 
-            os.replace(temp_path, final_path)
+            if is_bundle:
+                # The checksum above was verified against the bundle (.deb /
+                # .tar.gz).  After extraction the staged file is an AppImage
+                # whose hash differs from the bundle — flag this so apply_update
+                # knows not to re-verify against the bundle checksum.
+                self._bundle_checksum_verified = True
+                # Extract the AppImage from the bundle (.deb or .tar.gz).
+                os.replace(temp_path, bundle_path)
+                if is_deb:
+                    print(f'[INFO] Extracting AppImage from .deb: {bundle_path}')
+                    _extract_appimage_from_deb(bundle_path, final_path)
+                else:
+                    import tarfile
+                    print(f'[INFO] Extracting AppImage from tar.gz: {bundle_path}')
+                    with tarfile.open(bundle_path, 'r:gz') as tf:
+                        appimage_member = next(
+                            (m for m in tf.getmembers()
+                             if m.name.endswith('.AppImage') and not m.name.startswith('/')),
+                            None
+                        )
+                        if appimage_member is None:
+                            raise ValueError('No .AppImage found inside the tar.gz bundle')
+                        appimage_member.name = os.path.basename(appimage_member.name)
+                        tf.extract(appimage_member, path=updates_dir)
+                        extracted = os.path.join(updates_dir, appimage_member.name)
+                    os.chmod(extracted, 0o755)
+                    os.replace(extracted, final_path)
+                os.remove(bundle_path)
+                print(f'[INFO] AppImage staged for install: {final_path}')
+            else:
+                os.replace(temp_path, final_path)
+
             self.download_path = final_path
             self.download_progress = 1.0
 
@@ -1997,11 +2257,12 @@ class UpdateManager:
                               f"Failed to download update: {str(e)[:100]}. Will retry automatically.",
                               urgency="normal")
         finally:
-            if os.path.exists(temp_path):
-                try:
-                    os.remove(temp_path)
-                except Exception:
-                    pass
+            for _cleanup in (temp_path, tar_path):
+                if os.path.exists(_cleanup):
+                    try:
+                        os.remove(_cleanup)
+                    except Exception:
+                        pass
 
     def defer_update(self):
         if self.state in ('ready', 'mandatory_ready'):
@@ -2042,9 +2303,14 @@ class UpdateManager:
             return False
 
         expected_checksum = (self.update_info or {}).get('checksum')
-        if expected_checksum and not verify_download_checksum(self.download_path, expected_checksum):
-            self._set_state('failed', error='Staged update checksum mismatch')
-            return False
+        # Skip re-verification when the staged file is an AppImage that was
+        # extracted from a .deb/.tar.gz bundle: the bundle itself was already
+        # verified during download, and the extracted AppImage naturally has a
+        # different SHA256 than the original bundle archive.
+        if expected_checksum and not self._bundle_checksum_verified:
+            if not verify_download_checksum(self.download_path, expected_checksum):
+                self._set_state('failed', error='Staged update checksum mismatch')
+                return False
 
         try:
             # ── Linux path ──────────────────────────────────────────────────
@@ -13458,8 +13724,8 @@ class TimeTracker:
             menu = self._build_tray_menu()
             print(f"[DEBUG] Menu created in setup_system_tray: {menu}")
 
-            self.tray = pystray.Icon("Time Tracker", icon_image, menu=menu)
-            print(f"[DEBUG] pystray.Icon created with menu: {self.tray.menu}")
+            self.tray = pystray.Icon("timetracker", icon_image, menu=menu)
+            print(f"[DEBUG] pystray.Icon created with menu: {self.tray.menu}", flush=True)
             
             self.tray.title = "TimeTracker"
             if not self._tray_supports_menu():
@@ -13474,7 +13740,34 @@ class TimeTracker:
             # AFTER the tray is visible. Without this, the update thread exits
             # immediately because self.tray.visible is False before .run() starts.
             def on_tray_ready(icon):
+                print("[DEBUG] on_tray_ready() CALLED — setting icon visible", flush=True)
                 icon.visible = True
+                print("[DEBUG] icon.visible set to True", flush=True)
+                # On Linux/GNOME the tray icon is invisible without the AppIndicator
+                # GNOME Shell extension.  Send a desktop notification so the user
+                # always gets visual confirmation that the app started, regardless of
+                # whether their GNOME shell shows the tray icon or not.
+                if sys.platform.startswith('linux'):
+                    try:
+                        import subprocess as _sub_notify
+                        _sub_notify.Popen(
+                            [
+                                'notify-send',
+                                '--app-name=TimeTracker',
+                                '--icon=timetracker',
+                                '--urgency=normal',
+                                '--expire-time=8000',
+                                'TimeTracker is running',
+                                'Tracking your JIRA time in the background.\n'
+                                'If you don\'t see a tray icon, open a browser and go to:\n'
+                                'http://localhost:51777',
+                            ],
+                            stdout=_sub_notify.DEVNULL,
+                            stderr=_sub_notify.DEVNULL,
+                        )
+                    except Exception:
+                        pass  # notify-send not available — silently skip
+
                 # Start periodic icon update in a separate daemon thread
                 def update_icon_periodically():
                     while self.tray and self.tray.visible:
@@ -13491,9 +13784,9 @@ class TimeTracker:
                 update_thread = threading.Thread(target=update_icon_periodically, daemon=True)
                 update_thread.start()
 
-            print(f"[DEBUG] About to call tray.run() with menu: {self.tray.menu}")
+            print(f"[DEBUG] About to call tray.run() with menu: {self.tray.menu}", flush=True)
             self.tray.run(setup=on_tray_ready)
-            print("[DEBUG] tray.run() returned (app closing)")
+            print("[DEBUG] tray.run() returned (app closing)", flush=True)
         except Exception as e:
             print(f"[WARN] System tray setup failed: {e}")
             import traceback
@@ -13513,7 +13806,7 @@ class TimeTracker:
                 # Use the same menu helper for fallback
                 menu = self._build_tray_menu()
 
-                self.tray = pystray.Icon("Time Tracker", icon_image, menu=menu)
+                self.tray = pystray.Icon("timetracker", icon_image, menu=menu)
                 self.tray.run()
             except Exception as e2:
                 print(f"[ERROR] System tray fallback also failed: {e2}")

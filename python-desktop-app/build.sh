@@ -301,6 +301,202 @@ else
 fi
 
 # ============================================================================
+# [5/5] Build .deb package — the single distribution file for all users.
+#
+# WHY .deb:
+#   - User downloads a .deb → double-clicks → Ubuntu Software Center opens
+#     → clicks Install → app appears in launcher.  Zero terminal, zero chmod,
+#     zero folder navigation.
+#   - The .deb installs the AppImage to /opt/timetracker/ and creates a
+#     launcher wrapper at /usr/local/bin/timetracker that always runs the
+#     auto-updated binary in ~/.local/share/TimeTracker/ if it exists,
+#     falling back to /opt/.
+#   - APPIMAGE_EXTRACT_AND_RUN=1 in the wrapper means FUSE is NOT required
+#     (works on Ubuntu 22.04+ and 24.04 out of the box).
+# ============================================================================
+echo ""
+echo "[5/5] Building .deb package..."
+echo ""
+
+DEB_OUT=""
+if [ -f "$APPIMAGE_OUT" ]; then
+    case "$ARCH" in
+        x86_64)  DEB_ARCH="amd64"  ;;
+        aarch64) DEB_ARCH="arm64"  ;;
+        armv7l)  DEB_ARCH="armhf"  ;;
+        *)       DEB_ARCH="$ARCH"  ;;
+    esac
+
+    DEB_PKG_NAME="timetracker_${APP_VERSION}_${DEB_ARCH}"
+    DEB_BUILD_DIR="$(pwd)/deb_build/${DEB_PKG_NAME}"
+    DEB_OUT="dist/${DEB_PKG_NAME}.deb"
+
+    # Clean previous deb staging area
+    rm -rf "$(pwd)/deb_build"
+
+    # Directory skeleton
+    mkdir -p "${DEB_BUILD_DIR}/DEBIAN"
+    mkdir -p "${DEB_BUILD_DIR}/opt/timetracker"
+    mkdir -p "${DEB_BUILD_DIR}/usr/share/applications"
+    mkdir -p "${DEB_BUILD_DIR}/usr/share/icons/hicolor/256x256/apps"
+    mkdir -p "${DEB_BUILD_DIR}/usr/local/bin"
+
+    # Embed AppImage
+    echo "  Copying AppImage into .deb..."
+    cp "$APPIMAGE_OUT" "${DEB_BUILD_DIR}/opt/timetracker/TimeTracker.AppImage"
+    chmod 755 "${DEB_BUILD_DIR}/opt/timetracker/TimeTracker.AppImage"
+
+    # Icon
+    if [ -f "appimage/timetracker.png" ]; then
+        cp appimage/timetracker.png \
+           "${DEB_BUILD_DIR}/usr/share/icons/hicolor/256x256/apps/timetracker.png"
+    fi
+
+    # Launcher wrapper script (/usr/local/bin/timetracker)
+    # - Prefers the auto-updated binary in ~/.local/share/TimeTracker/
+    # - Falls back to /opt/timetracker/ on first run
+    # - APPIMAGE_EXTRACT_AND_RUN=1 avoids FUSE requirement
+    cat > "${DEB_BUILD_DIR}/usr/local/bin/timetracker" << 'WRAPPER'
+#!/bin/bash
+CANONICAL="${HOME}/.local/share/TimeTracker/TimeTracker.AppImage"
+if [ -f "$CANONICAL" ] && [ -x "$CANONICAL" ]; then
+    exec env APPIMAGE_EXTRACT_AND_RUN=1 "$CANONICAL" "$@"
+else
+    exec env APPIMAGE_EXTRACT_AND_RUN=1 /opt/timetracker/TimeTracker.AppImage "$@"
+fi
+WRAPPER
+    chmod 755 "${DEB_BUILD_DIR}/usr/local/bin/timetracker"
+
+    # .desktop launcher
+    cat > "${DEB_BUILD_DIR}/usr/share/applications/timetracker.desktop" << DESKTOP
+[Desktop Entry]
+Name=TimeTracker
+GenericName=Time Tracker
+Comment=Automatic time tracking for JIRA issues
+Exec=timetracker
+Icon=timetracker
+Type=Application
+Categories=Office;ProjectManagement;
+Terminal=false
+StartupNotify=false
+Keywords=time;tracker;jira;productivity;
+X-AppImage-Version=${APP_VERSION}
+DESKTOP
+
+    # DEBIAN/control
+    cat > "${DEB_BUILD_DIR}/DEBIAN/control" << CONTROL
+Package: timetracker
+Version: ${APP_VERSION}
+Architecture: ${DEB_ARCH}
+Maintainer: Amzur Technologies <support@amzur.com>
+Recommends: gnome-shell-extension-appindicator, libnotify-bin
+Description: Automatic time tracking for JIRA issues
+ TimeTracker tracks time spent on JIRA issues automatically
+ using active window detection and screenshot analysis.
+CONTROL
+
+    # DEBIAN/postinst — fix permissions, refresh caches, enable AppIndicator extension
+    cat > "${DEB_BUILD_DIR}/DEBIAN/postinst" << 'POSTINST'
+#!/bin/bash
+set -e
+chmod +x /opt/timetracker/TimeTracker.AppImage 2>/dev/null || true
+chmod +x /usr/local/bin/timetracker 2>/dev/null || true
+update-desktop-database /usr/share/applications 2>/dev/null || true
+gtk-update-icon-cache -f -t /usr/share/icons/hicolor 2>/dev/null || true
+
+# Remove stale per-user .desktop entries left by older installers.
+# Case 1: Old-style entry pointing to a plain binary path (without .AppImage).
+# Case 2: Entry pointing to an .AppImage path that no longer exists on disk
+#         (e.g. user deleted ~/.local/share/TimeTracker/ or re-installed via .deb
+#          after previously running via AppImage — the old user entry then shadows
+#          the system .desktop and causes a silent launch failure on double-click).
+# The app re-creates a correct user entry on first launch after self-install.
+for _USER_HOME in /home/*; do
+    _STALE="${_USER_HOME}/.local/share/applications/timetracker.desktop"
+    if [ -f "$_STALE" ]; then
+        _SHOULD_REMOVE=0
+        # Case 1: no .AppImage in Exec (old binary-path entry)
+        if ! grep -q '\.AppImage' "$_STALE" 2>/dev/null; then
+            _SHOULD_REMOVE=1
+        else
+            # Case 2: has .AppImage but the referenced file is missing
+            _EXEC_APPIMAGE=$(grep '^Exec=' "$_STALE" 2>/dev/null \
+                             | grep -o '/[^ ]*\.AppImage' | head -1)
+            if [ -n "$_EXEC_APPIMAGE" ] && [ ! -f "$_EXEC_APPIMAGE" ]; then
+                _SHOULD_REMOVE=1
+            fi
+        fi
+        if [ "$_SHOULD_REMOVE" = "1" ]; then
+            rm -f "$_STALE" && echo "Removed stale .desktop entry for $(basename $_USER_HOME)"
+            _USER_DESKTOP_DIR="${_USER_HOME}/.local/share/applications"
+            update-desktop-database "$_USER_DESKTOP_DIR" 2>/dev/null || true
+        fi
+    fi
+done
+
+# Enable the AppIndicator GNOME Shell extension for all users so the tray icon
+# is visible on GNOME without needing the user to go to extensions.gnome.org.
+# ubuntu-appindicators@ubuntu.com is the UUID shipped by gnome-shell-extension-appindicator.
+if command -v gnome-extensions &>/dev/null; then
+    # Run as each logged-in user's session so GNOME Shell picks up the change.
+    for _USER_HOME in /home/*; do
+        _USERNAME=$(basename "$_USER_HOME")
+        if id "$_USERNAME" &>/dev/null; then
+            su - "$_USERNAME" -c 'gnome-extensions enable ubuntu-appindicators@ubuntu.com 2>/dev/null || true' 2>/dev/null || true
+        fi
+    done
+fi
+POSTINST
+    chmod 755 "${DEB_BUILD_DIR}/DEBIAN/postinst"
+
+    # Build the .deb
+    # Force xz compression (-Zxz) so the data.tar uses lzma (xz) instead of
+    # zstd.  dpkg >= 1.21.18 (Ubuntu 24.04) defaults to zstd, which the
+    # auto-updater's pure-Python extractor cannot decompress without the
+    # 'zstandard' package.  xz is supported by lzma in the stdlib on all
+    # Python versions >= 3.3, making the .deb self-extractable on any host.
+    if command -v dpkg-deb &>/dev/null; then
+        mkdir -p dist
+        echo "  Running dpkg-deb (xz compression)..."
+        DPKG_DEB_OUTPUT=$(dpkg-deb -Zxz --build --root-owner-group "${DEB_BUILD_DIR}" "${DEB_OUT}" 2>&1)
+        DPKG_DEB_EXIT=$?
+        echo "$DPKG_DEB_OUTPUT" >> build_log.txt
+        if [ $DPKG_DEB_EXIT -eq 0 ] && [ -f "${DEB_OUT}" ]; then
+            DEB_BUILD_OK=1
+        else
+            DEB_BUILD_OK=0
+            echo "  [ERR] dpkg-deb exit=${DPKG_DEB_EXIT}" >&2
+            echo "  [ERR] Expected output: ${DEB_OUT}" >&2
+            echo "  [ERR] dpkg-deb output: ${DPKG_DEB_OUTPUT}" >&2
+            echo "  [ERR] dist/ contents: $(ls dist/ 2>/dev/null || echo 'empty/missing')" >&2
+        fi
+        if [ "${DEB_BUILD_OK}" = "1" ] && [ -f "$DEB_OUT" ]; then
+            DEB_SIZE=$(du -h "$DEB_OUT" | cut -f1)
+            if command -v sha256sum &>/dev/null; then
+                DEB_SHA256=$(sha256sum "$DEB_OUT" | awk '{print $1}')
+            else
+                DEB_SHA256="unavailable"
+            fi
+            echo ""
+            echo "  [OK] .deb package : ${DEB_OUT} (${DEB_SIZE})"
+            echo "  [OK] SHA256       : ${DEB_SHA256}"
+        else
+            echo "  [WARN] .deb build failed — check build_log.txt"
+            DEB_OUT=""
+        fi
+    else
+        echo "  [WARN] dpkg-deb not found — skipping .deb packaging."
+        echo "         Install with: sudo apt install dpkg"
+        DEB_OUT=""
+    fi
+
+    # Clean up staging dir
+    rm -rf "$(pwd)/deb_build"
+else
+    echo "  [SKIP] No AppImage available — skipping .deb packaging."
+fi
+
+# ============================================================================
 # Final summary
 # ============================================================================
 echo ""
@@ -308,18 +504,24 @@ echo "============================================"
 echo "  Build Complete!"
 echo "============================================"
 echo ""
-echo "  Standalone : dist/TimeTracker"
-if [ -f "$APPIMAGE_OUT" ]; then
-echo "  AppImage   : $APPIMAGE_OUT"
-if [ -n "${APPIMAGE_SHA256:-}" ]; then
-echo "  SHA256     : $APPIMAGE_SHA256"
+echo "  Standalone binary : dist/TimeTracker"
+if [ -n "${DEB_OUT:-}" ] && [ -f "$DEB_OUT" ]; then
+echo "  .deb (distribute this) : $DEB_OUT"
+if [ -n "${DEB_SHA256:-}" ]; then
+echo "  SHA256                 : $DEB_SHA256"
 fi
 fi
 echo ""
 echo "Next steps:"
-echo "  1. Test standalone   : ./dist/TimeTracker"
-if [ -f "$APPIMAGE_OUT" ]; then
-echo "  2. Test AppImage     : ./$APPIMAGE_OUT"
-echo "  3. Upload AppImage to storage and run publish-linux-release.sql"
-fi
+echo "  1. Test   : ./dist/TimeTracker"
 echo ""
+if [ -n "${DEB_OUT:-}" ] && [ -f "$DEB_OUT" ]; then
+echo "  UPLOAD ONE FILE to storage and share with users:"
+echo "    $DEB_OUT"
+echo "    SHA256: ${DEB_SHA256:-<run sha256sum on the file>}"
+echo ""
+echo "  New users    : download .deb → double-click → Ubuntu Software → Install → done"
+echo "  Auto-update  : running app downloads the .deb and extracts the AppImage automatically"
+echo ""
+echo "  Run supabase/migrations/publish-linux-release.sql with the .deb URL + SHA256"
+fi

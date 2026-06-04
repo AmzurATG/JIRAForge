@@ -38,6 +38,12 @@ winotify==1.1.0; sys_platform == 'win32'
 # notify2 - For native Linux notifications (graceful fallback if missing)
 # Note: Core functionality works without these; they enhance the experience
 
+# zstandard - required to extract .deb files that use zstd data compression
+# (dpkg >= 1.21.18 produces zst-compressed debs by default on Ubuntu 24.04+).
+# Must be bundled in the PyInstaller binary so the auto-updater can decompress
+# downloaded .deb packages without relying on the system dpkg version.
+zstandard>=0.21.0; sys_platform == 'linux'
+
 # =============================================================================
 # OCR Dependencies
 # =============================================================================

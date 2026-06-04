@@ -6,15 +6,22 @@
 -- NO new table or endpoint is needed.
 --
 -- HOW TO USE:
---   1. Build the Linux binary:  cd python-desktop-app && ./build.sh
---   2. Upload the AppImage to a public URL (GitHub Release, S3, etc.)
---   3. Compute the SHA-256 checksum:
---        sha256sum dist/TimeTracker-v<version>-<arch>.AppImage
---      (build.sh also prints the SHA256 for the generated AppImage)
---   5. Fill in the placeholders below and run this SQL in Supabase SQL editor
---      (or via psql).
---   6. Any running Linux desktop app will pick up the update within 1 hour
---      (or immediately if the user restarts the system or clicks Check Updates).
+--   1. Build:   cd python-desktop-app && ./build.sh
+--
+--   2. Upload ONE file to storage:
+--        dist/timetracker_<version>_amd64.deb
+--
+--        New users:   download .deb → double-click → Ubuntu Software → Install → done.
+--        Auto-update: the running app downloads this .deb and extracts the
+--                     AppImage from it automatically (no root, no dpkg needed).
+--
+--   3. SHA-256 is for the .deb (build.sh prints it):
+--        sha256sum dist/timetracker_<version>_amd64.deb
+--
+--   4. Fill in the placeholders below and run this SQL in Supabase SQL editor.
+--
+--   5. Any running Linux desktop app will pick up the update within 1 hour
+--      (or immediately if the user restarts or clicks Check Updates).
 -- ============================================================================
 
 BEGIN;
@@ -36,7 +43,7 @@ INSERT INTO app_releases (
 VALUES (
     'linux',
   '1.0.0',                          -- ← replace with new version
-  'https://example.com/path/to/TimeTracker-v1.0.2-x86_64.AppImage', -- ← replace with public download URL
+  'https://example.com/path/to/timetracker_1.0.0_amd64.deb', -- ← .deb URL (same file for new users and auto-update)
   'abc123deadbeef...'               -- ← replace with sha256sum output
 );
 

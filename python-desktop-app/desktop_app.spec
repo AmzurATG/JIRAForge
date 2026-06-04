@@ -572,6 +572,11 @@ a = Analysis(
         'jaraco.context',
         # platformdirs (required by pkg_resources via setuptools)
         'platformdirs',
+        # zstandard — needed to extract .deb packages that use zstd data compression
+        # (dpkg >= 1.21.18 on Ubuntu 24.04+ produces zst-compressed debs by default).
+        # Must be in hiddenimports so it is bundled even though it is only imported
+        # lazily inside _extract_appimage_from_deb().
+        'zstandard',
         # OCR core (always needed)
         'ocr',
         'ocr.facade',
