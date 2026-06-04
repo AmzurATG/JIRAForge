@@ -9,7 +9,7 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { ArrowLeft, Plus, Trash2, Search, X, Sparkles } from 'lucide-react';
+import { ArrowLeft, Plus, Trash2, Search, X, Sparkles, Eye, EyeOff } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { lobsApi } from '../api/lobs';
 import { employeesApi } from '../api/employees';
@@ -46,12 +46,43 @@ function LobDetailPage() {
   const [error, setError] = useState(null);
   const [success, setSuccess] = useState(null);
 
+  // "Apps used but not yet classified" — fetched once when the LOB opens so the
+  // count badge is visible to superadmins (who land on Members) and heads alike,
+  // and the AppsTab can show it without a manual scan.
+  const [unlisted, setUnlisted] = useState(null); // null = not scanned yet
+  const [unlistedLoading, setUnlistedLoading] = useState(false);
+
+  const scanUnlisted = useCallback(async () => {
+    setUnlistedLoading(true);
+    try {
+      const res = await lobAppClassificationsApi.listUnlisted(lobId);
+      setUnlisted(res.data || []);
+    } catch (err) {
+      // Non-critical background scan — don't show a page-level error banner on
+      // every LOB open (e.g. if the endpoint isn't deployed yet). It stays
+      // retryable via the "Find used apps" button.
+      console.error('[LobDetail] Failed to scan unlisted apps', err);
+    } finally {
+      setUnlistedLoading(false);
+    }
+  }, [lobId]);
+
+  const removeUnlisted = useCallback((identifier) => {
+    const id = (identifier || '').toLowerCase();
+    setUnlisted((u) => (Array.isArray(u) ? u.filter((a) => a.identifier.toLowerCase() !== id) : u));
+  }, []);
+
   // Non-superadmins (LOB heads) land directly on the app-classifications tab.
   useEffect(() => {
     if (!isSuperadmin) setTab('apps');
   }, [isSuperadmin]);
 
+  // Auto-scan on open so admins/heads are shown what needs classifying.
+  useEffect(() => { scanUnlisted(); }, [scanUnlisted]);
+
   const flash = (msg) => { setSuccess(msg); setTimeout(() => setSuccess(null), 2500); };
+
+  const unlistedCount = unlisted ? unlisted.length : 0;
 
   return (
     <div className="space-y-3">
@@ -76,12 +107,32 @@ function LobDetailPage() {
       <div className="flex gap-1 p-1 bg-gray-100 dark:bg-gray-800 rounded-xl w-fit">
         {isSuperadmin && <TabButton id="members" tab={tab} setTab={setTab}>Members</TabButton>}
         {isSuperadmin && <TabButton id="heads" tab={tab} setTab={setTab}>Heads</TabButton>}
-        <TabButton id="apps" tab={tab} setTab={setTab}>App Classifications</TabButton>
+        <TabButton id="apps" tab={tab} setTab={setTab}>
+          App Classifications
+          {unlistedCount > 0 && (
+            <span
+              title={`${unlistedCount} app(s) your team used aren't classified yet`}
+              className="ml-1.5 px-1.5 py-0.5 rounded-full text-[10px] font-semibold bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300"
+            >
+              {unlistedCount}
+            </span>
+          )}
+        </TabButton>
       </div>
 
       {tab === 'members' && isSuperadmin && <MembersTab lobId={lobId} setError={setError} flash={flash} />}
       {tab === 'heads' && isSuperadmin && <HeadsTab lobId={lobId} setError={setError} flash={flash} />}
-      {tab === 'apps' && <AppsTab lobId={lobId} setError={setError} flash={flash} />}
+      {tab === 'apps' && (
+        <AppsTab
+          lobId={lobId}
+          setError={setError}
+          flash={flash}
+          unlisted={unlisted}
+          unlistedLoading={unlistedLoading}
+          onScan={scanUnlisted}
+          onRemoveUnlisted={removeUnlisted}
+        />
+      )}
     </div>
   );
 }
@@ -288,17 +339,15 @@ function HeadsTab({ lobId, setError, flash }) {
 
 // --- App classifications ----------------------------------------------------
 
-function AppsTab({ lobId, setError, flash }) {
+function AppsTab({ lobId, setError, flash, unlisted, unlistedLoading, onScan, onRemoveUnlisted }) {
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
   const debouncedSearch = useDebounce(search, 400);
 
-  // Add-application modal + usage-discovery state
+  // Add-application modal state
   const [showAdd, setShowAdd] = useState(false);
   const [addPrefill, setAddPrefill] = useState(null);
-  const [unlisted, setUnlisted] = useState(null); // null = not scanned yet
-  const [unlistedLoading, setUnlistedLoading] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -314,18 +363,6 @@ function AppsTab({ lobId, setError, flash }) {
 
   useEffect(() => { load(); }, [load]);
 
-  const scanUnlisted = async () => {
-    setUnlistedLoading(true);
-    try {
-      const res = await lobAppClassificationsApi.listUnlisted(lobId);
-      setUnlisted(res.data || []);
-    } catch (err) {
-      setError(err.response?.data?.error || 'Failed to scan used apps');
-    } finally {
-      setUnlistedLoading(false);
-    }
-  };
-
   const openAddFor = (app) => {
     setAddPrefill(app ? { identifier: app.identifier, matchBy: 'process', displayName: app.identifier } : null);
     setShowAdd(true);
@@ -336,9 +373,7 @@ function AppsTab({ lobId, setError, flash }) {
     setShowAdd(false);
     setAddPrefill(null);
     load();
-    if (unlisted) {
-      setUnlisted((u) => (u || []).filter((a) => a.identifier.toLowerCase() !== (row.identifier || '').toLowerCase()));
-    }
+    onRemoveUnlisted(row.identifier || '');
   };
 
   const handleChange = async (row, value) => {
@@ -422,7 +457,7 @@ function AppsTab({ lobId, setError, flash }) {
         Apps stay <span className="font-medium">Unclassified</span> (excluded from productivity) until you set a rule here. "Org Default" is a hint only — it is not applied automatically.
       </p>
 
-      <UnlistedApps unlisted={unlisted} loading={unlistedLoading} onScan={scanUnlisted} onAdd={openAddFor} onClose={() => setUnlisted(null)} />
+      <UnlistedApps unlisted={unlisted} loading={unlistedLoading} onScan={onScan} onAdd={openAddFor} />
 
       <DataTable columns={columns} data={rows} loading={loading} emptyMessage="No applications in the catalog yet" />
 
@@ -440,33 +475,35 @@ function AppsTab({ lobId, setError, flash }) {
 }
 
 // "Apps used but not yet classified" — discovery from real activity.
-function UnlistedApps({ unlisted, loading, onScan, onAdd, onClose }) {
+function UnlistedApps({ unlisted, loading, onScan, onAdd }) {
+  const [collapsed, setCollapsed] = useState(false);
+  const hasItems = Array.isArray(unlisted) && unlisted.length > 0;
+
   return (
-    <div className="mb-3 rounded-lg border border-dashed border-gray-300 dark:border-gray-700 p-3">
+    <div className="mb-3 rounded-lg border border-dashed border-amber-300 dark:border-amber-800/60 bg-amber-50/40 dark:bg-amber-900/10 p-3">
       <div className="flex items-center justify-between gap-2">
         <p className="text-xs text-gray-600 dark:text-gray-400">
-          Apps your team used recently that aren&apos;t in the catalog yet.
+          Apps your team used recently that aren&apos;t classified yet{hasItems ? ` (${unlisted.length})` : ''}.
         </p>
         <div className="flex items-center gap-2">
+          {hasItems && (
+            <button
+              onClick={() => setCollapsed((c) => !c)}
+              className="flex items-center gap-1 px-2 py-1.5 rounded border border-gray-300 dark:border-gray-600 text-sm text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800"
+            >
+              {collapsed ? <><Eye className="w-4 h-4" /> Show</> : <><EyeOff className="w-4 h-4" /> Hide</>}
+            </button>
+          )}
           <button
-            onClick={onScan}
+            onClick={() => { setCollapsed(false); onScan(); }}
             disabled={loading}
             className="flex items-center gap-1.5 px-3 py-1.5 rounded border border-gray-300 dark:border-gray-600 text-sm hover:bg-gray-50 dark:hover:bg-gray-800 disabled:opacity-50 whitespace-nowrap"
           >
             <Sparkles className="w-4 h-4" /> {loading ? 'Scanning…' : (unlisted ? 'Rescan' : 'Find used apps')}
           </button>
-          {unlisted && (
-            <button
-              onClick={onClose}
-              title="Hide suggestions"
-              className="flex items-center gap-1 px-2 py-1.5 rounded border border-gray-300 dark:border-gray-600 text-sm text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800"
-            >
-              <X className="w-4 h-4" /> Hide
-            </button>
-          )}
         </div>
       </div>
-      {unlisted && (
+      {!collapsed && unlisted && (
         unlisted.length === 0 ? (
           <p className="text-xs text-gray-500 mt-2">Nothing new — every app your team used is already in the catalog.</p>
         ) : (
