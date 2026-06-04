@@ -2183,8 +2183,36 @@ INSTALL_DIR="{install_dir}"
 
 echo ""
 echo "[STEP 1/4] Stopping application if running..."
-pkill -f TimeTracker 2>/dev/null && echo "  Application stopped." || echo "  Application was not running."
-sleep 1
+
+# IMPORTANT: pkill -f TimeTracker matches the full command line of every
+# process.  The bash process running THIS script has a cmdline of:
+#   bash /home/.../.local/share/TimeTracker/uninstall.sh
+# which also contains "TimeTracker", so pkill -f would kill our own shell
+# before rm -rf ever runs.  Instead we use pgrep to collect matching PIDs,
+# then explicitly exclude $$ (this script's own PID) before killing.
+SELF_PID=$$
+TT_PIDS=$(pgrep -f TimeTracker 2>/dev/null | grep -v "^${{SELF_PID}}$")
+
+if [ -n "$TT_PIDS" ]; then
+    echo "  Sending shutdown signal to TimeTracker process(es)..."
+    echo "$TT_PIDS" | xargs kill 2>/dev/null || true
+    # Wait up to 5 s for graceful exit
+    for i in 1 2 3 4 5; do
+        REMAINING=$(pgrep -f TimeTracker 2>/dev/null | grep -v "^${{SELF_PID}}$")
+        [ -z "$REMAINING" ] && break
+        sleep 1
+    done
+    # Force-kill any survivors
+    SURVIVORS=$(pgrep -f TimeTracker 2>/dev/null | grep -v "^${{SELF_PID}}$")
+    if [ -n "$SURVIVORS" ]; then
+        echo "  Force-stopping remaining process(es)..."
+        echo "$SURVIVORS" | xargs kill -9 2>/dev/null || true
+        sleep 1
+    fi
+    echo "  Application stopped."
+else
+    echo "  Application was not running."
+fi
 
 echo ""
 echo "[STEP 2/4] Removing autostart entry..."
@@ -2197,11 +2225,7 @@ else
 fi
 
 echo ""
-echo "[STEP 3/4] Waiting for application to fully close..."
-sleep 2
-
-echo ""
-echo "[STEP 4/4] Removing application files..."
+echo "[STEP 3/4] Removing application files..."
 for f in TimeTracker.AppImage TimeTracker \\
           time_tracker_auth.json time_tracker_offline.db \\
           time_tracker_consent.json time_tracker_user_cache.json \\
