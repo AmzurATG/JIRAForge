@@ -5329,6 +5329,10 @@ class TimeTracker:
         if self.logger:
             self.logger.info("Atlassian authentication manager initialized")
         
+        # Description-Quality nudge poller (lazy-started after login)
+        self.dq_nudge_poller = None
+        self.dq_nudge_preferences = None
+
         # User state
         self.current_user = None
         self.current_user_id = None  # UUID from public.users table
@@ -11417,6 +11421,12 @@ class TimeTracker:
 
         print("[OK] Tracking started with idle detection")
         self.add_admin_log('INFO', f'Tracking started (interval: {self.capture_interval}s)')
+
+        # Start description-quality nudge poller (best-effort)
+        try:
+            self._start_dq_nudge_poller()
+        except Exception as e:
+            print(f"[WARN] Failed to start DQ nudge poller: {e}")
     
     def stop_tracking(self):
         """Stop screenshot tracking"""
@@ -11964,6 +11974,12 @@ class TimeTracker:
             return
         self._shutdown_done = True
         try:
+            if getattr(self, 'dq_nudge_poller', None):
+                print("[SHUTDOWN] Stopping description-quality nudge poller...")
+                self.dq_nudge_poller.stop()
+        except Exception as e:
+            print(f"[SHUTDOWN] DQ nudge poller shutdown error: {e}")
+        try:
             print("[SHUTDOWN] Stopping OCR worker thread...")
             if self.ocr_processor:
                 self.ocr_processor.shutdown()
@@ -12057,6 +12073,85 @@ class TimeTracker:
             except Exception as e2:
                 print(f"[ERROR] System tray fallback also failed: {e2}")
     
+    def _start_dq_nudge_poller(self):
+        """Start the description-quality nudge poller if not already running.
+
+        Best-effort: silently no-ops if the dq_nudge package is unavailable or
+        the user is not yet authenticated.
+        """
+        if getattr(self, 'dq_nudge_poller', None) is not None:
+            return  # already running
+
+        try:
+            from dq_nudge import DqNudgePoller, DqNudgePreferences
+        except ImportError as e:
+            print(f"[WARN] dq_nudge package unavailable: {e}")
+            return
+
+        if not self.auth_manager or not self.auth_manager.get_supabase_token():
+            # Not yet logged in — poller will be started on next start_tracking call.
+            return
+
+        try:
+            self.dq_nudge_preferences = DqNudgePreferences(self.auth_manager)
+            try:
+                self.dq_nudge_preferences.refresh()
+            except Exception:
+                pass  # best-effort; defaults are fine
+
+            self.dq_nudge_poller = DqNudgePoller(
+                self.auth_manager,
+                on_nudges=self._handle_dq_nudges,
+                preferences=self.dq_nudge_preferences,
+            )
+            self.dq_nudge_poller.start()
+            print("[OK] Description-quality nudge poller started")
+        except Exception as e:
+            print(f"[WARN] Could not start DQ nudge poller: {e}")
+            self.dq_nudge_poller = None
+
+    def _handle_dq_nudges(self, nudges):
+        """Background-thread callback: schedule popup on the main thread."""
+        if not nudges:
+            return
+        try:
+            # Show on a fresh daemon thread to avoid blocking the poller loop.
+            threading.Thread(
+                target=self._show_dq_popup,
+                args=(nudges,),
+                daemon=True,
+            ).start()
+        except Exception as e:
+            print(f"[WARN] Failed to dispatch DQ popup: {e}")
+
+    def _show_dq_popup(self, nudges):
+        """Build and show the DQ nudge popup."""
+        try:
+            from dq_nudge import DqNudgePopupWindow, acknowledge_nudges
+        except ImportError:
+            return
+
+        def ack_cb(ids, action, snooze_until):
+            try:
+                return acknowledge_nudges(self.auth_manager, ids, action, snooze_until)
+            except Exception as e:
+                print(f"[WARN] DQ ack failed: {e}")
+                return False
+
+        def disable_cb():
+            try:
+                if self.dq_nudge_preferences:
+                    return self.dq_nudge_preferences.set_popup_enabled(False)
+            except Exception as e:
+                print(f"[WARN] DQ disable-popup failed: {e}")
+            return False
+
+        try:
+            popup = DqNudgePopupWindow(nudges, ack_cb, disable_popup_callback=disable_cb)
+            popup.show()
+        except Exception as e:
+            print(f"[WARN] DQ popup display failed: {e}")
+
     def quit_app(self):
         """Quit application"""
         # Update desktop status to logged out before quitting

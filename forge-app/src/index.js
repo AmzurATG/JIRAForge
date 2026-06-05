@@ -18,7 +18,9 @@ import { registerAdminUserStatusResolvers } from './resolvers/adminUserStatusRes
 import { registerApprovalResolvers } from './resolvers/approval/approvalResolvers.js';
 import { registerAccuracyDashboardResolvers } from './resolvers/accuracyDashboardResolvers.js';
 import { registerDescriptionResolvers } from './resolvers/descriptionResolvers.js';
+import { registerDqNudgePreferenceResolvers } from './resolvers/dqNudgePreferenceResolvers.js';
 import { runScheduledWorklogSync } from './services/scheduledWorklogSync.js';
+import { runDescriptionQualityNudge } from './services/descriptionQualityNudge.js';
 import { handleIssueUpdateEvent, scheduledIssueCacheRefresh } from './services/issueCacheService.js';
 import { handleAppInstalled, handleAppUninstalled } from './services/lifecycleService.js';
 import { handlePersonalDataRequest } from './services/personalDataService.js';
@@ -41,6 +43,7 @@ registerAdminUserStatusResolvers(resolver);
 registerApprovalResolvers(resolver);
 registerAccuracyDashboardResolvers(resolver);
 registerDescriptionResolvers(resolver);
+registerDqNudgePreferenceResolvers(resolver);
 
 // Export handler for Forge
 export const handler = resolver.getDefinitions();
@@ -48,6 +51,12 @@ export const handler = resolver.getDefinitions();
 // Export scheduled trigger handler for worklog sync
 export const scheduledWorklogSyncHandler = async () => {
   return await runScheduledWorklogSync();
+};
+
+// Export scheduled trigger handler for description-quality nudges (Enhancement #13).
+// Fires hourly via two staggered triggers (A/B) — a KVS lock prevents overlap.
+export const descriptionQualityNudgeHandler = async (event, context) => {
+  return await runDescriptionQualityNudge({ context });
 };
 
 // Export issue cache trigger handler — fires on avi:jira:updated:issue

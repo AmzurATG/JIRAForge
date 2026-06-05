@@ -25,6 +25,9 @@ modules:
       handler: index.personalDataHandler
     - key: lifecycleHandler
       handler: index.lifecycleHandler
+    - key: descriptionQualityNudge
+      handler: index.descriptionQualityNudgeHandler
+      timeoutSeconds: 900
 
   jira:projectPage:
     - key: brd-time-tracker-project-page
@@ -55,6 +58,14 @@ modules:
       interval: hour
     - key: issue-cache-refresh-trigger
       function: issueCacheRefresh
+      interval: hour
+    # Description-quality nudge — two staggered triggers (A/B) for redundancy.
+    # A 60-second KVS lock in the handler prevents overlapping execution.
+    - key: description-quality-nudge-a
+      function: descriptionQualityNudge
+      interval: hour
+    - key: description-quality-nudge-b
+      function: descriptionQualityNudge
       interval: hour
 
   trigger:

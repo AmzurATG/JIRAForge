@@ -466,6 +466,7 @@ opens the Forge settings page.
 |---|---|
 | [forge-app/manifest.yml](../../forge-app/manifest.yml) | Add two `scheduledTrigger` entries `description-quality-nudge-a/b` and a `function` entry for `descriptionQualityNudge`. |
 | [forge-app/src/index.js](../../forge-app/src/index.js) | Export `descriptionQualityNudgeHandler`; register preference resolvers. |
+| [ai-server/src/index.js](../../ai-server/src/index.js) | `require` `desktopDqNudgesController` and `desktopDqPreferencesController`; mount with `authMiddleware`: `app.use('/api/desktop/description-quality-nudges', authMiddleware, desktopDqNudgesController)` and `app.use('/api/desktop/preferences/dq-nudges', authMiddleware, desktopDqPreferencesController)`. |
 | `forge-app/static/main/src/App.js` | On mount, parse `?issueKey=…#mf-improve`, switch to My Focus tab, scroll-to-row, trigger the Improve deep-link. |
 | `forge-app/static/main/src/components/tabs/DashboardTab.js` | Accept a `highlightIssueKey` prop / context; add transient highlight class. |
 | `forge-app/static/settings/src/...` | Wire up `NudgeSettings.js` into the existing settings layout. |

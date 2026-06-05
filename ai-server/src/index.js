@@ -22,6 +22,8 @@ const portalAppClassificationsController = require('./controllers/portal-app-cla
 const portalLobController = require('./controllers/portal-lob-controller');
 const portalAppCatalogController = require('./controllers/portal-app-catalog-controller');
 const portalLobAppClassificationsController = require('./controllers/portal-lob-app-classifications-controller');
+const desktopDqNudgesController = require('./controllers/desktop-dq-nudges-controller');
+const desktopDqPreferencesController = require('./controllers/desktop-dq-preferences-controller');
 const authMiddleware = require('./middleware/auth');
 const forgeAuthMiddleware = require('./middleware/forge-auth');
 const atlassianAuthMiddleware = require('./middleware/atlassian-auth');
@@ -552,6 +554,11 @@ app.post('/api/analyze-batch', express.json({ limit: '10mb' }), authMiddleware, 
 app.post('/api/classify-app', desktopAuthMiddleware, activityController.classifyApp);
 // identify-app uses Forge auth (called from Forge app for admin app classification)
 app.post('/api/identify-app', ...forgeMiddleware, activityController.identifyApp);
+
+// Description-Quality scheduled nudges (Enhancement #13) — desktop endpoints.
+// Both routers use desktopAuthMiddleware (Supabase JWT OR Atlassian token).
+app.use('/api/desktop/description-quality-nudges', desktopAuthMiddleware, desktopDqNudgesController);
+app.use('/api/desktop/preferences/dq-nudges', desktopAuthMiddleware, desktopDqPreferencesController);
 
 // Analytics endpoints (unified aggregation service)
 app.get('/api/analytics/daily', authMiddleware, analyticsController.getDailyTotal);
