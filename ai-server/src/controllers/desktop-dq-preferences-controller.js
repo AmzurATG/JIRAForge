@@ -25,6 +25,28 @@ const { getUserById, getOrganizationById } = require('../services/db/user-db-ser
 const TABLE = 'description_quality_nudge_preferences';
 
 async function resolveCaller(req) {
+  // Fast path: our exchange-token JWT carries `atlassian_account_id` as a
+  // top-level claim — look up by Atlassian ID to avoid sub-UUID ambiguity.
+  const jwtAtlassianId = req.supabaseUser?.atlassian_account_id
+    || req.supabaseUser?.user_metadata?.atlassian_account_id;
+  if (jwtAtlassianId) {
+    const supabase = getClient();
+    if (!supabase) return null;
+    const { data: user, error } = await supabase
+      .from('users')
+      .select('id, organization_id, atlassian_account_id')
+      .eq('atlassian_account_id', jwtAtlassianId)
+      .maybeSingle();
+    if (!error && user) {
+      const org = await getOrganizationById(user.organization_id);
+      return {
+        atlassianAccountId: user.atlassian_account_id,
+        orgId: org?.jira_cloud_id || user.organization_id
+      };
+    }
+  }
+
+  // Slow path: sub-based lookup
   if (req.supabaseUser?.sub) {
     const user = await getUserById(req.supabaseUser.sub);
     if (!user) return null;

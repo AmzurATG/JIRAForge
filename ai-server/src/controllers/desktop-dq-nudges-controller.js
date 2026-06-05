@@ -30,7 +30,30 @@ const VALID_ACTIONS = new Set(['viewed', 'opened-in-jira', 'dismissed', 'snoozed
  * Works for both auth types set by desktopAuthMiddleware.
  */
 async function resolveCaller(req) {
-  // Path 1: Supabase JWT — `sub` is the public.users.id
+  // Fast path: our exchange-token JWT carries `atlassian_account_id` as a
+  // top-level claim — look up by Atlassian ID to avoid sub-UUID ambiguity.
+  const jwtAtlassianId = req.supabaseUser?.atlassian_account_id
+    || req.supabaseUser?.user_metadata?.atlassian_account_id;
+  if (jwtAtlassianId) {
+    const supabase = getClient();
+    if (!supabase) return null;
+    const { data: user, error } = await supabase
+      .from('users')
+      .select('id, organization_id, atlassian_account_id')
+      .eq('atlassian_account_id', jwtAtlassianId)
+      .maybeSingle();
+    if (!error && user) {
+      const org = await getOrganizationById(user.organization_id);
+      return {
+        userId: user.id,
+        organizationId: user.organization_id,
+        atlassianAccountId: user.atlassian_account_id,
+        orgId: org?.jira_cloud_id || user.organization_id
+      };
+    }
+  }
+
+  // Slow path: sub-based lookup (fallback for tokens without atlassian_account_id claim)
   if (req.supabaseUser?.sub) {
     const user = await getUserById(req.supabaseUser.sub);
     if (!user) return null;
@@ -43,7 +66,7 @@ async function resolveCaller(req) {
     };
   }
 
-  // Path 2: Atlassian token — req.atlassianUser.account_id is the atlassian acct id
+  // Path 3: Atlassian token — req.atlassianUser.account_id is the atlassian acct id
   if (req.atlassianUser?.account_id) {
     const accountId = req.atlassianUser.account_id;
     const supabase = getClient();

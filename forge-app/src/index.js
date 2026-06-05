@@ -20,7 +20,7 @@ import { registerAccuracyDashboardResolvers } from './resolvers/accuracyDashboar
 import { registerDescriptionResolvers } from './resolvers/descriptionResolvers.js';
 import { registerDqNudgePreferenceResolvers } from './resolvers/dqNudgePreferenceResolvers.js';
 import { runScheduledWorklogSync } from './services/scheduledWorklogSync.js';
-import { runDescriptionQualityNudge } from './services/descriptionQualityNudge.js';
+import { runDescriptionQualityNudge, analyzeIssue } from './services/descriptionQualityNudge.js';
 import { handleIssueUpdateEvent, scheduledIssueCacheRefresh } from './services/issueCacheService.js';
 import { handleAppInstalled, handleAppUninstalled } from './services/lifecycleService.js';
 import { handlePersonalDataRequest } from './services/personalDataService.js';
@@ -56,7 +56,7 @@ export const scheduledWorklogSyncHandler = async () => {
 // Export scheduled trigger handler for description-quality nudges (Enhancement #13).
 // Fires hourly via two staggered triggers (A/B) — a KVS lock prevents overlap.
 export const descriptionQualityNudgeHandler = async (event, context) => {
-  return await runDescriptionQualityNudge({ context });
+  return await runDescriptionQualityNudge({ context, analyzer: analyzeIssue });
 };
 
 // Export issue cache trigger handler — fires on avi:jira:updated:issue

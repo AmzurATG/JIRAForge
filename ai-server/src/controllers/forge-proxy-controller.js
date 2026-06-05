@@ -240,9 +240,13 @@ async function executeSelect(queryBuilder) {
 }
 
 /**
- * Execute INSERT query
+ * Execute INSERT (or UPSERT when query.on_conflict is present) query
  */
-async function executeInsert(supabase, table, body) {
+async function executeInsert(supabase, table, body, query) {
+  const onConflict = query?.on_conflict;
+  if (onConflict) {
+    return supabase.from(table).upsert(body, { onConflict, ignoreDuplicates: false }).select();
+  }
   return supabase.from(table).insert(body).select();
 }
 
@@ -275,7 +279,7 @@ async function executeMethod(supabase, method, table, queryBuilder, body, query)
       return executeSelect(queryBuilder);
     case 'POST':
     case 'INSERT':
-      return executeInsert(supabase, table, body);
+      return executeInsert(supabase, table, body, query);
     case 'PATCH':
     case 'UPDATE':
       return executeUpdate(supabase, table, body, query);

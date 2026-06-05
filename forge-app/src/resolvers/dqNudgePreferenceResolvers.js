@@ -47,8 +47,7 @@ async function loadFromServer(accountId, orgId) {
   const data = await supabaseQuery(TABLE, {
     method: 'GET',
     query: {
-      account_id: `eq.${accountId}`,
-      org_id: `eq.${orgId}`,
+      eq: { account_id: accountId, org_id: orgId },
       _select: 'bell_enabled,popup_enabled'
     }
   });

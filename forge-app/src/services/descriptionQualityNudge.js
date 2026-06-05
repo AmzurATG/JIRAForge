@@ -105,6 +105,52 @@ export function groupByAssignee(issues) {
 }
 
 // ---------------------------------------------------------------------------
+// Jira base URL (for notification payload URLs)
+// ---------------------------------------------------------------------------
+async function fetchJiraBaseUrl() {
+  try {
+    const resp = await api.asApp().requestJira(
+      route`/rest/api/3/serverInfo`,
+      { method: 'GET', headers: { Accept: 'application/json' } }
+    );
+    if (!resp.ok) return null;
+    const info = await resp.json();
+    return info.baseUrl || null;
+  } catch {
+    return null;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Warm-up analyzer — fetches issue and calls the AI server analyze endpoint.
+// ---------------------------------------------------------------------------
+export async function analyzeIssue(issueKey) {
+  try {
+    const issueResp = await api.asApp().requestJira(
+      route`/rest/api/3/issue/${issueKey}`,
+      { method: 'GET', headers: { Accept: 'application/json' } }
+    );
+    if (!issueResp.ok) return null;
+    const issue = await issueResp.json();
+    const data = await remoteRequest('/api/forge/description/analyze', {
+      method: 'POST',
+      body: {
+        issueKey,
+        title: issue.fields?.summary || '',
+        description: issue.fields?.description || null,
+        issueType: issue.fields?.issuetype?.name || 'Task',
+        projectKey: issue.fields?.project?.key || issueKey.split('-')[0]
+      }
+    });
+    const result = data || {};
+    return typeof result.score === 'number' ? result : null;
+  } catch (err) {
+    console.warn(`[DQNudge] analyzeIssue failed for ${issueKey}:`, err.message);
+    return null;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Cache score lookup + warm-up
 // ---------------------------------------------------------------------------
 async function loadCachedScores(orgId, issueKeys) {
@@ -112,8 +158,8 @@ async function loadCachedScores(orgId, issueKeys) {
   const data = await supabaseQuery('description_quality_cache', {
     method: 'GET',
     query: {
-      org_id: `eq.${orgId}`,
-      issue_key: `in.(${issueKeys.join(',')})`,
+      eq: { org_id: orgId },
+      in: { issue_key: issueKeys },
       _select: 'issue_key,score'
     }
   });
@@ -155,10 +201,9 @@ async function loadRecentNotifications({ orgId, accountId, issueKeys, now = Date
   const data = await supabaseQuery('description_quality_notifications', {
     method: 'GET',
     query: {
-      org_id: `eq.${orgId}`,
-      account_id: `eq.${accountId}`,
-      issue_key: `in.(${issueKeys.join(',')})`,
-      notified_at: `gte.${sinceIso}`,
+      eq: { org_id: orgId, account_id: accountId },
+      in: { issue_key: issueKeys },
+      gte: { notified_at: sinceIso },
       _select: 'issue_key,channel,notified_at,snooze_until'
     }
   });
@@ -189,8 +234,8 @@ async function loadPreferencesMap(orgId, accountIds) {
   const data = await supabaseQuery('description_quality_nudge_preferences', {
     method: 'GET',
     query: {
-      org_id: `eq.${orgId}`,
-      account_id: `in.(${accountIds.join(',')})`,
+      eq: { org_id: orgId },
+      in: { account_id: accountIds },
       _select: 'account_id,bell_enabled,popup_enabled'
     }
   });
@@ -298,6 +343,7 @@ export async function runDescriptionQualityNudge(deps = {}) {
     return { success: false, error: 'missing cloudId' };
   }
 
+  const jiraBaseUrl = await fetchJiraBaseUrl();
   const acquired = await lockAcquire(now());
   if (!acquired) {
     console.log('[DQNudge] Lock held — skipping this run.');
@@ -391,7 +437,9 @@ export async function runDescriptionQualityNudge(deps = {}) {
         }
 
         const score = scores.get(cand.key);
-        const issueUrl = `https://jira/browse/${cand.key}`; // baseUrl injected client-side
+        const issueUrl = jiraBaseUrl
+          ? `${jiraBaseUrl}/browse/${cand.key}`
+          : `https://atlassian.net/browse/${cand.key}`;
         const appUrl = `#mf-improve?issueKey=${cand.key}`;
         const payload = { summary: cand.summary, issueUrl, appUrl };
 
