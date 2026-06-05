@@ -558,6 +558,19 @@ def set_runtime_privacy_config(config_dict):
 
 
 # ============================================================================
+# REQUEST ID & JWT UTILITIES
+# ============================================================================
+
+def generate_request_id():
+    """B-20: Generate unique request ID for logging correlation.
+    
+    Format: desktop_{16-char-hex}
+    Example: desktop_a1b2c3d4e5f67890
+    """
+    return f"desktop_{uuid.uuid4().hex[:16]}"
+
+
+# ============================================================================
 # VERSION CHECKING UTILITIES
 # ============================================================================
 
@@ -2343,7 +2356,15 @@ class AtlassianAuthManager:
         The double-check inside the lock compares the refresh_token value: if it changed
         while waiting for the lock, another thread already did the refresh successfully,
         so we skip the network call and return True.
+        
+        B-15: Rate limiting added to prevent refresh storms (min 5 seconds between calls).
         """
+        # B-15: Rate limiting - prevent refresh storms
+        time_since_last_refresh = time.time() - self._last_token_refresh_time
+        if time_since_last_refresh < self._token_refresh_min_interval:
+            print(f"[INFO] Token refresh rate limited ({time_since_last_refresh:.1f}s since last refresh)")
+            return False
+        
         # Fast-path: if the refresh token was marked invalid, check if the grace
         # period (30 min) has elapsed. If so, auto-clear and allow one more attempt.
         # This prevents a transient outage from permanently killing the session.
@@ -2385,6 +2406,9 @@ class AtlassianAuthManager:
             return False
 
         with self._refresh_lock:
+            # B-15: Update rate limit timestamp inside lock
+            self._last_token_refresh_time = time.time()
+            
             # Re-check invalid flag inside the lock — another thread may have set it
             # while we were waiting to acquire the lock.
             if getattr(self, '_refresh_token_invalid', False):
@@ -3330,6 +3354,84 @@ class OfflineManager:
         except Exception as e:
             print(f"[ERROR] Failed to get anonymous count: {e}")
             return 0
+    
+    def queue_finalization(self, finalization_data):
+        """B-12: Queue a failed finalization for retry.
+        
+        Args:
+            finalization_data: Dict with screenshot_id, end_time, duration_seconds, reason, queued_at
+        """
+        try:
+            conn = self.db_manager.get_connection()
+            cursor = conn.cursor()
+            
+            # Create table if it doesn't exist (migration-free approach)
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS pending_finalizations (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    screenshot_id TEXT UNIQUE NOT NULL,
+                    end_time TEXT NOT NULL,
+                    duration_seconds INTEGER NOT NULL,
+                    reason TEXT,
+                    queued_at REAL NOT NULL,
+                    retry_count INTEGER DEFAULT 0,
+                    last_retry_at REAL
+                )
+            ''')
+            
+            cursor.execute('''
+                INSERT OR REPLACE INTO pending_finalizations (
+                    screenshot_id, end_time, duration_seconds, reason, queued_at, retry_count
+                ) VALUES (?, ?, ?, ?, ?, 0)
+            ''', (
+                finalization_data['screenshot_id'],
+                finalization_data['end_time'],
+                finalization_data['duration_seconds'],
+                finalization_data['reason'],
+                finalization_data['queued_at']
+            ))
+            
+            conn.commit()
+            print(f"[OK] Queued finalization for screenshot {finalization_data['screenshot_id']}")
+        except Exception as e:
+            conn.rollback()
+            print(f"[ERROR] Failed to queue finalization: {e}")
+    
+    def get_pending_finalizations(self, limit=50):
+        """B-12: Get pending finalizations for retry.
+        
+        Returns:
+            List of pending finalization dicts
+        """
+        try:
+            conn = self.db_manager.get_connection()
+            cursor = conn.cursor()
+            
+            cursor.execute('''
+                SELECT * FROM pending_finalizations
+                WHERE retry_count < 5
+                ORDER BY queued_at ASC
+                LIMIT ?
+            ''', (limit,))
+            
+            columns = [desc[0] for desc in cursor.description]
+            rows = cursor.fetchall()
+            return [dict(zip(columns, row)) for row in rows]
+        except Exception as e:
+            print(f"[ERROR] Failed to get pending finalizations: {e}")
+            return []
+    
+    def mark_finalization_complete(self, screenshot_id):
+        """B-12: Mark finalization as complete and remove from queue."""
+        try:
+            conn = self.db_manager.get_connection()
+            cursor = conn.cursor()
+            
+            cursor.execute('DELETE FROM pending_finalizations WHERE screenshot_id = ?', (screenshot_id,))
+            conn.commit()
+        except Exception as e:
+            conn.rollback()
+            print(f"[ERROR] Failed to mark finalization complete: {e}")
     
     def associate_anonymous_records(self, user_id, organization_id=None):
         """Associate all anonymous offline records with a user after login
@@ -4823,6 +4925,31 @@ class ActiveSessionManager:
             except Exception as e:
                 conn.rollback()
                 print(f"[ERROR] stop_current_timer failed: {e}")
+    
+    def emergency_save(self):
+        """B-10: Emergency save on system shutdown or crash.
+        
+        Stops current timer, commits all pending changes, and checkpoints WAL.
+        Called from WM_ENDSESSION handler or atexit.
+        """
+        try:
+            with self._lock:
+                conn = self.db_manager.get_connection()
+                cursor = conn.cursor()
+                try:
+                    # Stop timer and commit
+                    now = datetime.now(timezone.utc).isoformat()
+                    self._stop_timer_internal(cursor, now)
+                    conn.commit()
+                    print("[OK] Emergency save: timer stopped")
+                except Exception as e:
+                    conn.rollback()
+                    print(f"[WARN] Emergency timer stop failed: {e}")
+            
+            # Checkpoint WAL outside lock to avoid deadlock
+            self.db_manager.checkpoint_wal()
+        except Exception as e:
+            print(f"[ERROR] Emergency save failed: {e}")
 
     def start_new_timer(self):
         """Reset _current_key so the next window switch starts a fresh session.
@@ -5436,9 +5563,19 @@ class TimeTracker:
         self._pending_idle_records = []  # Idle records waiting to be uploaded in next batch
         self._tracking_thread = None
         self._activity_monitor_thread = None  # Activity monitoring thread
+        self._activity_monitor_failed = False  # B-1: Track if pynput failed — enables fallback
+        self._activity_monitor_heartbeat = 0  # B-2: Last heartbeat from activity monitor
+        self._activity_monitor_heartbeat_timeout = 60  # B-2: 1 min without heartbeat = dead
+        self._last_activity_monitor_check = 0  # B-2: Last watchdog check time
+        self._last_window_switch_time = time.time()  # B-1: For fallback idle detection
         self._system_event_thread = None  # Windows sleep/lock event listener
         self._system_event_hwnd = None  # HWND for the system event message-only window
         self.screenshot_hash = None
+        self._offline_finalization_queue = []  # B-12: Queue for failed finalizations
+        self._last_token_refresh_time = 0  # B-15: Rate limiting for token refresh
+        self._token_refresh_min_interval = 5  # B-15: Min 5 seconds between refreshes
+        self.idle_resume_event = threading.Event()  # B-3: Thread-safe event instead of boolean
+        self._idle_record_pending = threading.Event()  # B-6: Prevent duplicate idle records
         
         # Event-based tracking: Window switch detection
         self.current_window_key = None  # Unique identifier for current window (app + title)
@@ -5855,6 +5992,37 @@ class TimeTracker:
         except Exception as e:
             print(f"[ERROR] Failed to set Supabase JWT: {e}")
             return False
+    
+    def _ensure_valid_supabase_jwt(self):
+        """B-16: Ensure Supabase JWT is valid before operations.
+        
+        Proactively refreshes JWT if expires within 5 minutes.
+        Returns True if JWT is valid/refreshed, False if refresh failed.
+        """
+        expires_at = self.auth_manager.tokens.get('supabase_token_expires_at', 0)
+        current_time = time.time()
+        time_remaining = expires_at - current_time
+        
+        # Refresh if expires within 5 minutes (300s buffer)
+        if time_remaining < 300:
+            if time_remaining > 0:
+                print(f"[JWT] Supabase JWT expires in {time_remaining:.0f}s — refreshing...")
+            else:
+                print(f"[JWT] Supabase JWT expired {-time_remaining:.0f}s ago — refreshing...")
+            
+            new_token = self.auth_manager.get_valid_supabase_token()
+            if not new_token:
+                print("[ERROR] Failed to refresh Supabase JWT")
+                return False
+            
+            # Update JWT on Supabase client
+            if not self._set_supabase_jwt():
+                print("[ERROR] Failed to set refreshed Supabase JWT")
+                return False
+            
+            print("[OK] Supabase JWT refreshed proactively")
+        
+        return True
 
     def setup_routes(self):
         """Setup Flask routes"""
@@ -10215,17 +10383,16 @@ class TimeTracker:
                     return None
             
             # Ensure Supabase JWT is valid before uploading
-            sb_expires_at = self.auth_manager.tokens.get('supabase_token_expires_at', 0)
-            if sb_expires_at and time.time() > (sb_expires_at - 300):
-                if not self._set_supabase_jwt():
-                    # JWT refresh failed — save offline
-                    local_id = self.offline_manager.save_screenshot_offline(
-                        screenshot_data, img_bytes, thumb_bytes
-                    )
-                    if local_id:
-                        self.last_screenshot_end_time = end_time
-                        return f"offline_{local_id}"
-                    return None
+            # B-16: Proactive JWT refresh with 5-minute buffer
+            if not self._ensure_valid_supabase_jwt():
+                print("[WARN] Supabase JWT invalid, queuing for offline")
+                local_id = self.offline_manager.save_screenshot_offline(
+                    screenshot_data, img_bytes, thumb_bytes
+                )
+                if local_id:
+                    self.last_screenshot_end_time = end_time
+                    return f"offline_{local_id}"
+                return None
 
             # ONLINE MODE: Upload to Supabase
             screenshot_result = storage_client.storage.from_('screenshots').upload(
@@ -10372,7 +10539,10 @@ class TimeTracker:
 
     def _finalize_active_session(self, reason="idle"):
         """Finalize the current work session by updating its end_time in the DB.
-        Called when entering idle (timeout, system sleep, or screen lock)."""
+        Called when entering idle (timeout, system sleep, or screen lock).
+        
+        B-12: If network fails, saves finalization to offline queue for retry.
+        """
         if self.current_window_screenshot_id is None or self.current_window_db_start_time is None:
             return
         try:
@@ -10392,19 +10562,36 @@ class TimeTracker:
                 duration_seconds = 1
                 end_time = self.current_window_db_start_time + timedelta(seconds=1)
 
-            db_client = self.supabase
-            update_result = db_client.table('screenshots').update({
-                'end_time': end_time.isoformat(),
-                'timestamp': end_time.isoformat(),
-                'duration_seconds': duration_seconds
-            }).eq('id', self.current_window_screenshot_id).execute()
+            # B-12: Try online update first, fallback to offline queue
+            try:
+                db_client = self.supabase
+                update_result = db_client.table('screenshots').update({
+                    'end_time': end_time.isoformat(),
+                    'timestamp': end_time.isoformat(),
+                    'duration_seconds': duration_seconds
+                }).eq('id', self.current_window_screenshot_id).execute()
 
-            if update_result.data:
-                print(f"[OK] Finalized work session ({reason}):")
-                print(f"     - Record ID: {self.current_window_screenshot_id}")
-                print(f"     - Start: {self.current_window_db_start_time.strftime('%H:%M:%S')} (from DB)")
-                print(f"     - End (last activity): {end_time.strftime('%H:%M:%S')}")
-                print(f"     - Duration: {duration_seconds}s")
+                if update_result.data:
+                    print(f"[OK] Finalized work session ({reason}):")
+                    print(f"     - Record ID: {self.current_window_screenshot_id}")
+                    print(f"     - Start: {self.current_window_db_start_time.strftime('%H:%M:%S')} (from DB)")
+                    print(f"     - End (last activity): {end_time.strftime('%H:%M:%S')}")
+                    print(f"     - Duration: {duration_seconds}s")
+            except Exception as network_error:
+                # B-12: Network failure - save to offline queue
+                print(f"[WARN] Network finalization failed: {network_error}")
+                print(f"[INFO] Queueing finalization for offline retry")
+                finalization_data = {
+                    'screenshot_id': self.current_window_screenshot_id,
+                    'end_time': end_time.isoformat(),
+                    'duration_seconds': duration_seconds,
+                    'reason': reason,
+                    'queued_at': time.time()
+                }
+                self._offline_finalization_queue.append(finalization_data)
+                # Save to SQLite for persistence across restarts
+                if hasattr(self, 'offline_manager'):
+                    self.offline_manager.queue_finalization(finalization_data)
 
             self.current_window_screenshot_id = None
             self.current_window_record_created_at = None
@@ -10625,31 +10812,40 @@ class TimeTracker:
         except ImportError:
             print("[WARN] pynput not installed - idle detection disabled")
             print("[INFO] Install with: pip install pynput")
+            self._activity_monitor_failed = True  # B-1: Mark failure for fallback
             return
 
         def on_activity(*args, **kwargs):
             """Called on any mouse or keyboard activity"""
             self.last_activity_time = time.time()
+            self._activity_monitor_heartbeat = time.time()  # B-2: Update heartbeat
 
             # Signal that we need to resume from idle (tracking loop will handle the state reset)
             if self.is_idle:
-                self.needs_idle_resume = True
+                self.idle_resume_event.set()  # B-3: Use Event instead of boolean
 
-        # Start mouse listener
-        mouse_listener = mouse.Listener(
-            on_move=on_activity,
-            on_click=on_activity,
-            on_scroll=on_activity
-        )
-        mouse_listener.start()
+        try:
+            # Start mouse listener
+            mouse_listener = mouse.Listener(
+                on_move=on_activity,
+                on_click=on_activity,
+                on_scroll=on_activity
+            )
+            mouse_listener.start()
 
-        # Start keyboard listener
-        keyboard_listener = keyboard.Listener(
-            on_press=on_activity
-        )
-        keyboard_listener.start()
+            # Start keyboard listener
+            keyboard_listener = keyboard.Listener(
+                on_press=on_activity
+            )
+            keyboard_listener.start()
 
-        print("[OK] Activity monitoring started (5-minute idle timeout)")
+            # Initialize heartbeat
+            self._activity_monitor_heartbeat = time.time()  # B-2
+            print("[OK] Activity monitoring started (5-minute idle timeout)")
+        except Exception as e:
+            print(f"[ERROR] Activity monitor failed to start: {e}")
+            print("[INFO] Fallback: idle detection via window switches")
+            self._activity_monitor_failed = True  # B-1: Mark failure for fallback
 
     def monitor_system_events(self):
         """Monitor Windows sleep/lock events to instantly detect inactivity.
@@ -10674,6 +10870,7 @@ class TimeTracker:
             WM_WTSSESSION_CHANGE = 0x02B1
             WTS_SESSION_LOCK = 0x7
             WTS_SESSION_UNLOCK = 0x8
+            WM_ENDSESSION = 0x0016  # B-9: Windows shutdown notification
             HWND_MESSAGE = wintypes.HWND(-3)
             NOTIFY_FOR_THIS_SESSION = 0
 
@@ -10702,7 +10899,7 @@ class TimeTracker:
                         elif wparam == PBT_APMRESUMEAUTOMATIC:
                             print("[INFO] System wake detected — will resume tracking on activity")
                             self._create_idle_record("system sleep")
-                            self.needs_idle_resume = True
+                            self.idle_resume_event.set()  # B-3: Use Event
                     elif msg == WM_WTSSESSION_CHANGE:
                         if wparam == WTS_SESSION_LOCK:
                             print("[INFO] Screen lock detected — entering idle state")
@@ -10710,7 +10907,20 @@ class TimeTracker:
                         elif wparam == WTS_SESSION_UNLOCK:
                             print("[INFO] Screen unlock detected — will resume tracking on activity")
                             self._create_idle_record("screen lock")
-                            self.needs_idle_resume = True
+                            self.idle_resume_event.set()  # B-3: Use Event
+                    elif msg == WM_ENDSESSION:  # B-9: Windows shutdown
+                        print("[INFO] System shutdown detected — saving state")
+                        try:
+                            # Finalize current session
+                            self._finalize_active_session("system shutdown")
+                            # Emergency save to SQLite
+                            if hasattr(self, 'session_manager'):
+                                self.session_manager.emergency_save()
+                            # Upload pending data
+                            self.upload_activity_batch()
+                            print("[OK] Emergency shutdown save completed")
+                        except Exception as e:
+                            print(f"[ERROR] Emergency shutdown save failed: {e}")
                 except Exception as e:
                     print(f"[ERROR] Error in system event handler: {e}")
                 return user32.DefWindowProcW(hwnd, msg, wparam, lparam)
@@ -11023,13 +11233,25 @@ class TimeTracker:
                     # Reset ALL tracking state — new session starts fresh
                     if self.resume_from_idle():
                         print(f"[INFO] Resumed from suspension — tracking state reset")
-                    self.needs_idle_resume = False
+                    self.idle_resume_event.clear()  # B-3: Clear event
                     self.last_interval_time = current_loop_time
                     self.last_activity_time = current_loop_time
                     last_loop_time = current_loop_time
                     self.add_admin_log('INFO', f'System suspension detected ({int(time_since_last_loop)}s gap) — session finalized and uploaded')
                     continue
                 last_loop_time = current_loop_time
+                
+                # B-2: Watchdog check for activity monitor thread
+                if time.time() - self._last_activity_monitor_check > 60:
+                    self._last_activity_monitor_check = time.time()
+                    if not self._activity_monitor_thread or not self._activity_monitor_thread.is_alive():
+                        print("[WARN] Activity monitor thread is dead — restarting")
+                        self._start_activity_monitor()
+                    elif not self._activity_monitor_failed:
+                        time_since_heartbeat = time.time() - self._activity_monitor_heartbeat
+                        if time_since_heartbeat > self._activity_monitor_heartbeat_timeout:
+                            print(f"[WARN] Activity monitor heartbeat timeout ({time_since_heartbeat:.0f}s) — restarting")
+                            self._start_activity_monitor()
                 # === END suspension detection ===
 
                 # Check for shutdown signal (for graceful update/exit)
@@ -11121,6 +11343,25 @@ class TimeTracker:
                 # Check for idle timeout (use configurable threshold)
                 idle_duration = time.time() - self.last_activity_time
                 current_idle_timeout = self.tracking_settings.get('idle_threshold_seconds', self.idle_timeout)
+                
+                # B-1: Fallback idle detection when pynput failed
+                # If pynput is not working, treat window switches as activity
+                if self._activity_monitor_failed:
+                    # Get current window to detect switches
+                    window_info_for_idle = self.get_active_window()
+                    if window_info_for_idle:
+                        window_key = f"{window_info_for_idle.get('app', '')}__{window_info_for_idle.get('title', '')}"
+                        # Check if window changed (indicates user activity)
+                        if hasattr(self, '_last_window_key_for_idle'):
+                            if window_key != self._last_window_key_for_idle:
+                                # Window switched - update activity time
+                                self.last_activity_time = time.time()
+                                self._last_window_switch_time = time.time()
+                                if self.is_idle:
+                                    print("[INFO] Window switch detected (fallback) - resuming from idle")
+                                    self.idle_resume_event.set()  # B-3: Use Event
+                        self._last_window_key_for_idle = window_key
+                
                 if idle_duration > current_idle_timeout:
                     if self.state == TrackingState.ACTIVE:
                         idle_start_time = datetime.now(timezone.utc)
@@ -11137,13 +11378,13 @@ class TimeTracker:
                             print(f"[WARN] Pre-idle batch upload failed: {e}")
 
                     # While idle, check every 5 seconds for activity
-                    # Don't skip if needs_idle_resume is set - we need to process the resume
-                    if not self.needs_idle_resume:
+                    # Don't skip if idle_resume_event is set - we need to process the resume
+                    if not self.idle_resume_event.is_set():  # B-3: Use Event
                         time.sleep(5)
                         continue
 
                 # Resume from idle if activity was detected by pynput
-                if self.needs_idle_resume:
+                if self.idle_resume_event.is_set():  # B-3: Use Event
                     resume_time = datetime.now(timezone.utc)
                     print(f"[INFO] Activity detected — resuming from idle")
                     
@@ -11157,8 +11398,8 @@ class TimeTracker:
                             except Exception as e:
                                 print(f"[WARN] Idle record flush failed: {e}")
                     
-                    # Clear the resume flag regardless of whether resume succeeded
-                    self.needs_idle_resume = False
+                    # Clear the event regardless of whether resume succeeded
+                    self.idle_resume_event.clear()  # B-3: Clear event
 
                 # Guard: if screen is locked (e.g., PC woke briefly from sleep but user
                 # hasn't unlocked), re-enter idle mode instead of tracking LockApp.exe.
@@ -11435,11 +11676,7 @@ class TimeTracker:
         self._tracking_thread.start()
 
         # Start activity monitoring thread (for idle detection)
-        if not self._activity_monitor_thread or not self._activity_monitor_thread.is_alive():
-            self._activity_monitor_thread = threading.Thread(
-                target=self.monitor_user_activity, daemon=True
-            )
-            self._activity_monitor_thread.start()
+        self._start_activity_monitor()  # B-2: Use helper method for watchdog restart
 
         # Start system event monitoring thread (sleep/lock detection)
         if WIN32_AVAILABLE and (not self._system_event_thread or not self._system_event_thread.is_alive()):
@@ -11447,6 +11684,16 @@ class TimeTracker:
                 target=self.monitor_system_events, daemon=True
             )
             self._system_event_thread.start()
+    
+    def _start_activity_monitor(self):
+        \"\"\"B-2: Start or restart activity monitor thread (helper for watchdog).\"\"\"
+        if not self._activity_monitor_thread or not self._activity_monitor_thread.is_alive():
+            self._activity_monitor_thread = threading.Thread(
+                target=self.monitor_user_activity, daemon=True
+            )
+            self._activity_monitor_thread.start()
+            self._activity_monitor_heartbeat = time.time()  # Reset heartbeat
+            print(\"[OK] Activity monitor (re)started\")
 
         # Start offline sync thread
         if not self._sync_thread or not self._sync_thread.is_alive():
@@ -12109,14 +12356,46 @@ class TimeTracker:
                 print(f"[ERROR] System tray fallback also failed: {e2}")
     
     def quit_app(self):
-        """Quit application"""
-        # Update desktop status to logged out before quitting
-        self._update_desktop_status(logged_in=False)
-
-        self._shutdown_cleanup()
+        """B-13: Quit application with bounded join on tracking thread"""
+        print("[EXIT] Shutting down application...")
+        
+        try:
+            # Update desktop status to logged out before quitting
+            self._update_desktop_status(logged_in=False)
+        except Exception as e:
+            print(f"[WARN] Status update failed during shutdown: {e}")
+        
+        # Signal tracking thread to stop
+        self.running = False
+        self.tracking_active = False
+        
+        # B-13: Wait for tracking thread to finish (bounded 10s)
+        if hasattr(self, '_tracking_thread') and self._tracking_thread and self._tracking_thread.is_alive():
+            print("[EXIT] Waiting for tracking thread to finish (max 10s)...")
+            self._tracking_thread.join(timeout=10)
+            
+            if self._tracking_thread.is_alive():
+                print("[WARN] Tracking thread did not exit cleanly")
+            else:
+                print("[OK] Tracking thread finished")
+        
+        # Run shutdown cleanup
+        try:
+            self._shutdown_cleanup()
+        except Exception as e:
+            print(f"[WARN] Shutdown cleanup failed: {e}")
+        
+        # Stop tracking
         self.stop_tracking()
+        
+        # Stop tray icon
         if self.tray:
-            self.tray.stop()
+            try:
+                self.tray.stop()
+            except Exception:
+                pass
+        
+        print("[EXIT] Exiting")
         sys.exit(0)
     
     def run_web_server(self):
