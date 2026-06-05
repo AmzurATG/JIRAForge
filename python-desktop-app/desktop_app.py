@@ -601,7 +601,7 @@ load_dotenv()
 
 # Application version - IMPORTANT: Update this when releasing new versions
 # This is used for update checking and notifications
-APP_VERSION = "1.0.1"
+APP_VERSION = "1.0.0"
 
 # True when the process is running inside an AppImage bundle.
 # The AppImage runtime sets the $APPIMAGE env var to the path of the .AppImage
@@ -2970,6 +2970,7 @@ class AtlassianAuthManager:
 
         # Initialize secure storage
         self.secure_storage = SecureTokenStorage(get_app_data_dir())
+        self._log_keyring_availability()
 
         # Migrate from plain-text JSON to secure storage if needed
         self._migrate_from_plaintext()
@@ -2980,6 +2981,24 @@ class AtlassianAuthManager:
         # Which provider authenticated this session: 'atlassian' (default, Jira)
         # or 'google' (non-Jira SSO). Persisted in token metadata so it survives restarts.
         self.auth_provider = self.tokens.get('auth_provider', 'atlassian')
+
+    def _log_keyring_availability(self):
+        """Log whether a functional keyring backend is available (Linux diagnostic)."""
+        if not KEYRING_AVAILABLE:
+            print("[WARN] Python 'keyring' package not installed — tokens stored in encrypted file only")
+            return
+        try:
+            import keyring as _kr
+            backend = _kr.get_keyring()
+            backend_name = type(backend).__name__
+            if 'Fail' in backend_name or 'Null' in backend_name:
+                print(f"[WARN] Keyring backend '{backend_name}' is a no-op — "
+                      "tokens will use encrypted file fallback. "
+                      "On headless Linux, install 'gnome-keyring' or 'pass' and ensure D-Bus is running.")
+            else:
+                print(f"[INFO] Keyring backend: {backend_name}")
+        except Exception as e:
+            print(f"[WARN] Could not query keyring backend: {e} — tokens will use encrypted file fallback")
 
     def _migrate_from_plaintext(self):
         """Migrate sensitive tokens from plain-text JSON to secure storage.
@@ -3490,25 +3509,39 @@ class AtlassianAuthManager:
                     next_action = 'retry_refresh'
 
                     if is_permanent_failure:
-                        # Track consecutive permanent failures with time-windowed counting.
-                        # Reset the counter if the last failure was more than 10 minutes ago
-                        # (i.e. failures are spread out, not a rapid cascade).
                         now = time.time()
-                        last_fail_time = getattr(self, '_last_refresh_fail_time', 0)
-                        if (now - last_fail_time) > 600:  # 10 min window
-                            self._refresh_fail_count = 0  # Reset — failures are not consecutive
-                        self._last_refresh_fail_time = now
-                        self._refresh_fail_count = getattr(self, '_refresh_fail_count', 0) + 1
-                        projected_fail_count = self._refresh_fail_count
-                        if self._refresh_fail_count >= 5:
-                            print(f"[WARN] Refresh token failed {self._refresh_fail_count} times within window - marking invalid (will auto-recover in 30 min)")
+                        # Distinguish between server-explicit error codes (certain) and
+                        # heuristic text-pattern matches (may have false positives).
+                        # When the server explicitly confirms OAUTH_REAUTH_REQUIRED, mark
+                        # invalid IMMEDIATELY (1 request). Preserve the 5-failure threshold
+                        # only for text-matched errors as a safety net against transients.
+                        server_explicit_reauth = (str(error_data.get('errorCode', '')).upper() == 'OAUTH_REAUTH_REQUIRED')
+                        if server_explicit_reauth:
+                            print("[WARN] Server confirmed refresh token permanently invalid (OAUTH_REAUTH_REQUIRED) — marking invalid immediately")
                             self._refresh_token_invalid = True
-                            self._refresh_invalid_set_at = now  # Record when flag was set for auto-expiry
+                            self._refresh_invalid_set_at = now
+                            self._refresh_fail_count = 5  # Saturate counter to block further retries
+                            projected_fail_count = 5
                             invalid_flag_after_failure = True
                             next_action = 'show_auth_notification'
                         else:
-                            print(f"[WARN] Refresh token failure {self._refresh_fail_count}/5 - will retry before requiring re-auth")
-                            next_action = 'retry_refresh'
+                            # Heuristic text-match — keep the 5-failure threshold as a
+                            # safety net to avoid false-positives from transient errors.
+                            last_fail_time = getattr(self, '_last_refresh_fail_time', 0)
+                            if (now - last_fail_time) > 600:  # 10 min window
+                                self._refresh_fail_count = 0  # Reset — failures are not consecutive
+                            self._last_refresh_fail_time = now
+                            self._refresh_fail_count = getattr(self, '_refresh_fail_count', 0) + 1
+                            projected_fail_count = self._refresh_fail_count
+                            if self._refresh_fail_count >= 5:
+                                print(f"[WARN] Refresh token failed {self._refresh_fail_count} times within window - marking invalid (will auto-recover in 30 min)")
+                                self._refresh_token_invalid = True
+                                self._refresh_invalid_set_at = now
+                                invalid_flag_after_failure = True
+                                next_action = 'show_auth_notification'
+                            else:
+                                print(f"[WARN] Refresh token failure {self._refresh_fail_count}/5 - will retry before requiring re-auth")
+                                next_action = 'retry_refresh'
                     else:
                         next_action = 'retry_refresh'
 
@@ -6899,12 +6932,20 @@ class TimeTracker:
             print(f"[ERROR] Failed to set Supabase JWT: {e}")
             return False
 
+    def _is_session_valid(self):
+        """Return True only when current_user exists AND the refresh token is not marked invalid."""
+        if not self.current_user:
+            return False
+        if getattr(self.auth_manager, '_refresh_token_invalid', False):
+            return False
+        return True
+
     def setup_routes(self):
         """Setup Flask routes"""
-        
+
         @self.app.route('/')
         def index():
-            if self.current_user:
+            if self._is_session_valid():
                 user_account_id = self.current_user.get('account_id')
                 if not self.consent_manager.has_valid_consent(user_account_id):
                     return redirect('/consent')
@@ -6913,12 +6954,16 @@ class TimeTracker:
 
         @self.app.route('/login')
         def login():
-            if self.current_user:
+            session_expired = (
+                self.current_user is not None
+                and getattr(self.auth_manager, '_refresh_token_invalid', False)
+            )
+            if self._is_session_valid():
                 user_account_id = self.current_user.get('account_id')
                 if not self.consent_manager.has_valid_consent(user_account_id):
                     return redirect('/consent')
                 return redirect('/success')
-            return self.render_login_page()
+            return self.render_login_page(session_expired=session_expired)
         
         @self.app.route('/auth/atlassian')
         def auth_atlassian():
@@ -9911,6 +9956,14 @@ class TimeTracker:
             else:
                 _linux_notify("Time Tracker", "Your session has expired. Please open Time Tracker and log in again.", urgency="critical")
                 print("[WARN] Re-authentication required (notification unavailable)")
+                # On Linux, notify-send is fire-and-forget with no click callbacks.
+                # Proactively open the browser so the user can re-authenticate
+                # immediately without hunting for the tray icon.
+                try:
+                    webbrowser.open(f'http://localhost:{self.web_port}/login')
+                    print("[INFO] Opened browser to login page for re-authentication")
+                except Exception as _e:
+                    print(f"[WARN] Could not auto-open browser after reauth notification: {_e}")
             log_auth_diagnostic(
                 'auth_notification_unavailable',
                 level='WARNING',
@@ -13549,7 +13602,11 @@ class TimeTracker:
 
     def _open_tray_fallback(self, icon=None, menu_item=None):
         """Fallback action for tray backends that do not support popup menus."""
-        target = '/login' if not self.current_user else '/'
+        # A logged-in user with an invalid refresh token needs /login, not /success.
+        if not self._is_session_valid():
+            target = '/login'
+        else:
+            target = '/'
         webbrowser.open(f'http://localhost:{self.web_port}{target}')
 
     def _get_tray_fallback_label(self):
@@ -14084,7 +14141,24 @@ class TimeTracker:
     # HTML TEMPLATES
     # ============================================================================
     
-    def render_login_page(self):
+    def render_login_page(self, session_expired=False):
+        expired_banner = ''
+        if session_expired:
+            expired_banner = (
+                '<div style="display:flex;align-items:center;gap:10px;'
+                'background:#FFF7D6;border:1px solid #F4C842;border-radius:8px;'
+                'padding:12px 16px;margin-bottom:20px;text-align:left;'
+                'font-size:13px;color:#594300;">'
+                '<svg width="18" height="18" viewBox="0 0 24 24" fill="none"'
+                ' stroke="#F4C842" stroke-width="2" stroke-linecap="round"'
+                ' stroke-linejoin="round">'
+                '<circle cx="12" cy="12" r="10"/>'
+                '<line x1="12" y1="8" x2="12" y2="12"/>'
+                '<line x1="12" y1="16" x2="12.01" y2="16"/>'
+                '</svg>'
+                '<span>Your session has expired. Please sign in again to continue.</span>'
+                '</div>'
+            )
         html = '''<!DOCTYPE html>
 <html>
 <head>
@@ -14211,6 +14285,12 @@ class TimeTracker:
     </div>
 </body>
 </html>'''
+        if expired_banner:
+            html = html.replace(
+                '<div class="login-card">',
+                f'<div class="login-card">\n        {expired_banner}',
+                1
+            )
         return html
 
     def render_classifications_page(self):

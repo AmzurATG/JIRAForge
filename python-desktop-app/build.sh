@@ -166,7 +166,7 @@ echo "[3/5] Building executable with PyInstaller..."
 echo "      This may take 5-10 minutes..."
 echo ""
 
-pyinstaller desktop_app.spec 2>&1 | tee build_log.txt
+pyinstaller --clean desktop_app.spec 2>&1 | tee build_log.txt; true
 
 # Check if build was successful
 if [ ! -f "dist/TimeTracker" ]; then
@@ -389,6 +389,7 @@ Package: timetracker
 Version: ${APP_VERSION}
 Architecture: ${DEB_ARCH}
 Maintainer: Amzur Technologies <support@amzur.com>
+Depends: gdebi
 Recommends: gnome-shell-extension-appindicator, libnotify-bin
 Description: Automatic time tracking for JIRA issues
  TimeTracker tracks time spent on JIRA issues automatically
@@ -403,6 +404,37 @@ chmod +x /opt/timetracker/TimeTracker.AppImage 2>/dev/null || true
 chmod +x /usr/local/bin/timetracker 2>/dev/null || true
 update-desktop-database /usr/share/applications 2>/dev/null || true
 gtk-update-icon-cache -f -t /usr/share/icons/hicolor 2>/dev/null || true
+
+# ── Upgrade canonical per-user AppImage copy ─────────────────────────────────
+# When a user previously installed/ran the app, _install_appimage() copied the
+# AppImage to ~/.local/share/TimeTracker/TimeTracker.AppImage (the canonical
+# location).  The wrapper script (/usr/local/bin/timetracker) always prefers
+# that canonical copy over /opt/timetracker/.  This means installing a new .deb
+# WOULD NOT upgrade the running user's binary — the old canonical copy just
+# keeps getting launched unchanged.
+#
+# Fix: copy the freshly-installed /opt/ binary over every user's canonical copy.
+# Then kill any running instance so the user gets the new version on next launch.
+_OPT_APPIMAGE="/opt/timetracker/TimeTracker.AppImage"
+for _USER_HOME in /home/*; do
+    _USERNAME=$(basename "$_USER_HOME")
+    _CANONICAL="${_USER_HOME}/.local/share/TimeTracker/TimeTracker.AppImage"
+    if [ -d "${_USER_HOME}/.local/share/TimeTracker" ] && id "$_USERNAME" &>/dev/null; then
+        echo "Upgrading canonical AppImage for ${_USERNAME}..."
+        _TMP="${_CANONICAL}.new"
+        cp "$_OPT_APPIMAGE" "$_TMP" 2>/dev/null && \
+            chmod +x "$_TMP" && \
+            mv -f "$_TMP" "$_CANONICAL" && \
+            chown "$_USERNAME":"$_USERNAME" "$_CANONICAL" 2>/dev/null || true
+        echo "  -> ${_CANONICAL} updated."
+        # Kill running instance (if any) so the user's next launch uses new binary.
+        _TT_PIDS=$(pgrep -u "$_USERNAME" -f TimeTracker 2>/dev/null || true)
+        if [ -n "$_TT_PIDS" ]; then
+            echo "  -> Stopping running TimeTracker for ${_USERNAME}..."
+            echo "$_TT_PIDS" | xargs kill 2>/dev/null || true
+        fi
+    fi
+done
 
 # Remove stale per-user .desktop entries left by older installers.
 # Case 1: Old-style entry pointing to a plain binary path (without .AppImage).
@@ -446,8 +478,68 @@ if command -v gnome-extensions &>/dev/null; then
         fi
     done
 fi
+
+# Set gdebi as the default handler for .deb files for all users.
+# This ensures future double-clicks open GDebi (which shows a proper Upgrade
+# button when a newer version is available) instead of Ubuntu App Center
+# (which always shows "Installed" for local .deb upgrades — a known Ubuntu bug).
+if command -v gdebi &>/dev/null; then
+    for _USER_HOME in /home/*; do
+        _USERNAME=$(basename "$_USER_HOME")
+        if id "$_USERNAME" &>/dev/null; then
+            su - "$_USERNAME" -c '
+                mkdir -p ~/.config
+                # Set gdebi as default for both Debian MIME types
+                xdg-mime default gdebi.desktop application/vnd.debian.binary-package 2>/dev/null || true
+                xdg-mime default gdebi.desktop application/x-debian-package 2>/dev/null || true
+            ' 2>/dev/null || true
+        fi
+    done
+    echo "GDebi set as default .deb handler — future upgrades will show a proper Upgrade button."
+fi
 POSTINST
     chmod 755 "${DEB_BUILD_DIR}/DEBIAN/postinst"
+
+    # DEBIAN/prerm — stop any running instance BEFORE dpkg replaces the files.
+    # Without this, dpkg may fail to overwrite /opt/timetracker/TimeTracker.AppImage
+    # because the FUSE mount keeps a file-descriptor open.  This also gives the
+    # old app a chance to flush pending data before being replaced.
+    #
+    # dpkg passes $1 = "upgrade <new-version>" for in-place upgrades,
+    # and $1 = "remove" for uninstalls.  We stop the app in both cases.
+    cat > "${DEB_BUILD_DIR}/DEBIAN/prerm" << 'PRERM'
+#!/bin/bash
+# Stop all running TimeTracker instances before dpkg replaces the binary.
+# This prevents "text file busy" / FUSE lock errors during file replacement.
+echo "Stopping TimeTracker before upgrade/removal..."
+for _USER_HOME in /home/*; do
+    _USERNAME=$(basename "$_USER_HOME")
+    if id "$_USERNAME" &>/dev/null; then
+        _TT_PIDS=$(pgrep -u "$_USERNAME" -f TimeTracker 2>/dev/null || true)
+        if [ -n "$_TT_PIDS" ]; then
+            echo "  Stopping TimeTracker for ${_USERNAME} (pids: ${_TT_PIDS})..."
+            # Graceful SIGTERM first
+            echo "$_TT_PIDS" | xargs kill 2>/dev/null || true
+            # Wait up to 5 s for graceful exit
+            for _i in 1 2 3 4 5; do
+                _STILL=$(pgrep -u "$_USERNAME" -f TimeTracker 2>/dev/null || true)
+                [ -z "$_STILL" ] && break
+                sleep 1
+            done
+            # Force-kill any survivors
+            _STILL=$(pgrep -u "$_USERNAME" -f TimeTracker 2>/dev/null || true)
+            if [ -n "$_STILL" ]; then
+                echo "  Force-stopping remaining TimeTracker for ${_USERNAME}..."
+                echo "$_STILL" | xargs kill -9 2>/dev/null || true
+                sleep 1
+            fi
+        fi
+    fi
+done
+echo "TimeTracker stopped."
+exit 0
+PRERM
+    chmod 755 "${DEB_BUILD_DIR}/DEBIAN/prerm"
 
     # Build the .deb
     # Force xz compression (-Zxz) so the data.tar uses lzma (xz) instead of

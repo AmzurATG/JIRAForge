@@ -101,6 +101,11 @@ def _build_auth_module():
     mod.set_runtime_ocr_config = lambda *a, **kw: None
     mod.set_runtime_privacy_config = lambda *a, **kw: None
 
+    # Stub logging helpers used by AtlassianAuthManager methods
+    mod.log_auth_diagnostic = lambda *a, **kw: None
+    mod.APP_LOGGER_AVAILABLE = False
+    mod.get_logger = lambda *a, **kw: None
+
     # -- Extract the class source and evaluate it in the module namespace ---
     # Find class start
     class_marker = 'class AtlassianAuthManager:'

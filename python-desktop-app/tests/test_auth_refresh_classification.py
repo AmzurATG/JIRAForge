@@ -72,7 +72,7 @@ def test_refresh_403_temporary_failure_does_not_mark_invalid():
 def test_refresh_reauth_error_code_is_permanent_failure():
     """
     AC3: Desktop must classify OAUTH_REAUTH_REQUIRED as a permanent failure
-    signal and increment the permanent-failure counter.
+    and mark the token IMMEDIATELY invalid (not wait for 5 failures).
     """
     manager = _make_manager()
 
@@ -90,8 +90,10 @@ def test_refresh_reauth_error_code_is_permanent_failure():
         ok = manager.refresh_access_token()
 
     assert ok is False
-    assert manager._refresh_fail_count == 1
-    assert manager._refresh_token_invalid is False
+    assert manager._refresh_token_invalid is True, \
+        "Explicit OAUTH_REAUTH_REQUIRED must immediately set _refresh_token_invalid"
+    assert manager._refresh_fail_count == 5, \
+        "fail_count must be set to threshold to prevent further retry loops"
 
 
 def test_refresh_failure_logs_root_cause_details():
