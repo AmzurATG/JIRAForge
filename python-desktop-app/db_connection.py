@@ -355,6 +355,19 @@ class DatabaseConnectionManager:
             )
         ''')
 
+        # FIX-9 (B-12): Persist failed Supabase screenshots UPDATE calls so they
+        # are retried on the next batch upload cycle instead of being lost forever.
+        conn.execute('''
+            CREATE TABLE IF NOT EXISTS pending_finalizes (
+                id               INTEGER PRIMARY KEY AUTOINCREMENT,
+                screenshot_id    TEXT    NOT NULL,
+                end_time         TEXT    NOT NULL,
+                duration_seconds INTEGER NOT NULL,
+                created_at       TEXT    DEFAULT (datetime('now')),
+                UNIQUE(screenshot_id)
+            )
+        ''')
+
         conn.commit()
 
     # =========================================================================

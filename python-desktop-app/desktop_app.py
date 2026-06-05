@@ -601,7 +601,7 @@ load_dotenv()
 
 # Application version - IMPORTANT: Update this when releasing new versions
 # This is used for update checking and notifications
-APP_VERSION = "1.0.0"
+APP_VERSION = "1.0.3"
 
 # True when the process is running inside an AppImage bundle.
 # The AppImage runtime sets the $APPIMAGE env var to the path of the .AppImage
@@ -5415,7 +5415,16 @@ class PausePopupWindow:
 # Lock screen / logon screen process names — these should NEVER be tracked
 # as active work sessions. When the foreground window belongs to one of these,
 # the user's screen is locked and any elapsed time is idle.
-LOCK_SCREEN_APPS = {'lockapp.exe', 'logonui.exe'}
+# FIX-3: Extended with Linux lock-screen process names so process_window_event()
+# blocks them on Linux just as it does for lockapp.exe on Windows.
+LOCK_SCREEN_APPS = {
+    # Windows
+    'lockapp.exe', 'logonui.exe',
+    # Linux — common screen locker process names
+    'gnome-screensaver', 'xscreensaver', 'i3lock', 'swaylock',
+    'kscreenlocker_greet', 'xflock4', 'light-locker', 'slock',
+    'physlock', 'xautolock', 'betterlockscreen',
+}
 
 # Browser process names — when one of these is the active process,
 # we check the window title against URL-based entries instead of process-based.
@@ -10650,6 +10659,43 @@ class TimeTracker:
                 self.add_admin_log('ERROR', f'Idle record insert failed — CHECK constraint may not allow classification=idle. Run migration 20260325.')
             self.last_batch_upload_time = time.time()
 
+        # FIX-9 (B-12): After each batch (success or failure), drain any screenshot
+        # UPDATE calls that previously failed and were saved to pending_finalizes.
+        if self.supabase and self.current_user_id:
+            self._drain_pending_finalizes()
+
+    def _drain_pending_finalizes(self):
+        """FIX-9: Retry failed screenshots UPDATE calls saved in pending_finalizes table.
+
+        _finalize_active_session() stores a row here when the Supabase UPDATE fails
+        (network loss, JWT expiry, timeout). This method replays up to 10 rows per
+        batch cycle so records never remain stuck with end_time = NULL.
+        """
+        try:
+            rows = self.db_manager.fetchall(
+                "SELECT id, screenshot_id, end_time, duration_seconds FROM pending_finalizes ORDER BY id LIMIT 10"
+            )
+            if not rows:
+                return
+            print(f"[BATCH] FIX-9: Draining {len(rows)} pending finalize(s)...")
+            for row in rows:
+                row_id, screenshot_id, end_time_str, duration_seconds = row
+                try:
+                    result = self.supabase.table('screenshots').update({
+                        'end_time': end_time_str,
+                        'timestamp': end_time_str,
+                        'duration_seconds': int(duration_seconds),
+                    }).eq('id', screenshot_id).execute()
+                    if result.data:
+                        self.db_manager.execute(
+                            "DELETE FROM pending_finalizes WHERE id = ?", (row_id,)
+                        )
+                        print(f"[BATCH] FIX-9: Pending finalize applied for {screenshot_id}")
+                except Exception as _pf_err:
+                    print(f"[WARN] FIX-9: Pending finalize retry failed for {screenshot_id}: {_pf_err}")
+        except Exception as _e:
+            print(f"[WARN] FIX-9: _drain_pending_finalizes error: {_e}")
+
     def process_window_event(self, window_info):
         """Core event handler for event-based activity tracking.
         Called on every window switch.
@@ -11031,8 +11077,9 @@ class TimeTracker:
         """Check if the screen is currently locked.
 
         Windows: inspects the foreground window's process name.
-        Linux:   queries the GNOME ScreenSaver D-Bus interface (gdbus).
-                 Falls back to False (not locked) if the interface is unavailable.
+        Linux (FIX-3): tries four D-Bus / systemd methods in order so that
+                 non-GNOME desktops (KDE, XFCE, i3, sway …) are also detected.
+                 Results are cached for 5 s to avoid stalling the tracking loop.
         Returns True when the lock/login screen is active.
         """
         if WIN32_AVAILABLE:
@@ -11043,22 +11090,79 @@ class TimeTracker:
                 return process.name().lower() in LOCK_SCREEN_APPS
             except Exception:
                 return False
-        # Linux: ask the GNOME ScreenSaver whether the session is locked
+
+        # Linux: cache result for 5 s so repeated calls inside the tracking loop
+        # don't spawn multiple subprocesses on every 2-second iteration.
+        _now = time.time()
+        _cached = getattr(self, '_screen_lock_cache', None)
+        if _cached and (_now - _cached[0]) < 5:
+            return _cached[1]
+
+        _locked = False
         try:
+            # Method 1: GNOME ScreenSaver (GNOME Shell 3+)
             result = subprocess.run(
-                [
-                    'gdbus', 'call', '--session',
-                    '--dest', 'org.gnome.ScreenSaver',
-                    '--object-path', '/org/gnome/ScreenSaver',
-                    '--method', 'org.gnome.ScreenSaver.GetActive',
-                ],
+                ['gdbus', 'call', '--session',
+                 '--dest', 'org.gnome.ScreenSaver',
+                 '--object-path', '/org/gnome/ScreenSaver',
+                 '--method', 'org.gnome.ScreenSaver.GetActive'],
                 capture_output=True, text=True, timeout=1
             )
             if result.returncode == 0:
-                # Output looks like "(true,)\n" or "(false,)\n"
-                return 'true' in result.stdout.lower()
+                _locked = 'true' in result.stdout.lower()
+                self._screen_lock_cache = (_now, _locked)
+                return _locked
         except Exception:
             pass
+
+        try:
+            # Method 2: KDE ScreenSaver (KDE Plasma 5/6)
+            result = subprocess.run(
+                ['gdbus', 'call', '--session',
+                 '--dest', 'org.kde.screensaver',
+                 '--object-path', '/ScreenSaver',
+                 '--method', 'org.kde.screensaver.GetActive'],
+                capture_output=True, text=True, timeout=1
+            )
+            if result.returncode == 0:
+                _locked = 'true' in result.stdout.lower()
+                self._screen_lock_cache = (_now, _locked)
+                return _locked
+        except Exception:
+            pass
+
+        try:
+            # Method 3: FreeDesktop ScreenSaver (XFCE, MATE, LXQt …)
+            result = subprocess.run(
+                ['gdbus', 'call', '--session',
+                 '--dest', 'org.freedesktop.ScreenSaver',
+                 '--object-path', '/org/freedesktop/ScreenSaver',
+                 '--method', 'org.freedesktop.ScreenSaver.GetActive'],
+                capture_output=True, text=True, timeout=1
+            )
+            if result.returncode == 0:
+                _locked = 'true' in result.stdout.lower()
+                self._screen_lock_cache = (_now, _locked)
+                return _locked
+        except Exception:
+            pass
+
+        try:
+            # Method 4: loginctl (systemd, display-server agnostic)
+            # LockedHint=yes means the session lock is active
+            result = subprocess.run(
+                ['loginctl', 'show-session', '--property=LockedHint', '--value'],
+                capture_output=True, text=True, timeout=1
+            )
+            if result.returncode == 0:
+                _locked = result.stdout.strip().lower() == 'yes'
+                self._screen_lock_cache = (_now, _locked)
+                return _locked
+        except Exception:
+            pass
+
+        # All methods failed — assume not locked (preserve existing behaviour)
+        self._screen_lock_cache = (_now, False)
         return False
 
     def _get_active_window_linux(self):
@@ -11288,20 +11392,58 @@ class TimeTracker:
         # Wayland: try Shell.Eval first (fast, GNOME < 45), then Introspect
         # (works on GNOME 40+ without unsafe mode), then xdotool (XWayland fallback).
         # X11: xdotool is most reliable; D-Bus methods are secondary.
-        methods = (
-            (_from_gdbus, _from_gnome_introspect, _from_xdotool, _from_atspi)
+        method_pairs = (
+            [('gdbus', _from_gdbus), ('gnome_introspect', _from_gnome_introspect),
+             ('xdotool', _from_xdotool), ('atspi', _from_atspi)]
             if is_wayland
-            else (_from_xdotool, _from_gdbus, _from_gnome_introspect, _from_atspi)
+            else [('xdotool', _from_xdotool), ('gdbus', _from_gdbus),
+                  ('gnome_introspect', _from_gnome_introspect), ('atspi', _from_atspi)]
         )
-        for resolver in methods:
-            resolved = resolver()
-            if resolved:
-                title, app_name = resolved
-                # On Wayland, xdotool often returns stale XWayland focus (commonly VS Code).
-                # If we got no title/app signal, continue to fallback method.
-                if title == 'Unknown' and app_name == 'Unknown':
-                    continue
-                return title, app_name
+
+        # FIX-6 (BL-17): Circuit-breaker — skip methods that have failed 3+ times recently.
+        # Prevents stalling the 2-second tracking loop for 9+ seconds on minimal Linux
+        # where all methods time out on every call.
+        _CB_OPEN_AFTER  = 3    # failures before circuit opens
+        _CB_RESET_AFTER = 60   # seconds before retry
+        if not hasattr(self, '_win_method_failures'):
+            self._win_method_failures = {}
+
+        for method_name, resolver in method_pairs:
+            # Check circuit state
+            _cb = self._win_method_failures.get(method_name, {'count': 0, 'open_until': 0})
+            if _cb['count'] >= _CB_OPEN_AFTER and time.time() < _cb.get('open_until', 0):
+                continue  # circuit open — skip this method
+            if _cb['count'] >= _CB_OPEN_AFTER and time.time() >= _cb.get('open_until', 0):
+                # Grace period expired — reset and allow one retry
+                self._win_method_failures[method_name] = {'count': 0, 'open_until': 0}
+
+            try:
+                resolved = resolver()
+                if resolved:
+                    title, app_name = resolved
+                    # On Wayland, xdotool often returns stale XWayland focus (commonly VS Code).
+                    if title == 'Unknown' and app_name == 'Unknown':
+                        # Count as a soft failure
+                        _cb2 = self._win_method_failures.setdefault(method_name, {'count': 0, 'open_until': 0})
+                        _cb2['count'] += 1
+                        if _cb2['count'] >= _CB_OPEN_AFTER:
+                            _cb2['open_until'] = time.time() + _CB_RESET_AFTER
+                        continue
+                    # Success — reset failure counter for this method
+                    self._win_method_failures[method_name] = {'count': 0, 'open_until': 0}
+                    return title, app_name
+                else:
+                    _cb3 = self._win_method_failures.setdefault(method_name, {'count': 0, 'open_until': 0})
+                    _cb3['count'] += 1
+                    if _cb3['count'] >= _CB_OPEN_AFTER:
+                        _cb3['open_until'] = time.time() + _CB_RESET_AFTER
+                        print(f"[WARN] FIX-6: Window detection method '{method_name}' circuit-open for {_CB_RESET_AFTER}s")
+            except Exception:
+                _cb4 = self._win_method_failures.setdefault(method_name, {'count': 0, 'open_until': 0})
+                _cb4['count'] += 1
+                if _cb4['count'] >= _CB_OPEN_AFTER:
+                    _cb4['open_until'] = time.time() + _CB_RESET_AFTER
+                    print(f"[WARN] FIX-6: Window detection method '{method_name}' circuit-open (exception) for {_CB_RESET_AFTER}s")
 
         return 'Unknown', 'Unknown'
 
@@ -11727,7 +11869,12 @@ class TimeTracker:
 
     def _finalize_active_session(self, reason="idle"):
         """Finalize the current work session by updating its end_time in the DB.
-        Called when entering idle (timeout, system sleep, or screen lock)."""
+        Called when entering idle (timeout, system sleep, or screen lock).
+
+        FIX-9 (B-12): On Supabase network failure the UPDATE is saved to the local
+        SQLite pending_finalizes table and retried on the next batch upload cycle,
+        so records never remain stuck with end_time = NULL permanently.
+        """
         if self.current_window_screenshot_id is None or self.current_window_db_start_time is None:
             return
         try:
@@ -11768,6 +11915,25 @@ class TimeTracker:
             self.last_screenshot_end_time = end_time
         except Exception as e:
             print(f"[ERROR] Error finalizing session ({reason}): {e}")
+            # FIX-9: Save to SQLite so the UPDATE is retried on the next batch cycle.
+            try:
+                _sid  = self.current_window_screenshot_id
+                _et   = datetime.fromtimestamp(self.last_activity_time, tz=timezone.utc)
+                _dur  = max(1, int((_et - (self.current_window_db_start_time or _et)).total_seconds()))
+                self.db_manager.execute(
+                    """INSERT OR IGNORE INTO pending_finalizes
+                       (screenshot_id, end_time, duration_seconds)
+                       VALUES (?, ?, ?)""",
+                    (_sid, _et.isoformat(), _dur)
+                )
+                print(f"[OFFLINE] FIX-9: Pending finalize saved to SQLite for record {_sid}")
+            except Exception as _sq_err:
+                print(f"[ERROR] FIX-9: Could not save pending finalize to SQLite: {_sq_err}")
+            # Always clear in-memory state so we don't re-attempt from stale instance vars
+            self.current_window_screenshot_id = None
+            self.current_window_record_created_at = None
+            self.current_window_start_time = None
+            self.current_window_db_start_time = None
 
     def enter_idle(self, reason):
         """Thread-safe transition to idle state.
@@ -11781,44 +11947,46 @@ class TimeTracker:
         Returns:
             bool: True if transition succeeded, False if already idle/paused/stopped
         """
+        # FIX-4 (BL-20): Capture state under lock, then release before making
+        # any HTTP/Supabase calls so state_lock is never held during network I/O.
+        was_active = False
         with self.state_lock:
             if self.state == TrackingState.IDLE:
-                # Already idle — no-op
                 return False
-                
+
+            # FIX-2: Don't finalize session or enter idle while user has manually paused.
+            if self.state == TrackingState.PAUSED:
+                print(f"[IDLE] enter_idle({reason}) suppressed — tracking is paused by user")
+                return False
+
             print(f"[STATE] {self.state.name} → IDLE (reason: {reason})")
-            
-            # Only finalize session if we were actively tracking
-            if self.state == TrackingState.ACTIVE:
-                # Finalize current work session
-                self._finalize_active_session(reason)
-                
-                # Stop SQLite activity timer so idle time isn't counted in activity_records
-                self.session_manager.stop_current_timer()
-                
+            was_active = (self.state == TrackingState.ACTIVE)
+
+            if was_active:
                 # Record when idle started (backdate to last activity)
                 self.idle_start_time = datetime.fromtimestamp(self.last_activity_time, tz=timezone.utc)
-                
-                # Store the project key at idle entry — this is the project the user
-                # was actually working on, not whatever project is active when they resume
+                # Store the project key at idle entry
                 self.idle_project_key = self.current_project_key
             else:
-                # Entering idle from STOPPED state (e.g., system sleep before tracking starts)
-                # Just record the current time
                 self.idle_start_time = datetime.now(timezone.utc)
-            
-            # Store idle reason for logging
+
             self.idle_reason = reason
-            
-            # Transition state
             self.state = TrackingState.IDLE
-            self.is_idle = True  # Keep boolean flag in sync for backward compatibility
-            
-            # Update UI
-            self.update_tray_icon()
-            self.add_admin_log('INFO', f'Entered idle state: {reason}')
-            
-            return True
+            self.is_idle = True
+            # FIX-7: record entry time for secondary resume path
+            self._idle_entry_time = time.time()
+        # ---- lock released ----
+
+        # HTTP / SQLite calls outside the lock (FIX-4)
+        if was_active:
+            self._finalize_active_session(reason)
+            self.session_manager.stop_current_timer()
+
+        # Update UI — thread-safe wrapper (FIX-5)
+        self._safe_update_tray_icon()
+        self.add_admin_log('INFO', f'Entered idle state: {reason}')
+
+        return True
 
     def resume_from_idle(self):
         """Thread-safe transition from idle to active state.
@@ -11829,37 +11997,23 @@ class TimeTracker:
         Returns:
             bool: True if transition succeeded, False if not idle
         """
+        # FIX-4 (BL-20): Capture idle metadata under lock, then release before
+        # calling _create_idle_record() or session_manager.start_new_timer().
         with self.state_lock:
             if self.state != TrackingState.IDLE:
-                # Not idle — no-op
                 return False
                 
             print(f"[STATE] IDLE → ACTIVE")
-            
-            # Create an idle record for the period the user was away
-            self._create_idle_record("idle timeout")
-            
-            # Clear idle tracking variables
+
+            # Clear idle tracking variables under lock
             self.idle_start_time = None
             self.idle_reason = None
             
-            # Transition state
             self.state = TrackingState.ACTIVE
-            self.is_idle = False  # Keep boolean flag in sync
+            self.is_idle = False
             self.needs_idle_resume = False
-            
-            # Start new SQLite timer for the active session
-            self.session_manager.start_new_timer()
-            
-            # Update UI
-            self.update_tray_icon()
-            self.add_admin_log('INFO', 'Resumed from idle - tracking active')
-            
-            # Reset interval timer so first capture happens after full interval
-            self.last_interval_time = time.time()
-            
-            # Reset ALL tracking state — new session starts fresh
-            # IMPORTANT: This prevents idle time from being counted as work time
+
+            # Reset tracking state — new session starts fresh
             self.current_window_start_time = None
             self.current_window_db_start_time = None
             self.current_window_screenshot_id = None
@@ -11869,11 +12023,21 @@ class TimeTracker:
             self.previous_window_screenshot_id = None
             self.previous_window_start_time = None
             self.previous_window_db_start_time = None
-            self.current_window_key = None  # Force detection as "new" window
+            self.current_window_key = None
             self.current_project_key = None
             self.current_window_title = None
-            
-            return True
+            self.last_interval_time = time.time()
+        # ---- lock released ----
+
+        # HTTP / SQLite calls outside the lock (FIX-4)
+        self._create_idle_record("idle timeout")
+        self.session_manager.start_new_timer()
+
+        # Update UI — thread-safe wrapper (FIX-5)
+        self._safe_update_tray_icon()
+        self.add_admin_log('INFO', 'Resumed from idle - tracking active')
+
+        return True
 
     def _is_within_work_hours(self, utc_dt):
         """Check if a UTC datetime falls within configured working hours (local time).
@@ -11919,20 +12083,30 @@ class TimeTracker:
             return True  # Fail-open: record idle if check fails
 
     def _create_idle_record(self, reason="idle timeout"):
-        """Create an idle record from idle_start_time to now and queue it for upload."""
+        """Create an idle record from idle_start_time to now and queue it for upload.
+
+        FIX-8: idle_start_time is cleared at the TOP of the function (before any
+        processing) so that a concurrent call racing in from the message-pump thread
+        or the loop-gap handler sees None immediately and bails out, preventing
+        duplicate idle records for the same sleep/lock period.
+        """
         if self.idle_start_time is None:
             return
+
+        # Take a local snapshot and clear IMMEDIATELY — acts as an atomic taken-flag.
+        # CPython's GIL makes a plain attribute assignment atomic for this purpose.
+        idle_start_snapshot = self.idle_start_time
+        self.idle_start_time = None   # ← cleared here (was at the end before FIX-8)
+
         idle_end = datetime.now(timezone.utc)
-        idle_duration = int((idle_end - self.idle_start_time).total_seconds())
+        idle_duration = int((idle_end - idle_start_snapshot).total_seconds())
         if idle_duration < 60:
             # Skip very short idle periods (< 1 minute)
-            self.idle_start_time = None
             return
 
         # Only record idle within configured working hours
-        if not self._is_within_work_hours(self.idle_start_time):
-            print(f"[IDLE] Skipping idle record outside work hours: {self.idle_start_time.strftime('%H:%M:%S')} ({reason})")
-            self.idle_start_time = None
+        if not self._is_within_work_hours(idle_start_snapshot):
+            print(f"[IDLE] Skipping idle record outside work hours: {idle_start_snapshot.strftime('%H:%M:%S')} ({reason})")
             return
 
         project_key = getattr(self, 'idle_project_key', None) or self.current_project_key or self.get_user_project_key()
@@ -11954,10 +12128,10 @@ class TimeTracker:
             'ocr_error_message': None,
             'total_time_seconds': idle_duration,
             'visit_count': 1,
-            'start_time': self.idle_start_time.isoformat(),
+            'start_time': idle_start_snapshot.isoformat(),
             'end_time': idle_end.isoformat(),
             'duration_seconds': idle_duration,
-            'work_date': _utc_ts_to_local_date(self.idle_start_time.isoformat()),
+            'work_date': _utc_ts_to_local_date(idle_start_snapshot.isoformat()),
             'user_timezone': get_local_timezone_name(),
             'project_key': project_key,
             'user_assigned_issues': json.dumps(self.user_issues) if self.user_issues else None,  # FIX: PGRST102
@@ -11970,8 +12144,7 @@ class TimeTracker:
             }
         }
         self._pending_idle_records.append(record)
-        print(f"[IDLE] Created idle record: {self.idle_start_time.strftime('%H:%M:%S')} → {idle_end.strftime('%H:%M:%S')} ({idle_duration}s, reason: {reason})")
-        self.idle_start_time = None
+        print(f"[IDLE] Created idle record: {idle_start_snapshot.strftime('%H:%M:%S')} → {idle_end.strftime('%H:%M:%S')} ({idle_duration}s, reason: {reason})")
 
     # ------------------------------------------------------------------
     # Idle-detection backend probe
@@ -12087,6 +12260,10 @@ class TimeTracker:
                     'idle_threshold_seconds', self.idle_timeout)
 
                 if idle_secs >= current_timeout and not was_idle:
+                    # FIX-2: Skip idle entry while user has manually paused tracking.
+                    if self.state == TrackingState.PAUSED:
+                        time.sleep(IDLE_POLL_INTERVAL)
+                        continue
                     print(f"[IDLE] D-Bus: idle {idle_secs:.0f}s ≥ timeout {current_timeout}s — entering idle")
                     self.enter_idle("idle timeout")
                     was_idle = True
@@ -12197,6 +12374,9 @@ class TimeTracker:
                 self._activity_listener_started = True
                 print("[OK] Activity listener confirmed working")
             self.last_activity_time = time.time()
+            # FIX-7 (B-2): Update pynput heartbeat so the sync-thread watchdog can
+            # detect when pynput listeners have silently stopped firing callbacks.
+            self._pynput_last_heartbeat = time.time()
             if self.is_idle:
                 self.needs_idle_resume = True
 
@@ -12537,6 +12717,8 @@ class TimeTracker:
             token_refresh_interval = 10  # Check token expiry every 10 iterations (~5 min at 30s interval)
             supabase_reinit_counter = 0
             supabase_reinit_interval = 60  # Retry Supabase init every 30 min (60 × 30s) if it failed at startup
+            thread_check_counter = 0   # FIX-10: tracking-thread watchdog counter
+            pynput_check_counter = 0   # FIX-7 (B-2): pynput heartbeat watchdog counter
 
             # Send initial heartbeat immediately on thread start
             if self.current_user_id and not self.current_user_id.startswith('anonymous_'):
@@ -12633,6 +12815,52 @@ class TimeTracker:
 
                 except Exception as e:
                     print(f"[ERROR] Sync thread error: {e}")
+
+                # ── FIX-10 (B-14): Tracking thread watchdog ──────────────────────────
+                # Check every 60 s (every 2 iterations at 30s sleep).
+                # Only restart if self.running AND tracking_active are both True —
+                # a legitimate stop_tracking() sets running=False first so this guard
+                # will NOT fire during normal shutdown.
+                thread_check_counter += 1
+                if thread_check_counter >= 2:
+                    thread_check_counter = 0
+                    if (self.running and
+                            self.tracking_active and
+                            self._tracking_thread is not None and
+                            not self._tracking_thread.is_alive()):
+                        print("[WARN] FIX-10: Tracking thread died unexpectedly — restarting")
+                        self.add_admin_log('WARNING', 'Tracking thread restarted by watchdog (FIX-10)')
+                        try:
+                            self._tracking_thread = threading.Thread(
+                                target=self.tracking_loop, daemon=True, name='tracking-loop-watchdog'
+                            )
+                            self._tracking_thread.start()
+                        except Exception as _wdog_err:
+                            print(f"[ERROR] FIX-10: Watchdog failed to restart tracking thread: {_wdog_err}")
+                # ── end FIX-10 ────────────────────────────────────────────────────────
+
+                # ── FIX-7 (B-2): pynput heartbeat watchdog ───────────────────────────
+                # If pynput is the idle-detection backend but its listeners have silently
+                # stopped firing (common after UAC / RDP switch / display driver change),
+                # restart the activity monitor thread every 2 minutes of stale heartbeat.
+                pynput_check_counter += 1
+                if pynput_check_counter >= 4:   # every ~2 min (4 × 30s)
+                    pynput_check_counter = 0
+                    _backend = getattr(self, '_idle_backend', 'none')
+                    if _backend == 'pynput' and self.tracking_active and not self.is_idle:
+                        _last_hb = getattr(self, '_pynput_last_heartbeat', 0)
+                        if _last_hb and (time.time() - _last_hb) > 300:  # 5 min no events
+                            print("[WARN] FIX-7: pynput heartbeat stale — restarting activity monitor thread")
+                            self.add_admin_log('WARN', 'pynput heartbeat stale — activity monitor restarted (FIX-7)')
+                            try:
+                                if not self._activity_monitor_thread or not self._activity_monitor_thread.is_alive():
+                                    self._activity_monitor_thread = threading.Thread(
+                                        target=self.monitor_user_activity, daemon=True, name='activity-monitor-watchdog'
+                                    )
+                                    self._activity_monitor_thread.start()
+                            except Exception as _pw_err:
+                                print(f"[ERROR] FIX-7: Could not restart activity monitor: {_pw_err}")
+                # ── end FIX-7 ────────────────────────────────────────────────────────
 
                 # Check every 30 seconds
                 time.sleep(30)
@@ -12839,9 +13067,17 @@ class TimeTracker:
 
                     # While idle, check every 5 seconds for activity
                     # Don't skip if needs_idle_resume is set - we need to process the resume
+                    # FIX-7 (B-1): Secondary resume path — if last_activity_time advanced since
+                    # we entered idle (e.g. a window switch updated it while pynput was silent),
+                    # treat that as user activity even if pynput never set needs_idle_resume.
                     if not self.needs_idle_resume:
-                        time.sleep(5)
-                        continue
+                        _idle_entry = getattr(self, '_idle_entry_time', self.last_activity_time)
+                        if self.last_activity_time > _idle_entry + 1:
+                            print("[INFO] Idle fallback: last_activity_time advanced since idle entry — resuming (pynput fallback)")
+                            self.needs_idle_resume = True
+                        else:
+                            time.sleep(5)
+                            continue
 
                 # Resume from idle if activity was detected by pynput
                 if self.needs_idle_resume:
@@ -13120,6 +13356,12 @@ class TimeTracker:
             self.tracking_active = False
             self.pause_start_time = time.time()  # Record when paused
             self.last_pause_reminder_time = 0  # Reset reminder timer
+
+            # FIX-2: Set PAUSED state so enter_idle() / D-Bus idle worker don't
+            # prematurely finalize the open Supabase record while user is only paused.
+            with self.state_lock:
+                if self.state == TrackingState.ACTIVE:
+                    self.state = TrackingState.PAUSED
 
             # Set auto-resume time if duration specified
             if duration_minutes:
@@ -13452,6 +13694,33 @@ class TimeTracker:
         else:
             return 'blue'  # Logged in but tracking not started
     
+    def _safe_update_tray_icon(self):
+        """FIX-5: Thread-safe wrapper for update_tray_icon().
+
+        On Linux pystray uses AppIndicator3 / AyatanaAppIndicator3, both GObject
+        wrappers over GTK. GTK is NOT thread-safe — all mutations must run on the
+        GLib main-loop thread. When enter_idle() or resume_from_idle() is triggered
+        by the D-Bus idle-poll worker (a background daemon thread), calling
+        update_tray_icon() directly causes GLib-GObject-WARNING assertions and can
+        produce a frozen or invisible tray icon.
+
+        This helper marshals the call via GLib.idle_add() when invoked from a
+        non-main-loop thread. On Windows (pystray xwin32 backend) direct calls
+        are always safe, so no marshalling is applied there.
+        """
+        if not sys.platform.startswith('linux'):
+            self.update_tray_icon()
+            return
+        try:
+            from gi.repository import GLib as _GLib  # noqa: PLC0415
+            if _GLib.MainContext.default().is_owner():
+                self.update_tray_icon()          # already on main loop thread
+            else:
+                _GLib.idle_add(self.update_tray_icon)   # marshal to main loop
+        except Exception:
+            # gi unavailable or pystray using non-GLib backend — fall back to direct call
+            self.update_tray_icon()
+
     def update_tray_icon(self):
         """Update the tray icon based on current state"""
         if self.tray:
@@ -13911,6 +14180,27 @@ class TimeTracker:
             # Give user time to see the message if running from console
             time.sleep(3)
             sys.exit(1)
+
+        # ── FIX-1: SIGTERM handler (Linux graceful shutdown) ──────────────────────
+        # On Linux, systemd stop / pkill / session logout send SIGTERM.
+        # Python's default handler terminates immediately without calling atexit,
+        # leaving open Supabase records (end_time = NULL) and losing in-memory
+        # idle records.  Register a handler so _shutdown_cleanup() always runs.
+        if sys.platform != 'win32':
+            import signal as _signal
+
+            def _handle_sigterm(signum, frame):
+                """Graceful shutdown on SIGTERM (systemd stop, pkill, logout)."""
+                print("[INFO] SIGTERM received — running shutdown cleanup before exit")
+                try:
+                    self._shutdown_cleanup()
+                except Exception as _se:
+                    print(f"[WARN] SIGTERM cleanup error (non-fatal): {_se}")
+                sys.exit(0)
+
+            _signal.signal(_signal.SIGTERM, _handle_sigterm)
+            print("[INFO] SIGTERM handler registered (Linux graceful shutdown enabled)")
+        # ── end FIX-1 ─────────────────────────────────────────────────────────────
 
         # Add to startup (runs on system boot) - ONLY when running as built exe
         # Windows: registry HKCU Run entry.
