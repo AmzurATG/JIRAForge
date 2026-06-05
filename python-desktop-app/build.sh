@@ -405,65 +405,70 @@ chmod +x /usr/local/bin/timetracker 2>/dev/null || true
 update-desktop-database /usr/share/applications 2>/dev/null || true
 gtk-update-icon-cache -f -t /usr/share/icons/hicolor 2>/dev/null || true
 
-# ── Upgrade canonical per-user AppImage copy ─────────────────────────────────
-# When a user previously installed/ran the app, _install_appimage() copied the
-# AppImage to ~/.local/share/TimeTracker/TimeTracker.AppImage (the canonical
-# location).  The wrapper script (/usr/local/bin/timetracker) always prefers
-# that canonical copy over /opt/timetracker/.  This means installing a new .deb
-# WOULD NOT upgrade the running user's binary — the old canonical copy just
-# keeps getting launched unchanged.
-#
-# Fix: copy the freshly-installed /opt/ binary over every user's canonical copy.
-# Then kill any running instance so the user gets the new version on next launch.
+# ── Install/upgrade canonical per-user AppImage copy + user .desktop ─────────
+# On fresh install AND upgrades, pre-install the canonical AppImage for every
+# user so that the first double-click launches instantly (no 150 MB self-install
+# dance that previously made the app appear to "not launch" after .deb install).
+# Also write a correct per-user .desktop entry pointing to the canonical path so
+# GNOME uses it directly without going through the /usr/local/bin wrapper.
 _OPT_APPIMAGE="/opt/timetracker/TimeTracker.AppImage"
 for _USER_HOME in /home/*; do
     _USERNAME=$(basename "$_USER_HOME")
-    _CANONICAL="${_USER_HOME}/.local/share/TimeTracker/TimeTracker.AppImage"
-    if [ -d "${_USER_HOME}/.local/share/TimeTracker" ] && id "$_USERNAME" &>/dev/null; then
-        echo "Upgrading canonical AppImage for ${_USERNAME}..."
-        _TMP="${_CANONICAL}.new"
-        cp "$_OPT_APPIMAGE" "$_TMP" 2>/dev/null && \
-            chmod +x "$_TMP" && \
-            mv -f "$_TMP" "$_CANONICAL" && \
-            chown "$_USERNAME":"$_USERNAME" "$_CANONICAL" 2>/dev/null || true
-        echo "  -> ${_CANONICAL} updated."
-        # Kill running instance (if any) so the user's next launch uses new binary.
-        _TT_PIDS=$(pgrep -u "$_USERNAME" -f TimeTracker 2>/dev/null || true)
-        if [ -n "$_TT_PIDS" ]; then
-            echo "  -> Stopping running TimeTracker for ${_USERNAME}..."
-            echo "$_TT_PIDS" | xargs kill 2>/dev/null || true
-        fi
-    fi
-done
+    if ! id "$_USERNAME" &>/dev/null; then continue; fi
 
-# Remove stale per-user .desktop entries left by older installers.
-# Case 1: Old-style entry pointing to a plain binary path (without .AppImage).
-# Case 2: Entry pointing to an .AppImage path that no longer exists on disk
-#         (e.g. user deleted ~/.local/share/TimeTracker/ or re-installed via .deb
-#          after previously running via AppImage — the old user entry then shadows
-#          the system .desktop and causes a silent launch failure on double-click).
-# The app re-creates a correct user entry on first launch after self-install.
-for _USER_HOME in /home/*; do
-    _STALE="${_USER_HOME}/.local/share/applications/timetracker.desktop"
-    if [ -f "$_STALE" ]; then
-        _SHOULD_REMOVE=0
-        # Case 1: no .AppImage in Exec (old binary-path entry)
-        if ! grep -q '\.AppImage' "$_STALE" 2>/dev/null; then
-            _SHOULD_REMOVE=1
-        else
-            # Case 2: has .AppImage but the referenced file is missing
-            _EXEC_APPIMAGE=$(grep '^Exec=' "$_STALE" 2>/dev/null \
-                             | grep -o '/[^ ]*\.AppImage' | head -1)
-            if [ -n "$_EXEC_APPIMAGE" ] && [ ! -f "$_EXEC_APPIMAGE" ]; then
-                _SHOULD_REMOVE=1
-            fi
-        fi
-        if [ "$_SHOULD_REMOVE" = "1" ]; then
-            rm -f "$_STALE" && echo "Removed stale .desktop entry for $(basename $_USER_HOME)"
-            _USER_DESKTOP_DIR="${_USER_HOME}/.local/share/applications"
-            update-desktop-database "$_USER_DESKTOP_DIR" 2>/dev/null || true
-        fi
+    _CANONICAL_DIR="${_USER_HOME}/.local/share/TimeTracker"
+    _CANONICAL="${_CANONICAL_DIR}/TimeTracker.AppImage"
+    _DESKTOP_DIR="${_USER_HOME}/.local/share/applications"
+    _USER_DESKTOP="${_DESKTOP_DIR}/timetracker.desktop"
+
+    # Stop any running instance before replacing the binary.
+    _TT_PIDS=$(pgrep -u "$_USERNAME" -f TimeTracker 2>/dev/null || true)
+    if [ -n "$_TT_PIDS" ]; then
+        echo "  Stopping running TimeTracker for ${_USERNAME}..."
+        echo "$_TT_PIDS" | xargs kill 2>/dev/null || true
+        sleep 1
     fi
+
+    # Create canonical dir (fresh install) or reuse existing (upgrade).
+    mkdir -p "$_CANONICAL_DIR" 2>/dev/null
+    chown "$_USERNAME":"$_USERNAME" "$_CANONICAL_DIR" 2>/dev/null || true
+
+    # Atomically copy /opt/ AppImage → canonical so the wrapper finds it on
+    # first launch without doing the slow self-install dance at runtime.
+    _TMP="${_CANONICAL}.new"
+    if cp "$_OPT_APPIMAGE" "$_TMP" 2>/dev/null; then
+        chmod +x "$_TMP"
+        mv -f "$_TMP" "$_CANONICAL"
+        chown "$_USERNAME":"$_USERNAME" "$_CANONICAL" 2>/dev/null || true
+        echo "Canonical AppImage installed/upgraded for ${_USERNAME}: ${_CANONICAL}"
+    else
+        echo "[WARN] Could not install canonical AppImage for ${_USERNAME}" >&2
+        continue
+    fi
+
+    # Write/overwrite the user-level .desktop entry with an absolute path to
+    # the canonical AppImage.  This replaces any stale entries (old binary-path
+    # entries without .AppImage, entries pointing to deleted paths, etc.) and
+    # ensures the GNOME launcher uses the correct canonical path immediately.
+    mkdir -p "$_DESKTOP_DIR" 2>/dev/null
+    chown "$_USERNAME":"$_USERNAME" "$_DESKTOP_DIR" 2>/dev/null || true
+    cat > "$_USER_DESKTOP" << USERDESKTOP
+[Desktop Entry]
+Name=TimeTracker
+GenericName=Time Tracker
+Comment=Automatic time tracking for JIRA issues
+Exec=env APPIMAGE_EXTRACT_AND_RUN=1 ${_CANONICAL}
+Icon=timetracker
+Type=Application
+Categories=Office;ProjectManagement;
+Terminal=false
+StartupNotify=false
+Keywords=time;tracker;jira;productivity;
+USERDESKTOP
+    chown "$_USERNAME":"$_USERNAME" "$_USER_DESKTOP" 2>/dev/null || true
+    chmod 644 "$_USER_DESKTOP" 2>/dev/null || true
+    update-desktop-database "$_DESKTOP_DIR" 2>/dev/null || true
+    echo "User .desktop created/updated for ${_USERNAME}: ${_USER_DESKTOP}"
 done
 
 # Enable the AppIndicator GNOME Shell extension for all users so the tray icon
