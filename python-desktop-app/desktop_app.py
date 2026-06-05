@@ -386,7 +386,7 @@ load_dotenv()
 
 # Application version - IMPORTANT: Update this when releasing new versions
 # This is used for update checking and notifications
-APP_VERSION = "1.4.6"
+APP_VERSION = "1.4.7"
 
 # Hard-disable screenshot monitoring/storage in desktop app.
 # OCR text extraction for activity records still runs via event-based flow.
@@ -2441,10 +2441,14 @@ class AtlassianAuthManager:
                     # NOT for transient errors that happen to contain the word "invalid".
                     # Atlassian returns 'invalid_grant' when the refresh token is truly revoked/expired.
                     error_lower = str(error).lower()
-                    error_code = str(error_data.get('errorCode', '')).upper()
-                    if error_code == 'OAUTH_REAUTH_REQUIRED':
+                    server_error_code = str(error_data.get('errorCode', '')).upper()
+                    
+                    # Track whether the server EXPLICITLY sent an error code (vs text-matching fallback)
+                    server_explicit_reauth = (server_error_code == 'OAUTH_REAUTH_REQUIRED')
+                    
+                    if server_error_code == 'OAUTH_REAUTH_REQUIRED':
                         is_permanent_failure = True
-                    elif error_code == 'OAUTH_TEMPORARY_FAILURE':
+                    elif server_error_code == 'OAUTH_TEMPORARY_FAILURE':
                         is_permanent_failure = False
                     else:
                         # Fallback text-matching for servers that don't send an explicit
@@ -2464,8 +2468,8 @@ class AtlassianAuthManager:
                             'token has been expired' in error_lower
                         )
 
-                    if not error_code:
-                        error_code = 'OAUTH_REAUTH_REQUIRED' if is_permanent_failure else 'OAUTH_TEMPORARY_FAILURE'
+                    # For logging: derive error_code if server didn't provide one
+                    error_code = server_error_code if server_error_code else ('OAUTH_REAUTH_REQUIRED' if is_permanent_failure else 'OAUTH_TEMPORARY_FAILURE')
                     self._last_refresh_error_code = error_code
 
                     projected_fail_count = getattr(self, '_refresh_fail_count', 0)
@@ -2473,25 +2477,44 @@ class AtlassianAuthManager:
                     next_action = 'retry_refresh'
 
                     if is_permanent_failure:
-                        # Track consecutive permanent failures with time-windowed counting.
-                        # Reset the counter if the last failure was more than 10 minutes ago
-                        # (i.e. failures are spread out, not a rapid cascade).
                         now = time.time()
-                        last_fail_time = getattr(self, '_last_refresh_fail_time', 0)
-                        if (now - last_fail_time) > 600:  # 10 min window
-                            self._refresh_fail_count = 0  # Reset — failures are not consecutive
-                        self._last_refresh_fail_time = now
-                        self._refresh_fail_count = getattr(self, '_refresh_fail_count', 0) + 1
-                        projected_fail_count = self._refresh_fail_count
-                        if self._refresh_fail_count >= 5:
-                            print(f"[WARN] Refresh token failed {self._refresh_fail_count} times within window - marking invalid (will auto-recover in 30 min)")
+                        # CRITICAL FIX: When the server EXPLICITLY says OAUTH_REAUTH_REQUIRED,
+                        # the refresh token is permanently dead (revoked, rotated out, or expired).
+                        # Mark it invalid IMMEDIATELY instead of waiting for 5 failures.
+                        # This prevents the log-flood of ~9 identical "refresh_token is invalid"
+                        # errors that occur when is_authenticated() and other callers each
+                        # retry 3 times before the 5-failure threshold is reached.
+                        #
+                        # The 5-failure threshold is still used for text-matched permanent failures
+                        # (older servers or edge cases) as a safety net against false positives.
+                        if server_explicit_reauth:
+                            print(f"[WARN] Server confirmed refresh token is permanently invalid (OAUTH_REAUTH_REQUIRED) - marking invalid immediately")
                             self._refresh_token_invalid = True
-                            self._refresh_invalid_set_at = now  # Record when flag was set for auto-expiry
+                            self._refresh_invalid_set_at = now
+                            self._last_refresh_fail_time = now
+                            self._refresh_fail_count = 5  # Set to threshold to prevent further retries
+                            projected_fail_count = 5
                             invalid_flag_after_failure = True
                             next_action = 'show_auth_notification'
                         else:
-                            print(f"[WARN] Refresh token failure {self._refresh_fail_count}/5 - will retry before requiring re-auth")
-                            next_action = 'retry_refresh'
+                            # Fallback path: permanent failure detected via text matching
+                            # (older server or edge case). Use the original 5-failure threshold
+                            # as a safety net against false positives.
+                            last_fail_time = getattr(self, '_last_refresh_fail_time', 0)
+                            if (now - last_fail_time) > 600:  # 10 min window
+                                self._refresh_fail_count = 0  # Reset — failures are not consecutive
+                            self._last_refresh_fail_time = now
+                            self._refresh_fail_count = getattr(self, '_refresh_fail_count', 0) + 1
+                            projected_fail_count = self._refresh_fail_count
+                            if self._refresh_fail_count >= 5:
+                                print(f"[WARN] Refresh token failed {self._refresh_fail_count} times within window - marking invalid (will auto-recover in 30 min)")
+                                self._refresh_token_invalid = True
+                                self._refresh_invalid_set_at = now
+                                invalid_flag_after_failure = True
+                                next_action = 'show_auth_notification'
+                            else:
+                                print(f"[WARN] Refresh token failure {self._refresh_fail_count}/5 - will retry before requiring re-auth")
+                                next_action = 'retry_refresh'
                     else:
                         next_action = 'retry_refresh'
 
@@ -5836,9 +5859,18 @@ class TimeTracker:
     def setup_routes(self):
         """Setup Flask routes"""
         
+        def _is_session_valid(self):
+            """Check if user has a valid, refreshable session (not just current_user in memory)."""
+            if not self.current_user:
+                return False
+            # If refresh token is marked invalid, session is expired even if current_user is set
+            if getattr(self.auth_manager, '_refresh_token_invalid', False):
+                return False
+            return True
+        
         @self.app.route('/')
         def index():
-            if self.current_user:
+            if _is_session_valid(self):
                 user_account_id = self.current_user.get('account_id')
                 if not self.consent_manager.has_valid_consent(user_account_id):
                     return redirect('/consent')
@@ -5847,12 +5879,18 @@ class TimeTracker:
 
         @self.app.route('/login')
         def login():
-            if self.current_user:
+            # Check if session is truly valid (not just current_user in memory)
+            session_expired = (self.current_user and 
+                               getattr(self.auth_manager, '_refresh_token_invalid', False))
+            
+            if _is_session_valid(self):
                 user_account_id = self.current_user.get('account_id')
                 if not self.consent_manager.has_valid_consent(user_account_id):
                     return redirect('/consent')
                 return redirect('/success')
-            return self.render_login_page()
+            
+            # Show login page with optional session expired message
+            return self.render_login_page(session_expired=session_expired)
         
         @self.app.route('/auth/atlassian')
         def auth_atlassian():
@@ -6217,6 +6255,19 @@ class TimeTracker:
                 'idle': self.is_idle,
                 'is_paused': self.pause_start_time is not None,
                 'pause_duration_seconds': pause_duration_seconds
+            })
+        
+        @self.app.route('/api/debug/expire-session', methods=['POST'])
+        def debug_expire_session():
+            """DEBUG ONLY: Simulate session expiry by marking refresh token as invalid"""
+            self.auth_manager._refresh_token_invalid = True
+            self.auth_manager._refresh_invalid_set_at = time.time()
+            self.auth_manager._refresh_fail_count = 5  # Prevent retries
+            # Update tray icon to reflect auth issue (will show orange)
+            self.update_tray_icon()
+            return jsonify({
+                'success': True,
+                'message': 'Session marked as expired. Visit /login to see the session expired banner.'
             })
         
         @self.app.route('/api/offline/sync', methods=['POST'])
@@ -12350,22 +12401,35 @@ class TimeTracker:
     # HTML TEMPLATES
     # ============================================================================
     
-    def render_login_page(self):
-        html = '''<!DOCTYPE html>
+    def render_login_page(self, session_expired=False):
+        # Build session expired banner if needed
+        expired_banner = ''
+        if session_expired:
+            expired_banner = '''
+        <div class="session-expired-banner">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <circle cx="12" cy="12" r="10"/>
+                <line x1="12" y1="8" x2="12" y2="12"/>
+                <line x1="12" y1="16" x2="12.01" y2="16"/>
+            </svg>
+            <span>Your session has expired. Please sign in again to continue.</span>
+        </div>'''
+        
+        html = f'''<!DOCTYPE html>
 <html>
 <head>
     <title>Amzur Timesheet Tracker</title>
     <style>
-        * { box-sizing: border-box; margin: 0; padding: 0; }
-        body {
+        * {{ box-sizing: border-box; margin: 0; padding: 0; }}
+        body {{
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
             min-height: 100vh;
             display: flex;
             align-items: center;
             justify-content: center;
             background: linear-gradient(135deg, #FAFBFC 0%, #DFE1E6 100%);
-        }
-        .login-card {
+        }}
+        .login-card {{
             background: white;
             border-radius: 12px;
             box-shadow: 0 8px 30px rgba(9, 30, 66, 0.12), 0 0 1px rgba(9, 30, 66, 0.2);
@@ -12373,8 +12437,25 @@ class TimeTracker:
             width: 100%;
             max-width: 420px;
             text-align: center;
-        }
-        .app-logo {
+        }}
+        .session-expired-banner {{
+            background: #FFFAE6;
+            border: 1px solid #FF991F;
+            border-radius: 6px;
+            padding: 12px 16px;
+            margin-bottom: 24px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            color: #974F0C;
+            font-size: 13px;
+            text-align: left;
+        }}
+        .session-expired-banner svg {{
+            flex-shrink: 0;
+            color: #FF991F;
+        }}
+        .app-logo {{
             width: 56px;
             height: 56px;
             background: linear-gradient(135deg, #0052CC 0%, #2684FF 100%);
@@ -12384,29 +12465,29 @@ class TimeTracker:
             justify-content: center;
             margin: 0 auto 20px;
             box-shadow: 0 4px 12px rgba(0, 82, 204, 0.3);
-        }
-        .app-logo svg {
+        }}
+        .app-logo svg {{
             width: 30px;
             height: 30px;
-        }
-        h1 {
+        }}
+        h1 {{
             font-size: 22px;
             font-weight: 700;
             color: #172B4D;
             margin-bottom: 6px;
-        }
-        .subtitle {
+        }}
+        .subtitle {{
             color: #6B778C;
             font-size: 14px;
             line-height: 1.5;
             margin-bottom: 28px;
-        }
-        .divider {
+        }}
+        .divider {{
             height: 1px;
             background: #EBECF0;
             margin-bottom: 28px;
-        }
-        .login-btn {
+        }}
+        .login-btn {{
             width: 100%;
             height: 48px;
             background: #0052CC;
@@ -12422,28 +12503,29 @@ class TimeTracker:
             gap: 10px;
             transition: background 0.2s, box-shadow 0.2s;
             letter-spacing: 0.2px;
-        }
-        .login-btn:hover {
+        }}
+        .login-btn:hover {{
             background: #0065FF;
             box-shadow: 0 4px 12px rgba(0, 82, 204, 0.35);
-        }
-        .login-btn:active {
+        }}
+        .login-btn:active {{
             background: #0747A6;
             box-shadow: none;
-        }
-        .login-btn svg {
+        }}
+        .login-btn svg {{
             flex-shrink: 0;
-        }
-        .info-text {
+        }}
+        .info-text {{
             margin-top: 20px;
             font-size: 12px;
             color: #97A0AF;
             line-height: 1.5;
-        }
+        }}
     </style>
 </head>
 <body>
     <div class="login-card">
+        {expired_banner}
         <div class="app-logo">
             <svg viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                 <circle cx="12" cy="12" r="10"/>
