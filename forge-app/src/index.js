@@ -56,7 +56,7 @@ export const scheduledWorklogSyncHandler = async () => {
 // Export scheduled trigger handler for description-quality nudges (Enhancement #13).
 // Fires hourly via two staggered triggers (A/B) — a KVS lock prevents overlap.
 export const descriptionQualityNudgeHandler = async (event, context) => {
-  return await runDescriptionQualityNudge({ context, analyzer: analyzeIssue });
+  return await runDescriptionQualityNudge({ event, context, analyzer: analyzeIssue });
 };
 
 // Export issue cache trigger handler — fires on avi:jira:updated:issue

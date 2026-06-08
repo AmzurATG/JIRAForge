@@ -30,7 +30,7 @@
 
 import api, { route } from '@forge/api';
 import { kvs } from '@forge/kvs';
-import { supabaseQuery } from '../utils/remote.js';
+import { supabaseQuery, remoteRequest } from '../utils/remote.js';
 
 const LOCK_KEY = 'scheduler-lock/dq-nudge';
 const LOCK_TTL_MS = 60 * 1000; // 60 seconds
@@ -43,6 +43,49 @@ const RECENT_DAYS_JQL = 30;
 const MAX_JQL_RESULTS = 100;
 
 const JQL_OPEN_RECENT = `assignee is not EMPTY AND statusCategory != Done AND updated >= -${RECENT_DAYS_JQL}d ORDER BY updated DESC`;
+
+function extractUuidFromString(value) {
+  if (typeof value !== 'string') return null;
+  const m = value.match(/[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/i);
+  return m ? m[0] : null;
+}
+
+function resolveCloudId(context = {}, event = {}) {
+  const direct = context.cloudId || event.cloudId || event?.context?.cloudId;
+  if (direct) return direct;
+
+  const nestedCandidates = [
+    context?.extension?.cloudId,
+    context?.installation?.cloudId,
+    event?.installation?.cloudId
+  ];
+  for (const candidate of nestedCandidates) {
+    if (candidate) return candidate;
+  }
+
+  const installationContexts = context?.installation?.contexts || event?.installation?.contexts || [];
+  for (const ctx of installationContexts) {
+    if (!ctx) continue;
+    if (ctx.cloudId) return ctx.cloudId;
+    const fromResource = extractUuidFromString(ctx.resourceId || ctx.ari || '');
+    if (fromResource) return fromResource;
+  }
+
+  // Last-resort parsing from known string fields seen in Forge contexts.
+  const stringCandidates = [
+    context.localId,
+    context.moduleKey,
+    context?.installationId,
+    event?.contextToken,
+    event?.contextAri
+  ];
+  for (const s of stringCandidates) {
+    const parsed = extractUuidFromString(s);
+    if (parsed) return parsed;
+  }
+
+  return null;
+}
 
 // ---------------------------------------------------------------------------
 // Locking — prevents overlapping A/B runs.
@@ -310,7 +353,8 @@ async function insertNotificationRow({ orgId, accountId, cloudId, issueKey, scor
 
 /**
  * @param {Object} [deps] — injected for tests
- * @param {Object} [deps.context] — Forge context (must contain `cloudId`)
+ * @param {Object} [deps.event] — Forge scheduled trigger event payload
+ * @param {Object} [deps.context] — Forge invocation context
  * @param {Function} [deps.fetchIssues] — overrides fetchOpenIssuesAsApp
  * @param {Function} [deps.analyzer] — overrides ai-server warm-up
  * @param {Function} [deps.notifier] — overrides Jira bell notify
@@ -324,6 +368,7 @@ async function insertNotificationRow({ orgId, accountId, cloudId, issueKey, scor
  */
 export async function runDescriptionQualityNudge(deps = {}) {
   const {
+    event = {},
     context = {},
     fetchIssues = fetchOpenIssuesAsApp,
     analyzer = null,
@@ -337,9 +382,9 @@ export async function runDescriptionQualityNudge(deps = {}) {
     now = () => Date.now()
   } = deps;
 
-  const cloudId = context.cloudId;
+  const cloudId = resolveCloudId(context, event);
   if (!cloudId) {
-    console.warn('[DQNudge] No cloudId in context — cannot determine tenant baseUrl, aborting.');
+    console.warn('[DQNudge] No cloudId resolved from context/event — aborting scheduler run.');
     return { success: false, error: 'missing cloudId' };
   }
 

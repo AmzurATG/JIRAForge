@@ -6,13 +6,18 @@ jest.mock('../../src/utils/logger', () => ({
 
 jest.mock('../../src/services/db/description-quality-notifications-repo', () => ({
   listPendingDesktopNudges: jest.fn(),
-  acknowledgeNudges: jest.fn()
+  acknowledgeNudges: jest.fn(),
+  listLowScoreCandidates: jest.fn(),
+  insertNotification: jest.fn(),
+  isWithinCooldown: jest.fn(),
+  ensurePreferenceRow: jest.fn()
 }));
 
 jest.mock('../../src/services/db/user-db-service', () => ({
   getUserById: jest.fn(),
   getOrganizationById: jest.fn(),
-  getUserAtlassianAccountId: jest.fn()
+  getUserAtlassianAccountId: jest.fn(),
+  getUserCachedIssues: jest.fn()
 }));
 
 jest.mock('../../src/services/db/supabase-client', () => ({
@@ -47,8 +52,13 @@ beforeEach(() => {
   });
   userDb.getOrganizationById.mockResolvedValue({
     id: 'org-uuid-1',
-    jira_cloud_id: 'cloud-xyz'
+    jira_cloud_id: 'cloud-xyz',
+    jira_instance_url: 'https://example.atlassian.net'
   });
+  userDb.getUserCachedIssues.mockResolvedValue([
+    { issue_key: 'PROJ-1', issue_summary: 'Issue one' },
+    { issue_key: 'PROJ-2', issue_summary: 'Issue two' }
+  ]);
 });
 
 describe('GET /api/desktop/description-quality-nudges', () => {
@@ -161,5 +171,71 @@ describe('POST /api/desktop/description-quality-nudges/ack', () => {
     expect(repo.acknowledgeNudges).toHaveBeenCalledWith(expect.objectContaining({
       snoozeUntil: future, action: 'snoozed'
     }));
+  });
+});
+
+describe('POST /api/desktop/description-quality-nudges/trigger', () => {
+  test('generates desktop rows from low-score assigned issues', async () => {
+    repo.listLowScoreCandidates.mockResolvedValue([
+      { issue_key: 'PROJ-1', score: 42 },
+      { issue_key: 'PROJ-2', score: 61 }
+    ]);
+    repo.insertNotification.mockResolvedValue({ id: 1 });
+
+    const res = await request(buildApp())
+      .post('/api/desktop/description-quality-nudges/trigger')
+      .send({ limit: 2, force: true });
+
+    expect(res.status).toBe(200);
+    expect(res.body.success).toBe(true);
+    expect(res.body.generated).toBe(2);
+    expect(res.body.reason).toBeNull();
+    expect(res.body.skippedCooldown).toBe(0);
+    expect(repo.ensurePreferenceRow).toHaveBeenCalledWith({
+      orgId: 'cloud-xyz',
+      accountId: 'acct-123'
+    });
+    expect(repo.listLowScoreCandidates).toHaveBeenCalledWith({
+      orgId: 'cloud-xyz',
+      issueKeys: ['PROJ-1', 'PROJ-2'],
+      maxScore: 79,
+      limit: 6
+    });
+    expect(repo.insertNotification).toHaveBeenCalledTimes(2);
+    expect(repo.insertNotification).toHaveBeenCalledWith(expect.objectContaining({
+      orgId: 'cloud-xyz',
+      accountId: 'acct-123',
+      cloudId: 'cloud-xyz',
+      issueKey: 'PROJ-1',
+      scoreAtNotify: 42,
+      channel: 'desktop'
+    }));
+  });
+
+  test('returns success with zero generation when no cached issue keys', async () => {
+    userDb.getUserCachedIssues.mockResolvedValue([]);
+
+    const res = await request(buildApp())
+      .post('/api/desktop/description-quality-nudges/trigger')
+      .send({ limit: 5, force: true });
+
+    expect(res.status).toBe(200);
+    expect(res.body.success).toBe(true);
+    expect(res.body.generated).toBe(0);
+    expect(res.body.reason).toBe('no-cached-issues');
+    expect(repo.listLowScoreCandidates).not.toHaveBeenCalled();
+  });
+
+  test('returns no-low-scores reason when cached issues exist but none below threshold', async () => {
+    repo.listLowScoreCandidates.mockResolvedValue([]);
+
+    const res = await request(buildApp())
+      .post('/api/desktop/description-quality-nudges/trigger')
+      .send({ limit: 5, force: true });
+
+    expect(res.status).toBe(200);
+    expect(res.body.success).toBe(true);
+    expect(res.body.generated).toBe(0);
+    expect(res.body.reason).toBe('no-low-scores');
   });
 });

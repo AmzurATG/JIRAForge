@@ -20,6 +20,7 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_AI_SERVER_URL = os.environ.get('AI_SERVER_URL', 'https://forgesync.amzur.com')
 NUDGES_ENDPOINT = '/api/desktop/description-quality-nudges'
+TRIGGER_ENDPOINT = '/api/desktop/description-quality-nudges/trigger'
 
 FOREGROUND_POLL_INTERVAL = 5 * 60     # 5 minutes
 IDLE_POLL_INTERVAL = 15 * 60          # 15 minutes
@@ -118,6 +119,41 @@ class DqNudgePoller:
             return []
 
         return list(data.get('nudges') or [])
+
+    def trigger_generation(self, timeout: float = 15.0, limit: int = 5, force: bool = True) -> dict:
+        """Request server-side generation of desktop nudge rows for manual testing."""
+        token = self.auth_manager.get_supabase_token()
+        if not token:
+            logger.debug('[DqNudge.poller] No Supabase token; skipping trigger')
+            return {'success': False, 'generated': 0, 'reason': 'missing-token'}
+
+        try:
+            resp = requests.post(
+                self.ai_server_url + TRIGGER_ENDPOINT,
+                headers={'Authorization': f'Bearer {token}', 'Accept': 'application/json'},
+                json={'limit': int(limit), 'force': bool(force)},
+                timeout=timeout,
+            )
+        except requests.RequestException as exc:
+            logger.warning('[DqNudge.poller] Trigger HTTP exception: %s', exc)
+            return {'success': False, 'generated': 0, 'reason': 'request-exception'}
+
+        if not (200 <= resp.status_code < 300):
+            logger.warning('[DqNudge.poller] Trigger HTTP %s', resp.status_code)
+            return {'success': False, 'generated': 0, 'reason': f'http-{resp.status_code}'}
+
+        try:
+            data = resp.json() or {}
+            return {
+                'success': bool(data.get('success')),
+                'generated': int(data.get('generated') or 0),
+                'candidates': int(data.get('candidates') or 0),
+                'reason': data.get('reason') or None,
+                'skippedCooldown': int(data.get('skippedCooldown') or 0)
+            }
+        except ValueError:
+            logger.warning('[DqNudge.poller] Trigger non-JSON response')
+            return {'success': False, 'generated': 0, 'reason': 'non-json'}
 
     def _run(self) -> None:
         # Stagger first poll by a few seconds so we don't compete with app boot.

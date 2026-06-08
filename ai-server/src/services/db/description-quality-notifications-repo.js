@@ -22,6 +22,8 @@ const { getClient } = require('./supabase-client');
 const logger = require('../../utils/logger');
 
 const TABLE = 'description_quality_notifications';
+const PREFS_TABLE = 'description_quality_nudge_preferences';
+const CACHE_TABLE = 'description_quality_cache';
 const VALID_CHANNELS = new Set(['jira', 'desktop', 'email']);
 const VALID_ACK_ACTIONS = new Set(['viewed', 'opened-in-jira', 'dismissed', 'snoozed']);
 
@@ -228,12 +230,66 @@ async function acknowledgeNudges({ orgId, accountId, nudgeIds, action, snoozeUnt
   return (data || []).length;
 }
 
+/**
+ * Ensure a default preferences row exists for (account, org).
+ * Uses upsert so repeated calls are idempotent.
+ */
+async function ensurePreferenceRow({ orgId, accountId }) {
+  if (!orgId || !accountId) throw new Error('ensurePreferenceRow requires orgId and accountId');
+
+  const supabase = getClient();
+  if (!supabase) throw new Error('Supabase client not initialised');
+
+  const { error } = await supabase
+    .from(PREFS_TABLE)
+    .upsert({
+      account_id: accountId,
+      org_id: orgId,
+      bell_enabled: true,
+      popup_enabled: true,
+      updated_at: new Date().toISOString()
+    }, { onConflict: 'account_id,org_id' });
+
+  if (error) {
+    logger.error('[DQNotificationsRepo] ensurePreferenceRow failed: %s', error.message);
+    throw error;
+  }
+}
+
+/**
+ * Lookup low-score cache rows for a set of issue keys.
+ */
+async function listLowScoreCandidates({ orgId, issueKeys, maxScore = 79, limit = 20 }) {
+  if (!orgId || !Array.isArray(issueKeys) || issueKeys.length === 0) return [];
+
+  const supabase = getClient();
+  if (!supabase) throw new Error('Supabase client not initialised');
+
+  const { data, error } = await supabase
+    .from(CACHE_TABLE)
+    .select('issue_key, score')
+    .eq('org_id', orgId)
+    .in('issue_key', issueKeys)
+    .lt('score', maxScore + 1)
+    .order('score', { ascending: true })
+    .limit(limit);
+
+  if (error) {
+    logger.error('[DQNotificationsRepo] listLowScoreCandidates failed: %s', error.message);
+    throw error;
+  }
+
+  return data || [];
+}
+
 module.exports = {
   insertNotification,
   lookupLatestAnyChannel,
   isWithinCooldown,
   listPendingDesktopNudges,
   acknowledgeNudges,
+  ensurePreferenceRow,
+  listLowScoreCandidates,
   // Exposed for tests:
   _sanitisePayload: sanitisePayload,
   _ALLOWED_PAYLOAD_KEYS: ALLOWED_PAYLOAD_KEYS,

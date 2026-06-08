@@ -19,10 +19,11 @@
 const express = require('express');
 const logger = require('../utils/logger');
 const dqNotificationsRepo = require('../services/db/description-quality-notifications-repo');
-const { getUserById, getOrganizationById, getUserAtlassianAccountId } = require('../services/db/user-db-service');
+const { getUserById, getOrganizationById, getUserCachedIssues } = require('../services/db/user-db-service');
 const { getClient } = require('../services/db/supabase-client');
 
 const MAX_PENDING_NUDGES = 5;
+const MAX_MANUAL_TRIGGER_LIMIT = 20;
 const VALID_ACTIONS = new Set(['viewed', 'opened-in-jira', 'dismissed', 'snoozed']);
 
 /**
@@ -48,7 +49,8 @@ async function resolveCaller(req) {
         userId: user.id,
         organizationId: user.organization_id,
         atlassianAccountId: user.atlassian_account_id,
-        orgId: org?.jira_cloud_id || user.organization_id
+        orgId: org?.jira_cloud_id || user.organization_id,
+        jiraBaseUrl: org?.jira_instance_url || null
       };
     }
   }
@@ -62,7 +64,8 @@ async function resolveCaller(req) {
       userId: user.id,
       organizationId: user.organization_id,
       atlassianAccountId: user.atlassian_account_id,
-      orgId: org?.jira_cloud_id || user.organization_id
+      orgId: org?.jira_cloud_id || user.organization_id,
+      jiraBaseUrl: org?.jira_instance_url || null
     };
   }
 
@@ -82,7 +85,8 @@ async function resolveCaller(req) {
       userId: user.id,
       organizationId: user.organization_id,
       atlassianAccountId: user.atlassian_account_id,
-      orgId: org?.jira_cloud_id || user.organization_id
+      orgId: org?.jira_cloud_id || user.organization_id,
+      jiraBaseUrl: org?.jira_instance_url || null
     };
   }
 
@@ -170,6 +174,112 @@ router.post('/ack', async (req, res) => {
   } catch (err) {
     logger.error('[DesktopDqNudges] POST /ack failed: %s', err.message);
     return res.status(500).json({ success: false, error: 'Failed to acknowledge nudges' });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// POST /trigger — manual test helper: generate desktop nudge rows now.
+// ---------------------------------------------------------------------------
+router.post('/trigger', async (req, res) => {
+  try {
+    const caller = await resolveCaller(req);
+    if (!caller || !caller.atlassianAccountId || !caller.orgId) {
+      return res.status(404).json({ success: false, error: 'User profile not found' });
+    }
+
+    const rawLimit = Number(req.body?.limit || MAX_PENDING_NUDGES);
+    const limit = Number.isInteger(rawLimit)
+      ? Math.max(1, Math.min(rawLimit, MAX_MANUAL_TRIGGER_LIMIT))
+      : MAX_PENDING_NUDGES;
+    const force = req.body?.force !== undefined ? Boolean(req.body.force) : true;
+
+    await dqNotificationsRepo.ensurePreferenceRow({
+      orgId: caller.orgId,
+      accountId: caller.atlassianAccountId
+    });
+
+    const cachedIssues = await getUserCachedIssues(caller.userId, caller.organizationId);
+    const issueKeys = [...new Set((cachedIssues || []).map((r) => r.issue_key).filter(Boolean))];
+
+    if (issueKeys.length === 0) {
+      return res.json({ success: true, generated: 0, candidates: 0, reason: 'no-cached-issues' });
+    }
+
+    const scoreRows = await dqNotificationsRepo.listLowScoreCandidates({
+      orgId: caller.orgId,
+      issueKeys,
+      maxScore: 79,
+      limit: limit * 3
+    });
+
+    const summaryByIssue = new Map(
+      (cachedIssues || []).map((row) => [row.issue_key, row.issue_summary || row.summary || null])
+    );
+
+    let generated = 0;
+    let skippedCooldown = 0;
+    for (const row of scoreRows) {
+      if (generated >= limit) break;
+
+      const issueKey = row.issue_key;
+      const score = Number(row.score);
+      if (!issueKey || Number.isNaN(score)) continue;
+
+      if (!force) {
+        const inCooldown = await dqNotificationsRepo.isWithinCooldown(
+          caller.orgId,
+          caller.atlassianAccountId,
+          issueKey
+        );
+        if (inCooldown) {
+          skippedCooldown += 1;
+          continue;
+        }
+      }
+
+      const baseUrl = caller.jiraBaseUrl ? String(caller.jiraBaseUrl).replace(/\/$/, '') : null;
+      await dqNotificationsRepo.insertNotification({
+        orgId: caller.orgId,
+        accountId: caller.atlassianAccountId,
+        cloudId: caller.orgId,
+        issueKey,
+        scoreAtNotify: score,
+        channel: 'desktop',
+        payload: {
+          score,
+          summary: summaryByIssue.get(issueKey) || null,
+          issueUrl: baseUrl ? `${baseUrl}/browse/${issueKey}` : null,
+          appUrl: null,
+          createdAt: new Date().toISOString()
+        }
+      });
+
+      generated += 1;
+    }
+
+    let reason = null;
+    if (generated === 0) {
+      if (scoreRows.length === 0) {
+        reason = 'no-low-scores';
+      } else if (!force && skippedCooldown > 0) {
+        reason = 'cooldown-filtered';
+      } else {
+        reason = 'limit-reached-or-invalid-candidates';
+      }
+    }
+
+    return res.json({
+      success: true,
+      generated,
+      candidates: scoreRows.length,
+      issueCount: issueKeys.length,
+      force,
+      skippedCooldown,
+      reason
+    });
+  } catch (err) {
+    logger.error('[DesktopDqNudges] POST /trigger failed: %s', err.message);
+    return res.status(500).json({ success: false, error: 'Failed to trigger nudges' });
   }
 });
 

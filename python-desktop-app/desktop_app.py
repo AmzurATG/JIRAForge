@@ -11934,6 +11934,65 @@ class TimeTracker:
         except Exception as e:
             print(f"[ERROR] Manual update trigger failed: {e}")
 
+    def _manual_dq_nudge_trigger(self, icon=None, it=None):
+        """Run a one-off description-quality nudge poll for manual testing."""
+        try:
+            if not self.current_user:
+                print("[DQNUDGE] Manual trigger ignored: user is not logged in")
+                return
+
+            if getattr(self, 'dq_nudge_poller', None) is None:
+                print("[DQNUDGE] Manual trigger requested; poller not running, attempting start")
+                self._start_dq_nudge_poller()
+
+            poller = getattr(self, 'dq_nudge_poller', None)
+            if poller is None:
+                print("[WARN] Manual DQ trigger unavailable: poller could not be started")
+                return
+
+            if getattr(self, 'dq_nudge_preferences', None):
+                try:
+                    self.dq_nudge_preferences.refresh()
+                except Exception as pref_err:
+                    print(f"[WARN] Manual DQ trigger preference refresh failed: {pref_err}")
+
+            print("[DQNUDGE] Running manual one-off DQ nudge poll")
+
+            def poll_in_background():
+                try:
+                    if hasattr(poller, 'trigger_generation'):
+                        trigger_result = poller.trigger_generation(timeout=20.0, limit=5, force=True)
+                        if trigger_result.get('success'):
+                            generated = trigger_result.get('generated', 0)
+                            candidates = trigger_result.get('candidates', 0)
+                            if generated == 0:
+                                reason = trigger_result.get('reason') or 'unspecified'
+                                skipped = trigger_result.get('skippedCooldown', 0)
+                                print(
+                                    f"[DQNUDGE] Manual trigger generated 0 rows "
+                                    f"(candidates={candidates}, reason={reason}, skippedCooldown={skipped})"
+                                )
+                            else:
+                                print(
+                                    f"[DQNUDGE] Manual trigger generated {generated} "
+                                    f"nudge row(s) from {candidates} candidate(s)"
+                                )
+                        else:
+                            print(f"[DQNUDGE] Manual trigger generation result: {trigger_result}")
+
+                    nudges = poller.poll_once(timeout=15.0)
+                    if nudges:
+                        print(f"[DQNUDGE] Manual poll found {len(nudges)} pending nudge(s)")
+                        self._handle_dq_nudges(nudges)
+                    else:
+                        print("[DQNUDGE] Manual poll found no pending nudges")
+                except Exception as poll_err:
+                    print(f"[WARN] Manual DQ trigger poll failed: {poll_err}")
+
+            threading.Thread(target=poll_in_background, daemon=True).start()
+        except Exception as e:
+            print(f"[ERROR] Manual DQ trigger failed: {e}")
+
     def _build_tray_menu(self):
         """Build the tray menu with current state"""
         def get_menu_label():
@@ -11992,6 +12051,10 @@ class TimeTracker:
             menu_items.append(item(
                 '  View All App Rules\u2026',
                 _open_classifications,
+            ))
+            menu_items.append(item(
+                '  Test Description Quality Nudges...',
+                self._manual_dq_nudge_trigger,
             ))
 
         # Add separator and update-related menu items

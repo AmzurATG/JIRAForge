@@ -79,6 +79,39 @@ def test_poll_once_swallows_request_exception():
     assert result == []
 
 
+def test_trigger_generation_returns_generated_count_on_success():
+    fake_response = MagicMock(status_code=200)
+    fake_response.json.return_value = {
+        'success': True,
+        'generated': 2,
+        'candidates': 3,
+        'reason': None,
+        'skippedCooldown': 0
+    }
+    poller = DqNudgePoller(FakeAuthManager(), on_nudges=lambda n: None)
+
+    with patch('dq_nudge.poller.requests.post', return_value=fake_response) as post:
+        result = poller.trigger_generation(limit=5, force=True)
+
+    assert result == {
+        'success': True,
+        'generated': 2,
+        'candidates': 3,
+        'reason': None,
+        'skippedCooldown': 0
+    }
+    _, kwargs = post.call_args
+    assert kwargs['headers']['Authorization'] == 'Bearer abc'
+
+
+def test_trigger_generation_returns_failure_without_token():
+    poller = DqNudgePoller(FakeAuthManager(token=None), on_nudges=lambda n: None)
+    with patch('dq_nudge.poller.requests.post') as post:
+        result = poller.trigger_generation()
+    assert result['success'] is False
+    post.assert_not_called()
+
+
 # ---------------------------------------------------------------------------
 # Adaptive interval
 # ---------------------------------------------------------------------------
