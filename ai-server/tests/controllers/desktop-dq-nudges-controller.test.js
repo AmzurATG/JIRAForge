@@ -25,8 +25,13 @@ jest.mock('../../src/services/db/supabase-client', () => ({
   getClient: jest.fn(() => ({}))
 }));
 
+jest.mock('../../src/services/description-service', () => ({
+  analyzeDescription: jest.fn()
+}));
+
 const repo = require('../../src/services/db/description-quality-notifications-repo');
 const userDb = require('../../src/services/db/user-db-service');
+const descriptionService = require('../../src/services/description-service');
 const router = require('../../src/controllers/desktop-dq-nudges-controller');
 
 const express = require('express');
@@ -58,9 +63,10 @@ beforeEach(() => {
     jira_instance_url: 'https://example.atlassian.net'
   });
   userDb.getUserCachedIssues.mockResolvedValue([
-    { issue_key: 'PROJ-1', issue_summary: 'Issue one' },
-    { issue_key: 'PROJ-2', issue_summary: 'Issue two' }
+    { issue_key: 'PROJ-1', issue_summary: 'Issue one', description: 'Desc one', project_key: 'PROJ' },
+    { issue_key: 'PROJ-2', issue_summary: 'Issue two', description: 'Desc two', project_key: 'PROJ' }
   ]);
+  descriptionService.analyzeDescription.mockResolvedValue({ score: 55 });
 });
 
 describe('GET /api/desktop/description-quality-nudges', () => {
@@ -254,6 +260,15 @@ describe('POST /api/desktop/description-quality-nudges/trigger', () => {
       issueKey: 'PROJ-1',
       scoreAtNotify: 42,
       channel: 'desktop'
+    }));
+    expect(descriptionService.analyzeDescription).toHaveBeenCalled();
+    expect(descriptionService.analyzeDescription).toHaveBeenCalledWith(expect.objectContaining({
+      issueKey: 'PROJ-1',
+      title: 'Issue one',
+      description: 'Desc one',
+      projectKey: 'PROJ',
+      orgId: 'cloud-xyz',
+      accountId: 'acct-123'
     }));
   });
 

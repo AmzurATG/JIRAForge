@@ -30,6 +30,7 @@ function setSupabaseFromMock({ insertReturn, selectReturn, updateReturn }) {
       select: jest.fn().mockImplementation(() => {
         const sel = {
           eq: jest.fn().mockReturnThis(),
+          in: jest.fn().mockReturnThis(),
           is: jest.fn().mockReturnThis(),
           order: jest.fn().mockReturnThis(),
           limit: jest.fn().mockReturnThis(),
@@ -198,5 +199,29 @@ describe('acknowledgeNudges', () => {
     expect(updateChain.in).toHaveBeenCalledWith('id', [1, 2]);
     expect(updateChain.eq).toHaveBeenCalledWith('org_id', 'org-a');
     expect(updateChain.eq).toHaveBeenCalledWith('account_id', 'acct-x');
+  });
+});
+
+describe('getIssueScoresFromCache', () => {
+  test('coerces numeric strings to numbers', async () => {
+    setSupabaseFromMock({
+      selectReturn: {
+        data: [
+          { issue_key: 'PROJ-1', score: '100' },
+          { issue_key: 'PROJ-2', score: 65 },
+          { issue_key: 'PROJ-3', score: 'n/a' }
+        ],
+        error: null
+      }
+    });
+
+    const result = await repo.getIssueScoresFromCache({
+      orgId: 'cloud-xyz',
+      issueKeys: ['PROJ-1', 'PROJ-2', 'PROJ-3']
+    });
+
+    expect(result.get('PROJ-1')).toBe(100);
+    expect(result.get('PROJ-2')).toBe(65);
+    expect(result.has('PROJ-3')).toBe(false);
   });
 });

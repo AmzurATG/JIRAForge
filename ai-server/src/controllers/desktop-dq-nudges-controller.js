@@ -19,12 +19,71 @@
 const express = require('express');
 const logger = require('../utils/logger');
 const dqNotificationsRepo = require('../services/db/description-quality-notifications-repo');
+const descriptionService = require('../services/description-service');
 const { getUserById, getOrganizationById, getUserCachedIssues } = require('../services/db/user-db-service');
 const { getClient } = require('../services/db/supabase-client');
 
 const MAX_PENDING_NUDGES = 5;
 const MAX_MANUAL_TRIGGER_LIMIT = 20;
+const MAX_TRIGGER_REFRESH_ISSUES = 20;
 const VALID_ACTIONS = new Set(['viewed', 'opened-in-jira', 'dismissed', 'snoozed']);
+
+async function refreshScoresForManualTrigger({ orgId, accountId, cachedIssues }) {
+  const rows = Array.isArray(cachedIssues) ? cachedIssues : [];
+  if (!orgId || rows.length === 0) return;
+
+  const byIssue = new Map();
+  for (const row of rows) {
+    if (!row?.issue_key || byIssue.has(row.issue_key)) continue;
+    byIssue.set(row.issue_key, row);
+    if (byIssue.size >= MAX_TRIGGER_REFRESH_ISSUES) break;
+  }
+  if (byIssue.size === 0) return;
+
+  const freshScoreByIssue = new Map();
+  for (const [issueKey, row] of byIssue.entries()) {
+    const title = row.issue_summary || row.summary || issueKey;
+    const description = typeof row.description === 'string' ? row.description : '';
+    const issueType = row.issue_type || row.issueType || 'Task';
+    const projectKey = row.project_key || (String(issueKey).split('-')[0] || 'TASK');
+
+    try {
+      const result = await descriptionService.analyzeDescription({
+        issueKey,
+        title,
+        description,
+        issueType,
+        projectKey,
+        requestImprovement: false,
+        orgId,
+        accountId
+      });
+      const score = Number(result?.score);
+      if (Number.isFinite(score)) {
+        freshScoreByIssue.set(issueKey, Math.max(0, Math.min(100, Math.round(score))));
+      }
+    } catch (err) {
+      logger.warn('[DesktopDqNudges] Trigger refresh failed for %s: %s', issueKey, err.message);
+    }
+  }
+
+  if (freshScoreByIssue.size === 0) return;
+
+  const supabase = getClient();
+  if (!supabase || typeof supabase.from !== 'function') return;
+
+  const updatedAt = new Date().toISOString();
+  for (const [issueKey, score] of freshScoreByIssue.entries()) {
+    const { error } = await supabase
+      .from('description_quality_cache')
+      .update({ score, updated_at: updatedAt })
+      .eq('org_id', orgId)
+      .eq('issue_key', issueKey);
+    if (error) {
+      logger.warn('[DesktopDqNudges] Trigger cache update failed for %s: %s', issueKey, error.message);
+    }
+  }
+}
 
 /**
  * Resolve the calling user's (organizationId, atlassianAccountId, orgCloudId).
@@ -233,6 +292,12 @@ router.post('/trigger', async (req, res) => {
     if (issueKeys.length === 0) {
       return res.json({ success: true, generated: 0, candidates: 0, reason: 'no-cached-issues' });
     }
+
+    await refreshScoresForManualTrigger({
+      orgId: caller.orgId,
+      accountId: caller.atlassianAccountId,
+      cachedIssues
+    });
 
     const scoreRows = await dqNotificationsRepo.listLowScoreCandidates({
       orgId: caller.orgId,

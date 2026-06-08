@@ -12516,7 +12516,7 @@ class TimeTracker:
             def poll_in_background():
                 try:
                     if hasattr(poller, 'trigger_generation'):
-                        trigger_result = poller.trigger_generation(timeout=20.0, limit=5, force=True)
+                        trigger_result = poller.trigger_generation(timeout=60.0, limit=5, force=True)
                         if trigger_result.get('success'):
                             generated = trigger_result.get('generated', 0)
                             candidates = trigger_result.get('candidates', 0)

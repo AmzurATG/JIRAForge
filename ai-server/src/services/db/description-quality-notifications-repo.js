@@ -308,8 +308,9 @@ async function getIssueScoresFromCache({ orgId, issueKeys }) {
   const map = new Map();
   for (const row of data || []) {
     if (!row?.issue_key) continue;
-    if (typeof row.score !== 'number') continue;
-    map.set(row.issue_key, row.score);
+    const score = Number(row.score);
+    if (!Number.isFinite(score)) continue;
+    map.set(row.issue_key, score);
   }
   return map;
 }
