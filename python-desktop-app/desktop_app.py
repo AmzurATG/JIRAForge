@@ -5722,6 +5722,198 @@ class TimeTracker:
             print(f"[WARN] OCR setup encountered an error: {e}")
             self.add_admin_log('WARNING', f'OCR setup error: {str(e)}')
 
+    def _start_background_ocr_setup(self):
+        """
+        Start OCR dependency installation in a background thread.
+        Non-blocking - authentication completes immediately.
+        Shows progress notifications to user.
+        """
+        if hasattr(self, '_ocr_setup_thread') and self._ocr_setup_thread and self._ocr_setup_thread.is_alive():
+            print("[INFO] OCR setup already running in background")
+            return
+
+        print("[INFO] Starting background OCR setup...")
+        self._ocr_setup_thread = threading.Thread(
+            target=self._background_ocr_setup_worker,
+            daemon=True,
+            name="OCR-Setup-Worker"
+        )
+        self._ocr_setup_thread.start()
+
+    def _background_ocr_setup_worker(self):
+        """
+        Worker thread for OCR setup and dependency installation.
+        Runs independently of authentication flow.
+        """
+        try:
+            print("[OCR SETUP] Background worker started")
+            self.add_admin_log('INFO', 'OCR setup started in background')
+            
+            # Track installation time
+            start_time = time.time()
+            max_install_time = 900  # 15 minutes timeout
+            
+            # Check if dependencies are already installed (fast check)
+            missing_count = self._count_missing_ocr_dependencies()
+            
+            if missing_count == 0:
+                print("[OCR SETUP] All dependencies already installed")
+                self._finalize_ocr_setup()
+                return
+            
+            # Show notification to user
+            print(f"[OCR SETUP] Installing {missing_count} OCR dependencies...")
+            print("[OCR SETUP] This may take 5-15 minutes. App continues running.")
+            self._show_ocr_installation_notification(missing_count, started=True)
+            
+            # Run dependency check (with timeout protection)
+            try:
+                from ocr.auto_installer import check_and_install_dependencies
+                
+                # Use threading.Event for timeout protection
+                install_complete = threading.Event()
+                install_success = [False]  # Use list for closure mutable ref
+                
+                def run_install():
+                    try:
+                        result = check_and_install_dependencies(
+                            auto_install=True,
+                            silent=False
+                        )
+                        install_success[0] = bool(result)
+                        install_complete.set()
+                    except Exception as e:
+                        print(f"[OCR SETUP] Installation error: {e}")
+                        install_complete.set()
+                
+                install_thread = threading.Thread(target=run_install, daemon=True)
+                install_thread.start()
+                
+                # Wait with timeout
+                timed_out = not install_complete.wait(timeout=max_install_time)
+                
+                if timed_out:
+                    elapsed = time.time() - start_time
+                    print(f"[OCR SETUP] Installation timed out after {elapsed:.0f}s")
+                    self.add_admin_log('WARNING', f'OCR installation timed out after {elapsed:.0f}s')
+                    self._show_ocr_installation_notification(missing_count, failed=True, timeout=True)
+                    return
+                
+                elapsed = time.time() - start_time
+                
+                if install_success[0]:
+                    print(f"[OCR SETUP] Installation completed in {elapsed:.0f}s")
+                    self.add_admin_log('INFO', f'OCR dependencies installed ({elapsed:.0f}s)')
+                    self._finalize_ocr_setup()
+                    self._show_ocr_installation_notification(missing_count, success=True)
+                else:
+                    print(f"[OCR SETUP] Installation failed after {elapsed:.0f}s")
+                    self.add_admin_log('WARNING', f'OCR installation failed ({elapsed:.0f}s)')
+                    self._show_ocr_installation_notification(missing_count, failed=True)
+            
+            except Exception as e:
+                elapsed = time.time() - start_time
+                print(f"[OCR SETUP] Unexpected error: {e}")
+                traceback.print_exc()
+                self.add_admin_log('ERROR', f'OCR setup error: {str(e)}')
+                self._show_ocr_installation_notification(missing_count, failed=True)
+        
+        except Exception as e:
+            print(f"[OCR SETUP] Worker thread crashed: {e}")
+            traceback.print_exc()
+
+    def _count_missing_ocr_dependencies(self):
+        """Count how many OCR dependencies are missing (fast check)."""
+        try:
+            from ocr.auto_installer import get_configured_engines, get_missing_dependencies
+            
+            engines = get_configured_engines()
+            total_missing = 0
+            
+            for engine in engines:
+                missing = get_missing_dependencies(engine)
+                total_missing += len(missing)
+            
+            return total_missing
+        except Exception as e:
+            print(f"[OCR SETUP] Could not count missing dependencies: {e}")
+            return 0
+
+    def _finalize_ocr_setup(self):
+        """
+        Finalize OCR setup after dependencies are installed.
+        Creates OCR processor and runs diagnostics.
+        """
+        try:
+            print("[OCR SETUP] Finalizing OCR engines...")
+            
+            # Setup OCR engines (now that dependencies are installed)
+            self._setup_ocr_engines()
+            
+            # Create OCR processor
+            from ocr.local_ocr_processor import LocalOCRProcessor
+            self.ocr_processor = LocalOCRProcessor()
+            
+            print("[OCR SETUP] OCR system ready")
+            self.add_admin_log('INFO', 'OCR system initialized successfully')
+            
+        except Exception as e:
+            print(f"[OCR SETUP] Finalization error: {e}")
+            traceback.print_exc()
+            self.add_admin_log('ERROR', f'OCR finalization error: {str(e)}')
+
+    def _show_ocr_installation_notification(self, package_count, started=False, success=False, failed=False, timeout=False):
+        """
+        Show desktop notification for OCR installation progress.
+        
+        Args:
+            package_count: Number of packages being installed
+            started: Installation started
+            success: Installation completed successfully
+            failed: Installation failed
+            timeout: Installation timed out
+        """
+        try:
+            # Import notification library if available
+            if not WINOTIFY_AVAILABLE:
+                return
+            
+            from winotify import Notification, audio
+            
+            if started:
+                title = "Setting Up OCR"
+                msg = f"Installing {package_count} OCR dependencies in background. App continues running."
+                duration = "long"
+            elif success:
+                title = "OCR Ready"
+                msg = "OCR text extraction is now available for screenshot analysis."
+                duration = "short"
+            elif timeout:
+                title = "OCR Installation Timeout"
+                msg = f"Installation took too long (>15 min). App continues without OCR. Check logs."
+                duration = "long"
+            elif failed:
+                title = "OCR Installation Issue"
+                msg = "Could not install OCR dependencies. App continues with basic functionality."
+                duration = "long"
+            else:
+                return
+            
+            notification = Notification(
+                app_id="Time Tracker",
+                title=title,
+                msg=msg,
+                duration=duration
+            )
+            
+            if success:
+                notification.set_audio(audio.Default, loop=False)
+            
+            notification.show()
+            
+        except Exception as e:
+            print(f"[OCR SETUP] Could not show notification: {e}")
+
     def _shutdown_for_update(self):
         """Exit process after scheduling updater script."""
         # Keep update shutdown immediate. Any cleanup here can block and leave
@@ -5884,10 +6076,16 @@ class TimeTracker:
             self.add_admin_log('WARNING', f'Update check failed: {str(e)}')
             return None
 
-    def initialize_supabase(self):
+    def initialize_supabase(self, skip_ocr_setup=False):
         """Initialize Supabase client with custom JWT for RLS-scoped access.
         Uses anon key + custom JWT — no service role key needed.
-        Must be called after successful authentication."""
+        Must be called after successful authentication.
+        
+        Args:
+            skip_ocr_setup: If True, defer OCR initialization to background thread.
+                           Used during authentication to prevent blocking (OCR dependency
+                           installation can take 5-15 minutes).
+        """
         if self.supabase_initialized:
             print("[INFO] Supabase already initialized")
             return True
@@ -5904,10 +6102,15 @@ class TimeTracker:
             print("[WARN] Failed to get OCR config from AI server, using defaults")
             # OCR config is not critical - continue with defaults
 
-        # Now that the correct engine config is in os.environ, set up OCR engines
-        # and create the processor (uses AI-server-provided engine names).
-        self._setup_ocr_engines()
-        self.ocr_processor = LocalOCRProcessor()
+        # OCR setup: either immediate (startup) or deferred (auth callback)
+        if not skip_ocr_setup:
+            # Called from startup path (already in background) - setup immediately
+            self._setup_ocr_engines()
+            self.ocr_processor = LocalOCRProcessor()
+        else:
+            # Called from auth callback (Flask thread) - defer to background to prevent blocking
+            print("[INFO] OCR setup deferred to background thread (prevents auth blocking)")
+            self.ocr_processor = None  # Will be initialized by background thread
 
         # Initialize single Supabase client with anon key + custom JWT
         try:
@@ -6110,8 +6313,12 @@ class TimeTracker:
                     set_runtime_privacy_config(result['privacy'])
 
                 # Initialize Supabase (uses the config cached during handle_google_callback)
-                if not self.initialize_supabase():
+                # Skip OCR setup to prevent blocking (OCR dependency installation can take 5-15 minutes)
+                if not self.initialize_supabase(skip_ocr_setup=True):
                     return "Failed to initialize database connection - check AI server connectivity", 500
+
+                # Start background OCR setup (non-blocking)
+                self._start_background_ocr_setup()
 
                 # Google users have no Atlassian account id; use the DB user id as the
                 # identity/consent key. organization_id + user_id come from the AI server.
@@ -6209,8 +6416,9 @@ class TimeTracker:
                     return error_msg, 500
 
                 # Initialize Supabase clients (fetches config from AI server)
+                # Skip OCR setup to prevent blocking (OCR dependency installation can take 5-15 minutes)
                 print("[INFO] Initializing database connection...")
-                if not self.initialize_supabase():
+                if not self.initialize_supabase(skip_ocr_setup=True):
                     error_msg = "Failed to initialize database connection - check AI server connectivity"
                     print(f"[ERROR] {error_msg}")
                     send_login_diagnostics(
@@ -6218,6 +6426,9 @@ class TimeTracker:
                         error=error_msg
                     )
                     return error_msg, 500
+
+                # Start background OCR setup (non-blocking)
+                self._start_background_ocr_setup()
 
                 # Check if we had anonymous tracking before login
                 had_anonymous = self.current_user_id and self.current_user_id.startswith('anonymous_')
@@ -9304,6 +9515,10 @@ class TimeTracker:
                 if backfill_count >= MAX_BACKFILL_PER_BATCH:
                     print(f"[BATCH] Backfill OCR cap reached ({MAX_BACKFILL_PER_BATCH}) — skipping remaining {len(pending_entries) - backfill_count} entries")
                     break
+                # Skip OCR backfill if OCR processor not ready yet
+                if not self.ocr_processor:
+                    print("[BATCH] OCR not available yet - skipping backfill")
+                    break
                 if saved_screenshot is not None:
                     ocr_result = self.ocr_processor.ocr_from_image(saved_screenshot)
                     del saved_screenshot
@@ -9833,14 +10048,20 @@ class TimeTracker:
                         ocr_text = ocr_res.get('text') if ocr_res else None
                         self._maybe_classify_unknown_app(_app, _wtitle, ocr_text)
 
-                submitted = self.ocr_processor.submit_ocr_async(screenshot, _ocr_callback)
-                if submitted:
-                    print(f"[OCR-ASYNC] Dispatched async OCR for {app_name}")
+                # Submit OCR async only if OCR processor is ready
+                if self.ocr_processor:
+                    submitted = self.ocr_processor.submit_ocr_async(screenshot, _ocr_callback)
+                    if submitted:
+                        print(f"[OCR-ASYNC] Dispatched async OCR for {app_name}")
+                    else:
+                        # Queue full: save screenshot for batch backfill (same as throttled)
+                        # Need to update the session we just created to add the pending screenshot
+                        self.session_manager.add_pending_ocr_screenshot(display_title, app_name, screenshot)
+                        print(f"[OCR-ASYNC] Queue full for {app_name}, saved for batch backfill")
                 else:
-                    # Queue full: save screenshot for batch backfill (same as throttled)
-                    # Need to update the session we just created to add the pending screenshot
+                    # OCR not ready yet - save screenshot for later backfill
                     self.session_manager.add_pending_ocr_screenshot(display_title, app_name, screenshot)
-                    print(f"[OCR-ASYNC] Queue full for {app_name}, saved for batch backfill")
+                    print(f"[OCR-ASYNC] OCR not ready for {app_name}, saved for batch backfill")
 
     def _maybe_classify_unknown_app(self, app_name, window_title, ocr_text):
         """Check dedup key and fire async AI classification if this is a new unknown app."""
@@ -11686,14 +11907,14 @@ class TimeTracker:
             self._system_event_thread.start()
     
     def _start_activity_monitor(self):
-        \"\"\"B-2: Start or restart activity monitor thread (helper for watchdog).\"\"\"
+        """B-2: Start or restart activity monitor thread (helper for watchdog)."""
         if not self._activity_monitor_thread or not self._activity_monitor_thread.is_alive():
             self._activity_monitor_thread = threading.Thread(
                 target=self.monitor_user_activity, daemon=True
             )
             self._activity_monitor_thread.start()
             self._activity_monitor_heartbeat = time.time()  # Reset heartbeat
-            print(\"[OK] Activity monitor (re)started\")
+            print("[OK] Activity monitor (re)started")
 
         # Start offline sync thread
         if not self._sync_thread or not self._sync_thread.is_alive():
@@ -12425,6 +12646,12 @@ class TimeTracker:
             time.sleep(3)
             sys.exit(1)
 
+        # Check if this is first run (OCR dependencies not installed)
+        # Start background installation early so it's ready by the time user logs in
+        if self._is_first_run_ocr_check():
+            print("[INFO] First run detected - starting OCR dependency check in background")
+            self._start_background_ocr_setup()
+
         # Add to Windows startup (runs on system boot) - ONLY when running as built exe
         # When running from source (python desktop_app.py), get_app_executable_path() returns
         # the .py file path - Windows would open it in the editor instead of running the app.
@@ -12675,6 +12902,15 @@ class TimeTracker:
         except KeyboardInterrupt:
             print("\n[INFO] Shutting down...")
             self.stop_tracking()
+
+    def _is_first_run_ocr_check(self):
+        """Check if OCR dependencies need to be installed."""
+        try:
+            from ocr.auto_installer import is_installation_complete
+            return not is_installation_complete()
+        except Exception as e:
+            print(f"[WARN] Could not check OCR installation status: {e}")
+            return False
     
     # ============================================================================
     # HTML TEMPLATES
