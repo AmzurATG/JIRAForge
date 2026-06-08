@@ -377,8 +377,12 @@ except ImportError:
 # Note: AI analysis is now handled by the separate AI server
 # Desktop app only captures and uploads screenshots to Supabase
 
-# Load environment variables
-load_dotenv()
+# Load environment variables only in source/dev runs.
+# In frozen PyInstaller builds, loading nearby template .env files can inject
+# placeholder values (for example "your_client_id_here") into child processes.
+# That can break first-login OAuth after install/update handoff.
+if not getattr(sys, 'frozen', False):
+    load_dotenv()
 
 # ============================================================================
 # CONFIGURATION
@@ -418,9 +422,32 @@ RUNTIME_OCR_CONFIG = {}
 
 def get_env_var(key, default=None):
     """Get environment variable with fallback to embedded/runtime values"""
+    def _is_template_placeholder(raw_value):
+        if raw_value is None:
+            return False
+
+        value = str(raw_value).strip().lower()
+        if not value:
+            return False
+
+        # Ignore common template placeholders from sample .env files.
+        return (
+            value in {
+                'your_client_id_here',
+                'your_google_desktop_client_id',
+                'your_ai_server_url',
+                'your-ai-server-url',
+                'your-project.supabase.co',
+            }
+            or value.startswith('your_')
+            or value.startswith('your-')
+            or 'your-ai-server-url' in value
+            or 'your-project.supabase.co' in value
+        )
+
     # First try environment variable (for development with .env)
     value = os.getenv(key)
-    if value:
+    if value and not _is_template_placeholder(value):
         return value
     # Then try runtime Supabase config (fetched from AI server)
     if key in RUNTIME_SUPABASE_CONFIG and RUNTIME_SUPABASE_CONFIG[key]:

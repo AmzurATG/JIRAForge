@@ -29,7 +29,6 @@ def _patch_tk():
     return patch.multiple(
         'dq_nudge.popup',
         tk=MagicMock(),
-        ttk=MagicMock(),
         webbrowser=MagicMock(),
     )
 
@@ -45,10 +44,33 @@ def test_show_noop_when_no_nudges():
     ack.assert_not_called()
 
 
+def test_create_window_centers_and_sets_minimum_size(sample_nudges):
+    ack = MagicMock(return_value=True)
+    popup = DqNudgePopupWindow(sample_nudges, ack)
+
+    fake_tk = MagicMock()
+    with patch.multiple('dq_nudge.popup', tk=fake_tk, webbrowser=MagicMock()):
+        fake_win = MagicMock()
+        fake_win.winfo_screenwidth.return_value = 1920
+        fake_win.winfo_screenheight.return_value = 1080
+        fake_tk.Tk.return_value = fake_win
+        popup._create_window()
+
+    fake_win.minsize.assert_called_once()
+    min_w, min_h = fake_win.minsize.call_args.args
+    assert min_w >= 760
+    assert min_h >= 460
+
+    fake_win.geometry.assert_called_once()
+    geometry = fake_win.geometry.call_args.args[0]
+    assert geometry.startswith('960x620+')
+    assert geometry.endswith('+230')
+
+
 # ---------------------------------------------------------------------------
-# show() — fires "viewed" ack with all nudge ids
+# show() — starts popup UI thread
 # ---------------------------------------------------------------------------
-def test_show_acks_viewed_with_all_ids(sample_nudges):
+def test_show_starts_ui_thread(sample_nudges):
     ack = MagicMock(return_value=True)
     popup = DqNudgePopupWindow(sample_nudges, ack)
     with _patch_tk():
@@ -56,10 +78,45 @@ def test_show_acks_viewed_with_all_ids(sample_nudges):
             instance = MagicMock()
             thread_cls.return_value = instance
             popup.show()
-            # First thread fired is the viewed-ack thread
-            thread_cls.assert_called()
-            kwargs = thread_cls.call_args_list[0].kwargs
-            assert kwargs['args'] == ([1, 2], 'viewed', None)
+            thread_cls.assert_called_once()
+            kwargs = thread_cls.call_args.kwargs
+            assert kwargs['target'] == popup._run_window
+
+
+def test_layout_action_buttons_stacks_on_small_width(sample_nudges):
+    ack = MagicMock(return_value=True)
+    popup = DqNudgePopupWindow(sample_nudges, ack)
+
+    btn_row = MagicMock()
+    btn_row.winfo_width.return_value = 300
+
+    open_btn = MagicMock()
+    snooze_btn = MagicMock()
+    dismiss_btn = MagicMock()
+
+    popup._layout_action_buttons(btn_row, open_btn, snooze_btn, dismiss_btn)
+
+    open_btn.pack.assert_called_with(side='top', fill='x', pady=(0, 6))
+    snooze_btn.pack.assert_called_with(side='top', fill='x', pady=(0, 6))
+    dismiss_btn.pack.assert_called_with(side='top', fill='x')
+
+
+# ---------------------------------------------------------------------------
+# _run_window() — fires "viewed" ack with all nudge ids and enters mainloop
+# ---------------------------------------------------------------------------
+def test_run_window_acks_viewed_with_all_ids(sample_nudges):
+    ack = MagicMock(return_value=True)
+    popup = DqNudgePopupWindow(sample_nudges, ack)
+    fake_window = MagicMock()
+    fake_window.master = fake_window
+    popup._create_window = MagicMock(return_value=fake_window)
+
+    with patch('dq_nudge.popup.threading.Thread') as thread_cls:
+        popup._run_window()
+        thread_cls.assert_called_once()
+        kwargs = thread_cls.call_args.kwargs
+        assert kwargs['args'] == ([1, 2], 'viewed', None)
+        fake_window.mainloop.assert_called_once()
 
 
 # ---------------------------------------------------------------------------

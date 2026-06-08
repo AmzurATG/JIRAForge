@@ -22,6 +22,7 @@ jest.mock('../../src/utils/remote.js', () => ({
 }));
 
 const { runDescriptionQualityNudge, _internals, groupByAssignee } = require('../../src/services/descriptionQualityNudge.js');
+const { kvs } = require('@forge/kvs');
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -215,6 +216,39 @@ test('caps nudges per user at MAX_NUDGES_PER_USER (5)', async () => {
   expect(deps.rowInserter).toHaveBeenCalledTimes(10);
   expect(result.stats.bellSent).toBe(5);
   expect(result.stats.desktopQueued).toBe(5);
+});
+
+test('re-analyzes all in-progress issues and uses fresh analyzer scores', async () => {
+  const issues = [makeIssue('X-1', 'u1'), makeIssue('X-2', 'u1')];
+  const deps = defaultDeps({
+    fetchIssues: jest.fn().mockResolvedValue(issues),
+    cacheLoader: jest.fn().mockResolvedValue(new Map([['X-1', 10], ['X-2', 10]])),
+    analyzer: jest.fn()
+      .mockResolvedValueOnce({ score: 95 })
+      .mockResolvedValueOnce({ score: 30 })
+  });
+
+  const result = await runDescriptionQualityNudge(deps);
+
+  expect(deps.analyzer).toHaveBeenCalledTimes(2);
+  expect(deps.rowInserter).toHaveBeenCalledTimes(2); // only X-2 on two channels
+  expect(result.stats.skippedHighScore).toBe(1);
+  expect(result.stats.bellSent).toBe(1);
+  expect(result.stats.desktopQueued).toBe(1);
+});
+
+test('skips execution when last successful run is under 30 minutes ago', async () => {
+  kvs.get.mockResolvedValueOnce({ lastRunAt: Date.parse('2026-06-05T11:45:00Z') });
+
+  const deps = defaultDeps({
+    now: () => Date.parse('2026-06-05T12:00:00Z')
+  });
+
+  const result = await runDescriptionQualityNudge(deps);
+
+  expect(result).toEqual({ success: true, skipped: 'cadence-throttled' });
+  expect(deps.fetchIssues).not.toHaveBeenCalled();
+  expect(deps.lockRelease).toHaveBeenCalledTimes(1);
 });
 
 // ---------------------------------------------------------------------------

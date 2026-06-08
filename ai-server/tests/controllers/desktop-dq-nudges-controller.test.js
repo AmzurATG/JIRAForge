@@ -7,6 +7,7 @@ jest.mock('../../src/utils/logger', () => ({
 jest.mock('../../src/services/db/description-quality-notifications-repo', () => ({
   listPendingDesktopNudges: jest.fn(),
   acknowledgeNudges: jest.fn(),
+  getIssueScoresFromCache: jest.fn(),
   listLowScoreCandidates: jest.fn(),
   insertNotification: jest.fn(),
   isWithinCooldown: jest.fn(),
@@ -45,6 +46,7 @@ function buildApp() {
 
 beforeEach(() => {
   jest.clearAllMocks();
+  repo.getIssueScoresFromCache.mockResolvedValue(new Map());
   userDb.getUserById.mockResolvedValue({
     id: 'user-uuid-1',
     organization_id: 'org-uuid-1',
@@ -106,6 +108,49 @@ describe('GET /api/desktop/description-quality-nudges', () => {
     repo.listPendingDesktopNudges.mockRejectedValue(new Error('db down'));
     const res = await request(buildApp()).get('/api/desktop/description-quality-nudges');
     expect(res.status).toBe(500);
+  });
+
+  test('prefers live cache score over score_at_notify in response', async () => {
+    repo.listPendingDesktopNudges.mockResolvedValue([
+      {
+        id: 12,
+        issue_key: 'PROJ-12',
+        score_at_notify: 5,
+        payload: { summary: 'Improve docs' },
+        notified_at: '2026-06-05T12:00:00Z'
+      }
+    ]);
+    repo.getIssueScoresFromCache.mockResolvedValue(new Map([['PROJ-12', 77]]));
+
+    const res = await request(buildApp()).get('/api/desktop/description-quality-nudges');
+    expect(res.status).toBe(200);
+    expect(res.body.nudges).toHaveLength(1);
+    expect(res.body.nudges[0].score).toBe(77);
+  });
+
+  test('filters stale rows when live score is >= 80 and auto-acks them', async () => {
+    repo.listPendingDesktopNudges.mockResolvedValue([
+      {
+        id: 21,
+        issue_key: 'PROJ-21',
+        score_at_notify: 0,
+        payload: { summary: 'Old low score' },
+        notified_at: '2026-06-05T12:00:00Z'
+      }
+    ]);
+    repo.getIssueScoresFromCache.mockResolvedValue(new Map([['PROJ-21', 100]]));
+    repo.acknowledgeNudges.mockResolvedValue(1);
+
+    const res = await request(buildApp()).get('/api/desktop/description-quality-nudges');
+    expect(res.status).toBe(200);
+    expect(res.body.nudges).toEqual([]);
+    expect(repo.acknowledgeNudges).toHaveBeenCalledWith({
+      orgId: 'cloud-xyz',
+      accountId: 'acct-123',
+      nudgeIds: [21],
+      action: 'dismissed',
+      snoozeUntil: null
+    });
   });
 });
 

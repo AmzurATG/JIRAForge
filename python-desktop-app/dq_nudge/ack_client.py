@@ -6,14 +6,14 @@ Atlassian token fallback is handled by the server-side desktop-auth middleware.
 """
 
 import logging
-import os
 from typing import Iterable, List, Optional
 
 import requests
 
+from .url_resolver import resolve_ai_server_url
+
 logger = logging.getLogger(__name__)
 
-DEFAULT_AI_SERVER_URL = os.environ.get('AI_SERVER_URL', 'https://forgesync.amzur.com')
 ACK_ENDPOINT = '/api/desktop/description-quality-nudges/ack'
 
 VALID_ACTIONS = {'viewed', 'opened-in-jira', 'dismissed', 'snoozed'}
@@ -47,7 +47,7 @@ def acknowledge_nudges(
         logger.warning('[DqNudge.ack] No Supabase token; skipping ack')
         return False
 
-    url = (ai_server_url or DEFAULT_AI_SERVER_URL) + ACK_ENDPOINT
+    url = resolve_ai_server_url(auth_manager=auth_manager, ai_server_url=ai_server_url) + ACK_ENDPOINT
     body = {'nudgeIds': ids, 'action': action}
     if snooze_until:
         body['snoozeUntil'] = snooze_until

@@ -54,7 +54,7 @@ export const scheduledWorklogSyncHandler = async () => {
 };
 
 // Export scheduled trigger handler for description-quality nudges (Enhancement #13).
-// Fires hourly via two staggered triggers (A/B) — a KVS lock prevents overlap.
+// Fires on frequent triggers, with lock + cadence gate enforcing one run per 30 minutes.
 export const descriptionQualityNudgeHandler = async (event, context) => {
   return await runDescriptionQualityNudge({ event, context, analyzer: analyzeIssue });
 };

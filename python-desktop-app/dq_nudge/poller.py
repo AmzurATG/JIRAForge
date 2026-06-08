@@ -9,21 +9,21 @@ server and schedules a popup on the main tkinter thread when results arrive.
 """
 
 import logging
-import os
 import threading
 import time
 from typing import Callable, List, Optional
 
 import requests
 
+from .url_resolver import resolve_ai_server_url
+
 logger = logging.getLogger(__name__)
 
-DEFAULT_AI_SERVER_URL = os.environ.get('AI_SERVER_URL', 'https://forgesync.amzur.com')
 NUDGES_ENDPOINT = '/api/desktop/description-quality-nudges'
 TRIGGER_ENDPOINT = '/api/desktop/description-quality-nudges/trigger'
 
-FOREGROUND_POLL_INTERVAL = 5 * 60     # 5 minutes
-IDLE_POLL_INTERVAL = 15 * 60          # 15 minutes
+FOREGROUND_POLL_INTERVAL = 30 * 60    # 30 minutes
+IDLE_POLL_INTERVAL = 60 * 60          # 60 minutes
 DEFAULT_IDLE_THRESHOLD = 5 * 60       # 5 minutes
 
 
@@ -47,7 +47,7 @@ class DqNudgePoller:
         self.auth_manager = auth_manager
         self.on_nudges = on_nudges
         self.preferences = preferences
-        self.ai_server_url = ai_server_url or DEFAULT_AI_SERVER_URL
+        self.ai_server_url = resolve_ai_server_url(auth_manager=auth_manager, ai_server_url=ai_server_url)
         self._idle_seconds_provider = idle_seconds_provider or (lambda: 0)
         self._idle_threshold = idle_threshold
         self._clock = clock

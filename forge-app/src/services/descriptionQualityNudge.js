@@ -2,17 +2,16 @@
  * Description Quality Nudge Scheduler
  * Enhancement #13 — see plan: docs/jira_ticket_description_enhancement/13_SCHEDULED_QUALITY_NOTIFICATIONS.md
  *
- * Runs hourly (via two scheduledTriggers in manifest.yml: A/B).
+ * Runs on frequent scheduled triggers with a 30-minute cadence gate.
  *
  * Algorithm (per tenant invocation):
  *   1. Acquire a 60s KVS lock to prevent overlapping runs of A and B.
- *   2. JQL: `assignee is not EMPTY AND statusCategory != Done AND updated >= -30d`
+ *   2. JQL: `assignee is not EMPTY AND statusCategory = "In Progress" AND updated >= -30d`
  *      via api.asApp() — returns recent open issues with an assignee.
  *   3. Group results by assignee accountId.
  *   4. For each (assignee, issue):
- *        - Look up cached quality score in description_quality_cache.
- *        - If absent, warm-up by calling the AI server `/api/forge/description/analyze`
- *          (capped at 10 warm-ups per tenant per run for cost control).
+ *        - Refresh score by calling the AI server `/api/forge/description/analyze`
+ *          and fall back to cache if refresh fails.
  *        - Skip if score >= MIN_NUDGE_SCORE (80).
  *        - Skip if the user is within their cross-channel cooldown (24 h).
  *        - Skip if the user has opted out of BOTH channels (bell + popup).
@@ -34,15 +33,16 @@ import { supabaseQuery, remoteRequest } from '../utils/remote.js';
 
 const LOCK_KEY = 'scheduler-lock/dq-nudge';
 const LOCK_TTL_MS = 60 * 1000; // 60 seconds
+const LAST_RUN_KEY = 'scheduler-last-run/dq-nudge';
+const RUN_INTERVAL_MS = 30 * 60 * 1000; // 30 minutes
 
 const MAX_NUDGES_PER_USER = 5;
-const MAX_WARMUPS_PER_RUN = 10;
 const MIN_NUDGE_SCORE = 80;
 const COOLDOWN_MS = 24 * 60 * 60 * 1000;
 const RECENT_DAYS_JQL = 30;
 const MAX_JQL_RESULTS = 100;
 
-const JQL_OPEN_RECENT = `assignee is not EMPTY AND statusCategory != Done AND updated >= -${RECENT_DAYS_JQL}d ORDER BY updated DESC`;
+const JQL_OPEN_RECENT = `assignee is not EMPTY AND statusCategory = "In Progress" AND updated >= -${RECENT_DAYS_JQL}d ORDER BY updated DESC`;
 
 function extractUuidFromString(value) {
   if (typeof value !== 'string') return null;
@@ -106,6 +106,28 @@ async function tryAcquireLock(now = Date.now()) {
 
 async function releaseLock() {
   try { await kvs.delete(LOCK_KEY); } catch { /* best-effort */ }
+}
+
+async function shouldRunForCadence(nowMs = Date.now()) {
+  try {
+    const row = await kvs.get(LAST_RUN_KEY);
+    const lastRunAt = Number(row?.lastRunAt || 0);
+    if (lastRunAt > 0 && (nowMs - lastRunAt) < RUN_INTERVAL_MS) {
+      return false;
+    }
+    return true;
+  } catch (err) {
+    console.warn('[DQNudge] Cadence read failed; proceeding:', err.message);
+    return true;
+  }
+}
+
+async function markRunForCadence(nowMs = Date.now()) {
+  try {
+    await kvs.set(LAST_RUN_KEY, { lastRunAt: nowMs });
+  } catch (err) {
+    console.warn('[DQNudge] Cadence write failed:', err.message);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -214,22 +236,18 @@ async function loadCachedScores(orgId, issueKeys) {
 }
 
 /**
- * Decide whether this run should warm-up missing cache entries.
- * Caller-injected `analyzer` keeps this testable.
+ * Re-analyze all in-progress issues for near-real-time scoring.
  */
-async function warmUpMissingScores({ issuesNeedingScore, analyzer, budget }) {
+async function refreshScoresForIssues({ issues, analyzer }) {
   const newScores = new Map();
-  let used = 0;
-  for (const issue of issuesNeedingScore) {
-    if (used >= budget) break;
+  for (const issue of issues) {
     try {
       const result = await analyzer(issue.key);
       if (result && typeof result.score === 'number') {
         newScores.set(issue.key, result.score);
-        used += 1;
       }
     } catch (err) {
-      console.warn(`[DQNudge] Warm-up failed for ${issue.key}:`, err.message);
+      console.warn(`[DQNudge] Re-analysis failed for ${issue.key}:`, err.message);
     }
   }
   return newScores;
@@ -395,6 +413,13 @@ export async function runDescriptionQualityNudge(deps = {}) {
     return { success: true, skipped: 'lock-held' };
   }
 
+  const nowMs = now();
+  const cadenceAllowed = await shouldRunForCadence(nowMs);
+  if (!cadenceAllowed) {
+    await lockRelease();
+    return { success: true, skipped: 'cadence-throttled' };
+  }
+
   const orgId = cloudId;
   const stats = {
     issuesScanned: 0,
@@ -411,11 +436,13 @@ export async function runDescriptionQualityNudge(deps = {}) {
     const issues = await fetchIssues();
     stats.issuesScanned = issues.length;
     if (issues.length === 0) {
+      await markRunForCadence(nowMs);
       return { success: true, stats };
     }
 
     const byUser = groupByAssignee(issues);
     if (byUser.size === 0) {
+      await markRunForCadence(nowMs);
       return { success: true, stats };
     }
 
@@ -427,20 +454,14 @@ export async function runDescriptionQualityNudge(deps = {}) {
     const allKeys = issues.map((i) => i.key);
     const scores = await cacheLoader(orgId, allKeys);
 
-    // Optional warm-up pass — capped per run.
-    let warmupBudget = MAX_WARMUPS_PER_RUN;
+    // Refresh score pass — analyze all issues for real-time consistency.
     if (analyzer) {
-      const missing = issues
-        .filter((i) => !scores.has(i.key))
-        .map((i) => ({ key: i.key, summary: i.fields?.summary || '' }))
-        .slice(0, warmupBudget);
-      const warmed = await warmUpMissingScores({
-        issuesNeedingScore: missing,
+      const refreshed = await refreshScoresForIssues({
+        issues,
         analyzer,
-        budget: warmupBudget
       });
-      for (const [k, v] of warmed.entries()) scores.set(k, v);
-      stats.warmedUp = warmed.size;
+      for (const [k, v] of refreshed.entries()) scores.set(k, v);
+      stats.warmedUp = refreshed.size;
     }
 
     // Per-user processing
@@ -511,6 +532,7 @@ export async function runDescriptionQualityNudge(deps = {}) {
       }
     }
 
+    await markRunForCadence(nowMs);
     return { success: true, stats };
   } catch (err) {
     console.error('[DQNudge] Fatal error:', err.message);
@@ -523,8 +545,8 @@ export async function runDescriptionQualityNudge(deps = {}) {
 // Exposed for tests
 export const _internals = {
   MAX_NUDGES_PER_USER,
-  MAX_WARMUPS_PER_RUN,
   MIN_NUDGE_SCORE,
+  RUN_INTERVAL_MS,
   COOLDOWN_MS,
   isWithinCooldown,
   getPreference,

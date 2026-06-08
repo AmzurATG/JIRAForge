@@ -63,10 +63,10 @@ modules:
     # A 60-second KVS lock in the handler prevents overlapping execution.
     - key: description-quality-nudge-a
       function: descriptionQualityNudge
-      interval: hour
+      interval: fiveMinute
     - key: description-quality-nudge-b
       function: descriptionQualityNudge
-      interval: hour
+      interval: fiveMinute
 
   trigger:
     - key: issue-cache-trigger

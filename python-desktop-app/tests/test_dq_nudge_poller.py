@@ -15,11 +15,13 @@ from dq_nudge.poller import (  # noqa: E402
     DEFAULT_IDLE_THRESHOLD,
 )
 from dq_nudge.ack_client import acknowledge_nudges  # noqa: E402
+from dq_nudge.preferences import DqNudgePreferences  # noqa: E402
 
 
 class FakeAuthManager:
-    def __init__(self, token='abc'):
+    def __init__(self, token='abc', ai_server_url='https://forgesync.amzur.com'):
         self._token = token
+        self.ai_server_url = ai_server_url
 
     def get_supabase_token(self):
         return self._token
@@ -112,6 +114,33 @@ def test_trigger_generation_returns_failure_without_token():
     post.assert_not_called()
 
 
+def test_poller_prefers_auth_manager_ai_server_url_over_placeholder_env(monkeypatch):
+    monkeypatch.setenv('AI_SERVER_URL', 'http://your-ai-server-url:3001')
+    auth = FakeAuthManager(token='abc', ai_server_url='https://good-server.example')
+    poller = DqNudgePoller(auth, on_nudges=lambda n: None)
+
+    fake_response = MagicMock(status_code=200)
+    fake_response.json.return_value = {'success': True, 'nudges': []}
+    with patch('dq_nudge.poller.requests.get', return_value=fake_response) as get:
+        poller.poll_once()
+
+    assert get.call_args.args[0].startswith('https://good-server.example')
+
+
+def test_preferences_prefers_auth_manager_ai_server_url_over_placeholder_env(monkeypatch):
+    monkeypatch.setenv('AI_SERVER_URL', 'http://your-ai-server-url:3001')
+    auth = FakeAuthManager(token='abc', ai_server_url='https://good-server.example')
+    prefs = DqNudgePreferences(auth)
+
+    fake_response = MagicMock(status_code=200)
+    fake_response.json.return_value = {'preferences': {'bellEnabled': True, 'popupEnabled': True}}
+    with patch('dq_nudge.preferences.requests.get', return_value=fake_response) as get:
+        ok = prefs.refresh()
+
+    assert ok is True
+    assert get.call_args.args[0].startswith('https://good-server.example')
+
+
 # ---------------------------------------------------------------------------
 # Adaptive interval
 # ---------------------------------------------------------------------------
@@ -122,6 +151,7 @@ def test_interval_foreground():
         idle_seconds_provider=lambda: 30,
     )
     assert poller._current_interval() == FOREGROUND_POLL_INTERVAL
+    assert FOREGROUND_POLL_INTERVAL == 30 * 60, 'foreground poll should be 30 min'
 
 
 def test_interval_idle():
@@ -131,6 +161,7 @@ def test_interval_idle():
         idle_seconds_provider=lambda: DEFAULT_IDLE_THRESHOLD + 1,
     )
     assert poller._current_interval() == IDLE_POLL_INTERVAL
+    assert IDLE_POLL_INTERVAL == 60 * 60, 'idle poll should be 60 min'
 
 
 def test_interval_provider_exception_defaults_to_foreground():
@@ -181,3 +212,15 @@ def test_acknowledge_nudges_includes_snooze_until():
     assert ok is True
     _, kwargs = post.call_args
     assert kwargs['json']['snoozeUntil'] == '2026-12-31T00:00:00Z'
+
+
+def test_acknowledge_nudges_prefers_auth_manager_ai_server_url_over_placeholder_env(monkeypatch):
+    monkeypatch.setenv('AI_SERVER_URL', 'http://your-ai-server-url:3001')
+    auth = FakeAuthManager(token='TOKEN', ai_server_url='https://good-server.example')
+    fake = MagicMock(status_code=200, text='ok')
+
+    with patch('dq_nudge.ack_client.requests.post', return_value=fake) as post:
+        ok = acknowledge_nudges(auth, [7], 'viewed')
+
+    assert ok is True
+    assert post.call_args.args[0].startswith('https://good-server.example')

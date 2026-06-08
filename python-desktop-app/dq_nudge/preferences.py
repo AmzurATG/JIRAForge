@@ -7,14 +7,14 @@ from the Forge settings UI and not relevant to the desktop popup itself.
 """
 
 import logging
-import os
 from typing import Optional
 
 import requests
 
+from .url_resolver import resolve_ai_server_url
+
 logger = logging.getLogger(__name__)
 
-DEFAULT_AI_SERVER_URL = os.environ.get('AI_SERVER_URL', 'https://forgesync.amzur.com')
 PREFS_ENDPOINT = '/api/desktop/preferences/dq-nudges'
 
 
@@ -25,7 +25,7 @@ class DqNudgePreferences:
 
     def __init__(self, auth_manager, ai_server_url: Optional[str] = None):
         self.auth_manager = auth_manager
-        self.ai_server_url = ai_server_url or DEFAULT_AI_SERVER_URL
+        self.ai_server_url = resolve_ai_server_url(auth_manager=auth_manager, ai_server_url=ai_server_url)
         # Defaults: both channels opt-in.
         self.bell_enabled = True
         self.popup_enabled = True

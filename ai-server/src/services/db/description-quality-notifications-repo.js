@@ -282,6 +282,38 @@ async function listLowScoreCandidates({ orgId, issueKeys, maxScore = 79, limit =
   return data || [];
 }
 
+/**
+ * Fetch latest cached score for a set of issue keys.
+ * Returns a Map<issueKey, score>.
+ */
+async function getIssueScoresFromCache({ orgId, issueKeys }) {
+  if (!orgId || !Array.isArray(issueKeys) || issueKeys.length === 0) {
+    return new Map();
+  }
+
+  const supabase = getClient();
+  if (!supabase) throw new Error('Supabase client not initialised');
+
+  const { data, error } = await supabase
+    .from(CACHE_TABLE)
+    .select('issue_key, score')
+    .eq('org_id', orgId)
+    .in('issue_key', issueKeys);
+
+  if (error) {
+    logger.error('[DQNotificationsRepo] getIssueScoresFromCache failed: %s', error.message);
+    throw error;
+  }
+
+  const map = new Map();
+  for (const row of data || []) {
+    if (!row?.issue_key) continue;
+    if (typeof row.score !== 'number') continue;
+    map.set(row.issue_key, row.score);
+  }
+  return map;
+}
+
 module.exports = {
   insertNotification,
   lookupLatestAnyChannel,
@@ -290,6 +322,7 @@ module.exports = {
   acknowledgeNudges,
   ensurePreferenceRow,
   listLowScoreCandidates,
+  getIssueScoresFromCache,
   // Exposed for tests:
   _sanitisePayload: sanitisePayload,
   _ALLOWED_PAYLOAD_KEYS: ALLOWED_PAYLOAD_KEYS,

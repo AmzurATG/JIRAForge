@@ -111,18 +111,47 @@ router.get('/', async (req, res) => {
       limit: MAX_PENDING_NUDGES
     });
 
-    const nudges = rows.map((row) => {
+    const issueKeys = [...new Set(rows.map((row) => row.issue_key).filter(Boolean))];
+    const liveScores = await dqNotificationsRepo.getIssueScoresFromCache({
+      orgId: caller.orgId,
+      issueKeys
+    });
+
+    const staleResolvedIds = [];
+    const nudges = [];
+
+    for (const row of rows) {
       const payload = row.payload || {};
-      return {
+      const liveScore = liveScores.has(row.issue_key)
+        ? Number(liveScores.get(row.issue_key))
+        : Number(row.score_at_notify);
+
+      // Do not surface stale rows that are no longer below threshold.
+      if (Number.isFinite(liveScore) && liveScore >= 80) {
+        staleResolvedIds.push(row.id);
+        continue;
+      }
+
+      nudges.push({
         id: row.id,
         issueKey: row.issue_key,
-        score: row.score_at_notify,
+        score: Number.isFinite(liveScore) ? liveScore : row.score_at_notify,
         summary: payload.summary || null,
         issueUrl: payload.issueUrl || null,
         appUrl: payload.appUrl || null,
         notifiedAt: row.notified_at
-      };
-    });
+      });
+    }
+
+    if (staleResolvedIds.length > 0) {
+      await dqNotificationsRepo.acknowledgeNudges({
+        orgId: caller.orgId,
+        accountId: caller.atlassianAccountId,
+        nudgeIds: staleResolvedIds,
+        action: 'dismissed',
+        snoozeUntil: null
+      });
+    }
 
     return res.json({ success: true, nudges });
   } catch (err) {
