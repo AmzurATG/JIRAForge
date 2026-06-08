@@ -59,12 +59,10 @@ modules:
     - key: issue-cache-refresh-trigger
       function: issueCacheRefresh
       interval: hour
-    # Description-quality nudge — two staggered triggers (A/B) for redundancy.
-    # A 60-second KVS lock in the handler prevents overlapping execution.
+    # Description-quality nudge.
+    # Forge allows only one fiveMinute scheduled trigger; 30-minute cadence
+    # is enforced in handler logic via KVS last-run gate.
     - key: description-quality-nudge-a
-      function: descriptionQualityNudge
-      interval: fiveMinute
-    - key: description-quality-nudge-b
       function: descriptionQualityNudge
       interval: fiveMinute
 

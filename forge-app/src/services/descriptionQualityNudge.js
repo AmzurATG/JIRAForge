@@ -5,7 +5,7 @@
  * Runs on frequent scheduled triggers with a 30-minute cadence gate.
  *
  * Algorithm (per tenant invocation):
- *   1. Acquire a 60s KVS lock to prevent overlapping runs of A and B.
+ *   1. Acquire a 60s KVS lock to prevent overlapping runs.
  *   2. JQL: `assignee is not EMPTY AND statusCategory = "In Progress" AND updated >= -30d`
  *      via api.asApp() — returns recent open issues with an assignee.
  *   3. Group results by assignee accountId.
