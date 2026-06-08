@@ -33,12 +33,16 @@ _candidate_gi_paths = [
     f'/usr/lib/python{sys.version_info.major}/dist-packages',
     f'/usr/lib/python{sys.version_info.major}.{sys.version_info.minor}/dist-packages',
     '/usr/local/lib/python3/dist-packages',
+    f'/usr/local/lib/python{sys.version_info.major}/dist-packages',
+    f'/usr/local/lib/python{sys.version_info.major}.{sys.version_info.minor}/dist-packages',
 ]
 
+_gi_found = False
 for _gi_path in _candidate_gi_paths:
     if not os.path.isdir(_gi_path):
         continue
     if _gi_path in sys.path:
+        _gi_found = True
         break  # Already present
     # Safety: skip paths that contain cv2 (would break the bundled cv2 pre-load)
     try:
@@ -50,6 +54,24 @@ for _gi_path in _candidate_gi_paths:
     # Verify gi is actually here before adding the path
     _gi_pkg = os.path.join(_gi_path, 'gi')
     if os.path.isdir(_gi_pkg) or os.path.isfile(_gi_pkg + '.py'):
+        # Check ABI compatibility: ensure _gi.cpython-3XX-*.so matches
+        # the bundled Python's ABI tag so dlopen() doesn't fail at runtime.
+        _abi_tag = f'cpython-{sys.version_info.major}{sys.version_info.minor}'
+        _has_matching_so = False
+        if os.path.isdir(_gi_pkg):
+            try:
+                for _f in os.listdir(_gi_pkg):
+                    if _f.startswith('_gi.') and _abi_tag in _f:
+                        _has_matching_so = True
+                        break
+            except OSError:
+                pass
+        if _has_matching_so:
+            sys.path.append(_gi_path)
+            _gi_found = True
+            break
+        # If no matching .so, still add the path but note the mismatch
+        # (the bootstrap in desktop_app.py will catch the import error).
         sys.path.append(_gi_path)
         break
 
@@ -60,6 +82,11 @@ _is_wayland = bool(
 )
 
 if _is_wayland:
-    # Force appindicator — do NOT use setdefault; AppRun might have set a
-    # different value which we must override to get the correct backend.
-    os.environ['PYSTRAY_BACKEND'] = 'appindicator'
+    # Only force appindicator if we believe gi will work (matching .so found).
+    # Otherwise fall back to xorg to prevent pystray from crashing when it
+    # tries to import gi's appindicator backend and gets a partially-initialized
+    # module error.
+    if _gi_found:
+        os.environ['PYSTRAY_BACKEND'] = 'appindicator'
+    else:
+        os.environ.setdefault('PYSTRAY_BACKEND', 'xorg')

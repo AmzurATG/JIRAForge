@@ -84,10 +84,54 @@ def _bootstrap_linux_tray_backend():
             sys.path.append(path)
             added_paths.append(path)
 
+    # Before importing gi, verify that the system's _gi C-extension matches
+    # the ABI of the bundled Python.  In frozen builds (PyInstaller + AppImage)
+    # the bundled interpreter is Python {major}.{minor} from the BUILD machine.
+    # If the TARGET machine has a different system Python (e.g. 3.10 vs 3.12),
+    # the _gi.cpython-3XX-*.so on disk won't load → "partially initialized
+    # module" ImportError.  Additionally, PyInstaller sets _MEIPASS first in
+    # LD_LIBRARY_PATH, which causes the bundled libffi.so.8 to shadow the
+    # system copy — this can also make _gi.so fail to load.
+    # When gi is unavailable, we fall back to the xorg backend (pure X11 via
+    # python-xlib, which IS bundled) so the app starts even without a visible
+    # Wayland/GNOME tray icon.
+    if is_frozen:
+        # Quick compatibility check: see if a matching _gi C-extension exists.
+        abi_tag = f'cpython-{sys.version_info.major}{sys.version_info.minor}'
+        gi_so_found = False
+        for p in added_paths:
+            gi_dir = os.path.join(p, 'gi')
+            if os.path.isdir(gi_dir):
+                try:
+                    for f in os.listdir(gi_dir):
+                        if f.startswith('_gi.') and abi_tag in f:
+                            gi_so_found = True
+                            break
+                except OSError:
+                    pass
+            if gi_so_found:
+                break
+        if not gi_so_found:
+            _LINUX_TRAY_BOOTSTRAP_STATUS = (
+                f'gi-abi-mismatch:no _gi.{abi_tag}-*.so found on system '
+                f'(paths searched: {", ".join(added_paths)})'
+            )
+            os.environ.setdefault('PYSTRAY_BACKEND', 'xorg')
+            return
+
     try:
         import gi
-    except ImportError as exc:
+    except Exception as exc:
         _LINUX_TRAY_BOOTSTRAP_STATUS = f'gi-unavailable:{exc}'
+        # Critical: set a backend that does NOT need gi so pystray can fall
+        # back to xorg (python-xlib, bundled) instead of trying appindicator
+        # → gtk → xorg with a poisoned gi in sys.modules.
+        os.environ.setdefault('PYSTRAY_BACKEND', 'xorg')
+        # Remove the broken partial gi module from sys.modules so that
+        # pystray's fallback backends don't hit "partially initialized" errors.
+        for _mod_name in list(sys.modules):
+            if _mod_name == 'gi' or _mod_name.startswith('gi.'):
+                del sys.modules[_mod_name]
         return
 
     try:
@@ -95,6 +139,7 @@ def _bootstrap_linux_tray_backend():
         from gi.repository import Gtk  # noqa: F401
     except Exception as exc:
         _LINUX_TRAY_BOOTSTRAP_STATUS = f'gtk-unavailable:{exc}'
+        os.environ.setdefault('PYSTRAY_BACKEND', 'xorg')
         return
 
     indicator_name = None
@@ -186,8 +231,63 @@ import psutil
 import requests
 from flask import Flask, render_template_string, jsonify, request, session, redirect, url_for
 from flask_cors import CORS
-import pystray
-from pystray import MenuItem as item
+try:
+    import pystray
+    from pystray import MenuItem as item
+except ImportError as _pystray_err:
+    # pystray could not load ANY backend (appindicator, gtk, xorg all failed).
+    # Create a no-op fallback so the app runs without a tray icon.
+    # This can happen when:
+    #   - System python3-gi is missing or has a Python-version ABI mismatch
+    #   - LD_LIBRARY_PATH from _MEIPASS shadows system libffi/libglib
+    #   - python-xlib is also unavailable
+    print(f'[WARN] pystray backend unavailable — running without tray icon: '
+          f'{_pystray_err}')
+
+    class _DummyMenuItem:
+        def __init__(self, *a, **kw):
+            pass
+
+    class _DummyIcon:
+        def __init__(self, *a, **kw):
+            self.visible = False
+        def run(self, setup=None):
+            if setup:
+                setup(self)
+        def run_detached(self, setup=None):
+            if setup:
+                setup(self)
+        def stop(self):
+            pass
+        def update_menu(self):
+            pass
+        @property
+        def icon(self):
+            return None
+        @icon.setter
+        def icon(self, value):
+            pass
+        @property
+        def title(self):
+            return ''
+        @title.setter
+        def title(self, value):
+            pass
+        @property
+        def menu(self):
+            return None
+        @menu.setter
+        def menu(self, value):
+            pass
+
+    class _DummyPystray:
+        Icon = _DummyIcon
+        Menu = lambda *a, **kw: None
+        MenuItem = _DummyMenuItem
+
+    import types
+    pystray = _DummyPystray()
+    item = _DummyMenuItem
 
 # --- Wayland: safety-net to guarantee AyatanaAppIndicator3 (D-Bus SNI) -------
 # The venv's pystray/_appindicator.py has been patched to prefer
@@ -203,7 +303,8 @@ from pystray import MenuItem as item
 #
 # In case (a) we also switch pystray.Icon to _appindicator.Icon and set
 # PYSTRAY_BACKEND so any future re-init also picks the right backend.
-if sys.platform.startswith('linux') and (
+_pystray_is_real = hasattr(pystray, '__file__') or hasattr(pystray, '__path__')
+if _pystray_is_real and sys.platform.startswith('linux') and (
     os.environ.get('WAYLAND_DISPLAY') or
     os.environ.get('XDG_SESSION_TYPE', '').lower() == 'wayland'
 ):
@@ -601,12 +702,16 @@ load_dotenv()
 
 # Application version - IMPORTANT: Update this when releasing new versions
 # This is used for update checking and notifications
-APP_VERSION = "1.0.3"
+APP_VERSION = "1.0.4"
 
 # True when the process is running inside an AppImage bundle.
-# The AppImage runtime sets the $APPIMAGE env var to the path of the .AppImage
-# file on disk, which is the file we replace during auto-update.
-IS_APPIMAGE = bool(os.environ.get('APPIMAGE'))
+# In FUSE mode, the AppImage runtime sets $APPIMAGE to the .AppImage file path.
+# In extract-and-run mode (APPIMAGE_EXTRACT_AND_RUN=1), the runtime does NOT
+# set $APPIMAGE — only APPIMAGE_EXTRACT_AND_RUN is present in the environment.
+# We must detect BOTH modes to correctly identify we're inside an AppImage.
+_APPIMAGE_PATH = os.environ.get('APPIMAGE', '')
+_APPIMAGE_EXTRACT_MODE = bool(os.environ.get('APPIMAGE_EXTRACT_AND_RUN'))
+IS_APPIMAGE = bool(_APPIMAGE_PATH) or _APPIMAGE_EXTRACT_MODE
 
 # Hard-disable screenshot monitoring/storage in desktop app.
 # OCR text extraction for activity records still runs via event-based flow.
@@ -1318,6 +1423,187 @@ def is_running_from_install_location():
 
     return current_path == install_path
 
+def _try_enable_gnome_appindicator_extension() -> None:
+    """Enable the ubuntu-appindicators GNOME Shell extension in the live user session.
+
+    This MUST run inside the user's running session — it uses D-Bus to talk to
+    the live gnome-shell process.  It is a no-op (silently succeeds) if:
+      - Not on Linux
+      - No GNOME session is active
+      - Extension is already enabled
+      - gnome-extensions CLI and gdbus are unavailable
+
+    Tries two methods in order:
+      1. gdbus call directly to org.gnome.Shell.Extensions (reliable on Ubuntu 22.04+)
+      2. gnome-extensions enable CLI (fallback for older GNOME)
+
+    NOTE: This must NOT be called from postinst/dpkg — there is no GNOME session
+    D-Bus at package-install time.  Call it at first app launch instead.
+    """
+    if not sys.platform.startswith('linux'):
+        return
+
+    EXTENSION_UUID = 'ubuntu-appindicators@ubuntu.com'
+
+    # Only attempt if inside a GNOME session
+    desktop = os.environ.get('XDG_CURRENT_DESKTOP', '').lower()
+    session = os.environ.get('DESKTOP_SESSION', '').lower()
+    if 'gnome' not in desktop and 'gnome' not in session and 'ubuntu' not in desktop:
+        return
+
+    # Method 1: gdbus — most reliable (works without gnome-extensions installed)
+    try:
+        result = subprocess.run(
+            [
+                'gdbus', 'call', '--session',
+                '--dest', 'org.gnome.Shell',
+                '--object-path', '/org/gnome/Shell',
+                '--method', 'org.gnome.Shell.Extensions.EnableExtension',
+                EXTENSION_UUID,
+            ],
+            capture_output=True, timeout=5, text=True
+        )
+        if result.returncode == 0:
+            print(f"[OK] GNOME AppIndicator extension enabled via gdbus: {EXTENSION_UUID}")
+            return
+        # Non-zero returncode does not always mean failure — if already enabled,
+        # some GNOME versions return a D-Bus reply without error.
+        stderr_lower = (result.stderr or '').lower()
+        if 'not found' not in stderr_lower and 'no such' not in stderr_lower:
+            print(f"[INFO] gdbus extension enable returned rc={result.returncode}: "
+                  f"{result.stderr.strip() or 'no output'}")
+            return
+    except FileNotFoundError:
+        pass  # gdbus not installed — fall through to CLI
+    except subprocess.TimeoutExpired:
+        print("[WARN] gdbus extension enable timed out — skipping")
+        return
+    except Exception as e:
+        print(f"[WARN] gdbus extension enable error: {e}")
+
+    # Method 2: gnome-extensions CLI (fallback)
+    try:
+        result = subprocess.run(
+            ['gnome-extensions', 'enable', EXTENSION_UUID],
+            capture_output=True, timeout=5, text=True
+        )
+        if result.returncode == 0:
+            print(f"[OK] GNOME AppIndicator extension enabled via CLI: {EXTENSION_UUID}")
+        else:
+            print(f"[INFO] gnome-extensions enable: "
+                  f"{result.stderr.strip() or result.stdout.strip() or 'no output'}")
+    except FileNotFoundError:
+        print("[INFO] gnome-extensions CLI not available — "
+              "tray icon may require manual AppIndicator extension enable")
+    except subprocess.TimeoutExpired:
+        print("[WARN] gnome-extensions enable timed out — skipping")
+    except Exception as e:
+        print(f"[WARN] gnome-extensions enable error: {e}")
+
+
+def _ensure_install_scaffold(install_dir: str, canonical_appimage: str) -> None:
+    """Create all directories and helper files expected in the TimeTracker
+    install folder, regardless of how the app was started.
+
+    Called at every startup (even when already at the canonical path) so that
+    a fresh .deb install produces a fully-populated install directory without
+    requiring the user to run the app twice or authenticate first.
+
+    Idempotent — only creates files/dirs that are missing; never overwrites.
+
+    Files / directories created if missing:
+      <install_dir>/
+        logs/                            ← app_logger writes timetracker.log here
+        updates/                         ← UpdateManager stages downloads here
+        uninstall.sh                     ← end-user uninstall script
+      ~/.config/autostart/timetracker.desktop  ← XDG autostart entry
+      <install_dir>/.first_launch_done   ← one-time first-launch notification marker
+    """
+    import stat as _stat
+
+    # ── 1. Subdirectories ─────────────────────────────────────────────────────
+    for sub in ('logs', 'updates'):
+        path = os.path.join(install_dir, sub)
+        if not os.path.isdir(path):
+            try:
+                os.makedirs(path, exist_ok=True)
+                print(f"[OK] Created directory: {path}")
+            except OSError as e:
+                print(f"[WARN] Could not create {path}: {e}")
+
+    # ── 2. uninstall.sh ───────────────────────────────────────────────────────
+    uninstall_path = os.path.join(install_dir, 'uninstall.sh')
+    if not os.path.isfile(uninstall_path):
+        try:
+            _generate_linux_uninstaller_at_path(uninstall_path, install_dir)
+            print(f"[OK] Uninstaller created: {uninstall_path}")
+        except Exception as e:
+            print(f"[WARN] Could not generate uninstaller: {e}")
+
+    # ── 3. XDG autostart entry ────────────────────────────────────────────────
+    autostart_dir = os.path.expanduser('~/.config/autostart')
+    autostart_path = os.path.join(autostart_dir, 'timetracker.desktop')
+    if not os.path.isfile(autostart_path):
+        try:
+            os.makedirs(autostart_dir, exist_ok=True)
+            content = (
+                '[Desktop Entry]\n'
+                'Type=Application\n'
+                'Name=TimeTracker\n'
+                'Comment=Automatic time tracking for JIRA issues\n'
+                f'Exec=env APPIMAGE_EXTRACT_AND_RUN=1 APPIMAGE={canonical_appimage} {canonical_appimage}\n'
+                'Terminal=false\n'
+                'Hidden=false\n'
+                'X-GNOME-Autostart-enabled=true\n'
+            )
+            with open(autostart_path, 'w') as _f:
+                _f.write(content)
+            os.chmod(autostart_path, 0o644)
+            print(f"[OK] Autostart entry created: {autostart_path}")
+        except Exception as e:
+            print(f"[WARN] Could not write autostart entry: {e}")
+
+    # ── 4. Ensure AppImage is executable ──────────────────────────────────────
+    if os.path.isfile(canonical_appimage):
+        try:
+            current_mode = os.stat(canonical_appimage).st_mode
+            if not (current_mode & _stat.S_IXUSR):
+                os.chmod(
+                    canonical_appimage,
+                    current_mode | _stat.S_IXUSR | _stat.S_IXGRP | _stat.S_IXOTH,
+                )
+                print(f"[OK] Made AppImage executable: {canonical_appimage}")
+        except OSError as e:
+            print(f"[WARN] Could not chmod AppImage: {e}")
+
+    # ── 5. Enable GNOME AppIndicator extension (live session only) ────────────
+    # This runs inside the user's already-running GNOME session, so D-Bus is
+    # available — unlike the postinst which has no GNOME session at all.
+    _try_enable_gnome_appindicator_extension()
+
+    # ── 6. First-launch notification ──────────────────────────────────────────
+    # Show only on the very first run (marker absent).
+    # Gives users a visible signal that TimeTracker is running even before the
+    # tray icon appears (GNOME may need a shell reload to show the indicator).
+    _first_launch_marker = os.path.join(install_dir, '.first_launch_done')
+    if not os.path.isfile(_first_launch_marker):
+        try:
+            _linux_notify(
+                'TimeTracker installed',
+                'TimeTracker is running in the background. '
+                'Look for it in the system tray. '
+                'If the tray icon is not visible, log out and back in.',
+                urgency='normal',
+            )
+            with open(_first_launch_marker, 'w') as _mf:
+                _mf.write(
+                    f"first_launch={datetime.now(timezone.utc).isoformat()}\n"
+                )
+            print(f"[OK] First-launch marker written: {_first_launch_marker}")
+        except Exception as e:
+            print(f"[WARN] First-launch notification failed (non-fatal): {e}")
+
+
 def _cleanup_stale_user_desktop():
     """Remove the user-level .desktop if it points to a missing AppImage.
 
@@ -1392,6 +1678,17 @@ def _install_appimage():
     canonical = os.path.join(get_app_data_dir(), 'TimeTracker.AppImage')
     current_appimage = os.environ.get('APPIMAGE', '')
 
+    # In APPIMAGE_EXTRACT_AND_RUN=1 mode, the AppImage runtime does NOT set
+    # $APPIMAGE.  Infer the path from the canonical location on disk or the
+    # system .deb copy at /opt/timetracker/.
+    if not current_appimage and _APPIMAGE_EXTRACT_MODE:
+        if os.path.isfile(canonical):
+            current_appimage = canonical
+            print(f"[INFO] Extract-and-run mode: inferred AppImage path: {canonical}")
+        elif os.path.isfile('/opt/timetracker/TimeTracker.AppImage'):
+            current_appimage = '/opt/timetracker/TimeTracker.AppImage'
+            print(f"[INFO] Extract-and-run mode: using system AppImage: {current_appimage}")
+
     # Always clean up any stale user-level .desktop that points to a missing
     # AppImage path.  This can happen when ~/.local/share/TimeTracker/ is deleted
     # (e.g. after uninstall or re-install via .deb) while the user-level .desktop
@@ -1400,7 +1697,7 @@ def _install_appimage():
     _cleanup_stale_user_desktop()
 
     if not current_appimage:
-        # No $APPIMAGE env var — running in dev/test mode, nothing to do.
+        # No $APPIMAGE env var and not in extract-and-run mode — dev/test mode.
         print("[INFO] AppImage install: $APPIMAGE not set — skipping install step")
         return True
 
@@ -1412,8 +1709,13 @@ def _install_appimage():
         canonical_norm = os.path.normpath(canonical)
 
     if current_norm == canonical_norm:
-        # Already running from the canonical install location — nothing to do.
+        # Already running from the canonical install location.
+        # Run the scaffold to ensure all expected subdirectories and helper
+        # files exist.  This is a no-op after the first successful run, but
+        # is essential for fresh .deb installs where postinst only copies the
+        # AppImage — no uninstall.sh, logs/, or updates/ are present yet.
         print(f"[INFO] Running from canonical AppImage location: {canonical}")
+        _ensure_install_scaffold(get_app_data_dir(), canonical)
         return True
 
     # Running from a non-canonical path (e.g. ~/Downloads/) — install/upgrade.
@@ -1451,45 +1753,13 @@ def _install_appimage():
         # Fall back: let the app run from the Downloads path rather than crashing.
         return True
 
-    # Step 3: Generate the Linux uninstall script.
+    # Step 3: Create all scaffold files (uninstaller, logs/, updates/,
+    # autostart entry, GNOME extension activation, first-launch notification).
+    # This also covers what was previously "Step 3b" (.desktop update).
     try:
-        uninstall_path = os.path.join(get_app_data_dir(), 'uninstall.sh')
-        _generate_linux_uninstaller_at_path(uninstall_path, get_app_data_dir())
-        print(f"[OK] Uninstaller created: {uninstall_path}")
+        _ensure_install_scaffold(get_app_data_dir(), canonical)
     except Exception as e:
-        print(f"[WARN] Could not generate uninstaller: {e}")
-
-    # Step 3b: Install/update the user-level .desktop entry so the app launcher
-    # always points to the canonical AppImage path (fixes stale entries left by
-    # previous installers that used a plain binary path without .AppImage).
-    try:
-        import subprocess as _sub_desktop2
-        desktop_dir = os.path.expanduser('~/.local/share/applications')
-        os.makedirs(desktop_dir, exist_ok=True)
-        desktop_content = (
-            '[Desktop Entry]\n'
-            'Name=TimeTracker\n'
-            'GenericName=Time Tracker\n'
-            'Comment=Automatic time tracking for JIRA issues\n'
-            f'Exec=env APPIMAGE_EXTRACT_AND_RUN=1 {canonical}\n'
-            'Icon=timetracker\n'
-            'Type=Application\n'
-            'Categories=Office;ProjectManagement;\n'
-            'Terminal=false\n'
-            'StartupNotify=false\n'
-            'Keywords=time;tracker;jira;productivity;\n'
-        )
-        desktop_path = os.path.join(desktop_dir, 'timetracker.desktop')
-        with open(desktop_path, 'w') as _df:
-            _df.write(desktop_content)
-        os.chmod(desktop_path, 0o644)
-        _sub_desktop2.run(
-            ['update-desktop-database', desktop_dir],
-            capture_output=True, timeout=10
-        )
-        print(f"[OK] Desktop entry updated: {desktop_path}")
-    except Exception as e:
-        print(f"[WARN] Could not update .desktop entry: {e}")
+        print(f"[WARN] Scaffold generation failed (non-fatal): {e}")
 
     # Step 4: Relaunch from the canonical location (detached) and exit this instance.
     # Pass APPIMAGE_EXTRACT_AND_RUN=1 so the new instance extracts without FUSE,

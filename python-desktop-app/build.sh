@@ -360,9 +360,9 @@ if [ -f "$APPIMAGE_OUT" ]; then
 #!/bin/bash
 CANONICAL="${HOME}/.local/share/TimeTracker/TimeTracker.AppImage"
 if [ -f "$CANONICAL" ] && [ -x "$CANONICAL" ]; then
-    exec env APPIMAGE_EXTRACT_AND_RUN=1 "$CANONICAL" "$@"
+    exec env APPIMAGE_EXTRACT_AND_RUN=1 APPIMAGE="$CANONICAL" "$CANONICAL" "$@"
 else
-    exec env APPIMAGE_EXTRACT_AND_RUN=1 /opt/timetracker/TimeTracker.AppImage "$@"
+    exec env APPIMAGE_EXTRACT_AND_RUN=1 APPIMAGE="/opt/timetracker/TimeTracker.AppImage" /opt/timetracker/TimeTracker.AppImage "$@"
 fi
 WRAPPER
     chmod 755 "${DEB_BUILD_DIR}/usr/local/bin/timetracker"
@@ -389,7 +389,7 @@ Package: timetracker
 Version: ${APP_VERSION}
 Architecture: ${DEB_ARCH}
 Maintainer: Amzur Technologies <support@amzur.com>
-Depends: gdebi
+Depends: gdebi, python3-gi, gir1.2-ayatanaappindicator3-0.1 | gir1.2-appindicator3-0.1
 Recommends: gnome-shell-extension-appindicator, libnotify-bin
 Description: Automatic time tracking for JIRA issues
  TimeTracker tracks time spent on JIRA issues automatically
@@ -446,6 +446,15 @@ for _USER_HOME in /home/*; do
         continue
     fi
 
+    # Scaffold expected subdirectories so the app can write log files and
+    # stage auto-updates even before the first successful login.
+    for _SUB in logs updates; do
+        _SUBDIR="${_CANONICAL_DIR}/${_SUB}"
+        mkdir -p "$_SUBDIR" 2>/dev/null && \
+            chown "$_USERNAME":"$_USERNAME" "$_SUBDIR" 2>/dev/null || true
+    done
+    echo "Scaffold directories created for ${_USERNAME}: logs/ updates/"
+
     # Write/overwrite the user-level .desktop entry with an absolute path to
     # the canonical AppImage.  This replaces any stale entries (old binary-path
     # entries without .AppImage, entries pointing to deleted paths, etc.) and
@@ -457,7 +466,7 @@ for _USER_HOME in /home/*; do
 Name=TimeTracker
 GenericName=Time Tracker
 Comment=Automatic time tracking for JIRA issues
-Exec=env APPIMAGE_EXTRACT_AND_RUN=1 ${_CANONICAL}
+Exec=env APPIMAGE_EXTRACT_AND_RUN=1 APPIMAGE=${_CANONICAL} ${_CANONICAL}
 Icon=timetracker
 Type=Application
 Categories=Office;ProjectManagement;
@@ -471,18 +480,12 @@ USERDESKTOP
     echo "User .desktop created/updated for ${_USERNAME}: ${_USER_DESKTOP}"
 done
 
-# Enable the AppIndicator GNOME Shell extension for all users so the tray icon
-# is visible on GNOME without needing the user to go to extensions.gnome.org.
-# ubuntu-appindicators@ubuntu.com is the UUID shipped by gnome-shell-extension-appindicator.
-if command -v gnome-extensions &>/dev/null; then
-    # Run as each logged-in user's session so GNOME Shell picks up the change.
-    for _USER_HOME in /home/*; do
-        _USERNAME=$(basename "$_USER_HOME")
-        if id "$_USERNAME" &>/dev/null; then
-            su - "$_USERNAME" -c 'gnome-extensions enable ubuntu-appindicators@ubuntu.com 2>/dev/null || true' 2>/dev/null || true
-        fi
-    done
-fi
+# NOTE: GNOME AppIndicator extension activation is intentionally NOT done here.
+# gnome-extensions requires an active org.gnome.Shell D-Bus session, which does
+# NOT exist during dpkg postinst execution.  Any 'su - user -c gnome-extensions'
+# invocation silently fails with a D-Bus connection error.
+# Activation is handled at first app launch (inside the user's live GNOME session)
+# by _try_enable_gnome_appindicator_extension() in desktop_app.py instead.
 
 # Set gdebi as the default handler for .deb files for all users.
 # This ensures future double-clicks open GDebi (which shows a proper Upgrade
