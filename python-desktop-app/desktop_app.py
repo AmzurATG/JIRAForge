@@ -5764,7 +5764,8 @@ class TimeTracker:
             # Show notification to user
             print(f"[OCR SETUP] Installing {missing_count} OCR dependencies...")
             print("[OCR SETUP] This may take 5-15 minutes. App continues running.")
-            self._show_ocr_installation_notification(missing_count, started=True)
+            # Notification disabled to avoid interrupting user
+            # self._show_ocr_installation_notification(missing_count, started=True)
             
             # Run dependency check (with timeout protection)
             try:
@@ -5796,7 +5797,8 @@ class TimeTracker:
                     elapsed = time.time() - start_time
                     print(f"[OCR SETUP] Installation timed out after {elapsed:.0f}s")
                     self.add_admin_log('WARNING', f'OCR installation timed out after {elapsed:.0f}s')
-                    self._show_ocr_installation_notification(missing_count, failed=True, timeout=True)
+                    # Notification disabled to avoid interrupting user
+                    # self._show_ocr_installation_notification(missing_count, failed=True, timeout=True)
                     return
                 
                 elapsed = time.time() - start_time
@@ -5805,18 +5807,21 @@ class TimeTracker:
                     print(f"[OCR SETUP] Installation completed in {elapsed:.0f}s")
                     self.add_admin_log('INFO', f'OCR dependencies installed ({elapsed:.0f}s)')
                     self._finalize_ocr_setup()
-                    self._show_ocr_installation_notification(missing_count, success=True)
+                    # Notification disabled to avoid interrupting user
+                    # self._show_ocr_installation_notification(missing_count, success=True)
                 else:
                     print(f"[OCR SETUP] Installation failed after {elapsed:.0f}s")
                     self.add_admin_log('WARNING', f'OCR installation failed ({elapsed:.0f}s)')
-                    self._show_ocr_installation_notification(missing_count, failed=True)
+                    # Notification disabled to avoid interrupting user
+                    # self._show_ocr_installation_notification(missing_count, failed=True)
             
             except Exception as e:
                 elapsed = time.time() - start_time
                 print(f"[OCR SETUP] Unexpected error: {e}")
                 traceback.print_exc()
                 self.add_admin_log('ERROR', f'OCR setup error: {str(e)}')
-                self._show_ocr_installation_notification(missing_count, failed=True)
+                # Notification disabled to avoid interrupting user
+                # self._show_ocr_installation_notification(missing_count, failed=True)
         
         except Exception as e:
             print(f"[OCR SETUP] Worker thread crashed: {e}")
@@ -10863,6 +10868,11 @@ class TimeTracker:
             # Store idle reason for logging
             self.idle_reason = reason
             
+            # Store current window key for stuck-idle detection (safeguard)
+            current_window = self.get_active_window()
+            if current_window:
+                self._idle_entry_window_key = f"{current_window.get('app', '')}__{current_window.get('title', '')}"
+            
             # Transition state
             self.state = TrackingState.IDLE
             self.is_idle = True  # Keep boolean flag in sync for backward compatibility
@@ -11063,6 +11073,32 @@ class TimeTracker:
             # Initialize heartbeat
             self._activity_monitor_heartbeat = time.time()  # B-2
             print("[OK] Activity monitoring started (5-minute idle timeout)")
+            
+            # CRITICAL FIX: Keep thread alive by monitoring listener health
+            # Without this loop, the thread exits immediately after starting listeners,
+            # causing the watchdog to restart it every 60 seconds and making activity
+            # detection unreliable. This loop keeps the thread alive while checking
+            # that listeners are still functioning.
+            try:
+                while self.running:
+                    # Check if listeners are still alive
+                    if not mouse_listener.is_alive() or not keyboard_listener.is_alive():
+                        print("[WARN] Activity listener stopped unexpectedly - exiting monitor thread")
+                        self._activity_monitor_failed = True
+                        break
+                    
+                    # Update heartbeat periodically even without activity
+                    # This ensures watchdog knows the thread is functioning
+                    self._activity_monitor_heartbeat = time.time()
+                    
+                    # Small sleep to avoid busy-waiting
+                    time.sleep(1)
+                    
+                print("[INFO] Activity monitor thread exiting gracefully")
+            except Exception as loop_err:
+                print(f"[ERROR] Activity monitor loop error: {loop_err}")
+                self._activity_monitor_failed = True
+                
         except Exception as e:
             print(f"[ERROR] Activity monitor failed to start: {e}")
             print("[INFO] Fallback: idle detection via window switches")
@@ -11466,12 +11502,18 @@ class TimeTracker:
                 if time.time() - self._last_activity_monitor_check > 60:
                     self._last_activity_monitor_check = time.time()
                     if not self._activity_monitor_thread or not self._activity_monitor_thread.is_alive():
-                        print("[WARN] Activity monitor thread is dead — restarting")
+                        # Enhanced diagnostics for thread death
+                        thread_exists = bool(self._activity_monitor_thread)
+                        thread_alive = self._activity_monitor_thread.is_alive() if self._activity_monitor_thread else False
+                        print(f"[WARN] Activity monitor thread is dead — restarting (exists={thread_exists}, alive={thread_alive})")
+                        if self._activity_monitor_failed:
+                            print("[INFO] Activity monitor marked as failed — will use fallback detection")
                         self._start_activity_monitor()
                     elif not self._activity_monitor_failed:
                         time_since_heartbeat = time.time() - self._activity_monitor_heartbeat
                         if time_since_heartbeat > self._activity_monitor_heartbeat_timeout:
                             print(f"[WARN] Activity monitor heartbeat timeout ({time_since_heartbeat:.0f}s) — restarting")
+                            print(f"[DEBUG] Heartbeat age: {time_since_heartbeat:.1f}s, timeout: {self._activity_monitor_heartbeat_timeout}s")
                             self._start_activity_monitor()
                 # === END suspension detection ===
 
@@ -11582,6 +11624,24 @@ class TimeTracker:
                                     print("[INFO] Window switch detected (fallback) - resuming from idle")
                                     self.idle_resume_event.set()  # B-3: Use Event
                         self._last_window_key_for_idle = window_key
+                
+                # Additional safeguard: If stuck in idle for extended period with window changes,
+                # force resume (prevents permanent idle lock if activity detection fails)
+                if self.is_idle and self.idle_start_time:
+                    time_in_idle = time.time() - self.idle_start_time.timestamp()
+                    # If idle for more than 30 minutes, check if window has changed
+                    if time_in_idle > 1800:  # 30 minutes
+                        current_window = self.get_active_window()
+                        if current_window:
+                            current_key = f"{current_window.get('app', '')}__{current_window.get('title', '')}"
+                            # Store window key when entering idle if not exists
+                            if not hasattr(self, '_idle_entry_window_key'):
+                                self._idle_entry_window_key = current_key
+                            # If window changed since entering idle, user is likely active
+                            elif current_key != self._idle_entry_window_key:
+                                print(f"[WARN] Stuck in idle for {int(time_in_idle)}s but window changed - forcing resume")
+                                self.idle_resume_event.set()
+                                self._idle_entry_window_key = None
                 
                 if idle_duration > current_idle_timeout:
                     if self.state == TrackingState.ACTIVE:
