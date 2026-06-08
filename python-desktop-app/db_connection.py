@@ -186,6 +186,20 @@ class DatabaseConnectionManager:
                     pass
             self._all_connections.clear()
         self._local.conn = None
+    
+    def checkpoint_wal(self):
+        """B-10: Checkpoint WAL to ensure data is written to main DB file.
+        
+        Called during emergency saves (shutdown, crash) to flush WAL to disk.
+        """
+        try:
+            conn = self.get_connection()
+            conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            print("[OK] WAL checkpoint completed")
+            return True
+        except Exception as e:
+            print(f"[WARN] WAL checkpoint failed: {e}")
+            return False
 
     # =========================================================================
     # SCHEMA INITIALIZATION
