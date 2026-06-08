@@ -49,10 +49,19 @@ export function registerUserResolvers(resolver) {
     const t0 = Date.now();
 
     try {
-      // Fetch latest app version info (cached for 5 minutes)
+      // Fetch latest app version info for both platforms (cached for 5 minutes)
       let latestVersionInfo = null;
+      let latestLinuxVersionInfo = null;
       try {
-        latestVersionInfo = await getLatestAppVersion({ platform: 'windows' });
+        // Fetch both Windows and Linux versions in parallel
+        const [winResult, linuxResult] = await Promise.allSettled([
+          getLatestAppVersion({ platform: 'windows' }),
+          getLatestAppVersion({ platform: 'linux' })
+        ]);
+        
+        // Extract fulfilled values (null if rejected)
+        latestVersionInfo = winResult.status === 'fulfilled' ? winResult.value : null;
+        latestLinuxVersionInfo = linuxResult.status === 'fulfilled' ? linuxResult.value : null;
       } catch (versionError) {
         console.warn('Could not fetch latest app version:', versionError.message);
       }
@@ -68,6 +77,7 @@ export function registerUserResolvers(resolver) {
           // Include version info even for not-setup users
           latestVersion: latestVersionInfo?.latestVersion || null,
           downloadUrl: latestVersionInfo?.downloadUrl || null,
+          linuxDownloadUrl: latestLinuxVersionInfo?.downloadUrl || null,
           releaseNotes: latestVersionInfo?.releaseNotes || null
         };
       }
@@ -82,6 +92,7 @@ export function registerUserResolvers(resolver) {
           message: 'Download the Desktop App to start tracking your work',
           latestVersion: latestVersionInfo?.latestVersion || null,
           downloadUrl: latestVersionInfo?.downloadUrl || null,
+          linuxDownloadUrl: latestLinuxVersionInfo?.downloadUrl || null,
           releaseNotes: latestVersionInfo?.releaseNotes || null
         };
       }
@@ -112,6 +123,7 @@ export function registerUserResolvers(resolver) {
           message: 'Download the Desktop App to start tracking your work',
           latestVersion: latestVersionInfo?.latestVersion || null,
           downloadUrl: latestVersionInfo?.downloadUrl || null,
+          linuxDownloadUrl: latestLinuxVersionInfo?.downloadUrl || null,
           releaseNotes: latestVersionInfo?.releaseNotes || null
         };
       }
@@ -143,6 +155,7 @@ export function registerUserResolvers(resolver) {
           message: 'Download the Desktop App to start tracking your work',
           latestVersion: latestVersionInfo?.latestVersion || null,
           downloadUrl: latestVersionInfo?.downloadUrl || null,
+          linuxDownloadUrl: latestLinuxVersionInfo?.downloadUrl || null,
           releaseNotes: latestVersionInfo?.releaseNotes || null
         };
       }
@@ -167,6 +180,7 @@ export function registerUserResolvers(resolver) {
             updateAvailable,
             latestVersion: latestVersionInfo?.latestVersion || null,
             downloadUrl: latestVersionInfo?.downloadUrl || null,
+            linuxDownloadUrl: latestLinuxVersionInfo?.downloadUrl || null,
             releaseNotes: latestVersionInfo?.releaseNotes || null,
             isMandatoryUpdate: latestVersionInfo?.isMandatory || false
           };
@@ -182,6 +196,7 @@ export function registerUserResolvers(resolver) {
             updateAvailable,
             latestVersion: latestVersionInfo?.latestVersion || null,
             downloadUrl: latestVersionInfo?.downloadUrl || null,
+            linuxDownloadUrl: latestLinuxVersionInfo?.downloadUrl || null,
             releaseNotes: latestVersionInfo?.releaseNotes || null,
             isMandatoryUpdate: latestVersionInfo?.isMandatory || false
           };
@@ -199,6 +214,7 @@ export function registerUserResolvers(resolver) {
         updateAvailable,
         latestVersion: latestVersionInfo?.latestVersion || null,
         downloadUrl: latestVersionInfo?.downloadUrl || null,
+        linuxDownloadUrl: latestLinuxVersionInfo?.downloadUrl || null,
         releaseNotes: latestVersionInfo?.releaseNotes || null,
         isMandatoryUpdate: latestVersionInfo?.isMandatory || false
       };
@@ -210,7 +226,9 @@ export function registerUserResolvers(resolver) {
         error: error.message,
         status: 'error',
         showDownload: true,
-        message: 'Unable to check Desktop App status'
+        message: 'Unable to check Desktop App status',
+        downloadUrl: null,
+        linuxDownloadUrl: null
       };
     } finally {
       console.log(`[UserResolver] getDesktopAppStatus took ${Date.now() - t0}ms`);

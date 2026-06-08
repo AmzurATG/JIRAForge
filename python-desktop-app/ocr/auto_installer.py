@@ -180,6 +180,58 @@ CONFLICTING_PACKAGES = {
 }
 
 
+def get_installation_marker_path():
+    """Get path to OCR installation marker file."""
+    import tempfile
+    from pathlib import Path
+    
+    # Store in user temp directory
+    marker_dir = Path(tempfile.gettempdir()) / 'timetracker_ocr'
+    marker_dir.mkdir(exist_ok=True)
+    
+    return marker_dir / 'installation_complete.marker'
+
+
+def mark_installation_complete(engines):
+    """Mark OCR dependencies as installed."""
+    try:
+        marker_path = get_installation_marker_path()
+        import json
+        import time
+        with open(marker_path, 'w') as f:
+            json.dump({
+                'engines': engines,
+                'timestamp': time.time(),
+                'version': '1.0'
+            }, f)
+        logger.info(f"Installation marker saved: {marker_path}")
+    except Exception as e:
+        logger.warning(f"Could not save installation marker: {e}")
+
+
+def is_installation_complete():
+    """Check if OCR dependencies were already installed."""
+    try:
+        marker_path = get_installation_marker_path()
+        if not marker_path.exists():
+            return False
+        
+        # Check if all configured engines are in the marker
+        import json
+        with open(marker_path, 'r') as f:
+            marker_data = json.load(f)
+        
+        installed_engines = set(marker_data.get('engines', []))
+        configured_engines = set(get_configured_engines())
+        
+        # All configured engines must be in the marker
+        return configured_engines.issubset(installed_engines)
+    
+    except Exception as e:
+        logger.debug(f"Could not read installation marker: {e}")
+        return False
+
+
 def is_development_mode() -> bool:
     """
     Check if running in development mode (not bundled EXE).
@@ -398,7 +450,8 @@ def get_missing_dependencies(engine_name: str) -> List[str]:
 
 def check_and_install_dependencies(
     auto_install: bool = True,
-    silent: bool = False
+    silent: bool = False,
+    force: bool = False
 ) -> Dict[str, bool]:
     """
     Check OCR engines from environment config and install missing dependencies.
@@ -412,6 +465,7 @@ def check_and_install_dependencies(
         auto_install: If True, automatically install missing packages
                      If False, only report missing packages
         silent: If True, suppress console output
+        force: If True, skip installation marker check and always check dependencies
     
     Returns:
         Dict mapping engine names to installation success status
@@ -419,6 +473,13 @@ def check_and_install_dependencies(
     # Skip in production (bundled EXE)
     if not is_development_mode():
         logger.debug("Running in production mode, skipping dependency check")
+        return {}
+    
+    # Check installation marker (unless forced)
+    if not force and is_installation_complete():
+        if not silent:
+            print("[OCR] Dependencies already installed (skipping check)")
+        logger.info("OCR dependencies already installed (marker found)")
         return {}
     
     # Get engines from environment config
@@ -483,6 +544,11 @@ def check_and_install_dependencies(
     
     if not silent:
         print(f"{'='*70}\n")
+    
+    # Mark installation complete if all engines succeeded
+    if results and all(results.values()):
+        mark_installation_complete(list(results.keys()))
+        logger.info(f"Installation complete for engines: {', '.join(results.keys())}")
     
     return results
 
