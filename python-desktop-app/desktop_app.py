@@ -386,7 +386,7 @@ load_dotenv()
 
 # Application version - IMPORTANT: Update this when releasing new versions
 # This is used for update checking and notifications
-APP_VERSION = "1.4.7"
+APP_VERSION = "1.4.8"
 
 # Hard-disable screenshot monitoring/storage in desktop app.
 # OCR text extraction for activity records still runs via event-based flow.
@@ -1047,6 +1047,30 @@ def is_running_from_install_location():
 
     return current_path == install_path
 
+def _is_running_from_program_files():
+    """True if the frozen exe is running from a Program Files directory.
+
+    Under the per-machine install model the Inno Setup installer places the app
+    in C:\\Program Files\\TimeTracker (a trusted, admin-only location). When we
+    detect that, the app must NOT self-install or self-modify — install and
+    updates are owned by the installer + the SYSTEM updater scheduled task.
+    """
+    if not getattr(sys, 'frozen', False) or sys.platform != 'win32':
+        return False
+    try:
+        exe_dir = os.path.normpath(get_app_executable_dir()).lower()
+    except Exception:
+        return False
+    candidates = [
+        os.environ.get('ProgramFiles', ''),
+        os.environ.get('ProgramFiles(x86)', ''),
+        os.environ.get('ProgramW6432', ''),
+    ]
+    for base in candidates:
+        if base and exe_dir.startswith(os.path.normpath(base).lower() + os.sep):
+            return True
+    return False
+
 def install_application():
     """
     Self-install the application to %LOCALAPPDATA%\TimeTracker\
@@ -1058,6 +1082,16 @@ def install_application():
     if not getattr(sys, 'frozen', False):
         # Running as script (development mode) - skip installation
         print("[INFO] Running in development mode - skipping self-installation")
+        return True
+
+    # NEW INSTALL MODEL (per-machine, Program Files via Inno Setup installer):
+    # If we are already running from a Program Files location, the installer
+    # placed us here and owns install/uninstall/updates. Program Files is
+    # admin-only, so the app must NOT copy or modify itself at runtime. Updates
+    # are handled by the SYSTEM "TimeTracker Updater" scheduled task
+    # (installer/update_service.ps1). Self-install is therefore a no-op here.
+    if _is_running_from_program_files():
+        print("[OK] Running from Program Files install; installer manages install/updates")
         return True
 
     # Check if already running from install location
@@ -1281,6 +1315,38 @@ def create_update_script(app_data_dir, current_pid, staged_exe, installed_exe):
     return updater_script
 
 
+# Name MUST match the scheduled task registered by installer/TimeTracker.iss.
+SYSTEM_UPDATE_TASK_NAME = "TimeTracker Updater"
+
+
+def trigger_system_update():
+    """Ask the privileged SYSTEM 'TimeTracker Updater' scheduled task to run now.
+
+    Installed (Program Files) builds delegate updates to this task because the
+    app itself cannot write to Program Files. Returns True if the run request
+    was accepted. A standard user may be denied permission to run a SYSTEM task
+    on demand (depends on the task DACL); that is fine — the task also runs on
+    its hourly schedule, so the update still installs at the next tick.
+    """
+    if sys.platform != 'win32':
+        return False
+    try:
+        result = subprocess.run(
+            ['schtasks', '/Run', '/TN', SYSTEM_UPDATE_TASK_NAME],
+            capture_output=True, text=True, timeout=30,
+            creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0),
+        )
+        if result.returncode == 0:
+            print("[OK] Triggered SYSTEM update task")
+            return True
+        print(f"[WARN] Could not trigger update task (rc={result.returncode}): "
+              f"{(result.stderr or '').strip()}")
+        return False
+    except Exception as e:
+        print(f"[WARN] Failed to trigger SYSTEM update task: {e}")
+        return False
+
+
 class UpdateManager:
     """Manages background download and installation of desktop app updates."""
 
@@ -1326,6 +1392,12 @@ class UpdateManager:
 
     def load_staged_update_if_exists(self):
         """Restore staged update state after app restart."""
+        # Installed (Program Files) builds never stage updates locally — the
+        # SYSTEM "TimeTracker Updater" task downloads + installs them. So there
+        # is nothing for the app to restore, and skipping avoids re-triggering
+        # the task from a leftover staged file on every startup.
+        if _is_running_from_program_files():
+            return False
         updates_dir = os.path.join(self.app_data_dir, 'updates')
         if not os.path.exists(updates_dir):
             return False
@@ -1368,6 +1440,22 @@ class UpdateManager:
         download_url = update_info.get('download_url')
         if not latest_version or not download_url:
             return False
+
+        # Installed (Program Files) builds do NOT download/stage updates
+        # themselves — the SYSTEM "TimeTracker Updater" task does. We only mark
+        # the update ready so the UI reflects availability and auto_apply()
+        # triggers that task. Avoids a double download and a leftover staged file.
+        if _is_running_from_program_files():
+            with self._lock:
+                existing = (self.update_info or {}).get('latest_version')
+                if self.state in ('ready', 'mandatory_ready', 'deferred', 'installing') and existing == latest_version:
+                    return False
+                self.update_info = update_info
+                self.download_path = None
+                self.download_progress = 1.0
+                new_state = 'mandatory_ready' if bool(update_info.get('is_mandatory')) else 'ready'
+            self._set_state(new_state)  # outside the lock (handler may trigger the task)
+            return True
 
         with self._lock:
             if self.state == 'downloading':
@@ -1516,6 +1604,33 @@ class UpdateManager:
         """Apply a previously staged update and request app shutdown."""
         if self.state not in ('ready', 'mandatory_ready', 'deferred'):
             return False
+
+        # Installed (Program Files) build => the app cannot replace its own
+        # files (admin-only location). Delegate to the privileged SYSTEM
+        # "TimeTracker Updater" scheduled task, which downloads + installs the
+        # update silently with no UAC prompt (installer/update_service.ps1).
+        # That task also runs hourly, so this just makes "update now" immediate.
+        if _is_running_from_program_files():
+            try:
+                if trigger_system_update():
+                    # Do NOT shut the app down here. The SYSTEM task runs the
+                    # installer, whose CloseApplications/RestartApplications
+                    # (Restart Manager) closes this instance only for the brief
+                    # file swap and restarts it. Proactively shutting down now
+                    # would remove that auto-restart and leave the user with no
+                    # running app during the background download.
+                    self._set_state('installing')
+                    return True
+                # On-demand trigger denied (e.g. task DACL) — the hourly SYSTEM
+                # run will still apply it. Treat as deferred, not failed.
+                self._set_state('deferred', error='Update will install on next scheduled check')
+                return False
+            except Exception as e:
+                self._set_state('failed', error=str(e))
+                print(f"[ERROR] Failed to request SYSTEM update: {e}")
+                return False
+
+        # ---- Legacy in-place updater (dev / non-Program-Files builds only) ---
         if not self.download_path or not os.path.exists(self.download_path):
             self._set_state('failed', error='Staged update missing')
             return False
@@ -1697,14 +1812,20 @@ def add_to_startup():
     try:
         import winreg
 
-        # Prefer the installed path only if it actually exists; otherwise fall back
-        # to the current executable path to avoid writing a broken startup entry.
+        # Determine which exe path to register for auto-start.
+        # Under the per-machine install, the exe we are running from IS the
+        # correct installer-placed location (e.g. C:\Program Files\TimeTracker),
+        # so register that. Only fall back to the legacy %LOCALAPPDATA% installed
+        # path for the old self-install model.
         if getattr(sys, 'frozen', False):
-            installed_exe = get_installed_exe_path()
-            if installed_exe and os.path.isfile(installed_exe):
-                exe_path = installed_exe
-            else:
+            if _is_running_from_program_files():
                 exe_path = get_app_executable_path()
+            else:
+                installed_exe = get_installed_exe_path()
+                if installed_exe and os.path.isfile(installed_exe):
+                    exe_path = installed_exe
+                else:
+                    exe_path = get_app_executable_path()
         else:
             exe_path = get_app_executable_path()
 

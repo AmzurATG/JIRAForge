@@ -28,6 +28,9 @@ tzlocal>=5.0
 jaraco.text>=4.0.0
 jaraco.functools>=4.0.0
 jaraco.context>=6.0.0
+# Required by pkg_resources/setuptools at runtime (pyi_rth_pkgres startup hook).
+# Was missing from the venv, causing "Hidden import 'platformdirs' not found".
+platformdirs>=4.0.0
 
 # Windows-specific dependencies
 pywin32==306; sys_platform == 'win32'

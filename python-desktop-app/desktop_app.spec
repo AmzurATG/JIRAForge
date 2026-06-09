@@ -93,9 +93,14 @@ if 'easyocr' in configured_engines:
         print("[WARN] EasyOCR not installed - engine will not work")
 else:
     print("[INFO] EasyOCR engine NOT configured - skipping EasyOCR bundling")
+    # torch/torchvision/scikit-image(skimage)/scipy are EasyOCR-only dependencies.
+    # When EasyOCR is not configured they are dead weight (~480 MB), and scipy's
+    # OpenBLAS DLL is mismatched in this venv and BREAKS the build, so exclude the
+    # whole chain. (Verified: the app, rapidocr, and presidio do not import them.)
     engine_excludes += ['easyocr', 'torch', 'torchvision', 'torchaudio',
                         'tensorboard', 'torch.utils.tensorboard',
                         'onnxruntime.transformers',
+                        'skimage', 'scipy',
                         'ocr.engines.easyocr_engine']
 
 # ==============================================================================
@@ -510,24 +515,54 @@ a = Analysis(
 
 pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 
+# ==============================================================================
+# ONE-FOLDER (--onedir) BUILD
+# ------------------------------------------------------------------------------
+# This was previously a one-file (--onefile) build. One-file unpacks every
+# bundled DLL into %TEMP%\_MEIxxxx on each launch and loads them from there.
+# On machines with a Windows application-control policy (WDAC / Smart App
+# Control / AppLocker), loading unsigned DLLs from a user-writable temp folder
+# is blocked, producing:
+#     "DLL load failed while importing pyexpat:
+#      An Application Control policy has blocked this file."
+# A one-folder build keeps the DLLs next to the EXE (no temp extraction), and
+# the accompanying installer places that folder under C:\Program Files (a
+# trusted, admin-only location), which the default policies allow.
+#
+# UPX is disabled because packed binaries hurt SmartScreen / Smart App Control
+# reputation and are more likely to be flagged.
+#
+# codesign_identity is left None here; signing is applied as a post-build
+# signtool pass in build.bat once a code-signing certificate is available
+# (see installer/README.md). Signing every file in dist/TimeTracker plus the
+# installer is what satisfies *publisher-based* policies.
+# ==============================================================================
 exe = EXE(
     pyz,
     a.scripts,
-    a.binaries,
-    a.zipfiles,
-    a.datas,
     [],
+    exclude_binaries=True,        # one-folder: binaries go into COLLECT, not the EXE
     name='TimeTracker',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
-    upx=True,
+    upx=False,
     upx_exclude=[],
-    runtime_tmpdir=None,
     console=False,
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
+)
+
+coll = COLLECT(
+    exe,
+    a.binaries,
+    a.zipfiles,
+    a.datas,
+    strip=False,
+    upx=False,
+    upx_exclude=[],
+    name='TimeTracker',           # output dir: dist/TimeTracker/ (exe + _internal/)
 )
