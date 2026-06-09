@@ -21,6 +21,7 @@ const logger = require('../utils/logger');
 const dqNotificationsRepo = require('../services/db/description-quality-notifications-repo');
 const descriptionService = require('../services/description-service');
 const { getUserById, getOrganizationById, getUserCachedIssues } = require('../services/db/user-db-service');
+const { getClient } = require('../services/db/supabase-client');
 
 const MAX_PENDING_NUDGES = 5;
 const MAX_MANUAL_TRIGGER_LIMIT = 20;

@@ -32,6 +32,7 @@ jest.mock('../../src/services/description-service', () => ({
 const repo = require('../../src/services/db/description-quality-notifications-repo');
 const userDb = require('../../src/services/db/user-db-service');
 const descriptionService = require('../../src/services/description-service');
+const supabaseClient = require('../../src/services/db/supabase-client');
 const router = require('../../src/controllers/desktop-dq-nudges-controller');
 
 const express = require('express');
@@ -43,6 +44,17 @@ function buildApp() {
   // Stub authentication — set a supabase user on every request.
   app.use((req, _res, next) => {
     req.supabaseUser = { sub: 'user-uuid-1' };
+    next();
+  });
+  app.use('/api/desktop/description-quality-nudges', router);
+  return app;
+}
+
+function buildAppWithJwtAtlassianClaim() {
+  const app = express();
+  app.use(express.json());
+  app.use((req, _res, next) => {
+    req.supabaseUser = { atlassian_account_id: 'acct-123' };
     next();
   });
   app.use('/api/desktop/description-quality-nudges', router);
@@ -114,6 +126,29 @@ describe('GET /api/desktop/description-quality-nudges', () => {
     repo.listPendingDesktopNudges.mockRejectedValue(new Error('db down'));
     const res = await request(buildApp()).get('/api/desktop/description-quality-nudges');
     expect(res.status).toBe(500);
+  });
+
+  test('supports JWT fast path using atlassian_account_id claim', async () => {
+    supabaseClient.getClient.mockReturnValue({
+      from: jest.fn().mockReturnValue({
+        select: jest.fn().mockReturnValue({
+          eq: jest.fn().mockReturnValue({
+            maybeSingle: jest.fn().mockResolvedValue({
+              data: {
+                id: 'user-uuid-1',
+                organization_id: 'org-uuid-1',
+                atlassian_account_id: 'acct-123'
+              },
+              error: null
+            })
+          })
+        })
+      })
+    });
+    repo.listPendingDesktopNudges.mockResolvedValue([]);
+    const res = await request(buildAppWithJwtAtlassianClaim()).get('/api/desktop/description-quality-nudges');
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ success: true, nudges: [] });
   });
 
   test('prefers live cache score over score_at_notify in response', async () => {
