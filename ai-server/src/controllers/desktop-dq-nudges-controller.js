@@ -82,22 +82,27 @@ async function resolveCaller(req) {
   const jwtAtlassianId = req.supabaseUser?.atlassian_account_id
     || req.supabaseUser?.user_metadata?.atlassian_account_id;
   if (jwtAtlassianId) {
-    const supabase = getClient();
-    if (!supabase) return null;
-    const { data: user, error } = await supabase
-      .from('users')
-      .select('id, organization_id, atlassian_account_id')
-      .eq('atlassian_account_id', jwtAtlassianId)
-      .maybeSingle();
-    if (!error && user) {
-      const org = await getOrganizationById(user.organization_id);
-      return {
-        userId: user.id,
-        organizationId: user.organization_id,
-        atlassianAccountId: user.atlassian_account_id,
-        orgId: org?.jira_cloud_id || user.organization_id,
-        jiraBaseUrl: org?.jira_instance_url || null
-      };
+    try {
+      const supabase = getClient();
+      if (supabase) {
+        const { data: user, error } = await supabase
+          .from('users')
+          .select('id, organization_id, atlassian_account_id')
+          .eq('atlassian_account_id', jwtAtlassianId)
+          .maybeSingle();
+        if (!error && user) {
+          const org = await getOrganizationById(user.organization_id);
+          return {
+            userId: user.id,
+            organizationId: user.organization_id,
+            atlassianAccountId: user.atlassian_account_id,
+            orgId: org?.jira_cloud_id || user.organization_id,
+            jiraBaseUrl: org?.jira_instance_url || null
+          };
+        }
+      }
+    } catch (err) {
+      logger.warn('[DesktopDqNudges] resolveCaller fast path failed: %s', err.message);
     }
   }
 
@@ -118,22 +123,27 @@ async function resolveCaller(req) {
   // Path 3: Atlassian token — req.atlassianUser.account_id is the atlassian acct id
   if (req.atlassianUser?.account_id) {
     const accountId = req.atlassianUser.account_id;
-    const supabase = getClient();
-    if (!supabase) return null;
-    const { data: user, error } = await supabase
-      .from('users')
-      .select('id, organization_id, atlassian_account_id')
-      .eq('atlassian_account_id', accountId)
-      .maybeSingle();
-    if (error || !user) return null;
-    const org = await getOrganizationById(user.organization_id);
-    return {
-      userId: user.id,
-      organizationId: user.organization_id,
-      atlassianAccountId: user.atlassian_account_id,
-      orgId: org?.jira_cloud_id || user.organization_id,
-      jiraBaseUrl: org?.jira_instance_url || null
-    };
+    try {
+      const supabase = getClient();
+      if (!supabase) return null;
+      const { data: user, error } = await supabase
+        .from('users')
+        .select('id, organization_id, atlassian_account_id')
+        .eq('atlassian_account_id', accountId)
+        .maybeSingle();
+      if (error || !user) return null;
+      const org = await getOrganizationById(user.organization_id);
+      return {
+        userId: user.id,
+        organizationId: user.organization_id,
+        atlassianAccountId: user.atlassian_account_id,
+        orgId: org?.jira_cloud_id || user.organization_id,
+        jiraBaseUrl: org?.jira_instance_url || null
+      };
+    } catch (err) {
+      logger.warn('[DesktopDqNudges] resolveCaller Atlassian path failed: %s', err.message);
+      return null;
+    }
   }
 
   return null;

@@ -151,6 +151,25 @@ describe('GET /api/desktop/description-quality-nudges', () => {
     expect(res.body).toEqual({ success: true, nudges: [] });
   });
 
+  test('falls back to sub-based caller resolution when fast path throws', async () => {
+    supabaseClient.getClient.mockImplementation(() => {
+      throw new Error('getClient is not defined');
+    });
+    repo.listPendingDesktopNudges.mockResolvedValue([]);
+
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => {
+      req.supabaseUser = { sub: 'user-uuid-1', atlassian_account_id: 'acct-123' };
+      next();
+    });
+    app.use('/api/desktop/description-quality-nudges', router);
+
+    const res = await request(app).get('/api/desktop/description-quality-nudges');
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ success: true, nudges: [] });
+  });
+
   test('prefers live cache score over score_at_notify in response', async () => {
     repo.listPendingDesktopNudges.mockResolvedValue([
       {
