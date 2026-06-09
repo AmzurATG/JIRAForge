@@ -41,8 +41,40 @@ def _make_manager():
     manager._refresh_invalid_set_at = 0
     manager._last_refresh_fail_time = 0
     manager._last_refresh_error_code = ''
+    manager._last_token_refresh_time = 0
+    manager._token_refresh_min_interval = 5
     manager._save_tokens = lambda: None
     return manager
+
+
+def test_refresh_initializes_missing_rate_limit_state_on_legacy_instance():
+    """
+    Legacy/partially-initialized AtlassianAuthManager instances must not crash
+    refresh_access_token() with AttributeError for missing rate-limit fields.
+    """
+    manager = AtlassianAuthManager.__new__(AtlassianAuthManager)
+    manager.tokens = {
+        'access_token': 'old-access',
+        'refresh_token': 'refresh-123',
+        'expires_at': 0,
+    }
+    manager.ai_server_url = 'https://example.test'
+    manager._refresh_lock = threading.Lock()
+    manager._refresh_token_invalid = False
+    manager._refresh_fail_count = 0
+    manager._refresh_invalid_set_at = 0
+    manager._last_refresh_fail_time = 0
+    manager._last_refresh_error_code = ''
+    manager._save_tokens = lambda: None
+
+    response = _MockResponse(503, {'success': False, 'error': 'temporary outage'})
+
+    with patch('desktop_app.requests.post', return_value=response):
+        ok = manager.refresh_access_token()
+
+    assert ok is False
+    assert hasattr(manager, '_last_token_refresh_time')
+    assert hasattr(manager, '_token_refresh_min_interval')
 
 
 def test_refresh_403_temporary_failure_does_not_mark_invalid():

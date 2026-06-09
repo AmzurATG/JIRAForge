@@ -1981,6 +1981,9 @@ class AtlassianAuthManager:
         self._refresh_invalid_set_at = 0  # timestamp when _refresh_token_invalid was set
         self._last_refresh_fail_time = 0
         self._last_refresh_error_code = ''
+        # Rate limiting for refresh calls to avoid storms from parallel callers.
+        self._last_token_refresh_time = 0
+        self._token_refresh_min_interval = 5
 
         # Initialize secure storage
         self.secure_storage = SecureTokenStorage(get_app_data_dir())
@@ -2386,6 +2389,8 @@ class AtlassianAuthManager:
         
         B-15: Rate limiting added to prevent refresh storms (min 5 seconds between calls).
         """
+        self._ensure_refresh_rate_limit_state()
+
         # B-15: Rate limiting - prevent refresh storms
         time_since_last_refresh = time.time() - self._last_token_refresh_time
         if time_since_last_refresh < self._token_refresh_min_interval:
@@ -2416,6 +2421,13 @@ class AtlassianAuthManager:
                     next_action='show_auth_notification'
                 )
                 return False
+
+    def _ensure_refresh_rate_limit_state(self):
+        """Backfill refresh rate-limit fields for legacy/partially initialized instances."""
+        if not hasattr(self, '_last_token_refresh_time'):
+            self._last_token_refresh_time = 0
+        if not hasattr(self, '_token_refresh_min_interval'):
+            self._token_refresh_min_interval = 5
 
         refresh_token_before = self.tokens.get('refresh_token')
         if not refresh_token_before:
