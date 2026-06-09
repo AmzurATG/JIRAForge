@@ -21,7 +21,6 @@ const logger = require('../utils/logger');
 const dqNotificationsRepo = require('../services/db/description-quality-notifications-repo');
 const descriptionService = require('../services/description-service');
 const { getUserById, getOrganizationById, getUserCachedIssues } = require('../services/db/user-db-service');
-const { getClient } = require('../services/db/supabase-client');
 
 const MAX_PENDING_NUDGES = 5;
 const MAX_MANUAL_TRIGGER_LIMIT = 20;
@@ -30,7 +29,7 @@ const VALID_ACTIONS = new Set(['viewed', 'opened-in-jira', 'dismissed', 'snoozed
 
 async function refreshScoresForManualTrigger({ orgId, accountId, cachedIssues }) {
   const rows = Array.isArray(cachedIssues) ? cachedIssues : [];
-  if (!orgId || rows.length === 0) return;
+  if (!orgId || rows.length === 0) return new Map();
 
   const byIssue = new Map();
   for (const row of rows) {
@@ -38,7 +37,7 @@ async function refreshScoresForManualTrigger({ orgId, accountId, cachedIssues })
     byIssue.set(row.issue_key, row);
     if (byIssue.size >= MAX_TRIGGER_REFRESH_ISSUES) break;
   }
-  if (byIssue.size === 0) return;
+  if (byIssue.size === 0) return new Map();
 
   const freshScoreByIssue = new Map();
   for (const [issueKey, row] of byIssue.entries()) {
@@ -67,22 +66,7 @@ async function refreshScoresForManualTrigger({ orgId, accountId, cachedIssues })
     }
   }
 
-  if (freshScoreByIssue.size === 0) return;
-
-  const supabase = getClient();
-  if (!supabase || typeof supabase.from !== 'function') return;
-
-  const updatedAt = new Date().toISOString();
-  for (const [issueKey, score] of freshScoreByIssue.entries()) {
-    const { error } = await supabase
-      .from('description_quality_cache')
-      .update({ score, updated_at: updatedAt })
-      .eq('org_id', orgId)
-      .eq('issue_key', issueKey);
-    if (error) {
-      logger.warn('[DesktopDqNudges] Trigger cache update failed for %s: %s', issueKey, error.message);
-    }
-  }
+  return freshScoreByIssue;
 }
 
 /**
@@ -293,18 +277,27 @@ router.post('/trigger', async (req, res) => {
       return res.json({ success: true, generated: 0, candidates: 0, reason: 'no-cached-issues' });
     }
 
-    await refreshScoresForManualTrigger({
+    const freshScores = await refreshScoresForManualTrigger({
       orgId: caller.orgId,
       accountId: caller.atlassianAccountId,
       cachedIssues
     });
 
-    const scoreRows = await dqNotificationsRepo.listLowScoreCandidates({
+    const cachedScores = await dqNotificationsRepo.getIssueScoresFromCache({
       orgId: caller.orgId,
-      issueKeys,
-      maxScore: 79,
-      limit: limit * 3
+      issueKeys
     });
+
+    const mergedScores = new Map(cachedScores);
+    for (const [issueKey, score] of freshScores.entries()) {
+      mergedScores.set(issueKey, score);
+    }
+
+    const scoreRows = [...mergedScores.entries()]
+      .filter(([, score]) => Number.isFinite(Number(score)) && Number(score) < 80)
+      .sort((a, b) => Number(a[1]) - Number(b[1]))
+      .slice(0, limit * 3)
+      .map(([issue_key, score]) => ({ issue_key, score: Number(score) }));
 
     const summaryByIssue = new Map(
       (cachedIssues || []).map((row) => [row.issue_key, row.issue_summary || row.summary || null])

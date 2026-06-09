@@ -227,10 +227,12 @@ describe('POST /api/desktop/description-quality-nudges/ack', () => {
 
 describe('POST /api/desktop/description-quality-nudges/trigger', () => {
   test('generates desktop rows from low-score assigned issues', async () => {
-    repo.listLowScoreCandidates.mockResolvedValue([
-      { issue_key: 'PROJ-1', score: 42 },
-      { issue_key: 'PROJ-2', score: 61 }
-    ]);
+    repo.getIssueScoresFromCache.mockResolvedValue(new Map());
+    descriptionService.analyzeDescription.mockImplementation(async ({ issueKey }) => {
+      if (issueKey === 'PROJ-1') return { score: 42 };
+      if (issueKey === 'PROJ-2') return { score: 61 };
+      return { score: 90 };
+    });
     repo.insertNotification.mockResolvedValue({ id: 1 });
 
     const res = await request(buildApp())
@@ -246,11 +248,9 @@ describe('POST /api/desktop/description-quality-nudges/trigger', () => {
       orgId: 'cloud-xyz',
       accountId: 'acct-123'
     });
-    expect(repo.listLowScoreCandidates).toHaveBeenCalledWith({
+    expect(repo.getIssueScoresFromCache).toHaveBeenCalledWith({
       orgId: 'cloud-xyz',
-      issueKeys: ['PROJ-1', 'PROJ-2'],
-      maxScore: 79,
-      limit: 6
+      issueKeys: ['PROJ-1', 'PROJ-2']
     });
     expect(repo.insertNotification).toHaveBeenCalledTimes(2);
     expect(repo.insertNotification).toHaveBeenCalledWith(expect.objectContaining({
@@ -283,11 +283,15 @@ describe('POST /api/desktop/description-quality-nudges/trigger', () => {
     expect(res.body.success).toBe(true);
     expect(res.body.generated).toBe(0);
     expect(res.body.reason).toBe('no-cached-issues');
-    expect(repo.listLowScoreCandidates).not.toHaveBeenCalled();
+    expect(repo.getIssueScoresFromCache).not.toHaveBeenCalled();
   });
 
   test('returns no-low-scores reason when cached issues exist but none below threshold', async () => {
-    repo.listLowScoreCandidates.mockResolvedValue([]);
+    descriptionService.analyzeDescription.mockResolvedValue({ score: 95 });
+    repo.getIssueScoresFromCache.mockResolvedValue(new Map([
+      ['PROJ-1', 92],
+      ['PROJ-2', 94]
+    ]));
 
     const res = await request(buildApp())
       .post('/api/desktop/description-quality-nudges/trigger')
