@@ -31,24 +31,21 @@ async function refreshScoresForManualTrigger({ orgId, accountId, cachedIssues })
   const rows = Array.isArray(cachedIssues) ? cachedIssues : [];
   if (!orgId || rows.length === 0) return new Map();
 
-  const byIssue = new Map();
-  for (const row of rows) {
-    if (!row?.issue_key || byIssue.has(row.issue_key)) continue;
-    byIssue.set(row.issue_key, row);
-    if (byIssue.size >= MAX_TRIGGER_REFRESH_ISSUES) break;
-  }
-  if (byIssue.size === 0) return new Map();
-
   const freshScoreByIssue = new Map();
-  for (const [issueKey, row] of byIssue.entries()) {
-    const title = row.issue_summary || row.summary || issueKey;
-    const description = typeof row.description === 'string' ? row.description : '';
-    const issueType = row.issue_type || row.issueType || 'Task';
-    const projectKey = row.project_key || (String(issueKey).split('-')[0] || 'TASK');
+  let refreshCount = 0;
+
+  for (const row of rows) {
+    if (!row?.issue_key) continue;
+    if (refreshCount >= MAX_TRIGGER_REFRESH_ISSUES) break;
 
     try {
+      const title = String(row.issue_summary || row.summary || row.issue_key).trim();
+      const description = typeof row.description === 'string' ? row.description : '';
+      const issueType = String(row.issue_type || 'Task').trim();
+      const projectKey = String(row.project_key || row.issue_key.split('-')[0] || 'TASK').trim();
+
       const result = await descriptionService.analyzeDescription({
-        issueKey,
+        issueKey: row.issue_key,
         title,
         description,
         issueType,
@@ -57,15 +54,20 @@ async function refreshScoresForManualTrigger({ orgId, accountId, cachedIssues })
         orgId,
         accountId
       });
+
       const score = Number(result?.score);
       if (Number.isFinite(score)) {
-        freshScoreByIssue.set(issueKey, Math.max(0, Math.min(100, Math.round(score))));
+        const normalized = Math.max(0, Math.min(100, Math.round(score)));
+        freshScoreByIssue.set(row.issue_key, normalized);
+        logger.debug('[DesktopDqNudges] Trigger refresh %s: %d', row.issue_key, normalized);
       }
+      refreshCount += 1;
     } catch (err) {
-      logger.warn('[DesktopDqNudges] Trigger refresh failed for %s: %s', issueKey, err.message);
+      logger.warn('[DesktopDqNudges] Trigger refresh failed for %s: %s', row.issue_key, err.message);
     }
   }
 
+  logger.info('[DesktopDqNudges] Trigger refresh completed: %d issues analyzed', refreshCount);
   return freshScoreByIssue;
 }
 
@@ -293,11 +295,20 @@ router.post('/trigger', async (req, res) => {
       mergedScores.set(issueKey, score);
     }
 
-    const scoreRows = [...mergedScores.entries()]
-      .filter(([, score]) => Number.isFinite(Number(score)) && Number(score) < 80)
-      .sort((a, b) => Number(a[1]) - Number(b[1]))
-      .slice(0, limit * 3)
-      .map(([issue_key, score]) => ({ issue_key, score: Number(score) }));
+    logger.debug('[DesktopDqNudges] Trigger scores: cached=%d, fresh=%d, merged=%d', 
+      cachedScores.size, freshScores.size, mergedScores.size);
+
+    const scoreRows = [];
+    for (const [issueKey, score] of mergedScores.entries()) {
+      const numScore = Number(score);
+      if (Number.isFinite(numScore) && numScore < 80) {
+        scoreRows.push({ issue_key: issueKey, score: numScore });
+      }
+    }
+    scoreRows.sort((a, b) => a.score - b.score);
+    scoreRows.splice(limit * 3);
+
+    logger.debug('[DesktopDqNudges] Trigger filtered candidates: %d < 80', scoreRows.length);
 
     const summaryByIssue = new Map(
       (cachedIssues || []).map((row) => [row.issue_key, row.issue_summary || row.summary || null])
