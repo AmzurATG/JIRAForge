@@ -1,5 +1,9 @@
 'use strict';
 
+jest.mock('axios', () => ({
+  post: jest.fn()
+}));
+
 jest.mock('../../src/utils/logger', () => ({
   info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn()
 }));
@@ -33,6 +37,7 @@ const repo = require('../../src/services/db/description-quality-notifications-re
 const userDb = require('../../src/services/db/user-db-service');
 const descriptionService = require('../../src/services/description-service');
 const supabaseClient = require('../../src/services/db/supabase-client');
+const axios = require('axios');
 const router = require('../../src/controllers/desktop-dq-nudges-controller');
 
 const express = require('express');
@@ -61,8 +66,22 @@ function buildAppWithJwtAtlassianClaim() {
   return app;
 }
 
+function buildAtlassianApp() {
+  const app = express();
+  app.use(express.json());
+  app.use((req, _res, next) => {
+    req.supabaseUser = { sub: 'user-uuid-1' };
+    req.atlassianToken = 'atl-token-123';
+    next();
+  });
+  app.use('/api/desktop/description-quality-nudges', router);
+  return app;
+}
+
 beforeEach(() => {
   jest.clearAllMocks();
+  repo.listPendingDesktopNudges.mockResolvedValue([]);
+  repo.isWithinCooldown.mockResolvedValue(false);
   repo.getIssueScoresFromCache.mockResolvedValue(new Map());
   userDb.getUserById.mockResolvedValue({
     id: 'user-uuid-1',
@@ -212,6 +231,55 @@ describe('GET /api/desktop/description-quality-nudges', () => {
       snoozeUntil: null
     });
   });
+
+  test('uses live Jira issues for Atlassian-authenticated requests and inserts missing rows', async () => {
+    axios.post.mockResolvedValue({
+      data: {
+        issues: [
+          {
+            key: 'PROJ-92',
+            fields: {
+              summary: 'Fresh bad issue',
+              description: 'short desc',
+              issuetype: { name: 'Bug' },
+              project: { key: 'PROJ' }
+            }
+          }
+        ]
+      }
+    });
+    descriptionService.analyzeDescription.mockResolvedValue({ score: 15 });
+    repo.insertNotification.mockResolvedValue({
+      id: 92,
+      issue_key: 'PROJ-92',
+      score_at_notify: 15,
+      payload: { summary: 'Fresh bad issue', issueUrl: 'https://example.atlassian.net/browse/PROJ-92', appUrl: null },
+      notified_at: '2026-06-09T10:00:00Z'
+    });
+
+    const res = await request(buildAtlassianApp()).get('/api/desktop/description-quality-nudges');
+
+    expect(res.status).toBe(200);
+    expect(res.body.success).toBe(true);
+    expect(res.body.nudges).toHaveLength(1);
+    expect(res.body.nudges[0]).toEqual({
+      id: 92,
+      issueKey: 'PROJ-92',
+      score: 15,
+      summary: 'Fresh bad issue',
+      issueUrl: 'https://example.atlassian.net/browse/PROJ-92',
+      appUrl: null,
+      notifiedAt: '2026-06-09T10:00:00Z'
+    });
+    expect(axios.post).toHaveBeenCalled();
+    expect(repo.insertNotification).toHaveBeenCalledWith(expect.objectContaining({
+      orgId: 'cloud-xyz',
+      accountId: 'acct-123',
+      issueKey: 'PROJ-92',
+      scoreAtNotify: 15,
+      channel: 'desktop'
+    }));
+  });
 });
 
 describe('POST /api/desktop/description-quality-nudges/ack', () => {
@@ -355,5 +423,51 @@ describe('POST /api/desktop/description-quality-nudges/trigger', () => {
     expect(res.body.success).toBe(true);
     expect(res.body.generated).toBe(0);
     expect(res.body.reason).toBe('no-low-scores');
+  });
+
+  test('uses live Jira issues instead of cached issue rows for Atlassian-authenticated trigger', async () => {
+    axios.post.mockResolvedValue({
+      data: {
+        issues: [
+          {
+            key: 'PROJ-92',
+            fields: {
+              summary: 'Fresh bad issue',
+              description: 'short desc',
+              issuetype: { name: 'Bug' },
+              project: { key: 'PROJ' }
+            }
+          }
+        ]
+      }
+    });
+    descriptionService.analyzeDescription.mockResolvedValue({ score: 15 });
+    repo.insertNotification.mockResolvedValue({
+      id: 100,
+      issue_key: 'PROJ-92',
+      score_at_notify: 15,
+      payload: { summary: 'Fresh bad issue' },
+      notified_at: '2026-06-09T10:00:00Z'
+    });
+
+    const res = await request(buildAtlassianApp())
+      .post('/api/desktop/description-quality-nudges/trigger')
+      .send({ limit: 5, force: true });
+
+    expect(res.status).toBe(200);
+    expect(res.body.success).toBe(true);
+    expect(res.body.generated).toBe(1);
+    expect(res.body.candidates).toBe(1);
+    expect(res.body.issueCount).toBe(1);
+    expect(userDb.getUserCachedIssues).not.toHaveBeenCalled();
+    expect(repo.getIssueScoresFromCache).not.toHaveBeenCalled();
+    expect(descriptionService.analyzeDescription).toHaveBeenCalledWith(expect.objectContaining({
+      issueKey: 'PROJ-92',
+      title: 'Fresh bad issue',
+      description: 'short desc',
+      projectKey: 'PROJ',
+      orgId: 'cloud-xyz',
+      accountId: 'acct-123'
+    }));
   });
 });

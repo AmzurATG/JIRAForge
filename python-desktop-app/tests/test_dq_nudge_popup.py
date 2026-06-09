@@ -59,12 +59,12 @@ def test_create_window_centers_and_sets_minimum_size(sample_nudges):
     fake_win.minsize.assert_called_once()
     min_w, min_h = fake_win.minsize.call_args.args
     assert min_w >= 760
-    assert min_h >= 460
+    assert min_h >= 320
 
     fake_win.geometry.assert_called_once()
     geometry = fake_win.geometry.call_args.args[0]
-    assert geometry.startswith('960x620+')
-    assert geometry.endswith('+230')
+    assert geometry.startswith('860x440+')
+    assert geometry.endswith('+320')
 
 
 # ---------------------------------------------------------------------------

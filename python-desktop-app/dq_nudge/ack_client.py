@@ -10,6 +10,7 @@ from typing import Iterable, List, Optional
 
 import requests
 
+from .auth_headers import get_dq_headers
 from .url_resolver import resolve_ai_server_url
 
 logger = logging.getLogger(__name__)
@@ -42,8 +43,8 @@ def acknowledge_nudges(
         logger.warning('[DqNudge.ack] snoozed action requires snooze_until')
         return False
 
-    token = auth_manager.get_supabase_token()
-    if not token:
+    headers = get_dq_headers(auth_manager)
+    if not headers:
         logger.warning('[DqNudge.ack] No Supabase token; skipping ack')
         return False
 
@@ -56,7 +57,7 @@ def acknowledge_nudges(
         response = requests.post(
             url,
             json=body,
-            headers={'Authorization': f'Bearer {token}', 'Content-Type': 'application/json'},
+            headers=headers,
             timeout=timeout,
         )
         if 200 <= response.status_code < 300:

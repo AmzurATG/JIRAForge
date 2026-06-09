@@ -15,6 +15,7 @@ from typing import Callable, List, Optional
 
 import requests
 
+from .auth_headers import get_dq_headers
 from .url_resolver import resolve_ai_server_url
 
 logger = logging.getLogger(__name__)
@@ -93,15 +94,15 @@ class DqNudgePoller:
         if not self._popup_enabled():
             return []
 
-        token = self.auth_manager.get_supabase_token()
-        if not token:
+        headers = get_dq_headers(self.auth_manager, include_json=False)
+        if not headers:
             logger.debug('[DqNudge.poller] No Supabase token; skipping poll')
             return []
 
         try:
             resp = requests.get(
                 self.ai_server_url + NUDGES_ENDPOINT,
-                headers={'Authorization': f'Bearer {token}', 'Accept': 'application/json'},
+                headers={**headers, 'Accept': 'application/json'},
                 timeout=timeout,
             )
         except requests.RequestException as exc:
@@ -122,15 +123,15 @@ class DqNudgePoller:
 
     def trigger_generation(self, timeout: float = 15.0, limit: int = 5, force: bool = True) -> dict:
         """Request server-side generation of desktop nudge rows for manual testing."""
-        token = self.auth_manager.get_supabase_token()
-        if not token:
+        headers = get_dq_headers(self.auth_manager)
+        if not headers:
             logger.debug('[DqNudge.poller] No Supabase token; skipping trigger')
             return {'success': False, 'generated': 0, 'reason': 'missing-token'}
 
         try:
             resp = requests.post(
                 self.ai_server_url + TRIGGER_ENDPOINT,
-                headers={'Authorization': f'Bearer {token}', 'Accept': 'application/json'},
+                headers={**headers, 'Accept': 'application/json'},
                 json={'limit': int(limit), 'force': bool(force)},
                 timeout=timeout,
             )

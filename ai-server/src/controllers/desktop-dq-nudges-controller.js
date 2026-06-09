@@ -8,14 +8,13 @@
  *
  * Authentication: desktopAuthMiddleware (Supabase JWT OR Atlassian token).
  *
- * Endpoints:
- *   GET  /api/desktop/description-quality-nudges
- *     → { success: true, nudges: [{ id, issueKey, score, summary, issueUrl, appUrl, notifiedAt }] }
- *   POST /api/desktop/description-quality-nudges/ack
- *     body: { nudgeIds: number[], action: 'viewed'|'opened-in-jira'|'dismissed'|'snoozed', snoozeUntil?: ISO8601 }
- *     → { success: true, acknowledged: <count> }
+ * Jira users now prefer the live Atlassian OAuth token path for popup refresh:
+ * every GET/trigger can fetch the caller's current in-progress Jira issues and
+ * re-run description analysis in real time, rather than relying on cached issue
+ * lists or cached description scores.
  */
 
+const axios = require('axios');
 const express = require('express');
 const logger = require('../utils/logger');
 const dqNotificationsRepo = require('../services/db/description-quality-notifications-repo');
@@ -24,9 +23,216 @@ const { getUserById, getOrganizationById, getUserCachedIssues } = require('../se
 const { getClient } = require('../services/db/supabase-client');
 
 const MAX_PENDING_NUDGES = 5;
+const MAX_PENDING_SCAN = 50;
 const MAX_MANUAL_TRIGGER_LIMIT = 20;
 const MAX_TRIGGER_REFRESH_ISSUES = 20;
+const MIN_NUDGE_SCORE = 80;
 const VALID_ACTIONS = new Set(['viewed', 'opened-in-jira', 'dismissed', 'snoozed']);
+const LIVE_JQL = 'assignee = currentUser() AND resolution = EMPTY AND statusCategory = "In Progress" ORDER BY updated DESC';
+const LIVE_FIELDS = ['summary', 'description', 'issuetype', 'project', 'status', 'updated'];
+
+function normalizeScore(score) {
+  const num = Number(score);
+  if (!Number.isFinite(num)) return null;
+  return Math.max(0, Math.min(100, Math.round(num)));
+}
+
+function buildIssueUrl(jiraBaseUrl, issueKey) {
+  const base = jiraBaseUrl ? String(jiraBaseUrl).replace(/\/$/, '') : null;
+  return base ? `${base}/browse/${issueKey}` : null;
+}
+
+function mapNudgeRow({ row, liveCandidate = null, jiraBaseUrl = null }) {
+  const payload = row?.payload || {};
+  const issueKey = liveCandidate?.issueKey || row.issue_key;
+  return {
+    id: row.id,
+    issueKey,
+    score: liveCandidate?.score ?? row.score_at_notify,
+    summary: liveCandidate?.summary || payload.summary || null,
+    issueUrl: liveCandidate?.issueUrl || payload.issueUrl || buildIssueUrl(jiraBaseUrl, issueKey),
+    appUrl: payload.appUrl || null,
+    notifiedAt: row.notified_at
+  };
+}
+
+async function fetchLiveAssignedIssues({ atlassianToken, cloudId, limit = MAX_TRIGGER_REFRESH_ISSUES }) {
+  if (!atlassianToken || !cloudId) return [];
+
+  const url = `https://api.atlassian.com/ex/jira/${encodeURIComponent(cloudId)}/rest/api/3/search/jql`;
+  const response = await axios.post(
+    url,
+    {
+      jql: LIVE_JQL,
+      maxResults: Math.max(1, Math.min(limit, MAX_TRIGGER_REFRESH_ISSUES)),
+      fields: LIVE_FIELDS
+    },
+    {
+      headers: {
+        Authorization: `Bearer ${atlassianToken}`,
+        Accept: 'application/json',
+        'Content-Type': 'application/json'
+      },
+      timeout: 15000,
+      maxContentLength: 5 * 1024 * 1024,
+      maxBodyLength: 5 * 1024 * 1024
+    }
+  );
+
+  return response?.data?.issues || [];
+}
+
+async function analyzeLiveIssues({ orgId, accountId, jiraBaseUrl, issues }) {
+  const candidates = [];
+  const rows = Array.isArray(issues) ? issues : [];
+
+  for (const issue of rows) {
+    const issueKey = issue?.key;
+    if (!issueKey) continue;
+
+    const fields = issue.fields || {};
+    const result = await descriptionService.analyzeDescription({
+      issueKey,
+      title: String(fields.summary || issueKey).trim(),
+      description: typeof fields.description === 'string' ? fields.description : '',
+      issueType: String(fields.issuetype?.name || 'Task').trim(),
+      projectKey: String(fields.project?.key || issueKey.split('-')[0] || 'TASK').trim(),
+      requestImprovement: false,
+      orgId,
+      accountId
+    });
+
+    const score = normalizeScore(result?.score);
+    if (score === null) continue;
+
+    candidates.push({
+      issueKey,
+      score,
+      summary: String(fields.summary || '').trim() || null,
+      issueUrl: buildIssueUrl(jiraBaseUrl, issueKey),
+      appUrl: null
+    });
+  }
+
+  candidates.sort((a, b) => a.score - b.score);
+  return candidates;
+}
+
+async function syncLiveDesktopNudges({ caller, atlassianToken, limit = MAX_PENDING_NUDGES, force = false }) {
+  await dqNotificationsRepo.ensurePreferenceRow({
+    orgId: caller.orgId,
+    accountId: caller.atlassianAccountId
+  });
+
+  const liveIssues = await fetchLiveAssignedIssues({
+    atlassianToken,
+    cloudId: caller.orgId,
+    limit: MAX_TRIGGER_REFRESH_ISSUES
+  });
+
+  const pendingRows = await dqNotificationsRepo.listPendingDesktopNudges({
+    orgId: caller.orgId,
+    accountId: caller.atlassianAccountId,
+    limit: MAX_PENDING_SCAN
+  });
+
+  const liveCandidates = await analyzeLiveIssues({
+    orgId: caller.orgId,
+    accountId: caller.atlassianAccountId,
+    jiraBaseUrl: caller.jiraBaseUrl,
+    issues: liveIssues
+  });
+
+  const lowScoreCandidates = liveCandidates.filter((candidate) => candidate.score < MIN_NUDGE_SCORE);
+  const lowScoreKeySet = new Set(lowScoreCandidates.map((candidate) => candidate.issueKey));
+  const pendingByIssue = new Map(
+    pendingRows
+      .filter((row) => row?.issue_key)
+      .map((row) => [row.issue_key, row])
+  );
+
+  const staleResolvedIds = pendingRows
+    .filter((row) => row?.issue_key && !lowScoreKeySet.has(row.issue_key))
+    .map((row) => row.id);
+
+  if (staleResolvedIds.length > 0) {
+    await dqNotificationsRepo.acknowledgeNudges({
+      orgId: caller.orgId,
+      accountId: caller.atlassianAccountId,
+      nudgeIds: staleResolvedIds,
+      action: 'dismissed',
+      snoozeUntil: null
+    });
+  }
+
+  const nudges = [];
+  let generated = 0;
+  let skippedCooldown = 0;
+
+  for (const candidate of lowScoreCandidates) {
+    if (nudges.length >= limit) break;
+
+    const existing = pendingByIssue.get(candidate.issueKey);
+    if (existing) {
+      nudges.push(mapNudgeRow({ row: existing, liveCandidate: candidate, jiraBaseUrl: caller.jiraBaseUrl }));
+      continue;
+    }
+
+    if (!force) {
+      const inCooldown = await dqNotificationsRepo.isWithinCooldown(
+        caller.orgId,
+        caller.atlassianAccountId,
+        candidate.issueKey
+      );
+      if (inCooldown) {
+        skippedCooldown += 1;
+        continue;
+      }
+    }
+
+    const inserted = await dqNotificationsRepo.insertNotification({
+      orgId: caller.orgId,
+      accountId: caller.atlassianAccountId,
+      cloudId: caller.orgId,
+      issueKey: candidate.issueKey,
+      scoreAtNotify: candidate.score,
+      channel: 'desktop',
+      payload: {
+        score: candidate.score,
+        summary: candidate.summary,
+        issueUrl: candidate.issueUrl,
+        appUrl: candidate.appUrl,
+        createdAt: new Date().toISOString()
+      }
+    });
+
+    generated += 1;
+    nudges.push(mapNudgeRow({ row: inserted, liveCandidate: candidate, jiraBaseUrl: caller.jiraBaseUrl }));
+  }
+
+  let reason = null;
+  if (nudges.length === 0) {
+    if (liveIssues.length === 0) {
+      reason = 'no-live-issues';
+    } else if (lowScoreCandidates.length === 0) {
+      reason = 'no-low-scores';
+    } else if (!force && skippedCooldown > 0) {
+      reason = 'cooldown-filtered';
+    } else {
+      reason = 'limit-reached-or-invalid-candidates';
+    }
+  }
+
+  return {
+    nudges,
+    generated,
+    candidates: lowScoreCandidates.length,
+    issueCount: liveIssues.length,
+    force,
+    skippedCooldown,
+    reason
+  };
+}
 
 async function refreshScoresForManualTrigger({ orgId, accountId, cachedIssues }) {
   const rows = Array.isArray(cachedIssues) ? cachedIssues : [];
@@ -56,11 +262,10 @@ async function refreshScoresForManualTrigger({ orgId, accountId, cachedIssues })
         accountId
       });
 
-      const score = Number(result?.score);
-      if (Number.isFinite(score)) {
-        const normalized = Math.max(0, Math.min(100, Math.round(score)));
-        freshScoreByIssue.set(row.issue_key, normalized);
-        logger.debug('[DesktopDqNudges] Trigger refresh %s: %d', row.issue_key, normalized);
+      const score = normalizeScore(result?.score);
+      if (score !== null) {
+        freshScoreByIssue.set(row.issue_key, score);
+        logger.debug('[DesktopDqNudges] Trigger refresh %s: %d', row.issue_key, score);
       }
       refreshCount += 1;
     } catch (err) {
@@ -77,8 +282,6 @@ async function refreshScoresForManualTrigger({ orgId, accountId, cachedIssues })
  * Works for both auth types set by desktopAuthMiddleware.
  */
 async function resolveCaller(req) {
-  // Fast path: our exchange-token JWT carries `atlassian_account_id` as a
-  // top-level claim — look up by Atlassian ID to avoid sub-UUID ambiguity.
   const jwtAtlassianId = req.supabaseUser?.atlassian_account_id
     || req.supabaseUser?.user_metadata?.atlassian_account_id;
   if (jwtAtlassianId) {
@@ -106,7 +309,6 @@ async function resolveCaller(req) {
     }
   }
 
-  // Slow path: sub-based lookup (fallback for tokens without atlassian_account_id claim)
   if (req.supabaseUser?.sub) {
     const user = await getUserById(req.supabaseUser.sub);
     if (!user) return null;
@@ -120,7 +322,6 @@ async function resolveCaller(req) {
     };
   }
 
-  // Path 3: Atlassian token — req.atlassianUser.account_id is the atlassian acct id
   if (req.atlassianUser?.account_id) {
     const accountId = req.atlassianUser.account_id;
     try {
@@ -151,14 +352,21 @@ async function resolveCaller(req) {
 
 const router = express.Router();
 
-// ---------------------------------------------------------------------------
-// GET / — list pending desktop nudges for the caller.
-// ---------------------------------------------------------------------------
 router.get('/', async (req, res) => {
   try {
     const caller = await resolveCaller(req);
     if (!caller || !caller.atlassianAccountId || !caller.orgId) {
       return res.status(404).json({ success: false, error: 'User profile not found' });
+    }
+
+    if (req.atlassianToken) {
+      const live = await syncLiveDesktopNudges({
+        caller,
+        atlassianToken: req.atlassianToken,
+        limit: MAX_PENDING_NUDGES,
+        force: false
+      });
+      return res.json({ success: true, nudges: live.nudges });
     }
 
     const rows = await dqNotificationsRepo.listPendingDesktopNudges({
@@ -182,8 +390,7 @@ router.get('/', async (req, res) => {
         ? Number(liveScores.get(row.issue_key))
         : Number(row.score_at_notify);
 
-      // Do not surface stale rows that are no longer below threshold.
-      if (Number.isFinite(liveScore) && liveScore >= 80) {
+      if (Number.isFinite(liveScore) && liveScore >= MIN_NUDGE_SCORE) {
         staleResolvedIds.push(row.id);
         continue;
       }
@@ -216,9 +423,6 @@ router.get('/', async (req, res) => {
   }
 });
 
-// ---------------------------------------------------------------------------
-// POST /ack — acknowledge one or more nudges.
-// ---------------------------------------------------------------------------
 router.post('/ack', async (req, res) => {
   try {
     const { nudgeIds, action, snoozeUntil } = req.body || {};
@@ -262,9 +466,6 @@ router.post('/ack', async (req, res) => {
   }
 });
 
-// ---------------------------------------------------------------------------
-// POST /trigger — manual test helper: generate desktop nudge rows now.
-// ---------------------------------------------------------------------------
 router.post('/trigger', async (req, res) => {
   try {
     const caller = await resolveCaller(req);
@@ -277,6 +478,25 @@ router.post('/trigger', async (req, res) => {
       ? Math.max(1, Math.min(rawLimit, MAX_MANUAL_TRIGGER_LIMIT))
       : MAX_PENDING_NUDGES;
     const force = req.body?.force !== undefined ? Boolean(req.body.force) : true;
+
+    if (req.atlassianToken) {
+      const live = await syncLiveDesktopNudges({
+        caller,
+        atlassianToken: req.atlassianToken,
+        limit,
+        force
+      });
+
+      return res.json({
+        success: true,
+        generated: live.generated,
+        candidates: live.candidates,
+        issueCount: live.issueCount,
+        force: live.force,
+        skippedCooldown: live.skippedCooldown,
+        reason: live.reason
+      });
+    }
 
     await dqNotificationsRepo.ensurePreferenceRow({
       orgId: caller.orgId,
@@ -306,20 +526,20 @@ router.post('/trigger', async (req, res) => {
       mergedScores.set(issueKey, score);
     }
 
-    logger.debug('[DesktopDqNudges] Trigger scores: cached=%d, fresh=%d, merged=%d', 
+    logger.debug('[DesktopDqNudges] Trigger scores: cached=%d, fresh=%d, merged=%d',
       cachedScores.size, freshScores.size, mergedScores.size);
 
     const scoreRows = [];
     for (const [issueKey, score] of mergedScores.entries()) {
       const numScore = Number(score);
-      if (Number.isFinite(numScore) && numScore < 80) {
+      if (Number.isFinite(numScore) && numScore < MIN_NUDGE_SCORE) {
         scoreRows.push({ issue_key: issueKey, score: numScore });
       }
     }
     scoreRows.sort((a, b) => a.score - b.score);
     scoreRows.splice(limit * 3);
 
-    logger.debug('[DesktopDqNudges] Trigger filtered candidates: %d < 80', scoreRows.length);
+    logger.debug('[DesktopDqNudges] Trigger filtered candidates: %d < %d', scoreRows.length, MIN_NUDGE_SCORE);
 
     const summaryByIssue = new Map(
       (cachedIssues || []).map((row) => [row.issue_key, row.issue_summary || row.summary || null])
@@ -346,7 +566,6 @@ router.post('/trigger', async (req, res) => {
         }
       }
 
-      const baseUrl = caller.jiraBaseUrl ? String(caller.jiraBaseUrl).replace(/\/$/, '') : null;
       await dqNotificationsRepo.insertNotification({
         orgId: caller.orgId,
         accountId: caller.atlassianAccountId,
@@ -357,7 +576,7 @@ router.post('/trigger', async (req, res) => {
         payload: {
           score,
           summary: summaryByIssue.get(issueKey) || null,
-          issueUrl: baseUrl ? `${baseUrl}/browse/${issueKey}` : null,
+          issueUrl: buildIssueUrl(caller.jiraBaseUrl, issueKey),
           appUrl: null,
           createdAt: new Date().toISOString()
         }
@@ -393,5 +612,4 @@ router.post('/trigger', async (req, res) => {
 });
 
 module.exports = router;
-// Exposed for unit-test injection only.
 module.exports._resolveCaller = resolveCaller;

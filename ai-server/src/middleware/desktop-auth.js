@@ -62,6 +62,7 @@ module.exports = async (req, res, next) => {
         maxRedirects: 5
       });
       req.atlassianUser = meResponse.data;
+      req.atlassianToken = token;
       req.authType = 'atlassian';
       logger.debug('[DesktopAuth] Authenticated via Atlassian token:', meResponse.data.account_id);
       return next();

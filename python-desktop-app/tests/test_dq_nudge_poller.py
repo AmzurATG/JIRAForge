@@ -22,8 +22,13 @@ class FakeAuthManager:
     def __init__(self, token='abc', ai_server_url='https://forgesync.amzur.com'):
         self._token = token
         self.ai_server_url = ai_server_url
+        self.auth_provider = 'jira'
+        self.tokens = {}
 
     def get_supabase_token(self):
+        return self._token
+
+    def get_valid_supabase_token(self):
         return self._token
 
 
@@ -125,6 +130,20 @@ def test_poller_prefers_auth_manager_ai_server_url_over_placeholder_env(monkeypa
         poller.poll_once()
 
     assert get.call_args.args[0].startswith('https://good-server.example')
+
+
+def test_poll_once_prefers_live_atlassian_access_token():
+    auth = FakeAuthManager(token='supabase-token')
+    auth.tokens = {'access_token': 'atlassian-token'}
+    poller = DqNudgePoller(auth, on_nudges=lambda n: None)
+
+    fake_response = MagicMock(status_code=200)
+    fake_response.json.return_value = {'success': True, 'nudges': []}
+    with patch('dq_nudge.poller.requests.get', return_value=fake_response) as get:
+        poller.poll_once()
+
+    _, kwargs = get.call_args
+    assert kwargs['headers']['Authorization'] == 'Bearer atlassian-token'
 
 
 def test_preferences_prefers_auth_manager_ai_server_url_over_placeholder_env(monkeypatch):

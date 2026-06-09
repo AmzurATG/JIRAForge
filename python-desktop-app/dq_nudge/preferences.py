@@ -11,6 +11,7 @@ from typing import Optional
 
 import requests
 
+from .auth_headers import get_dq_headers
 from .url_resolver import resolve_ai_server_url
 
 logger = logging.getLogger(__name__)
@@ -31,10 +32,7 @@ class DqNudgePreferences:
         self.popup_enabled = True
 
     def _headers(self) -> Optional[dict]:
-        token = self.auth_manager.get_supabase_token()
-        if not token:
-            return None
-        return {'Authorization': f'Bearer {token}', 'Content-Type': 'application/json'}
+        return get_dq_headers(self.auth_manager)
 
     def refresh(self, timeout: float = 10.0) -> bool:
         headers = self._headers()
