@@ -41,8 +41,110 @@ def _make_manager():
     manager._refresh_invalid_set_at = 0
     manager._last_refresh_fail_time = 0
     manager._last_refresh_error_code = ''
+    # B-15 rate-limit fields — must mirror AtlassianAuthManager.__init__, which is
+    # bypassed here via __new__. (Their absence is exactly the production bug:
+    # "'AtlassianAuthManager' object has no attribute '_last_token_refresh_time'".)
+    manager._last_token_refresh_time = 0
+    manager._token_refresh_min_interval = 5
     manager._save_tokens = lambda: None
     return manager
+
+
+# ---------------------------------------------------------------------------
+# Regression (Fix 1): the B-15 rate-limit fields must be initialized on
+# AtlassianAuthManager itself. They were only set on the TimeTracker class,
+# which broke every token refresh after restart/expiry with
+# "'AtlassianAuthManager' object has no attribute '_last_token_refresh_time'".
+# ---------------------------------------------------------------------------
+def test_init_sets_rate_limit_attributes(tmp_path):
+    with patch('desktop_app.get_app_data_dir', return_value=str(tmp_path)), \
+         patch('desktop_app.SecureTokenStorage'), \
+         patch.object(AtlassianAuthManager, '_migrate_from_plaintext', lambda self: None), \
+         patch.object(AtlassianAuthManager, '_load_tokens', lambda self: {}):
+        mgr = AtlassianAuthManager(web_port=51777)
+    assert hasattr(mgr, '_last_token_refresh_time'), "rate-limit field missing from __init__"
+    assert hasattr(mgr, '_token_refresh_min_interval')
+    assert mgr._token_refresh_min_interval == 5
+
+
+# ---------------------------------------------------------------------------
+# Regression (Fix 2): a MISSING access_token must attempt a refresh (and so
+# reach the OAUTH_REAUTH_REQUIRED path) instead of silently dead-ending.
+# ---------------------------------------------------------------------------
+def test_missing_access_token_triggers_refresh():
+    mgr = _make_manager()
+    mgr.auth_provider = 'atlassian'
+    mgr.tokens['access_token'] = None
+    calls = {'n': 0}
+    def fake_refresh():
+        calls['n'] += 1
+        return False  # no valid refresh token
+    mgr.refresh_access_token = fake_refresh
+    result = mgr.get_supabase_token()
+    assert calls['n'] == 1, "missing access_token must attempt refresh_access_token()"
+    assert result is None
+
+
+def test_missing_access_token_self_heals_when_refresh_succeeds():
+    mgr = _make_manager()
+    mgr.auth_provider = 'atlassian'
+    mgr.tokens['access_token'] = None
+    def fake_refresh():
+        mgr.tokens['access_token'] = 'new-access'
+        return True
+    mgr.refresh_access_token = fake_refresh
+    resp = _MockResponse(200, {'success': True, 'supabase_token': 'sb-tok', 'expires_in': 3600, 'user': {}})
+    with patch('desktop_app.requests.post', return_value=resp):
+        result = mgr.get_supabase_token()
+    assert result == 'sb-tok', "should self-heal via refresh when access_token was missing"
+
+
+def test_is_authenticated_tries_refresh_when_access_token_missing():
+    mgr = _make_manager()
+    mgr.auth_provider = 'atlassian'
+    mgr.tokens['access_token'] = None
+    def fake_refresh():
+        mgr.tokens['access_token'] = 'new-access'
+        return True
+    mgr.refresh_access_token = fake_refresh
+    assert mgr.is_authenticated() is True
+
+
+# ---------------------------------------------------------------------------
+# Regression (Fix 3): the 1.4.5 storm signature — server returns
+# OAUTH_TEMPORARY_FAILURE but the text says the refresh token is invalid (dead).
+# Dead-token TEXT must override the (wrong) temporary label -> permanent ->
+# stop retrying. Previously this was treated as temporary -> infinite retry.
+# ---------------------------------------------------------------------------
+def test_temporary_label_with_dead_token_text_is_permanent():
+    manager = _make_manager()
+    response = _MockResponse(403, {
+        'success': False,
+        'error': 'Token refresh failed: refresh_token is invalid',
+        'errorCode': 'OAUTH_TEMPORARY_FAILURE',
+    })
+    with patch('desktop_app.requests.post', return_value=response):
+        ok = manager.refresh_access_token()
+    assert ok is False
+    # Permanent classification increments the fail counter; the temporary path never does.
+    # (Before the fix this stayed 0 forever -> the storm.)
+    assert manager._refresh_fail_count == 1, "dead-token text must be classified permanent, not temporary"
+
+
+def test_storm_signature_marks_invalid_after_threshold():
+    """Enough dead-token failures (mislabeled temporary) must mark the token invalid
+    so retries stop and re-auth is surfaced — i.e. the storm ends."""
+    manager = _make_manager()
+    manager._token_refresh_min_interval = 0  # disable rate-limit for this loop
+    response = _MockResponse(403, {
+        'success': False,
+        'error': 'Token refresh failed: refresh_token is invalid',
+        'errorCode': 'OAUTH_TEMPORARY_FAILURE',
+    })
+    with patch('desktop_app.requests.post', return_value=response):
+        for _ in range(5):
+            manager.refresh_access_token()
+    assert manager._refresh_token_invalid is True, "5 dead-token failures must mark token invalid (stop the storm)"
 
 
 def test_refresh_403_temporary_failure_does_not_mark_invalid():

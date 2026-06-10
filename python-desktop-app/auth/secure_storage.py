@@ -47,10 +47,17 @@ except ImportError:
 # KEYRING CONFIGURATION
 # =============================================================================
 
-# Windows Credential Manager has a 2560-byte limit per credential (CredWrite API).
-# OAuth/JWT tokens often exceed this, causing error 1783 "The stub received bad data".
-# We chunk large tokens across multiple keyring entries to work around this limit.
-KEYRING_CHUNK_SIZE = 2000  # Reduced to 2000 to be safe (limit is 2560)
+# Windows Credential Manager limits CredentialBlob to CRED_MAX_CREDENTIAL_BLOB_SIZE
+# = 5*512 = 2560 BYTES, and stores the password as UTF-16 (2 bytes/char) -> a hard
+# ceiling of ~1280 CHARACTERS. Exceeding it makes CredWrite fail with error 1783
+# "The stub received bad data", so the value never persists.
+#
+# BUG FIXED: this was 2000, calibrated as if the limit were 2560 *characters*. At
+# 2000 chars a value is ~4000 bytes in UTF-16 -- well over 2560 -- so large Atlassian
+# access/refresh tokens failed to save to keyring and were lost on restart (small
+# tokens that fit one sub-1280 entry survived). Use 1000 chars (~2000 bytes) for a
+# safe margin under the 2560-byte limit.
+KEYRING_CHUNK_SIZE = 1000  # characters; ~2000 bytes UTF-16, safely under the 2560-byte limit
 
 # Token keys that are security-sensitive.
 # MUST stay in sync with desktop_app.py's SENSITIVE_TOKEN_KEYS: save_tokens() stores
@@ -323,19 +330,28 @@ class SecureTokenStorage:
             Dictionary with tokens, or None if not found
         """
         with self._lock:
-            # Try keyring first
-            if KEYRING_AVAILABLE:
-                tokens = self._load_from_keyring(user_email)
-                if tokens:
-                    self.storage_method = 'keyring'
-                    return tokens
-            
-            # Try encrypted file
-            tokens = self._load_encrypted(user_email)
-            if tokens:
+            keyring_tokens = self._load_from_keyring(user_email) if KEYRING_AVAILABLE else None
+            encrypted_tokens = self._load_encrypted(user_email)
+
+            # MERGE both sources instead of preferring keyring outright. Large tokens
+            # (Atlassian access/refresh) can fail to save to Windows Credential Manager
+            # (2560-byte / ~1280-char blob limit) and therefore live ONLY in the
+            # encrypted fallback, while small tokens are in keyring. Returning keyring
+            # alone dropped the big tokens -> users had to re-login on every restart.
+            # keyring wins on conflicts (it's the freshest, most secure store); the
+            # encrypted file fills any gaps. This recovers already-affected users with
+            # no re-login.
+            if keyring_tokens and encrypted_tokens:
+                merged = {**encrypted_tokens, **keyring_tokens}
+                self.storage_method = 'keyring+encrypted'
+                return merged
+            if keyring_tokens:
+                self.storage_method = 'keyring'
+                return keyring_tokens
+            if encrypted_tokens:
                 self.storage_method = 'encrypted'
-                return tokens
-            
+                return encrypted_tokens
+
             return None
     
     def delete_tokens(self, user_email: str = 'default') -> bool:
