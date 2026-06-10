@@ -131,3 +131,108 @@ def test_apply_update_writes_launcher_log_and_spawns_updater(tmp_path, monkeypat
     assert 'updater_build_marker=apply_update_r4' in launcher_content
     assert 'app_version=' in launcher_content
     assert 'script=' in launcher_content
+
+
+# ---------------------------------------------------------------------------
+# Program Files install model: apply_update delegates to the SYSTEM updater
+# task; the app does NOT download/stage or self-replace.
+# ---------------------------------------------------------------------------
+
+def test_apply_update_program_files_triggers_system_task(tmp_path, monkeypatch):
+    manager = UpdateManager(str(tmp_path), '1.0.0')
+    manager.update_info = {'latest_version': '2.0.0'}
+    manager._set_state('ready')
+
+    monkeypatch.setattr(desktop_app, '_is_running_from_program_files', lambda: True)
+    calls = {'n': 0}
+
+    def fake_trigger():
+        calls['n'] += 1
+        return True
+
+    monkeypatch.setattr(desktop_app, 'trigger_system_update', fake_trigger)
+
+    assert manager.apply_update() is True
+    assert manager.get_status()['state'] == 'installing'
+    assert calls['n'] == 1
+
+
+def test_apply_update_program_files_denied_trigger_defers(tmp_path, monkeypatch):
+    manager = UpdateManager(str(tmp_path), '1.0.0')
+    manager.update_info = {'latest_version': '2.0.0'}
+    manager._set_state('ready')
+
+    monkeypatch.setattr(desktop_app, '_is_running_from_program_files', lambda: True)
+    monkeypatch.setattr(desktop_app, 'trigger_system_update', lambda: False)
+
+    assert manager.apply_update() is False
+    assert manager.get_status()['state'] == 'deferred'
+
+
+def test_apply_update_program_files_does_not_run_legacy_updater(tmp_path, monkeypatch):
+    # Even with NO staged file, the Program Files path must not touch the
+    # legacy in-place updater (create_update_script).
+    manager = UpdateManager(str(tmp_path), '1.0.0')
+    manager.update_info = {'latest_version': '2.0.0'}
+    manager.download_path = None
+    manager._set_state('ready')
+
+    monkeypatch.setattr(desktop_app, '_is_running_from_program_files', lambda: True)
+    monkeypatch.setattr(desktop_app, 'trigger_system_update', lambda: True)
+
+    def boom(*a, **k):
+        raise AssertionError("legacy create_update_script must not run in Program Files mode")
+
+    monkeypatch.setattr(desktop_app, 'create_update_script', boom)
+
+    assert manager.apply_update() is True
+    assert manager.get_status()['state'] == 'installing'
+
+
+def test_check_and_download_program_files_skips_download(tmp_path, monkeypatch):
+    manager = UpdateManager(str(tmp_path), '1.0.0')
+    monkeypatch.setattr(desktop_app, '_is_running_from_program_files', lambda: True)
+
+    update_info = {
+        'update_available': True,
+        'latest_version': '2.0.0',
+        'download_url': 'https://example.com/TimeTrackerSetup.exe',
+        'is_mandatory': False,
+    }
+    assert manager.check_and_download(update_info) is True
+
+    status = manager.get_status()
+    assert status['state'] == 'ready'
+    assert status['download_path'] is None
+
+    # Nothing was downloaded/staged locally.
+    updates_dir = tmp_path / 'updates'
+    staged = list(updates_dir.glob('TimeTracker_v*.exe')) if updates_dir.exists() else []
+    assert staged == []
+
+
+def test_check_and_download_program_files_mandatory_sets_mandatory_ready(tmp_path, monkeypatch):
+    manager = UpdateManager(str(tmp_path), '1.0.0')
+    monkeypatch.setattr(desktop_app, '_is_running_from_program_files', lambda: True)
+
+    update_info = {
+        'update_available': True,
+        'latest_version': '2.0.0',
+        'download_url': 'https://example.com/TimeTrackerSetup.exe',
+        'is_mandatory': True,
+    }
+    assert manager.check_and_download(update_info) is True
+    assert manager.get_status()['state'] == 'mandatory_ready'
+
+
+def test_load_staged_update_skipped_in_program_files(tmp_path, monkeypatch):
+    updates_dir = tmp_path / 'updates'
+    updates_dir.mkdir(parents=True, exist_ok=True)
+    (updates_dir / 'TimeTracker_v2.1.0.exe').write_bytes(b'x')
+
+    manager = UpdateManager(str(tmp_path), '1.0.0')
+    monkeypatch.setattr(desktop_app, '_is_running_from_program_files', lambda: True)
+
+    # In Program Files mode the app must not adopt a leftover staged file
+    # (which would otherwise re-trigger the updater on every startup).
+    assert manager.load_staged_update_if_exists() is False

@@ -218,47 +218,37 @@ if not errorlevel 1 (
     echo [INFO] PaddleOCR not configured - skipping model download
 )
 
-REM Check for UPX compression (optional)
+REM ============================================================================
+REM STEP 5: Code-signing readiness  (UPX is intentionally DISABLED)
+REM ----------------------------------------------------------------------------
+REM UPX compression is disabled in desktop_app.spec (upx=False): packed binaries
+REM hurt SmartScreen / Smart App Control reputation. Do NOT re-enable it.
+REM
+REM To Authenticode-sign the build + installer, install signtool (Windows SDK)
+REM and set, before running this script:
+REM     set SIGN_PFX=C:\path\to\codesign.pfx
+REM     set SIGN_PFX_PASSWORD=yourpassword
+REM Without a certificate the build still works and passes PATH-based policies
+REM (Program Files); a certificate is only needed for PUBLISHER-based policies.
+REM See installer\README.md.
+REM ============================================================================
 echo.
-echo [STEP 5/6] Checking for UPX compression tool...
-where upx >nul 2>&1
+echo [STEP 5/7] Code-signing readiness check...
+where signtool >nul 2>&1
 if errorlevel 1 (
-    echo [INFO] UPX not found - attempting auto-install...
-    where winget >nul 2>&1
-    if not errorlevel 1 (
-        winget install --id UPX.UPX -e --silent --accept-source-agreements --accept-package-agreements >nul 2>&1
-    )
-
-    where upx >nul 2>&1
-    if errorlevel 1 (
-        where choco >nul 2>&1
-        if not errorlevel 1 (
-            choco install upx -y >nul 2>&1
-        )
-    )
-
-    where upx >nul 2>&1
-    if errorlevel 1 (
-        where scoop >nul 2>&1
-        if not errorlevel 1 (
-            scoop install upx >nul 2>&1
-        )
-    )
-
-    where upx >nul 2>&1
-    if errorlevel 1 (
-        echo [WARN] UPX install failed or unavailable - executable will not be compressed
-        echo       Install manually from https://github.com/upx/upx/releases and add to PATH
-    ) else (
-        echo [OK] UPX installed and found in PATH - compression enabled
-    )
+    echo [INFO] signtool not found in PATH - signing pass will be skipped.
+    echo        ^(Install the Windows SDK to get signtool; see installer\README.md^)
 ) else (
-    echo [OK] UPX found - compression enabled
+    if defined SIGN_PFX (
+        echo [OK] signtool found and SIGN_PFX set - build/installer will be signed.
+    ) else (
+        echo [INFO] signtool found but SIGN_PFX not set - signing pass will be skipped.
+    )
 )
 
 REM Clean previous builds
 echo.
-echo [STEP 6/6] Building executable...
+echo [STEP 6/7] Building application (one-folder)...
 
 REM Remove problematic packages that conflict with PyInstaller
 echo [INFO] Removing packages incompatible with PyInstaller...
@@ -284,45 +274,100 @@ if errorlevel 1 (
     exit /b 1
 )
 
-REM Check if build was successful
-if exist "dist\TimeTracker.exe" (
+REM Check if build was successful (one-folder output)
+if not exist "dist\TimeTracker\TimeTracker.exe" (
     echo.
-    echo ============================================
-    echo  BUILD SUCCESSFUL!
-    echo ============================================
-    echo.
-
-    REM Get file size
-    for %%A in ("dist\TimeTracker.exe") do (
-        set /a size=%%~zA / 1024 / 1024
-        echo Executable: dist\TimeTracker.exe
-        echo Size: ~%%~zA bytes
-    )
-
-    echo.
-    echo ============================================
-    echo  DISTRIBUTION READY
-    echo ============================================
-    echo.
-    echo The executable is ready to distribute!
-    echo.
-    echo Features included:
-    echo   - Credentials embedded - no .env file needed
-    echo   - Auto-start on Windows boot via registry
-    echo   - Uninstaller generated on first run
-    echo   - Data stored in: %%LOCALAPPDATA%%\TimeTracker
-    echo.
-    echo Users simply:
-    echo   1. Double-click TimeTracker.exe
-    echo   2. Login with Atlassian
-    echo   3. Done!
-    echo.
-) else (
-    echo.
-    echo [ERROR] Build completed but executable not found
+    echo [ERROR] Build completed but dist\TimeTracker\TimeTracker.exe not found
     pause
     exit /b 1
 )
 
+echo.
+echo ============================================
+echo  BUILD SUCCESSFUL (one-folder)
+echo ============================================
+echo   Output folder: dist\TimeTracker\
+echo.
+
+REM ----------------------------------------------------------------------------
+REM Optional: Authenticode-sign every exe/dll in the build BEFORE packaging.
+REM Enabled only when signtool is on PATH and SIGN_PFX is set (see STEP 5).
+REM ----------------------------------------------------------------------------
+where signtool >nul 2>&1
+if not errorlevel 1 if defined SIGN_PFX (
+    echo [INFO] Signing build artifacts in dist\TimeTracker ...
+    for /r "dist\TimeTracker" %%F in (*.exe *.dll) do (
+        signtool sign /fd SHA256 /f "%SIGN_PFX%" /p "%SIGN_PFX_PASSWORD%" /tr http://timestamp.digicert.com /td SHA256 "%%F" >nul 2>&1
+    )
+    echo [OK] Build artifacts signed.
+)
+
+REM ----------------------------------------------------------------------------
+REM STEP 7: Compile the Windows installer (Inno Setup)
+REM ----------------------------------------------------------------------------
+echo.
+echo [STEP 7/7] Building installer (Inno Setup)...
+
+REM Determine app version from desktop_app.py (fallback 1.4.7).
+REM The Python one-liner uses chr(34)/chr(39) and single quotes only, so there
+REM are NO embedded double quotes to confuse cmd's quote parsing.
+set "APP_VER=1.4.13"
+"%VENV_PYTHON%" -c "import io;print(next(l.split('=',1)[1].strip().strip(chr(34)).strip(chr(39)) for l in io.open('desktop_app.py',encoding='utf-8') if l.strip().startswith('APP_VERSION') and '=' in l))" > "%TEMP%\tt_ver.txt" 2>nul
+if exist "%TEMP%\tt_ver.txt" (
+    set /p APP_VER=<"%TEMP%\tt_ver.txt"
+    del /f /q "%TEMP%\tt_ver.txt" >nul 2>&1
+)
+echo [INFO] Installer version: %APP_VER%
+
+REM Locate the Inno Setup command-line compiler (ISCC.exe)
+set "ISCC="
+if exist "%ProgramFiles(x86)%\Inno Setup 6\ISCC.exe" set "ISCC=%ProgramFiles(x86)%\Inno Setup 6\ISCC.exe"
+if not defined ISCC if exist "%ProgramFiles%\Inno Setup 6\ISCC.exe" set "ISCC=%ProgramFiles%\Inno Setup 6\ISCC.exe"
+if not defined ISCC (
+    where iscc >nul 2>&1
+    if not errorlevel 1 set "ISCC=iscc"
+)
+
+if not defined ISCC (
+    echo [WARN] Inno Setup ^(ISCC.exe^) not found - installer NOT built.
+    echo        Install Inno Setup 6 from https://jrsoftware.org/isdl.php then re-run.
+    echo        The one-folder build in dist\TimeTracker\ is still ready.
+    goto :done
+)
+
+"%ISCC%" /DMyAppVersion=%APP_VER% "installer\TimeTracker.iss"
+if errorlevel 1 (
+    echo.
+    echo [ERROR] Installer build failed. See Inno Setup output above.
+    pause
+    exit /b 1
+)
+
+REM Optional: sign the installer itself
+where signtool >nul 2>&1
+if not errorlevel 1 if defined SIGN_PFX (
+    if exist "installer\Output\TimeTrackerSetup.exe" (
+        echo [INFO] Signing installer...
+        signtool sign /fd SHA256 /f "%SIGN_PFX%" /p "%SIGN_PFX_PASSWORD%" /tr http://timestamp.digicert.com /td SHA256 "installer\Output\TimeTrackerSetup.exe" >nul 2>&1
+        echo [OK] Installer signed.
+    )
+)
+
+echo.
+echo ============================================
+echo  DISTRIBUTION READY
+echo ============================================
+echo   Installer: installer\Output\TimeTrackerSetup.exe
+echo.
+echo Distribute TimeTrackerSetup.exe. Users run it once (it asks for admin),
+echo which installs into C:\Program Files\TimeTracker and registers the silent
+echo SYSTEM auto-update task. Per-user data stays in %%LOCALAPPDATA%%\TimeTracker.
+echo.
+echo IMPORTANT one-time server step: point the /api/app-version/check
+echo downloadUrl at TimeTrackerSetup.exe and set its SHA256 as the checksum,
+echo so the SYSTEM updater installs the right artifact. See installer\README.md.
+echo.
+
+:done
 echo Build complete! Press any key to exit...
 pause >nul

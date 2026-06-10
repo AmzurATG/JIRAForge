@@ -42,3 +42,9 @@ Thumbs.db
 *.json
 !package.json
 
+# Installer build output (compiled Setup.exe) + build logs
+installer/Output/
+buildlogs.md
+build_log.txt
+rebuild_log.txt
+
