@@ -44,8 +44,9 @@ blocked. See the team analysis for the full evidence trail.
   `HKLM\Software\Amzur Technologies\TimeTracker`, registers the
   `TimeTracker Updater` SYSTEM scheduled task, and generates the uninstaller.
 - **`update_service.ps1`** — the SYSTEM updater the scheduled task runs hourly.
-  Checks the version endpoint, downloads the new installer to a SYSTEM-only
-  staging dir, verifies SHA256, and runs it silently (`/VERYSILENT`).
+  Checks the version endpoint, downloads the new installer to an ACL-locked
+  staging dir (SYSTEM + Administrators only), verifies SHA256, and runs it
+  silently (`/VERYSILENT`).
 - **`Output/TimeTrackerSetup.exe`** — the compiled installer you distribute
   (created by `build.bat`).
 
@@ -54,8 +55,8 @@ blocked. See the team analysis for the full evidence trail.
 ```
 TimeTracker Updater scheduled task  (runs as SYSTEM, hourly)
         │
-        ├─ GET https://forgesync.amzur.com/api/app-version/check?platform=windows&current=<ver>
-        ├─ if updateAvailable: download downloadUrl  ->  C:\Windows\Temp\TimeTrackerUpdate\
+        ├─ GET https://timetracker-forge.amzur.com/api/app-version/check?platform=windows&current=<ver>
+        ├─ if updateAvailable: download downloadUrl  ->  C:\ProgramData\TimeTracker\updates\stage\  (ACL-locked: SYSTEM+Admins)
         ├─ verify SHA256 == checksum
         └─ run TimeTrackerSetup.exe /VERYSILENT   (SYSTEM => writes Program Files, NO prompt)
                  └─ Inno closes the running app, replaces files, restarts it
@@ -114,10 +115,12 @@ The updater runs as SYSTEM, so its trust inputs matter:
 
 - **Transport:** HTTPS (TLS 1.2) to the trusted server.
 - **Integrity:** SHA256 from the server manifest is verified before running.
-- **Tamper resistance:** the installer is staged in `C:\Windows\Temp\...`
-  (SYSTEM/admin-only), so a standard user **cannot** swap the file between
-  download and execution. This avoids the classic "SYSTEM executes a
-  user-writable file" privilege-escalation hole.
+- **Tamper resistance:** the installer is staged in
+  `C:\ProgramData\TimeTracker\updates\stage\`, which the updater **explicitly
+  ACL-locks to SYSTEM + Administrators** (inheritance disabled) immediately after
+  creating it, and **fails closed** if that ACL cannot be applied. So a standard
+  user **cannot** swap the file between download/verify and execution — avoiding
+  the classic "SYSTEM executes a user-writable file" privilege-escalation hole.
 - **Future hardening:** enable `$RequireValidSignature` once signed so the
   updater additionally requires a valid Authenticode signature from your
   publisher.
@@ -150,6 +153,7 @@ environment** (no Inno Setup / Windows installer execution available here):
   applies updates regardless; if you want instant "Update now", grant Users run
   permission on the task (the app treats a denied trigger as *deferred*, not a
   failure).
-- **`AppId` GUID in `TimeTracker.iss`** uses a placeholder
-  (`...-TIMETRACKER01`). Replace with a real, stable GUID before shipping so
-  upgrades are tracked correctly in Add/Remove Programs.
+- **`AppId` GUID in `TimeTracker.iss`** is a fixed, real GUID
+  (`{0302495E-0DC4-460E-85CE-92C26EFE0FF0}`). Do **NOT** change it between
+  versions — it is the upgrade/uninstall identity in Add/Remove Programs, so
+  changing it would orphan existing installs.

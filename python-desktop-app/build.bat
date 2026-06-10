@@ -296,8 +296,19 @@ REM ----------------------------------------------------------------------------
 where signtool >nul 2>&1
 if not errorlevel 1 if defined SIGN_PFX (
     echo [INFO] Signing build artifacts in dist\TimeTracker ...
+    set "SIGN_FAILED="
     for /r "dist\TimeTracker" %%F in (*.exe *.dll) do (
         signtool sign /fd SHA256 /f "%SIGN_PFX%" /p "%SIGN_PFX_PASSWORD%" /tr http://timestamp.digicert.com /td SHA256 "%%F" >nul 2>&1
+        if errorlevel 1 (
+            echo [ERROR] signtool failed on: %%F
+            set "SIGN_FAILED=1"
+        )
+    )
+    if defined SIGN_FAILED (
+        echo [ERROR] One or more artifacts failed to sign - aborting so we do NOT ship
+        echo         binaries that appear signed but are not ^(undermines SmartScreen/SAC^).
+        pause
+        exit /b 1
     )
     echo [OK] Build artifacts signed.
 )
@@ -308,14 +319,22 @@ REM ----------------------------------------------------------------------------
 echo.
 echo [STEP 7/7] Building installer (Inno Setup)...
 
-REM Determine app version from desktop_app.py (fallback 1.4.7).
+REM Determine app version from desktop_app.py. NO hardcoded fallback: if the
+REM extraction fails we ABORT, rather than silently ship an installer with a
+REM wrong/placeholder version (which would break upgrade/version-check behavior).
 REM The Python one-liner uses chr(34)/chr(39) and single quotes only, so there
 REM are NO embedded double quotes to confuse cmd's quote parsing.
-set "APP_VER=1.4.13"
+set "APP_VER="
 "%VENV_PYTHON%" -c "import io;print(next(l.split('=',1)[1].strip().strip(chr(34)).strip(chr(39)) for l in io.open('desktop_app.py',encoding='utf-8') if l.strip().startswith('APP_VERSION') and '=' in l))" > "%TEMP%\tt_ver.txt" 2>nul
 if exist "%TEMP%\tt_ver.txt" (
     set /p APP_VER=<"%TEMP%\tt_ver.txt"
     del /f /q "%TEMP%\tt_ver.txt" >nul 2>&1
+)
+if "%APP_VER%"=="" (
+    echo [ERROR] Could not read APP_VERSION from desktop_app.py - aborting installer build.
+    echo         ^(Refusing to build an installer with an unknown/placeholder version.^)
+    pause
+    exit /b 1
 )
 echo [INFO] Installer version: %APP_VER%
 
@@ -349,6 +368,11 @@ if not errorlevel 1 if defined SIGN_PFX (
     if exist "installer\Output\TimeTrackerSetup.exe" (
         echo [INFO] Signing installer...
         signtool sign /fd SHA256 /f "%SIGN_PFX%" /p "%SIGN_PFX_PASSWORD%" /tr http://timestamp.digicert.com /td SHA256 "installer\Output\TimeTrackerSetup.exe" >nul 2>&1
+        if errorlevel 1 (
+            echo [ERROR] Failed to sign the installer - aborting.
+            pause
+            exit /b 1
+        )
         echo [OK] Installer signed.
     )
 )
