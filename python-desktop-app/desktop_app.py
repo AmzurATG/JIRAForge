@@ -6157,10 +6157,31 @@ class TimeTracker:
             latest = update_info.get('latest_version', 'unknown')
             print(f"[UPDATE] Auto-applying update v{latest}...")
             self.add_admin_log('INFO', f'Auto-applying update v{latest}')
-            # Trigger the update FIRST, then notify based on the actual result -- so we do
-            # not promise "installing / will restart" when the on-demand trigger was denied
-            # (a standard user may not be able to run the SYSTEM task on demand; in that
-            # case it installs on the hourly schedule instead).
+            # Legacy (non-Program-Files / dev) builds: auto_apply() spawns the
+            # updater and IMMEDIATELY exits this process (os._exit in
+            # _shutdown_for_update), so any toast shown AFTER auto_apply() would
+            # never render. Notify FIRST in that case, then apply.
+            if not _is_running_from_program_files():
+                if WINOTIFY_AVAILABLE:
+                    try:
+                        notification = Notification(
+                            app_id="Time Tracker",
+                            title="Updating Time Tracker",
+                            msg=f"Installing v{latest}. The app will restart shortly.",
+                            duration="short"
+                        )
+                        notification.set_audio(audio.Default, loop=False)
+                        notification.show()
+                    except Exception:
+                        pass
+                self.update_manager.auto_apply()
+                return
+
+            # Program Files build: the SYSTEM task does the install and this
+            # process keeps running, so trigger FIRST and word the toast by the
+            # actual result -- we do not promise "installing / will restart" when
+            # the on-demand trigger was denied (a standard user may not be able to
+            # run the SYSTEM task on demand; it then installs on the hourly run).
             triggered = self.update_manager.auto_apply()
             if WINOTIFY_AVAILABLE:
                 try:
