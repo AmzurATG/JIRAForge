@@ -308,10 +308,10 @@ REM ----------------------------------------------------------------------------
 echo.
 echo [STEP 7/7] Building installer (Inno Setup)...
 
-REM Determine app version from desktop_app.py (fallback 1.4.8).
+REM Determine app version from desktop_app.py (fallback 1.4.7).
 REM The Python one-liner uses chr(34)/chr(39) and single quotes only, so there
 REM are NO embedded double quotes to confuse cmd's quote parsing.
-set "APP_VER=1.4.8"
+set "APP_VER=1.4.13"
 "%VENV_PYTHON%" -c "import io;print(next(l.split('=',1)[1].strip().strip(chr(34)).strip(chr(39)) for l in io.open('desktop_app.py',encoding='utf-8') if l.strip().startswith('APP_VERSION') and '=' in l))" > "%TEMP%\tt_ver.txt" 2>nul
 if exist "%TEMP%\tt_ver.txt" (
     set /p APP_VER=<"%TEMP%\tt_ver.txt"

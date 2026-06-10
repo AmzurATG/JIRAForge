@@ -14,7 +14,7 @@ import sys
 import os
 import glob
 from pathlib import Path
-from PyInstaller.utils.hooks import collect_submodules, collect_data_files, collect_dynamic_libs
+from PyInstaller.utils.hooks import collect_submodules, collect_data_files, collect_dynamic_libs, collect_all
 
 sys.setrecursionlimit(sys.getrecursionlimit() * 5)
 
@@ -320,6 +320,56 @@ try:
     runtime_datas += collect_data_files('platformdirs')
 except Exception:
     print("[WARN] Could not collect platformdirs data files")
+
+# ==============================================================================
+# spaCy NLP + en_core_web_sm model (REQUIRED by Presidio's default NER recognizer)
+# Presidio collects fine on its own, but its name/address/NER detection silently
+# degrades to regex-only unless spaCy AND the en_core_web_sm model are bundled.
+# These are separate top-level packages with compiled (Cython) deps, so collect
+# each explicitly via collect_all (datas + binaries + hiddenimports).
+# ==============================================================================
+nlp_binaries = []
+_spacy_pkgs = (
+    'spacy', 'en_core_web_sm', 'thinc', 'cymem', 'preshed', 'murmurhash',
+    'blis', 'srsly', 'catalogue', 'wasabi', 'spacy_legacy', 'spacy_loggers',
+    'confection', 'langcodes', 'weasel', 'cloudpathlib',
+)
+_nlp_ok = []
+for _pkg in _spacy_pkgs:
+    try:
+        _d, _b, _h = collect_all(_pkg)
+        runtime_datas += _d
+        nlp_binaries += _b
+        dynamic_hiddenimports += _h
+        _nlp_ok.append(_pkg)
+    except Exception as _e:
+        print(f"[WARN] Could not bundle '{_pkg}' for spaCy/Presidio NER: {_e}")
+if 'spacy' in _nlp_ok and 'en_core_web_sm' in _nlp_ok:
+    print(f"[INFO] Bundled spaCy NLP + en_core_web_sm for full Presidio PII detection ({len(_nlp_ok)} pkgs)")
+else:
+    print("[WARN] spaCy or en_core_web_sm NOT bundled — Presidio PII detection will run DEGRADED")
+
+# collect_all() returns binaries=0 for the Cython packages above: the .cpp/.pyx/.pxd
+# sources get collected as data, but the importable compiled .pyd is dropped. That
+# caused "No module named 'thinc.backends.numpy_ops'" at runtime and silent fallback
+# to regex-only PII. Force-include every .pyd from each package dir at its correct
+# package-relative destination so the extensions are actually importable when frozen.
+import importlib.util as _ilu
+_pyd_count = 0
+for _pkg in _spacy_pkgs:
+    try:
+        _spec_obj = _ilu.find_spec(_pkg)
+        _locs = list(_spec_obj.submodule_search_locations) if (_spec_obj and _spec_obj.submodule_search_locations) else []
+    except Exception:
+        _locs = []
+    for _loc in _locs:
+        _site_root = os.path.dirname(_loc)  # .../site-packages
+        for _pyd in glob.glob(os.path.join(_loc, '**', '*.pyd'), recursive=True):
+            _dest = os.path.dirname(os.path.relpath(_pyd, _site_root))
+            nlp_binaries.append((_pyd, _dest))
+            _pyd_count += 1
+print(f"[INFO] Force-included {_pyd_count} compiled .pyd extensions for spaCy/Thinc stack")
+
 # ==============================================================================
 # BUILD SUMMARY
 # ==============================================================================
@@ -340,7 +390,7 @@ runtime_hooks_list = []
 a = Analysis(
     ['desktop_app.py'],
     pathex=[os.path.abspath('.')],
-    binaries=engine_binaries,
+    binaries=engine_binaries + nlp_binaries,
     datas=[
         *engine_datas,
         *ocr_datas,

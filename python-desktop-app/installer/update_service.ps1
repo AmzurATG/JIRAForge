@@ -53,7 +53,7 @@ $AppName       = 'TimeTracker'
 $Publisher     = 'Amzur Technologies'
 $ExeName       = 'TimeTracker.exe'
 $TaskName      = 'TimeTracker Updater'
-$DefaultServer = 'https://forgesync.amzur.com'
+$DefaultServer = 'https://timetracker-forge.amzur.com'
 $RegKey        = "HKLM:\Software\$Publisher\$AppName"
 
 # Flip to $true once the installer is code-signed (see README). Until then we
@@ -108,6 +108,24 @@ function Register-UpdateTask {
         -Principal $principal -Settings $settings -Force | Out-Null
 
     Write-Log "Scheduled task '$TaskName' registered (SYSTEM, hourly + at startup)."
+
+    # Allow standard (non-admin) users to RUN this SYSTEM task on demand. Without this,
+    # the app -- which runs as the logged-in user -- gets "ERROR: Access is denied" when
+    # it calls `schtasks /Run` to trigger an immediate update from the "Check for updates"
+    # button. We grant Authenticated Users read+EXECUTE on the task's security descriptor.
+    # SYSTEM and Administrators keep Full control; users can only VIEW and RUN it, not
+    # modify it. (0x1200a9 = generic read + execute.) The hourly SYSTEM run does not need
+    # this; it is only for the on-demand trigger.
+    try {
+        $svc = New-Object -ComObject 'Schedule.Service'
+        $svc.Connect()
+        $regTask = $svc.GetFolder('\').GetTask($TaskName)
+        $sddl = 'D:(A;;FA;;;SY)(A;;FA;;;BA)(A;;0x1200a9;;;AU)'
+        $regTask.SetSecurityDescriptor($sddl, 0)
+        Write-Log "Granted Authenticated Users run permission on '$TaskName' (on-demand trigger enabled)."
+    } catch {
+        Write-Log "Could not set task DACL (on-demand trigger may be admin-only; hourly run still works): $($_.Exception.Message)" 'WARN'
+    }
 }
 
 function Unregister-UpdateTask {

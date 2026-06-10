@@ -386,7 +386,7 @@ load_dotenv()
 
 # Application version - IMPORTANT: Update this when releasing new versions
 # This is used for update checking and notifications
-APP_VERSION = "1.4.8"
+APP_VERSION = "1.4.7"
 
 # Hard-disable screenshot monitoring/storage in desktop app.
 # OCR text extraction for activity records still runs via event-based flow.
@@ -395,14 +395,14 @@ SCREENSHOT_MONITORING_HARD_DISABLED = True
 # Embedded credentials (for production builds - no .env file needed)
 # SECURITY: All sensitive keys moved to AI Server - fetched at runtime after authentication
 EMBEDDED_CONFIG = {
-    'ATLASSIAN_CLIENT_ID': 'Q8HT4Jn205AuTiAarj088oWNDrOqwvM5',
+    'ATLASSIAN_CLIENT_ID': 'k2Xwzy8c1g3Wk6Xpbeev0x70CXEp9lJH',
     # Google OAuth (non-Jira users). PUBLIC client ID only — the client SECRET
     # stays on the AI Server, never in the desktop build. Same handling as
     # ATLASSIAN_CLIENT_ID above. Must match GOOGLE_DESKTOP_CLIENT_ID on the AI server.
     'GOOGLE_DESKTOP_CLIENT_ID': '508843846019-glrru7r3m622vt75e215lmf5ih1bcgju.apps.googleusercontent.com',
     # REMOVED: ATLASSIAN_CLIENT_SECRET - now on AI Server only (security fix)
     # REMOVED: SUPABASE_URL, SUPABASE_ANON_KEY, SUPABASE_SERVICE_ROLE_KEY - fetched from AI Server
-    'AI_SERVER_URL': 'https://forgesync.amzur.com',  # AI Server for secure token exchange & config
+    'AI_SERVER_URL': 'https://timetracker-forge.amzur.com',  # AI Server for secure token exchange & config
     'CAPTURE_INTERVAL': '300',
     'WEB_PORT': '51777',
 }
@@ -2058,7 +2058,7 @@ class AtlassianAuthManager:
         self.google_authorization_url = 'https://accounts.google.com/o/oauth2/v2/auth'
         self.google_redirect_uri = f'http://127.0.0.1:{web_port}/auth/google/callback'
         # Token exchange now goes through AI Server
-        self.ai_server_url = get_env_var('AI_SERVER_URL', 'https://forgesync.amzur.com')
+        self.ai_server_url = get_env_var('AI_SERVER_URL', 'https://timetracker-forge.amzur.com')
         self.store_path = store_path or os.path.join(get_app_data_dir(), 'time_tracker_auth.json')
         self.metadata_path = os.path.join(get_app_data_dir(), 'auth_metadata.json')  # For non-sensitive data
 
@@ -2076,6 +2076,14 @@ class AtlassianAuthManager:
         self._last_refresh_fail_time = 0
         self._last_refresh_error_code = ''
 
+        # B-15: token-refresh rate limiting. refresh_access_token() READS these on
+        # THIS object (self), so they MUST be initialized here. They were previously
+        # only set on the TimeTracker class, which caused
+        # "'AtlassianAuthManager' object has no attribute '_last_token_refresh_time'"
+        # and broke every token refresh after the access token expired / on restart.
+        self._last_token_refresh_time = 0
+        self._token_refresh_min_interval = 5  # min seconds between refreshes
+
         # Initialize secure storage
         self.secure_storage = SecureTokenStorage(get_app_data_dir())
 
@@ -2084,6 +2092,45 @@ class AtlassianAuthManager:
 
         # Load tokens (from secure storage)
         self.tokens = self._load_tokens()
+
+        # --- Stale-credential guard (clean install after an uninstall) --------
+        # Tokens can be recovered from the OS keyring (Windows Credential
+        # Manager), which SURVIVES an uninstall that wiped this app's data
+        # folder. If we hold tokens but the data folder contains NONE of the
+        # local files a real prior session leaves behind, those credentials are
+        # orphaned leftovers from a previous install — clear them so the user is
+        # sent to the login page instead of being silently signed back in as the
+        # previous user. Upgrades / auto-updates keep the folder (its files are
+        # present), so this never fires for them.
+        try:
+            _adir = get_app_data_dir()
+            _markers = ('auth_metadata.json', 'time_tracker_user_cache.json',
+                        'time_tracker_offline.db')
+            _has_local = any(os.path.exists(os.path.join(_adir, _m)) for _m in _markers)
+            if not _has_local:
+                try:
+                    _has_local = any(f.startswith('tokens_') and f.endswith('.enc')
+                                     for f in os.listdir(_adir))
+                except Exception:
+                    pass
+            _has_token = any(self.tokens.get(k) for k in SENSITIVE_TOKEN_KEYS)
+            if _has_token and not _has_local:
+                print("[INFO] Orphaned keyring credentials detected after a clean "
+                      "install — clearing stale session so login is required")
+                try:
+                    self.secure_storage.delete_tokens()
+                except Exception as _se:
+                    print(f"[WARN] Stale-clear: secure storage delete failed: {_se}")
+                if KEYRING_AVAILABLE:
+                    for _k in SENSITIVE_TOKEN_KEYS:
+                        try:
+                            _keyring_delete(KEYRING_SERVICE, f"default_{_k}")
+                        except Exception:
+                            pass
+                self.tokens = {}
+        except Exception as _ge:
+            print(f"[WARN] Stale-credential guard error (non-fatal): {_ge}")
+        # ---------------------------------------------------------------------
 
         # Which provider authenticated this session: 'atlassian' (default, Jira)
         # or 'google' (non-Jira SSO). Persisted in token metadata so it survives restarts.
@@ -2590,28 +2637,38 @@ class AtlassianAuthManager:
                     
                     # Track whether the server EXPLICITLY sent an error code (vs text-matching fallback)
                     server_explicit_reauth = (server_error_code == 'OAUTH_REAUTH_REQUIRED')
-                    
+
+                    # Definitive "refresh token is dead" signals (Atlassian's exact wording /
+                    # OAuth error codes). These mean re-auth is required and MUST override a
+                    # (possibly wrong) errorCode. ai-server has been observed returning
+                    # OAUTH_TEMPORARY_FAILURE together with "refresh_token is invalid", which made
+                    # the desktop retry forever (1.4.5 token-refresh storm: 13k refreshes/day, zero
+                    # sync, re-auth never fired). For these the TEXT is authoritative, not the label.
+                    # Patterns are verbatim from Atlassian's published OAuth error responses — note
+                    # the underscore in 'refresh_token is invalid' and the 'unauthorized_client' code.
+                    text_indicates_dead_token = bool(
+                        error_data.get('requiresReauth') or
+                        'invalid_grant' in error_lower or
+                        'unauthorized_client' in error_lower or
+                        'refresh_token is invalid' in error_lower or
+                        'refresh token is invalid' in error_lower or
+                        'token has been revoked' in error_lower or
+                        'token was globally revoked' in error_lower or
+                        'token has been expired' in error_lower
+                    )
+
                     if server_error_code == 'OAUTH_REAUTH_REQUIRED':
                         is_permanent_failure = True
+                    elif text_indicates_dead_token:
+                        # Unambiguous dead-token text overrides a mislabeled
+                        # OAUTH_TEMPORARY_FAILURE — this is the 1.4.5 storm root cause.
+                        is_permanent_failure = True
                     elif server_error_code == 'OAUTH_TEMPORARY_FAILURE':
+                        # Genuinely transient (e.g. a 403 policy block) — retry, don't invalidate.
                         is_permanent_failure = False
                     else:
-                        # Fallback text-matching for servers that don't send an explicit
-                        # errorCode (older ai-server builds). Patterns are taken verbatim
-                        # from Atlassian's published OAuth error responses — note the
-                        # underscore in 'refresh_token is invalid' (Atlassian's exact
-                        # wording) and the 'unauthorized_client' error code, both of which
-                        # the previous list missed.
-                        is_permanent_failure = (
-                            error_data.get('requiresReauth') or
-                            'invalid_grant' in error_lower or
-                            'unauthorized_client' in error_lower or
-                            'refresh_token is invalid' in error_lower or
-                            'refresh token is invalid' in error_lower or
-                            'token has been revoked' in error_lower or
-                            'token was globally revoked' in error_lower or
-                            'token has been expired' in error_lower
-                        )
+                        # No explicit code and no dead-token text => treat as transient/retry.
+                        is_permanent_failure = False
 
                     # For logging: derive error_code if server didn't provide one
                     error_code = server_error_code if server_error_code else ('OAUTH_REAUTH_REQUIRED' if is_permanent_failure else 'OAUTH_TEMPORARY_FAILURE')
@@ -2724,6 +2781,12 @@ class AtlassianAuthManager:
         if self.auth_provider == 'google':
             return bool(self.tokens.get('supabase_token') or self.tokens.get('google_refresh_token'))
         if not self.tokens.get('access_token'):
+            # Missing access token: try to mint one from the refresh token before
+            # declaring the session unauthenticated (mirrors get_supabase_token).
+            # refresh_access_token() is rate-limited and handles the no/invalid
+            # refresh-token case (-> OAUTH_REAUTH_REQUIRED -> re-login prompt).
+            if self.refresh_access_token() and self.tokens.get('access_token'):
+                return True
             return False
         # If refresh token is marked invalid, check if the 30-min grace period
         # has elapsed. If so, auto-clear the flag and allow a retry.
@@ -2816,8 +2879,17 @@ class AtlassianAuthManager:
 
         access_token = self.tokens.get('access_token')
         if not access_token:
-            print("[ERROR] No Atlassian access token available")
-            return None
+            # Access token is gone (cleared, or not restored after a restart). Do NOT
+            # dead-end here: try to mint a new one from the refresh token. If there is
+            # no valid refresh token, refresh_access_token() runs the
+            # OAUTH_REAUTH_REQUIRED path, which surfaces the re-login prompt instead of
+            # silently failing to sync for hours.
+            print("[INFO] No Atlassian access token — attempting refresh from refresh token...")
+            if self.refresh_access_token():
+                access_token = self.tokens.get('access_token')
+            if not access_token:
+                print("[ERROR] No Atlassian access token available (refresh did not yield one)")
+                return None
 
         print("[INFO] Requesting Supabase token from AI Server...")
         try:
@@ -3059,7 +3131,7 @@ class AtlassianAuthManager:
             print("[ERROR] No valid Atlassian token - cannot fetch OCR config")
             return False
 
-        ai_server_url = get_env_var('AI_SERVER_URL', 'https://forgesync.amzur.com')
+        ai_server_url = get_env_var('AI_SERVER_URL', 'https://timetracker-forge.amzur.com')
         
         try:
             print("[INFO] Fetching OCR config from AI Server...")
@@ -5693,8 +5765,8 @@ class TimeTracker:
         self._system_event_hwnd = None  # HWND for the system event message-only window
         self.screenshot_hash = None
         self._offline_finalization_queue = []  # B-12: Queue for failed finalizations
-        self._last_token_refresh_time = 0  # B-15: Rate limiting for token refresh
-        self._token_refresh_min_interval = 5  # B-15: Min 5 seconds between refreshes
+        # (B-15 token-refresh rate-limit fields moved to AtlassianAuthManager.__init__,
+        # where refresh_access_token() actually reads them; they were dead here.)
         self.idle_resume_event = threading.Event()  # B-3: Thread-safe event instead of boolean
         self._idle_record_pending = threading.Event()  # B-6: Prevent duplicate idle records
         
@@ -5918,8 +5990,11 @@ class TimeTracker:
                     elapsed = time.time() - start_time
                     print(f"[OCR SETUP] Installation timed out after {elapsed:.0f}s")
                     self.add_admin_log('WARNING', f'OCR installation timed out after {elapsed:.0f}s')
-                    # Notification disabled to avoid interrupting user
-                    # self._show_ocr_installation_notification(missing_count, failed=True, timeout=True)
+                    # An OPTIONAL engine didn't install in time, but the bundled engines
+                    # (rapidocr/winrtocr) are ready. Finalize anyway so self.ocr_processor
+                    # is created — otherwise process_window_event() skips session creation
+                    # for productive apps and NO activity records are ever made.
+                    self._finalize_ocr_setup()
                     return
                 
                 elapsed = time.time() - start_time
@@ -5933,8 +6008,12 @@ class TimeTracker:
                 else:
                     print(f"[OCR SETUP] Installation failed after {elapsed:.0f}s")
                     self.add_admin_log('WARNING', f'OCR installation failed ({elapsed:.0f}s)')
-                    # Notification disabled to avoid interrupting user
-                    # self._show_ocr_installation_notification(missing_count, failed=True)
+                    # An OPTIONAL engine (e.g. easyocr, which is intentionally NOT bundled)
+                    # failed to install at runtime, but the bundled engines (rapidocr/winrtocr)
+                    # are ready. Finalize anyway so self.ocr_processor is created — otherwise
+                    # process_window_event() skips session creation for productive apps and NO
+                    # activity records are made (empty dashboard on every fresh login).
+                    self._finalize_ocr_setup()
             
             except Exception as e:
                 elapsed = time.time() - start_time
@@ -5976,8 +6055,14 @@ class TimeTracker:
             # Setup OCR engines (now that dependencies are installed)
             self._setup_ocr_engines()
             
-            # Create OCR processor
-            from ocr.local_ocr_processor import LocalOCRProcessor
+            # Create OCR processor. LocalOCRProcessor is defined in THIS module
+            # (see class definition above), so use it directly — do NOT import it
+            # from a non-existent 'ocr.local_ocr_processor' module. That stale
+            # import raised ModuleNotFoundError, leaving self.ocr_processor=None,
+            # which made process_window_event() skip session creation for
+            # productive/unknown apps on fresh-login sessions => no activity
+            # records were ever uploaded. (Matches the working path in
+            # initialize_supabase().)
             self.ocr_processor = LocalOCRProcessor()
             
             print("[OCR SETUP] OCR system ready")
@@ -6072,21 +6157,27 @@ class TimeTracker:
             latest = update_info.get('latest_version', 'unknown')
             print(f"[UPDATE] Auto-applying update v{latest}...")
             self.add_admin_log('INFO', f'Auto-applying update v{latest}')
-            # Show brief "restarting" toast so user isn't surprised
+            # Trigger the update FIRST, then notify based on the actual result -- so we do
+            # not promise "installing / will restart" when the on-demand trigger was denied
+            # (a standard user may not be able to run the SYSTEM task on demand; in that
+            # case it installs on the hourly schedule instead).
+            triggered = self.update_manager.auto_apply()
             if WINOTIFY_AVAILABLE:
                 try:
+                    msg = (f"Installing v{latest}. The app will restart shortly."
+                           if triggered else
+                           f"Update v{latest} found. It will install automatically shortly.")
                     notification = Notification(
                         app_id="Time Tracker",
                         title="Updating Time Tracker",
-                        msg=f"Installing v{latest}. The app will restart shortly.",
+                        msg=msg,
                         duration="short"
                     )
                     notification.set_audio(audio.Default, loop=False)
                     notification.show()
                 except Exception:
                     pass
-            self.update_manager.auto_apply()
-            return  # app is shutting down, skip tray updates
+            return
 
         # Still notify for downloading/failed states (informational only)
         should_notify = state in ('downloading', 'failed')
@@ -11240,6 +11331,44 @@ class TimeTracker:
             user32 = ctypes.windll.user32
             kernel32 = ctypes.windll.kernel32
             wtsapi32 = ctypes.windll.wtsapi32
+
+            # --- ctypes signatures (CRITICAL on 64-bit Windows) ---
+            # Without explicit argtypes/restype, ctypes marshals HANDLE/HINSTANCE
+            # values (64-bit pointers) as 32-bit ints. On x64 the module handle
+            # returned by GetModuleHandleW is a high address, so passing it to
+            # CreateWindowExW raised "argument 11: OverflowError: int too long to
+            # convert" and aborted the entire system-event monitor (no sleep/lock
+            # detection, leaving open sessions to absorb suspend gaps). Declare the
+            # signatures up front so handles round-trip as pointers, not ints.
+            kernel32.GetModuleHandleW.argtypes = [wintypes.LPCWSTR]
+            kernel32.GetModuleHandleW.restype = wintypes.HMODULE
+
+            user32.RegisterClassExW.argtypes = [ctypes.c_void_p]
+            user32.RegisterClassExW.restype = wintypes.ATOM
+
+            user32.CreateWindowExW.argtypes = [
+                wintypes.DWORD,     # dwExStyle
+                wintypes.LPCWSTR,   # lpClassName
+                wintypes.LPCWSTR,   # lpWindowName
+                wintypes.DWORD,     # dwStyle
+                ctypes.c_int,       # X
+                ctypes.c_int,       # Y
+                ctypes.c_int,       # nWidth
+                ctypes.c_int,       # nHeight
+                wintypes.HWND,      # hWndParent
+                wintypes.HMENU,     # hMenu
+                wintypes.HINSTANCE, # hInstance
+                wintypes.LPVOID,    # lpParam
+            ]
+            user32.CreateWindowExW.restype = wintypes.HWND
+
+            wtsapi32.WTSRegisterSessionNotification.argtypes = [wintypes.HWND, wintypes.DWORD]
+            wtsapi32.WTSRegisterSessionNotification.restype = wintypes.BOOL
+
+            user32.GetMessageW.argtypes = [ctypes.c_void_p, wintypes.HWND, wintypes.UINT, wintypes.UINT]
+            user32.GetMessageW.restype = ctypes.c_int
+            user32.TranslateMessage.argtypes = [ctypes.c_void_p]
+            user32.DispatchMessageW.argtypes = [ctypes.c_void_p]
 
             # Window message constants
             WM_POWERBROADCAST = 0x0218

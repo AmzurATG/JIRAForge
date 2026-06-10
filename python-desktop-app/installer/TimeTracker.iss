@@ -23,7 +23,7 @@
 ; ============================================================================
 
 #ifndef MyAppVersion
-  #define MyAppVersion "1.4.8"     ; fallback; build.bat overrides with /D
+  #define MyAppVersion "1.4.7"    ; fallback; build.bat overrides with /D
 #endif
 
 #define MyAppName        "TimeTracker"
@@ -76,6 +76,7 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 Source: "..\dist\TimeTracker\*"; DestDir: "{app}"; Flags: recursesubdirs createallsubdirs ignoreversion
 ; The SYSTEM updater script (run by the scheduled task as SYSTEM); sits beside this .iss.
 Source: "update_service.ps1"; DestDir: "{app}"; Flags: ignoreversion
+Source: "clear_credentials.ps1"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
@@ -159,8 +160,27 @@ begin
         SIDs[i] + '\Software\Microsoft\Windows\CurrentVersion\Run', '{#MyAppName}');
 end;
 
+// Remove this user's TimeTracker credentials from the Windows Credential
+// Manager. The OAuth tokens live in the credential vault (not in the data
+// folder), so without this they survive uninstall and the app silently signs
+// the user back in on reinstall — skipping the login page. Run at usUninstall,
+// while {app}\clear_credentials.ps1 still exists (it is deleted with the rest of
+// {app} shortly after). Runs as the uninstalling user, whose vault this is.
+procedure ClearCredentialVault();
+var
+  ResultCode: Integer;
+begin
+  Exec('powershell.exe',
+    '-NoProfile -ExecutionPolicy Bypass -File "' + ExpandConstant('{app}\clear_credentials.ps1') + '"',
+    '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+end;
+
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 begin
+  // Before files are removed: clear the credential vault (needs the script file).
+  if CurUninstallStep = usUninstall then
+    ClearCredentialVault();
+  // After files are removed: wipe all per-user data folders / registry traces.
   if CurUninstallStep = usPostUninstall then
     WipeAllUserData();
 end;
