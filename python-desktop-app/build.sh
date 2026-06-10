@@ -340,6 +340,7 @@ if [ -f "$APPIMAGE_OUT" ]; then
     mkdir -p "${DEB_BUILD_DIR}/usr/share/applications"
     mkdir -p "${DEB_BUILD_DIR}/usr/share/icons/hicolor/256x256/apps"
     mkdir -p "${DEB_BUILD_DIR}/usr/local/bin"
+    mkdir -p "${DEB_BUILD_DIR}/usr/share/gnome-shell/extensions/disable-screenshot-flash@timetracker"
 
     # Embed AppImage
     echo "  Copying AppImage into .deb..."
@@ -350,6 +351,49 @@ if [ -f "$APPIMAGE_OUT" ]; then
     if [ -f "appimage/timetracker.png" ]; then
         cp appimage/timetracker.png \
            "${DEB_BUILD_DIR}/usr/share/icons/hicolor/256x256/apps/timetracker.png"
+    fi
+
+    # Screenshot flash fix extension (GNOME Wayland)
+    # Copy extension files to /usr/share so postinst can install them per-user
+    echo "  Bundling GNOME Shell extension (screenshot flash fix)..."
+    EXTENSION_SOURCE="${HOME}/.local/share/gnome-shell/extensions/disable-screenshot-flash@timetracker"
+    if [ -d "$EXTENSION_SOURCE" ]; then
+        cp -r "$EXTENSION_SOURCE"/* \
+           "${DEB_BUILD_DIR}/usr/share/gnome-shell/extensions/disable-screenshot-flash@timetracker/"
+        echo "    Extension bundled: disable-screenshot-flash@timetracker"
+    else
+        echo "    [WARN] Extension not found at $EXTENSION_SOURCE - creating minimal version"
+        # Create minimal extension inline if source doesn't exist
+        cat > "${DEB_BUILD_DIR}/usr/share/gnome-shell/extensions/disable-screenshot-flash@timetracker/metadata.json" << 'EXTMETA'
+{
+  "name": "Disable Screenshot Flash",
+  "description": "Disables the camera flash animation when taking screenshots",
+  "uuid": "disable-screenshot-flash@timetracker",
+  "shell-version": ["45", "46"],
+  "version": 1
+}
+EXTMETA
+        cat > "${DEB_BUILD_DIR}/usr/share/gnome-shell/extensions/disable-screenshot-flash@timetracker/extension.js" << 'EXTJS'
+import {Extension} from 'resource:///org/gnome/shell/extensions/extension.js';
+export default class DisableScreenshotFlashExtension extends Extension {
+    enable() {
+        import('resource:///org/gnome/shell/ui/screenshot.js').then(Screenshot => {
+            if (Screenshot.ScreenshotService?.prototype._flashAsync) {
+                this._originalFlashAsync = Screenshot.ScreenshotService.prototype._flashAsync;
+                Screenshot.ScreenshotService.prototype._flashAsync = () => Promise.resolve();
+            }
+        }).catch(e => console.error('DisableScreenshotFlash:', e));
+    }
+    disable() {
+        import('resource:///org/gnome/shell/ui/screenshot.js').then(Screenshot => {
+            if (Screenshot.ScreenshotService?.prototype && this._originalFlashAsync) {
+                Screenshot.ScreenshotService.prototype._flashAsync = this._originalFlashAsync;
+            }
+        }).catch(e => console.error('DisableScreenshotFlash:', e));
+        this._originalFlashAsync = null;
+    }
+}
+EXTJS
     fi
 
     # Launcher wrapper script (/usr/local/bin/timetracker)
@@ -373,7 +417,7 @@ WRAPPER
 Name=TimeTracker
 GenericName=Time Tracker
 Comment=Automatic time tracking for JIRA issues
-Exec=timetracker
+Exec=/usr/local/bin/timetracker
 Icon=timetracker
 Type=Application
 Categories=Office;ProjectManagement;
@@ -412,6 +456,14 @@ gtk-update-icon-cache -f -t /usr/share/icons/hicolor 2>/dev/null || true
 # Also write a correct per-user .desktop entry pointing to the canonical path so
 # GNOME uses it directly without going through the /usr/local/bin wrapper.
 _OPT_APPIMAGE="/opt/timetracker/TimeTracker.AppImage"
+
+# Verify source AppImage exists before processing users
+if [ ! -f "$_OPT_APPIMAGE" ]; then
+    echo "[ERROR] Source AppImage not found: $_OPT_APPIMAGE" >&2
+    echo "Skipping per-user installation, but system files are in place." >&2
+    echo "Users can run: /usr/local/bin/timetracker" >&2
+fi
+
 for _USER_HOME in /home/*; do
     _USERNAME=$(basename "$_USER_HOME")
     if ! id "$_USERNAME" &>/dev/null; then continue; fi
@@ -430,7 +482,7 @@ for _USER_HOME in /home/*; do
     fi
 
     # Create canonical dir (fresh install) or reuse existing (upgrade).
-    mkdir -p "$_CANONICAL_DIR" 2>/dev/null
+    mkdir -p "$_CANONICAL_DIR" 2>/dev/null || true
     chown "$_USERNAME":"$_USERNAME" "$_CANONICAL_DIR" 2>/dev/null || true
 
     # Atomically copy /opt/ AppImage → canonical so the wrapper finds it on
@@ -459,7 +511,7 @@ for _USER_HOME in /home/*; do
     # the canonical AppImage.  This replaces any stale entries (old binary-path
     # entries without .AppImage, entries pointing to deleted paths, etc.) and
     # ensures the GNOME launcher uses the correct canonical path immediately.
-    mkdir -p "$_DESKTOP_DIR" 2>/dev/null
+    mkdir -p "$_DESKTOP_DIR" 2>/dev/null || true
     chown "$_USERNAME":"$_USERNAME" "$_DESKTOP_DIR" 2>/dev/null || true
     cat > "$_USER_DESKTOP" << USERDESKTOP
 [Desktop Entry]
@@ -478,6 +530,35 @@ USERDESKTOP
     chmod 644 "$_USER_DESKTOP" 2>/dev/null || true
     update-desktop-database "$_DESKTOP_DIR" 2>/dev/null || true
     echo "User .desktop created/updated for ${_USERNAME}: ${_USER_DESKTOP}"
+
+    # ── Install screenshot flash fix extension (GNOME Wayland only) ─────────
+    # Copy extension to user's GNOME extensions directory and create an autostart
+    # file that will automatically enable it on next GNOME login (no manual steps).
+    if [ -d "/usr/share/gnome-shell/extensions/disable-screenshot-flash@timetracker" ]; then
+        _EXT_DIR="${_USER_HOME}/.local/share/gnome-shell/extensions/disable-screenshot-flash@timetracker"
+        mkdir -p "$_EXT_DIR" 2>/dev/null || true
+        cp -r /usr/share/gnome-shell/extensions/disable-screenshot-flash@timetracker/* "$_EXT_DIR/" 2>/dev/null
+        chown -R "$_USERNAME":"$_USERNAME" "$_EXT_DIR" 2>/dev/null || true
+        
+        # Create autostart entry that enables extension on first login
+        _AUTOSTART_DIR="${_USER_HOME}/.config/autostart"
+        _AUTOSTART_FILE="${_AUTOSTART_DIR}/timetracker-enable-flash-fix.desktop"
+        mkdir -p "$_AUTOSTART_DIR" 2>/dev/null || true
+        cat > "$_AUTOSTART_FILE" << AUTOSTART
+[Desktop Entry]
+Type=Application
+Name=TimeTracker Flash Fix
+Exec=sh -c 'gnome-extensions enable disable-screenshot-flash@timetracker 2>/dev/null && rm -f "$_AUTOSTART_FILE"'
+Hidden=false
+NoDisplay=true
+X-GNOME-Autostart-enabled=true
+Comment=Enables screenshot flash fix extension (runs once)
+AUTOSTART
+        chown "$_USERNAME":"$_USERNAME" "$_AUTOSTART_FILE" 2>/dev/null || true
+        chmod 644 "$_AUTOSTART_FILE" 2>/dev/null || true
+        echo "Extension installed for ${_USERNAME}: ${_EXT_DIR}"
+        echo "  Auto-enable configured via: ${_AUTOSTART_FILE}"
+    fi
 done
 
 # NOTE: GNOME AppIndicator extension activation is intentionally NOT done here.
@@ -505,6 +586,26 @@ if command -v gdebi &>/dev/null; then
     done
     echo "GDebi set as default .deb handler — future upgrades will show a proper Upgrade button."
 fi
+
+# Summary message
+echo ""
+echo "========================================"
+echo "  TimeTracker Installation Complete"
+echo "========================================"
+echo ""
+echo "✓ TimeTracker installed to /opt/timetracker/"
+echo "✓ Launcher created: /usr/local/bin/timetracker"
+echo "✓ Desktop entry installed for all users"
+echo ""
+if [ -d "/usr/share/gnome-shell/extensions/disable-screenshot-flash@timetracker" ]; then
+    echo "✓ Screenshot flash fix extension installed"
+    echo "  → Will auto-enable on next GNOME login (no manual steps needed!)"
+    echo ""
+fi
+echo "Launch TimeTracker from:"
+echo "  • Applications menu → TimeTracker"
+echo "  • Terminal: timetracker"
+echo ""
 POSTINST
     chmod 755 "${DEB_BUILD_DIR}/DEBIAN/postinst"
 

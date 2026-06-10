@@ -26,10 +26,23 @@ import logging
 import shutil
 import subprocess
 import tempfile
+import random
+import string
 
 from PIL import Image as _PILImage, ImageGrab
 
 logger = logging.getLogger(__name__)
+
+# GStreamer for ScreenCast frame capture
+try:
+    import gi
+    gi.require_version('Gst', '1.0')
+    from gi.repository import Gst
+    Gst.init(None)
+    _GSTREAMER_AVAILABLE = True
+except (ImportError, ValueError) as e:
+    _GSTREAMER_AVAILABLE = False
+    # Logger available now, but we'll log when functions are called
 
 # ============================================================================
 # PLATFORM DETECTION & WIN32 SETUP
@@ -500,6 +513,839 @@ def _capture_gnome_dbus_silent():
     return None
 
 
+# ============================================================================
+# XDG DESKTOP PORTAL SCREENSHOT (GNOME 46+ / Standard Wayland)
+# ============================================================================
+
+_XDG_PORTAL_AVAILABLE = None  # None = untested, True/False = cached result
+
+
+def _check_xdg_portal_available():
+    """Check if XDG Desktop Portal Screenshot interface is available.
+    
+    Called once at module load to cache the result.
+    Returns True if the portal daemon is running and supports screenshots.
+    """
+    global _XDG_PORTAL_AVAILABLE
+    
+    if _XDG_PORTAL_AVAILABLE is not None:
+        return _XDG_PORTAL_AVAILABLE
+    
+    try:
+        result = subprocess.run(
+            ['gdbus', 'introspect', '--session',
+             '--dest', 'org.freedesktop.portal.Desktop',
+             '--object-path', '/org/freedesktop/portal/desktop'],
+            capture_output=True,
+            text=True,
+            timeout=3
+        )
+        _XDG_PORTAL_AVAILABLE = (
+            result.returncode == 0 and
+            'org.freedesktop.portal.Screenshot' in result.stdout
+        )
+    except Exception as e:
+        logger.debug(f"XDG Portal check failed: {e}")
+        _XDG_PORTAL_AVAILABLE = False
+    
+    logger.info(f"XDG Desktop Portal Screenshot available: {_XDG_PORTAL_AVAILABLE}")
+    return _XDG_PORTAL_AVAILABLE
+
+
+def _capture_xdg_portal():
+    """Capture screenshot via XDG Desktop Portal (standard Wayland API).
+    
+    The XDG Desktop Portal provides a desktop-environment-agnostic way to
+    capture screenshots on Wayland. It works on GNOME, KDE, and wlroots-based
+    compositors that implement the portal backend.
+    
+    Behavior:
+    - First call may show a permission dialog to the user
+    - After user grants permission, subsequent captures are silent
+    - No flash or shutter animation
+    
+    Implementation uses DIRECT D-Bus Portal calls (NOT gnome-screenshot).
+    gnome-screenshot still uses the old GNOME Shell API which causes flash.
+    
+    The Portal API is asynchronous:
+    1. Call Screenshot() → get request object path
+    2. Wait for Response signal on that request path
+    3. Signal contains 'uri' with file:// path to screenshot
+    4. Read the screenshot from that path
+    
+    Returns PIL.Image on success, None on failure.
+    """
+    if not _check_xdg_portal_available():
+        return None
+    
+    try:
+        # Try using GLib/GIO for proper async D-Bus handling
+        import gi
+        gi.require_version('Gio', '2.0')
+        from gi.repository import Gio, GLib
+        
+        # Timeout and result storage
+        result_data = {'screenshot_path': None, 'error': None}
+        main_loop = GLib.MainLoop()
+        
+        def on_response_signal(connection, sender_name, object_path, interface_name,
+                             signal_name, parameters, user_data):
+            """Handle the Response signal from the portal."""
+            try:
+                response_code = parameters[0]
+                results_dict = parameters[1]
+                
+                if response_code == 0:  # Success
+                    uri = results_dict.get('uri', '')
+                    if uri:
+                        screenshot_path = uri.replace('file://', '')
+                        result_data['screenshot_path'] = screenshot_path
+                        logger.debug(f"Portal Response: screenshot at {screenshot_path}")
+                    else:
+                        result_data['error'] = "No URI in portal response"
+                elif response_code == 1:
+                    result_data['error'] = "User cancelled screenshot"
+                else:
+                    result_data['error'] = f"Portal returned error code {response_code}"
+            except Exception as e:
+                result_data['error'] = f"Error parsing response: {e}"
+            finally:
+                main_loop.quit()
+        
+        def on_timeout():
+            """Handle timeout."""
+            result_data['error'] = "Portal request timed out"
+            main_loop.quit()
+            return False
+        
+        # Get D-Bus connection
+        connection = Gio.bus_get_sync(Gio.BusType.SESSION, None)
+        
+        # Call Screenshot() method
+        result = connection.call_sync(
+            'org.freedesktop.portal.Desktop',
+            '/org/freedesktop/portal/desktop',
+            'org.freedesktop.portal.Screenshot',
+            'Screenshot',
+            GLib.Variant('(sa{sv})', ('', {'interactive': GLib.Variant('b', False)})),
+            GLib.VariantType('(o)'),
+            Gio.DBusCallFlags.NONE,
+            5000,  # 5 second timeout for the call
+            None
+        )
+        
+        request_path = result[0]
+        logger.debug(f"Portal request path: {request_path}")
+        
+        # Subscribe to Response signal on the request object
+        subscription_id = connection.signal_subscribe(
+            'org.freedesktop.portal.Desktop',
+            'org.freedesktop.portal.Request',
+            'Response',
+            request_path,
+            None,
+            Gio.DBusSignalFlags.NONE,
+            on_response_signal,
+            None
+        )
+        
+        # Set timeout (15 seconds for user to grant permission)
+        GLib.timeout_add_seconds(15, on_timeout)
+        
+        # Wait for response
+        main_loop.run()
+        
+        # Unsubscribe from signal
+        connection.signal_unsubscribe(subscription_id)
+        
+        # Check result
+        if result_data['error']:
+            logger.debug(f"Portal capture failed: {result_data['error']}")
+            return None
+        
+        screenshot_path = result_data['screenshot_path']
+        if not screenshot_path or not os.path.exists(screenshot_path):
+            logger.warning(f"Portal screenshot file not found: {screenshot_path}")
+            return None
+        
+        # Read the screenshot
+        im = _PILImage.open(screenshot_path)
+        im.load()  # Load into memory before file is potentially deleted
+        
+        # Validate not all-black
+        import array as _array
+        bands = im.split()
+        if any(max(_array.array('B', b.tobytes())) > 0 for b in bands):
+            logger.debug("Linux capture: XDG Desktop Portal (direct D-Bus with GLib)")
+            return im.copy()
+        
+        logger.warning("XDG Portal screenshot all-black — skipping")
+        return None
+        
+    except ImportError:
+        logger.debug("GLib not available for Portal capture")
+        return None
+    except Exception as e:
+        logger.debug(f"XDG Portal screenshot error: {e}")
+        return None
+
+
+# ============================================================================
+# PIPEWIRE SCREENCAST PORTAL (NO FLASH SOLUTION)
+# ============================================================================
+
+_SCREENCAST_AVAILABLE = None  # None = untested, True/False = cached result
+
+# Cache for ScreenCast session (to avoid repeated consent dialogs)
+_SCREENCAST_SESSION_CACHE = {
+    'session_handle': None,
+    'pipewire_fd': None,
+    'node_id': None,
+    'restore_token': None
+}
+
+
+def _generate_portal_token():
+    """Generate random token for Portal D-Bus requests."""
+    chars = string.ascii_letters + string.digits
+    return ''.join(random.choice(chars) for _ in range(10))
+
+
+def _check_screencast_available():
+    """Check if ScreenCast portal is available.
+    
+    ScreenCast portal is used for flash-free screenshots by capturing
+    a single frame from a video stream instead of using the Screenshot API.
+    
+    Returns:
+        bool: True if available, False otherwise
+    """
+    global _SCREENCAST_AVAILABLE
+    
+    if _SCREENCAST_AVAILABLE is not None:
+        return _SCREENCAST_AVAILABLE
+    
+    # Check if GStreamer is available
+    if not _GSTREAMER_AVAILABLE:
+        logger.debug("ScreenCast unavailable: GStreamer not available")
+        _SCREENCAST_AVAILABLE = False
+        return False
+    
+    try:
+        result = subprocess.run(
+            ['gdbus', 'introspect', '--session',
+             '--dest', 'org.freedesktop.portal.Desktop',
+             '--object-path', '/org/freedesktop/portal/desktop'],
+            capture_output=True,
+            text=True,
+            timeout=3
+        )
+        _SCREENCAST_AVAILABLE = (
+            result.returncode == 0 and
+            'org.freedesktop.portal.ScreenCast' in result.stdout
+        )
+    except Exception as e:
+        logger.debug(f"ScreenCast Portal check failed: {e}")
+        _SCREENCAST_AVAILABLE = False
+    
+    if _SCREENCAST_AVAILABLE:
+        logger.info("ScreenCast Portal available - flash-free captures enabled")
+    else:
+        logger.debug("ScreenCast Portal not available - falling back to Screenshot Portal")
+    
+    return _SCREENCAST_AVAILABLE
+
+
+def _capture_screencast():
+    """Capture screenshot via ScreenCast Portal (NO FLASH).
+    
+    This uses the ScreenCast portal which is designed for screen recording/sharing
+    (used by Teams, Zoom, OBS). We capture a single frame from the video stream.
+    
+    Why this doesn't flash:
+    - ScreenCast uses GNOME Shell's video capture path, NOT screenshot service
+    - Video capture doesn't trigger ScreenshotService._flashAsync()
+    - Result is identical PNG but without the camera flash animation
+    
+    Flow:
+    1. Check for cached session (to avoid repeated consent dialogs)
+    2. If no cache: Create ScreenCast session
+    3. Select monitor as source
+    4. Start capture (shows consent dialog on first run only)
+    5. Open PipeWire connection
+    6. Use GStreamer to extract single frame
+    7. Save as PNG and cache session
+    
+    Returns PIL.Image on success, None on failure.
+    """
+    global _SCREENCAST_SESSION_CACHE
+    
+    if not _check_screencast_available():
+        return None
+    
+    try:
+        import gi
+        gi.require_version('Gio', '2.0')
+        gi.require_version('GLib', '2.0')
+        from gi.repository import Gio, GLib
+        
+        # Try to reuse cached session first (avoids repeated consent dialogs)
+        if (_SCREENCAST_SESSION_CACHE['session_handle'] and 
+            _SCREENCAST_SESSION_CACHE['node_id']):
+            
+            logger.debug("Reusing cached ScreenCast session (no consent needed)")
+            
+            try:
+                bus = Gio.bus_get_sync(Gio.BusType.SESSION, None)
+                proxy = Gio.DBusProxy.new_sync(
+                    bus,
+                    Gio.DBusProxyFlags.NONE,
+                    None,
+                    'org.freedesktop.portal.Desktop',
+                    '/org/freedesktop/portal/desktop',
+                    'org.freedesktop.portal.ScreenCast',
+                    None
+                )
+                
+                # Try to open new PipeWire connection with cached session
+                result = proxy.call_with_unix_fd_list_sync(
+                    'OpenPipeWireRemote',
+                    GLib.Variant('(oa{sv})', (_SCREENCAST_SESSION_CACHE['session_handle'], {})),
+                    Gio.DBusCallFlags.NONE,
+                    -1,
+                    None,
+                    None
+                )
+                
+                fd_list = result[1]
+                fd_index = result[0].unpack()[0]
+                pipewire_fd = fd_list.get(fd_index)
+                
+                logger.debug(f"Reused session PipeWire fd: {pipewire_fd}")
+                
+                # Capture frame with cached node_id
+                output_path = _capture_frame_with_gstreamer(pipewire_fd, _SCREENCAST_SESSION_CACHE['node_id'])
+                
+                if output_path and os.path.exists(output_path):
+                    im = _PILImage.open(output_path)
+                    im.load()
+                    
+                    try:
+                        os.unlink(output_path)
+                    except:
+                        pass
+                    
+                    # Validate not all-black
+                    import array as _array
+                    bands = im.split()
+                    if any(max(_array.array('B', b.tobytes())) > 0 for b in bands):
+                        logger.debug("ScreenCast: Reused session successfully")
+                        return im.copy()
+                
+            except Exception as e:
+                logger.debug(f"Cached session failed: {e}, creating new session...")
+                # Clear cache and fall through to create new session
+                _SCREENCAST_SESSION_CACHE = {
+                    'session_handle': None,
+                    'pipewire_fd': None,
+                    'node_id': None,
+                    'restore_token': None
+                }
+        
+        # No cache or cache failed - create new session
+        logger.debug("Creating new ScreenCast session")
+        
+        # State for async operation
+        session_state = {
+            'session_handle': None,
+            'pipewire_fd': None,
+            'node_id': None,
+            'error': None,
+            'step': 'init'
+        }
+        
+        loop = GLib.MainLoop()
+        bus = Gio.bus_get_sync(Gio.BusType.SESSION, None)
+        sender = bus.get_unique_name()[1:].replace('.', '_')
+        
+        def on_create_session_response(connection, sender_name, object_path, 
+                                      interface_name, signal_name, parameters, user_data):
+            """Handle CreateSession response"""
+            try:
+                response_code = parameters[0]
+                results = parameters[1]
+                
+                if response_code == 0:
+                    session_state['session_handle'] = results['session_handle']
+                    session_state['step'] = 'session_created'
+                    logger.debug(f"ScreenCast session created: {session_state['session_handle']}")
+                    # Continue to select sources
+                    GLib.idle_add(_select_sources)
+                else:
+                    session_state['error'] = f"CreateSession failed: response {response_code}"
+                    loop.quit()
+            except Exception as e:
+                session_state['error'] = f"CreateSession error: {e}"
+                loop.quit()
+        
+        def on_select_sources_response(connection, sender_name, object_path,
+                                       interface_name, signal_name, parameters, user_data):
+            """Handle SelectSources response"""
+            try:
+                response_code = parameters[0]
+                
+                if response_code == 0:
+                    session_state['step'] = 'sources_selected'
+                    logger.debug("ScreenCast sources selected")
+                    # Continue to start
+                    GLib.idle_add(_start_capture)
+                else:
+                    session_state['error'] = f"SelectSources failed: response {response_code}"
+                    loop.quit()
+            except Exception as e:
+                session_state['error'] = f"SelectSources error: {e}"
+                loop.quit()
+        
+        def on_start_response(connection, sender_name, object_path,
+                            interface_name, signal_name, parameters, user_data):
+            """Handle Start response"""
+            try:
+                response_code = parameters[0]
+                results = parameters[1]
+                
+                if response_code == 0:
+                    # Extract streams information (contains node_id)
+                    if 'streams' in results:
+                        streams = results['streams']
+                        if streams:
+                            # Get first stream's node_id
+                            first_stream = streams[0]
+                            node_id = first_stream[0]  # First element is node_id
+                            session_state['node_id'] = node_id
+                            logger.debug(f"ScreenCast stream node_id: {node_id}")
+                    
+                    session_state['step'] = 'started'
+                    logger.debug("ScreenCast capture started")
+                    # Continue to open PipeWire
+                    GLib.idle_add(_open_pipewire)
+                elif response_code == 1:
+                    session_state['error'] = "User denied consent"
+                    loop.quit()
+                else:
+                    session_state['error'] = f"Start failed: response {response_code}"
+                    loop.quit()
+            except Exception as e:
+                session_state['error'] = f"Start error: {e}"
+                loop.quit()
+        
+        def _create_session():
+            """Step 1: Create ScreenCast session"""
+            try:
+                request_token = _generate_portal_token()
+                session_token = _generate_portal_token()
+                request_path = f'/org/freedesktop/portal/desktop/request/{sender}/{request_token}'
+                
+                # Subscribe to response
+                bus.signal_subscribe(
+                    'org.freedesktop.portal.Desktop',
+                    'org.freedesktop.portal.Request',
+                    'Response',
+                    request_path,
+                    None,
+                    Gio.DBusSignalFlags.NONE,
+                    on_create_session_response,
+                    None
+                )
+                
+                proxy = Gio.DBusProxy.new_sync(
+                    bus,
+                    Gio.DBusProxyFlags.NONE,
+                    None,
+                    'org.freedesktop.portal.Desktop',
+                    '/org/freedesktop/portal/desktop',
+                    'org.freedesktop.portal.ScreenCast',
+                    None
+                )
+                
+                options = {
+                    'handle_token': GLib.Variant('s', request_token),
+                    'session_handle_token': GLib.Variant('s', session_token)
+                }
+                
+                proxy.call(
+                    'CreateSession',
+                    GLib.Variant('(a{sv})', (options,)),
+                    Gio.DBusCallFlags.NONE,
+                    -1,
+                    None,
+                    None,
+                    None
+                )
+                logger.debug("ScreenCast CreateSession called")
+                return False  # Don't repeat idle callback
+            except Exception as e:
+                session_state['error'] = f"CreateSession call failed: {e}"
+                loop.quit()
+                return False
+        
+        def _select_sources():
+            """Step 2: Select monitor as source"""
+            try:
+                request_token = _generate_portal_token()
+                request_path = f'/org/freedesktop/portal/desktop/request/{sender}/{request_token}'
+                
+                # Subscribe to response
+                bus.signal_subscribe(
+                    'org.freedesktop.portal.Desktop',
+                    'org.freedesktop.portal.Request',
+                    'Response',
+                    request_path,
+                    None,
+                    Gio.DBusSignalFlags.NONE,
+                    on_select_sources_response,
+                    None
+                )
+                
+                proxy = Gio.DBusProxy.new_sync(
+                    bus,
+                    Gio.DBusProxyFlags.NONE,
+                    None,
+                    'org.freedesktop.portal.Desktop',
+                    '/org/freedesktop/portal/desktop',
+                    'org.freedesktop.portal.ScreenCast',
+                    None
+                )
+                
+                options = {
+                    'handle_token': GLib.Variant('s', request_token),
+                    'types': GLib.Variant('u', 1),  # 1 = Monitor
+                    'multiple': GLib.Variant('b', False),
+                    'cursor_mode': GLib.Variant('u', 1)  # 1 = Hidden
+                }
+                
+                proxy.call(
+                    'SelectSources',
+                    GLib.Variant('(oa{sv})', (session_state['session_handle'], options)),
+                    Gio.DBusCallFlags.NONE,
+                    -1,
+                    None,
+                    None,
+                    None
+                )
+                logger.debug("ScreenCast SelectSources called")
+                return False
+            except Exception as e:
+                session_state['error'] = f"SelectSources call failed: {e}"
+                loop.quit()
+                return False
+        
+        def _start_capture():
+            """Step 3: Start capture (may show consent dialog)"""
+            try:
+                request_token = _generate_portal_token()
+                request_path = f'/org/freedesktop/portal/desktop/request/{sender}/{request_token}'
+                
+                # Subscribe to response
+                bus.signal_subscribe(
+                    'org.freedesktop.portal.Desktop',
+                    'org.freedesktop.portal.Request',
+                    'Response',
+                    request_path,
+                    None,
+                    Gio.DBusSignalFlags.NONE,
+                    on_start_response,
+                    None
+                )
+                
+                proxy = Gio.DBusProxy.new_sync(
+                    bus,
+                    Gio.DBusProxyFlags.NONE,
+                    None,
+                    'org.freedesktop.portal.Desktop',
+                    '/org/freedesktop/portal/desktop',
+                    'org.freedesktop.portal.ScreenCast',
+                    None
+                )
+                
+                options = {
+                    'handle_token': GLib.Variant('s', request_token)
+                }
+                
+                proxy.call(
+                    'Start',
+                    GLib.Variant('(osa{sv})', (session_state['session_handle'], '', options)),
+                    Gio.DBusCallFlags.NONE,
+                    -1,
+                    None,
+                    None,
+                    None
+                )
+                logger.debug("ScreenCast Start called")
+                return False
+            except Exception as e:
+                session_state['error'] = f"Start call failed: {e}"
+                loop.quit()
+                return False
+        
+        def _open_pipewire():
+            """Step 4: Open PipeWire connection"""
+            try:
+                proxy = Gio.DBusProxy.new_sync(
+                    bus,
+                    Gio.DBusProxyFlags.NONE,
+                    None,
+                    'org.freedesktop.portal.Desktop',
+                    '/org/freedesktop/portal/desktop',
+                    'org.freedesktop.portal.ScreenCast',
+                    None
+                )
+                
+                result = proxy.call_with_unix_fd_list_sync(
+                    'OpenPipeWireRemote',
+                    GLib.Variant('(oa{sv})', (session_state['session_handle'], {})),
+                    Gio.DBusCallFlags.NONE,
+                    -1,
+                    None,
+                    None
+                )
+                
+                fd_list = result[1]
+                fd_index = result[0].unpack()[0]
+                session_state['pipewire_fd'] = fd_list.get(fd_index)
+                session_state['step'] = 'pipewire_opened'
+                
+                logger.debug(f"PipeWire fd opened: {session_state['pipewire_fd']}")
+                loop.quit()
+                return False
+            except Exception as e:
+                session_state['error'] = f"OpenPipeWire failed: {e}"
+                loop.quit()
+                return False
+        
+        def on_timeout():
+            """Handle timeout"""
+            if session_state['step'] == 'init':
+                session_state['error'] = "Timeout creating session"
+            elif session_state['step'] in ('session_created', 'sources_selected'):
+                session_state['error'] = "Timeout waiting for consent"
+            else:
+                session_state['error'] = f"Timeout at step: {session_state['step']}"
+            loop.quit()
+            return False
+        
+        # Set timeout (30 seconds for user consent)
+        GLib.timeout_add_seconds(30, on_timeout)
+        
+        # Start the async flow
+        GLib.idle_add(_create_session)
+        
+        # Run event loop
+        loop.run()
+        
+        # Check for errors
+        if session_state['error']:
+            logger.debug(f"ScreenCast capture failed: {session_state['error']}")
+            return None
+        
+        if not session_state['pipewire_fd']:
+            logger.warning("ScreenCast: No PipeWire fd obtained")
+            return None
+        
+        if not session_state.get('node_id'):
+            logger.warning("ScreenCast: No stream node_id obtained")
+            return None
+        
+        # Step 5: Capture frame with GStreamer
+        output_path = _capture_frame_with_gstreamer(session_state['pipewire_fd'], session_state['node_id'])
+        
+        if not output_path or not os.path.exists(output_path):
+            logger.warning("ScreenCast: GStreamer capture failed")
+            return None
+        
+        # Read the image
+        im = _PILImage.open(output_path)
+        im.load()
+        
+        # Cleanup
+        try:
+            os.unlink(output_path)
+        except:
+            pass
+        
+        # Validate not all-black
+        import array as _array
+        bands = im.split()
+        if any(max(_array.array('B', b.tobytes())) > 0 for b in bands):
+            logger.debug("Linux capture: ScreenCast Portal (NO FLASH)")
+            
+            # Cache session info for future captures (avoids repeated consent dialogs)
+            _SCREENCAST_SESSION_CACHE['session_handle'] = session_state['session_handle']
+            _SCREENCAST_SESSION_CACHE['node_id'] = session_state['node_id']
+            logger.debug("ScreenCast session cached for reuse")
+            
+            return im.copy()
+        
+        logger.warning("ScreenCast screenshot all-black — skipping")
+        return None
+        
+    except ImportError as e:
+        logger.debug(f"ScreenCast unavailable: {e}")
+        return None
+    except Exception as e:
+        logger.debug(f"ScreenCast capture error: {e}")
+        return None
+
+
+def _capture_frame_with_gstreamer(pipewire_fd, node_id):
+    """Capture single frame from PipeWire using GStreamer.
+    
+    Args:
+        pipewire_fd: PipeWire file descriptor from OpenPipeWireRemote
+        node_id: PipeWire stream node ID
+        
+    Returns:
+        str: Path to captured PNG file, or None on failure
+    """
+    if not _GSTREAMER_AVAILABLE:
+        return None
+    
+    try:
+        from gi.repository import Gst, GLib
+        
+        # Create temp output file
+        fd, output_path = tempfile.mkstemp(suffix='.png', prefix='screencast_')
+        os.close(fd)
+        
+        # Build GStreamer pipeline
+        # Use path property with node_id instead of fd
+        pipeline_str = (
+            f'pipewiresrc fd={pipewire_fd} path={node_id} do-timestamp=true ! '
+            f'videoconvert ! '
+            f'pngenc ! '
+            f'filesink location={output_path}'
+        )
+        
+        # State for async capture
+        capture_state = {
+            'success': False,
+            'error': None,
+            'playing': False,
+            'frames_captured': 0
+        }
+        
+        loop = GLib.MainLoop()
+        
+        def on_message(bus, message):
+            """Handle GStreamer bus messages"""
+            t = message.type
+            
+            if t == Gst.MessageType.EOS:
+                logger.debug("GStreamer: End of stream")
+                capture_state['success'] = True
+                loop.quit()
+            elif t == Gst.MessageType.ERROR:
+                err, debug = message.parse_error()
+                capture_state['error'] = f"GStreamer error: {err.message}"
+                logger.debug(f"GStreamer error: {err.message} (debug: {debug})")
+                loop.quit()
+            elif t == Gst.MessageType.STATE_CHANGED:
+                if message.src == pipeline:
+                    old_state, new_state, pending = message.parse_state_changed()
+                    if new_state == Gst.State.PLAYING:
+                        logger.debug("GStreamer: Pipeline playing")
+                        capture_state['playing'] = True
+                        # Schedule stop after 3 seconds of playing
+                        GLib.timeout_add(3000, stop_pipeline)
+            elif t == Gst.MessageType.STREAM_START:
+                logger.debug("GStreamer: Stream started")
+            elif t == Gst.MessageType.ASYNC_DONE:
+                logger.debug("GStreamer: Async done")
+            
+            return True
+        
+        def stop_pipeline():
+            """Stop pipeline after capturing frame"""
+            if not capture_state['playing']:
+                logger.debug("GStreamer: Not playing yet, waiting...")
+                return True  # Try again
+            
+            logger.debug("GStreamer: Stopping pipeline after frame capture")
+            pipeline.send_event(Gst.Event.new_eos())
+            return False  # Don't repeat
+        
+        # Create pipeline
+        try:
+            pipeline = Gst.parse_launch(pipeline_str)
+        except Exception as e:
+            logger.warning(f"GStreamer: Failed to create pipeline: {e}")
+            return None
+        
+        # Set up message bus BEFORE starting pipeline
+        bus = pipeline.get_bus()
+        bus.add_signal_watch()
+        bus.connect('message', on_message)
+        
+        # Start pipeline
+        ret = pipeline.set_state(Gst.State.PLAYING)
+        if ret == Gst.StateChangeReturn.FAILURE:
+            # Don't return immediately - wait to see actual error on bus
+            logger.warning("GStreamer: State change returned FAILURE, waiting for error message...")
+            
+            # Set short timeout to get error details
+            def on_early_timeout():
+                if not capture_state['error']:
+                    capture_state['error'] = "Pipeline state change failed with no error details"
+                loop.quit()
+                return False
+            
+            GLib.timeout_add(2000, on_early_timeout)
+        elif ret == Gst.StateChangeReturn.ASYNC:
+            logger.debug("GStreamer: State change is async, waiting...")
+        elif ret == Gst.StateChangeReturn.SUCCESS:
+            logger.debug("GStreamer: Pipeline set to playing immediately")
+        
+        # Timeout after 15 seconds
+        def on_timeout():
+            capture_state['error'] = "GStreamer capture timeout (15s)"
+            logger.warning("GStreamer: Capture timeout - PipeWire stream may not be ready")
+            pipeline.set_state(Gst.State.NULL)
+            loop.quit()
+            return False
+        
+        GLib.timeout_add_seconds(15, on_timeout)
+        
+        # Run event loop
+        loop.run()
+        
+        # Cleanup
+        pipeline.set_state(Gst.State.NULL)
+        bus.remove_signal_watch()
+        
+        # Check result
+        if capture_state['error']:
+            logger.debug(f"GStreamer capture failed: {capture_state['error']}")
+            try:
+                os.unlink(output_path)
+            except:
+                pass
+            return None
+        
+        if capture_state['success'] and os.path.exists(output_path) and os.path.getsize(output_path) > 0:
+            logger.debug(f"GStreamer: Frame captured ({os.path.getsize(output_path)} bytes)")
+            return output_path
+        
+        logger.debug("GStreamer: No frame captured or file empty")
+        try:
+            os.unlink(output_path)
+        except:
+            pass
+        return None
+        
+    except Exception as e:
+        logger.debug(f"GStreamer frame capture error: {e}")
+        return None
+
+
 def _capture_gnome_screenshot_muted():
     """Capture via gnome-screenshot with the GNOME shutter sound suppressed.
 
@@ -565,19 +1411,22 @@ def _capture_linux():
     screenshot service, which has access to the Wayland compositor buffers
     and produces a real, pixel-accurate screenshot.
 
-    Fallback order (fastest / most-reliable first):
+    Fallback order (flash-free methods prioritized):
 
     Wayland session:
-      1. GNOME Screenshot D-Bus (silent) — flash=false, no shutter sound.
+      1. ScreenCast Portal — PipeWire video capture, NO FLASH. Uses screen
+         recording API to capture single frame. Requires one-time consent.
+      2. XDG Desktop Portal Screenshot — Standard freedesktop.org API, but
+         HAS FLASH on GNOME. May show one-time consent dialog.
+      3. GNOME Screenshot D-Bus (silent) — flash=false, no shutter sound.
          Works when org.gnome.Shell.Screenshot is accessible (GNOME < 46 or
          relaxed security policy).
-      2. gnome-screenshot + event-sounds muted — uses the gnome-screenshot
+      4. gnome-screenshot + event-sounds muted — uses the gnome-screenshot
          binary but temporarily sets org.gnome.desktop.sound event-sounds to
-         false to suppress the camera-shutter sound.  Restores the original
-         setting immediately after capture.
-      3. scrot                           — X11 / XWayland fallback; all-black
+         false to suppress the camera-shutter sound.  VISUAL FLASH MAY OCCUR.
+      5. scrot                           — X11 / XWayland fallback; all-black
                 on pure Wayland (checked and skipped).
-      4. Pillow XCB                      — last resort; same caveat as scrot.
+      6. Pillow XCB                      — last resort; same caveat as scrot.
 
     X11 session:
       1. scrot                         — pure X11, fast, no snap issues.
@@ -585,15 +1434,26 @@ def _capture_linux():
     """
     is_wayland = _is_wayland_session()
 
-    # --- Wayland Method 1: silent D-Bus call (flash=false, no shutter sound) ---
-    # --- Wayland Method 2: gnome-screenshot with event-sounds muted          ---
     if is_wayland:
+        # --- Wayland Method 1: ScreenCast Portal (NO FLASH) ---
+        img = _capture_screencast()
+        if img is not None:
+            return img
+        
+        # --- Wayland Method 2: XDG Desktop Portal Screenshot (HAS FLASH) ---
+        img = _capture_xdg_portal()
+        if img is not None:
+            return img
+        
+        # --- Wayland Method 3: GNOME D-Bus (flash=false, silent) ---
         img = _capture_gnome_dbus_silent()
         if img is not None:
             return img
+        
+        # --- Wayland Method 4: gnome-screenshot (muted sound, flash may occur) ---
         img = _capture_gnome_screenshot_muted()
         if img is not None:
-            logger.debug("Linux capture: gnome-screenshot (muted)")
+            logger.debug("Linux capture: gnome-screenshot (muted) — flash may occur")
             return img
 
     # --- Method 2: scrot (X11 / XWayland) ---
