@@ -30,6 +30,8 @@ function UnassignedWork() {
   // Notification settings state
   const [notificationsEnabled, setNotificationsEnabled] = useState(true);
   const [savingNotificationSettings, setSavingNotificationSettings] = useState(false);
+  const [syncingWithJira, setSyncingWithJira] = useState(false);
+  const [syncBanner, setSyncBanner] = useState(null);
   const unassignedRequestIdRef = useRef(0);
 
   // Date range filter state
@@ -665,6 +667,30 @@ This will permanently dismiss these sessions from clustering. They won't appear 
     loadUnassignedWork();
   };
 
+  const handleSyncWithJira = async () => {
+    setSyncingWithJira(true);
+    setSyncBanner(null);
+    try {
+      const result = await invoke('syncRecentUnassignedWorkWithAllUpdatedIssues');
+      if (!result?.success) {
+        setSyncBanner({ type: 'error', message: result?.error || 'Sync failed' });
+        return;
+      }
+      const count = result.matchedCount || 0;
+      setSyncBanner({
+        type: 'success',
+        message: count > 0
+          ? `Sync complete. Automatically assigned ${count} session${count === 1 ? '' : 's'} to updated tickets.`
+          : 'Sync complete. No matching unassigned work found in the last 30 minutes.'
+      });
+      await loadUnassignedWork();
+    } catch (err) {
+      setSyncBanner({ type: 'error', message: err?.message || 'Sync failed' });
+    } finally {
+      setSyncingWithJira(false);
+    }
+  };
+
   useEffect(() => {
     clearSelection();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -753,6 +779,23 @@ This will permanently dismiss these sessions from clustering. They won't appear 
           <h2>Unassigned Work</h2>
           <div className="header-buttons-row">
             <button
+              className="sync-with-jira-btn"
+              onClick={handleSyncWithJira}
+              disabled={syncingWithJira}
+              title="Match recent unassigned work to tickets updated in the last 30 minutes"
+            >
+              {syncingWithJira ? (
+                <span className="sync-with-jira-spinner" aria-hidden="true" />
+              ) : (
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <polyline points="23 4 23 10 17 10" />
+                  <polyline points="1 20 1 14 7 14" />
+                  <path d="M3.51 9a9 9 0 0 1 14.13-3.36L23 10M1 14l5.36 5.36A9 9 0 0 0 20.49 15" />
+                </svg>
+              )}
+              {syncingWithJira ? 'Syncing…' : 'Sync with Jira'}
+            </button>
+            <button
               className="bulk-time-edit-btn"
               onClick={() => setShowBulkEditModal(true)}
               title="Bulk reassign activities by time interval"
@@ -765,6 +808,12 @@ This will permanently dismiss these sessions from clustering. They won't appear 
             </button>
           </div>
         </div>
+        {syncBanner && (
+          <div className={`sync-banner sync-banner--${syncBanner.type}`} role="status">
+            {syncBanner.message}
+          </div>
+        )}
+
         <div className="unassigned-work-summary">
           <span className="summary-item">
             {/* When a date filter is active, show the count of sessions that actually

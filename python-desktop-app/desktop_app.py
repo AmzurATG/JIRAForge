@@ -12293,6 +12293,7 @@ class TimeTracker:
         # Start description-quality nudge poller (best-effort)
         try:
             self._start_dq_nudge_poller()
+            self._run_dq_startup_sync()
         except Exception as e:
             print(f"[WARN] Failed to start DQ nudge poller: {e}")
     
@@ -13040,6 +13041,25 @@ class TimeTracker:
         except Exception as e:
             print(f"[WARN] Could not start DQ nudge poller: {e}")
             self.dq_nudge_poller = None
+
+    def _run_dq_startup_sync(self):
+        """One-time DQ sync after tracking starts — show popup immediately if nudges exist."""
+        poller = getattr(self, 'dq_nudge_poller', None)
+        if poller is None:
+            return
+
+        def _sync():
+            try:
+                result = poller.sync_recent_unassigned_once()
+                nudges = list(result.get('nudges') or [])
+                if not nudges:
+                    nudges = poller.poll_once()
+                if nudges:
+                    self._handle_dq_nudges(nudges)
+            except Exception as e:
+                print(f"[WARN] DQ startup sync failed: {e}")
+
+        threading.Thread(target=_sync, name='DqStartupSync', daemon=True).start()
 
     def _handle_dq_nudges(self, nudges):
         """Background-thread callback: schedule popup on the main thread."""

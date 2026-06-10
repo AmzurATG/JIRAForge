@@ -315,6 +315,54 @@ async function getIssueScoresFromCache({ orgId, issueKeys }) {
   return map;
 }
 
+/**
+ * Return true when the user has unassigned work in the last `windowMinutes`.
+ * Checks both activity_records (created_at) and unassigned_activity (timestamp).
+ */
+async function hasRecentUnassignedWork({ userId, organizationId, windowMinutes = 30 }) {
+  if (!userId || !organizationId) return false;
+
+  const supabase = getClient();
+  if (!supabase) throw new Error('Supabase client not initialised');
+
+  const minutes = Number.isFinite(Number(windowMinutes))
+    ? Math.max(1, Math.min(Number(windowMinutes), 60))
+    : 30;
+  const cutoff = new Date(Date.now() - minutes * 60 * 1000).toISOString();
+
+  const [activityResult, legacyResult] = await Promise.all([
+    supabase
+      .from('activity_records')
+      .select('id', { count: 'exact', head: true })
+      .eq('user_id', userId)
+      .eq('organization_id', organizationId)
+      .is('user_assigned_issue_key', null)
+      .in('status', ['pending', 'processing', 'analyzed'])
+      .in('classification', ['productive', 'unknown'])
+      .eq('clustering_dismissed', false)
+      .gte('created_at', cutoff),
+    supabase
+      .from('unassigned_activity')
+      .select('id', { count: 'exact', head: true })
+      .eq('user_id', userId)
+      .eq('organization_id', organizationId)
+      .eq('manually_assigned', false)
+      .eq('clustering_dismissed', false)
+      .gte('timestamp', cutoff)
+  ]);
+
+  if (activityResult.error) {
+    logger.error('[DQNotificationsRepo] hasRecentUnassignedWork activity_records failed: %s', activityResult.error.message);
+    throw activityResult.error;
+  }
+  if (legacyResult.error) {
+    logger.error('[DQNotificationsRepo] hasRecentUnassignedWork unassigned_activity failed: %s', legacyResult.error.message);
+    throw legacyResult.error;
+  }
+
+  return (activityResult.count || 0) + (legacyResult.count || 0) > 0;
+}
+
 module.exports = {
   insertNotification,
   lookupLatestAnyChannel,
@@ -324,6 +372,7 @@ module.exports = {
   ensurePreferenceRow,
   listLowScoreCandidates,
   getIssueScoresFromCache,
+  hasRecentUnassignedWork,
   // Exposed for tests:
   _sanitisePayload: sanitisePayload,
   _ALLOWED_PAYLOAD_KEYS: ALLOWED_PAYLOAD_KEYS,

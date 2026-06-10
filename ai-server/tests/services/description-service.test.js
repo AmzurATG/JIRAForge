@@ -21,7 +21,11 @@ const {
   validateLLMResponse,
   parseLLMContent,
   generateContentHash,
-  LLM_GATE_THRESHOLD
+  syncIssueUnassigned,
+  syncAllUnassigned,
+  filterMatchesByConfidence,
+  LLM_GATE_THRESHOLD,
+  MATCH_MIN_CONFIDENCE
 } = require('../../src/services/description-service');
 
 beforeEach(() => {
@@ -423,6 +427,88 @@ Investigate and fix.`,
       deps: { runLLM, getClient: () => null }
     });
     expect(result.source).toBe('deterministic');
+  });
+
+  test('filterMatchesByConfidence drops matches below threshold', () => {
+    const filtered = filterMatchesByConfidence(
+      [
+        { sessionId: 'a', confidence: 0.9, issueKey: 'PROJ-1' },
+        { sessionId: 'b', confidence: 0.5, issueKey: 'PROJ-1' }
+      ],
+      ['a', 'b'],
+      ['PROJ-1']
+    );
+    expect(filtered).toHaveLength(1);
+    expect(filtered[0].sessionId).toBe('a');
+    expect(MATCH_MIN_CONFIDENCE).toBe(0.7);
+  });
+
+  test('syncIssueUnassigned returns empty when no sessions', async () => {
+    const result = await syncIssueUnassigned({
+      issueKey: 'PROJ-1',
+      title: 'Title',
+      description: 'Description',
+      sessions: []
+    });
+    expect(result.matchedSessionIds).toEqual([]);
+  });
+
+  test('syncIssueUnassigned filters low-confidence LLM matches', async () => {
+    const runChat = jest.fn().mockResolvedValue({
+      response: {
+        choices: [{
+          message: {
+            content: JSON.stringify({
+              matches: [
+                { sessionId: 'sess-1', confidence: 0.95 },
+                { sessionId: 'sess-2', confidence: 0.4 }
+              ]
+            })
+          }
+        }]
+      }
+    });
+
+    const result = await syncIssueUnassigned({
+      issueKey: 'PROJ-1',
+      title: 'Login bug',
+      description: 'Broken login flow',
+      sessions: [
+        { sessionId: 'sess-1', applicationName: 'Code', windowTitle: 'login.ts' },
+        { sessionId: 'sess-2', applicationName: 'Slack', windowTitle: 'general' }
+      ],
+      deps: { runChat }
+    });
+
+    expect(result.matchedSessionIds).toEqual(['sess-1']);
+  });
+
+  test('syncAllUnassigned returns one assignment per session', async () => {
+    const runChat = jest.fn().mockResolvedValue({
+      response: {
+        choices: [{
+          message: {
+            content: JSON.stringify({
+              assignments: [
+                { sessionId: 'sess-1', issueKey: 'PROJ-1', confidence: 0.9 },
+                { sessionId: 'sess-1', issueKey: 'PROJ-2', confidence: 0.8 }
+              ]
+            })
+          }
+        }]
+      }
+    });
+
+    const result = await syncAllUnassigned({
+      issues: [
+        { issueKey: 'PROJ-1', title: 'One', description: 'Desc one' },
+        { issueKey: 'PROJ-2', title: 'Two', description: 'Desc two' }
+      ],
+      sessions: [{ sessionId: 'sess-1', applicationName: 'Code', windowTitle: 'proj' }],
+      deps: { runChat }
+    });
+
+    expect(result.assignments).toEqual([{ sessionId: 'sess-1', issueKey: 'PROJ-1' }]);
   });
 
   test('sanitizes title + description before calling LLM', async () => {

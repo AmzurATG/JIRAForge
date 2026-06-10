@@ -1,5 +1,5 @@
 import React, { useCallback, useState } from 'react';
-import { invoke } from '@forge/bridge';
+import { invoke, router } from '@forge/bridge';
 import './DescriptionQuality.css';
 
 /**
@@ -75,6 +75,8 @@ export default function DescriptionQuality({ issueKey }) {
   const [error, setError] = useState(null);
   const [editedTitle, setEditedTitle] = useState('');
   const [editedDescription, setEditedDescription] = useState('');
+  const [syncingRecentWork, setSyncingRecentWork] = useState(false);
+  const [syncMessage, setSyncMessage] = useState(null);
 
   const runAnalysis = useCallback(async (requestImprovement) => {
     setError(null);
@@ -143,6 +145,37 @@ export default function DescriptionQuality({ issueKey }) {
     setError(null);
     setEditedTitle('');
     setEditedDescription('');
+    setSyncingRecentWork(false);
+    setSyncMessage(null);
+  };
+
+  const handleDone = () => {
+    router.reload();
+  };
+
+  const handleSyncRecentWork = async () => {
+    setSyncingRecentWork(true);
+    setSyncMessage(null);
+    setError(null);
+    try {
+      const res = await invoke('syncRecentUnassignedWorkForIssue', { issueKey });
+      if (!res?.success) {
+        setError(res?.error || 'Sync failed');
+        setSyncingRecentWork(false);
+        return;
+      }
+      const count = res.matchedCount || 0;
+      if (count > 0) {
+        setSyncMessage(`Matched and assigned ${count} session${count === 1 ? '' : 's'}!`);
+        window.setTimeout(() => router.reload(), 2000);
+      } else {
+        setSyncMessage('No matching recent unassigned work found in the last 30 minutes.');
+        setSyncingRecentWork(false);
+      }
+    } catch (err) {
+      setError(err?.message || 'Sync failed');
+      setSyncingRecentWork(false);
+    }
   };
 
   // -----------------------------------------------------------------------
@@ -209,10 +242,31 @@ export default function DescriptionQuality({ issueKey }) {
       <div className="dq-root">
         <div className="dq-success">
           <span className="dq-success-icon" aria-hidden="true">✓</span>
-          Ticket updated. Reload the issue to see the change.
-          <button type="button" className="dq-btn dq-btn--link" onClick={handleReset}>
-            Done
-          </button>
+          <div className="dq-success-body">
+            <div>Ticket updated successfully.</div>
+            {syncingRecentWork && (
+              <div className="dq-loading dq-loading--inline">
+                <div className="dq-spinner" aria-hidden="true" />
+                <span>Syncing recent unassigned work…</span>
+              </div>
+            )}
+            {syncMessage && !syncingRecentWork && (
+              <div className="dq-sync-message">{syncMessage}</div>
+            )}
+            <div className="dq-success-actions">
+              <button
+                type="button"
+                className="dq-btn dq-btn--primary"
+                onClick={handleSyncRecentWork}
+                disabled={syncingRecentWork}
+              >
+                {syncingRecentWork ? 'Syncing…' : 'Sync Recent Work'}
+              </button>
+              <button type="button" className="dq-btn dq-btn--link" onClick={handleDone}>
+                Done
+              </button>
+            </div>
+          </div>
         </div>
       </div>
     );

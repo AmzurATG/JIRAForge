@@ -15,7 +15,8 @@ jest.mock('../../src/services/db/description-quality-notifications-repo', () => 
   listLowScoreCandidates: jest.fn(),
   insertNotification: jest.fn(),
   isWithinCooldown: jest.fn(),
-  ensurePreferenceRow: jest.fn()
+  ensurePreferenceRow: jest.fn(),
+  hasRecentUnassignedWork: jest.fn()
 }));
 
 jest.mock('../../src/services/db/user-db-service', () => ({
@@ -82,6 +83,7 @@ beforeEach(() => {
   jest.clearAllMocks();
   repo.listPendingDesktopNudges.mockResolvedValue([]);
   repo.isWithinCooldown.mockResolvedValue(false);
+  repo.hasRecentUnassignedWork.mockResolvedValue(true);
   repo.getIssueScoresFromCache.mockResolvedValue(new Map());
   userDb.getUserById.mockResolvedValue({
     id: 'user-uuid-1',
@@ -344,6 +346,65 @@ describe('POST /api/desktop/description-quality-nudges/ack', () => {
     expect(repo.acknowledgeNudges).toHaveBeenCalledWith(expect.objectContaining({
       snoozeUntil: future, action: 'snoozed'
     }));
+  });
+});
+
+describe('POST /api/desktop/description-quality-nudges/sync-recent-unassigned', () => {
+  test('returns no-recent-unassigned when user has no work in the window', async () => {
+    repo.hasRecentUnassignedWork.mockResolvedValue(false);
+
+    const res = await request(buildApp())
+      .post('/api/desktop/description-quality-nudges/sync-recent-unassigned')
+      .send({ windowMinutes: 30, limit: 5, force: false });
+
+    expect(res.status).toBe(200);
+    expect(res.body.success).toBe(true);
+    expect(res.body.generated).toBe(0);
+    expect(res.body.nudges).toEqual([]);
+    expect(res.body.reason).toBe('no-recent-unassigned');
+    expect(repo.hasRecentUnassignedWork).toHaveBeenCalledWith({
+      userId: 'user-uuid-1',
+      organizationId: 'org-uuid-1',
+      windowMinutes: 30
+    });
+    expect(descriptionService.analyzeDescription).not.toHaveBeenCalled();
+  });
+
+  test('generates nudges when recent unassigned work exists and scores are low', async () => {
+    repo.hasRecentUnassignedWork.mockResolvedValue(true);
+    descriptionService.analyzeDescription.mockResolvedValue({ score: 35 });
+    repo.insertNotification.mockResolvedValue({
+      id: 77,
+      issue_key: 'PROJ-1',
+      score_at_notify: 35,
+      payload: { summary: 'Issue one' },
+      notified_at: '2026-06-10T10:00:00Z'
+    });
+
+    const res = await request(buildApp())
+      .post('/api/desktop/description-quality-nudges/sync-recent-unassigned')
+      .send({ windowMinutes: 30, limit: 2, force: false });
+
+    expect(res.status).toBe(200);
+    expect(res.body.success).toBe(true);
+    expect(res.body.generated).toBeGreaterThan(0);
+    expect(Array.isArray(res.body.nudges)).toBe(true);
+    expect(repo.insertNotification).toHaveBeenCalled();
+  });
+
+  test('respects cooldown unless force=true', async () => {
+    repo.hasRecentUnassignedWork.mockResolvedValue(true);
+    descriptionService.analyzeDescription.mockResolvedValue({ score: 20 });
+    repo.isWithinCooldown.mockResolvedValue(true);
+
+    const res = await request(buildApp())
+      .post('/api/desktop/description-quality-nudges/sync-recent-unassigned')
+      .send({ windowMinutes: 30, limit: 5, force: false });
+
+    expect(res.status).toBe(200);
+    expect(res.body.generated).toBe(0);
+    expect(res.body.skippedCooldown).toBeGreaterThan(0);
+    expect(repo.insertNotification).not.toHaveBeenCalled();
   });
 });
 

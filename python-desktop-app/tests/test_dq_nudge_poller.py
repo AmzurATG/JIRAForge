@@ -119,6 +119,40 @@ def test_trigger_generation_returns_failure_without_token():
     post.assert_not_called()
 
 
+def test_sync_recent_unassigned_once_returns_nudges_on_success():
+    fake_response = MagicMock(status_code=200)
+    fake_response.json.return_value = {
+        'success': True,
+        'generated': 1,
+        'candidates': 2,
+        'reason': None,
+        'skippedCooldown': 0,
+        'nudges': [
+            {'id': 9, 'issueKey': 'PROJ-9', 'score': 25, 'summary': 'Bad desc', 'issueUrl': 'u', 'appUrl': None}
+        ],
+    }
+    poller = DqNudgePoller(FakeAuthManager(), on_nudges=lambda n: None)
+
+    with patch('dq_nudge.poller.requests.post', return_value=fake_response) as post:
+        result = poller.sync_recent_unassigned_once(limit=5)
+
+    assert result['success'] is True
+    assert result['generated'] == 1
+    assert len(result['nudges']) == 1
+    assert result['nudges'][0]['issueKey'] == 'PROJ-9'
+    _, kwargs = post.call_args
+    assert kwargs['json'] == {'windowMinutes': 30, 'limit': 5, 'force': False}
+
+
+def test_sync_recent_unassigned_once_returns_failure_without_token():
+    poller = DqNudgePoller(FakeAuthManager(token=None), on_nudges=lambda n: None)
+    with patch('dq_nudge.poller.requests.post') as post:
+        result = poller.sync_recent_unassigned_once()
+    assert result['success'] is False
+    assert result['nudges'] == []
+    post.assert_not_called()
+
+
 def test_poller_prefers_auth_manager_ai_server_url_over_placeholder_env(monkeypatch):
     monkeypatch.setenv('AI_SERVER_URL', 'http://your-ai-server-url:3001')
     auth = FakeAuthManager(token='abc', ai_server_url='https://good-server.example')

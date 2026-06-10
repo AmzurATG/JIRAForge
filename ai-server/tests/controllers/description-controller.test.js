@@ -6,7 +6,9 @@ jest.mock('../../src/utils/logger', () => ({
 
 jest.mock('../../src/services/description-service', () => ({
   analyzeDescription: jest.fn(),
-  recordEvent: jest.fn()
+  recordEvent: jest.fn(),
+  syncIssueUnassigned: jest.fn(),
+  syncAllUnassigned: jest.fn()
 }));
 
 const descriptionService = require('../../src/services/description-service');
@@ -137,5 +139,50 @@ describe('description-controller.recordEvent validation', () => {
     const res = makeRes();
     await controller.recordEvent(makeReq({ issueKey: 'PROJ-1', eventType: 'accept' }), res);
     expect(res.json).toHaveBeenCalledWith({ success: true });
+  });
+});
+
+describe('description-controller.syncIssueUnassigned', () => {
+  test('returns matched session ids from service', async () => {
+    descriptionService.syncIssueUnassigned.mockResolvedValue({ matchedSessionIds: ['sess-1'] });
+    const res = makeRes();
+    await controller.syncIssueUnassigned(makeReq({
+      issueKey: 'PROJ-1',
+      title: 'Title',
+      description: 'Description',
+      sessions: [{ sessionId: 'sess-1' }]
+    }), res);
+    expect(res.json).toHaveBeenCalledWith({
+      success: true,
+      data: { matchedSessionIds: ['sess-1'] }
+    });
+  });
+
+  test('rejects invalid issueKey', async () => {
+    const res = makeRes();
+    await controller.syncIssueUnassigned(makeReq({
+      issueKey: 'bad',
+      title: 'Title',
+      description: 'Description',
+      sessions: []
+    }), res);
+    expect(res.status).toHaveBeenCalledWith(400);
+  });
+});
+
+describe('description-controller.syncAllUnassigned', () => {
+  test('returns assignments from service', async () => {
+    descriptionService.syncAllUnassigned.mockResolvedValue({
+      assignments: [{ sessionId: 'sess-1', issueKey: 'PROJ-1' }]
+    });
+    const res = makeRes();
+    await controller.syncAllUnassigned(makeReq({
+      issues: [{ issueKey: 'PROJ-1', title: 'One', description: 'Desc' }],
+      sessions: [{ sessionId: 'sess-1' }]
+    }), res);
+    expect(res.json).toHaveBeenCalledWith({
+      success: true,
+      data: { assignments: [{ sessionId: 'sess-1', issueKey: 'PROJ-1' }] }
+    });
   });
 });

@@ -48,6 +48,33 @@
   margin-top: 2px;
 }
 
+.dq-success-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  flex: 1;
+}
+
+.dq-success-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.dq-sync-message {
+  font-size: 12px;
+  color: var(--ds-text-success, #006644);
+}
+
+.dq-loading--inline {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--ds-text-subtle, #6B778C);
+}
+
 /* Score badge */
 
 .dq-score-badge {

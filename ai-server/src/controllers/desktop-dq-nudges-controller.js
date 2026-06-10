@@ -466,6 +466,178 @@ router.post('/ack', async (req, res) => {
   }
 });
 
+router.post('/sync-recent-unassigned', async (req, res) => {
+  try {
+    const caller = await resolveCaller(req);
+    if (!caller || !caller.atlassianAccountId || !caller.orgId) {
+      return res.status(404).json({ success: false, error: 'User profile not found' });
+    }
+
+    const rawWindow = Number(req.body?.windowMinutes ?? 30);
+    const windowMinutes = Number.isInteger(rawWindow)
+      ? Math.max(1, Math.min(rawWindow, 60))
+      : 30;
+    const rawLimit = Number(req.body?.limit || MAX_PENDING_NUDGES);
+    const limit = Number.isInteger(rawLimit)
+      ? Math.max(1, Math.min(rawLimit, MAX_MANUAL_TRIGGER_LIMIT))
+      : MAX_PENDING_NUDGES;
+    const force = req.body?.force !== undefined ? Boolean(req.body.force) : false;
+
+    const hasRecent = await dqNotificationsRepo.hasRecentUnassignedWork({
+      userId: caller.userId,
+      organizationId: caller.organizationId,
+      windowMinutes
+    });
+
+    if (!hasRecent) {
+      return res.json({
+        success: true,
+        generated: 0,
+        nudges: [],
+        reason: 'no-recent-unassigned',
+        windowMinutes
+      });
+    }
+
+    if (req.atlassianToken) {
+      const live = await syncLiveDesktopNudges({
+        caller,
+        atlassianToken: req.atlassianToken,
+        limit,
+        force
+      });
+      return res.json({
+        success: true,
+        generated: live.generated,
+        candidates: live.candidates,
+        issueCount: live.issueCount,
+        force: live.force,
+        skippedCooldown: live.skippedCooldown,
+        reason: live.reason,
+        nudges: live.nudges,
+        windowMinutes
+      });
+    }
+
+    await dqNotificationsRepo.ensurePreferenceRow({
+      orgId: caller.orgId,
+      accountId: caller.atlassianAccountId
+    });
+
+    const cachedIssues = await getUserCachedIssues(caller.userId, caller.organizationId);
+    const issueKeys = [...new Set((cachedIssues || []).map((r) => r.issue_key).filter(Boolean))];
+
+    if (issueKeys.length === 0) {
+      return res.json({
+        success: true,
+        generated: 0,
+        nudges: [],
+        reason: 'no-cached-issues',
+        windowMinutes
+      });
+    }
+
+    const freshScores = await refreshScoresForManualTrigger({
+      orgId: caller.orgId,
+      accountId: caller.atlassianAccountId,
+      cachedIssues
+    });
+
+    const cachedScores = await dqNotificationsRepo.getIssueScoresFromCache({
+      orgId: caller.orgId,
+      issueKeys
+    });
+
+    const mergedScores = new Map(cachedScores);
+    for (const [issueKey, score] of freshScores.entries()) {
+      mergedScores.set(issueKey, score);
+    }
+
+    const scoreRows = [];
+    for (const [issueKey, score] of mergedScores.entries()) {
+      const numScore = Number(score);
+      if (Number.isFinite(numScore) && numScore < MIN_NUDGE_SCORE) {
+        scoreRows.push({ issue_key: issueKey, score: numScore });
+      }
+    }
+    scoreRows.sort((a, b) => a.score - b.score);
+    scoreRows.splice(limit * 3);
+
+    const summaryByIssue = new Map(
+      (cachedIssues || []).map((row) => [row.issue_key, row.issue_summary || row.summary || null])
+    );
+
+    let generated = 0;
+    let skippedCooldown = 0;
+    const nudges = [];
+
+    for (const row of scoreRows) {
+      if (nudges.length >= limit) break;
+
+      const issueKey = row.issue_key;
+      const score = Number(row.score);
+      if (!issueKey || Number.isNaN(score)) continue;
+
+      if (!force) {
+        const inCooldown = await dqNotificationsRepo.isWithinCooldown(
+          caller.orgId,
+          caller.atlassianAccountId,
+          issueKey
+        );
+        if (inCooldown) {
+          skippedCooldown += 1;
+          continue;
+        }
+      }
+
+      const inserted = await dqNotificationsRepo.insertNotification({
+        orgId: caller.orgId,
+        accountId: caller.atlassianAccountId,
+        cloudId: caller.orgId,
+        issueKey,
+        scoreAtNotify: score,
+        channel: 'desktop',
+        payload: {
+          score,
+          summary: summaryByIssue.get(issueKey) || null,
+          issueUrl: buildIssueUrl(caller.jiraBaseUrl, issueKey),
+          appUrl: null,
+          createdAt: new Date().toISOString()
+        }
+      });
+
+      generated += 1;
+      nudges.push(mapNudgeRow({ row: inserted, jiraBaseUrl: caller.jiraBaseUrl }));
+    }
+
+    let reason = null;
+    if (nudges.length === 0) {
+      if (scoreRows.length === 0) {
+        reason = 'no-low-scores';
+      } else if (!force && skippedCooldown > 0) {
+        reason = 'cooldown-filtered';
+      } else {
+        reason = 'limit-reached-or-invalid-candidates';
+      }
+    }
+
+    return res.json({
+      success: true,
+      generated,
+      candidates: scoreRows.length,
+      issueCount: issueKeys.length,
+      force,
+      skippedCooldown,
+      reason,
+      nudges,
+      windowMinutes
+    });
+  } catch (err) {
+    logger.error('[DesktopDqNudges] POST /sync-recent-unassigned failed: %s', err.message);
+    return res.status(500).json({ success: false, error: 'Failed to sync recent unassigned nudges' });
+  }
+});
+
 router.post('/trigger', async (req, res) => {
   try {
     const caller = await resolveCaller(req);

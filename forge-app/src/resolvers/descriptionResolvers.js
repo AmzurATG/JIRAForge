@@ -18,11 +18,16 @@
 
 import api, { route } from '@forge/api';
 import { remoteRequest } from '../utils/remote.js';
-import { isValidIssueKey } from '../utils/validators.js';
+import { isValidIssueKey, sanitizeUUIDArray } from '../utils/validators.js';
 import { markdownToADF, validateADF, adfToText, extractMediaNodes } from '../utils/adfBuilder.js';
+import { supabaseRequest } from '../utils/supabase.js';
+import { initializeRequestContext, ensureArray, handleResolverError } from './unassigned/helpers.js';
+import { updateSessionsAndAnalysis, markGroupAsAssigned } from './unassigned/assignmentResolvers.js';
+import { createWorklogIfNeeded, isAutoSyncEnabled } from '../services/workAssignmentService.js';
 
 const ALLOWED_ISSUE_TYPES = new Set(['Bug', 'Story', 'Task', 'Epic', 'Sub-task']);
 const ALLOWED_EVENTS = new Set(['analyze', 'improve', 'accept', 'edit', 'reject']);
+const RECENT_UNASSIGNED_WINDOW_MINUTES = 30;
 
 function failure(message) {
   return { success: false, error: message };
@@ -327,6 +332,175 @@ function normalizeIssueType(type) {
   return ALLOWED_ISSUE_TYPES.has(type) ? type : 'Task';
 }
 
+function recentUnassignedCutoffIso(windowMinutes = RECENT_UNASSIGNED_WINDOW_MINUTES) {
+  return new Date(Date.now() - windowMinutes * 60 * 1000).toISOString();
+}
+
+async function fetchRecentUnassignedSessions(supabaseConfig, userId, organizationId, windowMinutes = RECENT_UNASSIGNED_WINDOW_MINUTES) {
+  const cutoff = recentUnassignedCutoffIso(windowMinutes);
+
+  const [activityResults, legacyResults] = await Promise.all([
+    supabaseRequest(
+      supabaseConfig,
+      `activity_records?user_id=eq.${userId}&organization_id=eq.${organizationId}` +
+      `&user_assigned_issue_key=is.null&status=in.(pending,processing,analyzed)` +
+      `&classification=in.(productive,unknown)&clustering_dismissed=eq.false` +
+      `&created_at=gte.${cutoff}` +
+      `&select=id,window_title,application_name,ocr_text,duration_seconds,total_time_seconds`
+    ),
+    supabaseRequest(
+      supabaseConfig,
+      `unassigned_activity?user_id=eq.${userId}&organization_id=eq.${organizationId}` +
+      `&manually_assigned=eq.false&clustering_dismissed=eq.false` +
+      `&timestamp=gte.${cutoff}` +
+      `&select=id,window_title,application_name,extracted_text,time_spent_seconds`
+    )
+  ]);
+
+  const sessions = [];
+  for (const record of ensureArray(activityResults)) {
+    sessions.push({
+      sessionId: record.id,
+      applicationName: record.application_name || '',
+      windowTitle: record.window_title || '',
+      screenText: (record.ocr_text || '').slice(0, 500),
+      durationSeconds: record.duration_seconds || record.total_time_seconds || 0,
+      source: 'activity_records'
+    });
+  }
+  for (const record of ensureArray(legacyResults)) {
+    sessions.push({
+      sessionId: record.id,
+      applicationName: record.application_name || '',
+      windowTitle: record.window_title || '',
+      screenText: (record.extracted_text || '').slice(0, 500),
+      durationSeconds: record.time_spent_seconds || 0,
+      source: 'unassigned_activity'
+    });
+  }
+  return sessions;
+}
+
+async function sumSessionDurations(supabaseConfig, userId, organizationId, sessionIds) {
+  const validIds = sanitizeUUIDArray(sessionIds);
+  if (validIds.length === 0) return 0;
+
+  const idsParam = validIds.join(',');
+  const [activityRows, legacyRows] = await Promise.all([
+    supabaseRequest(
+      supabaseConfig,
+      `activity_records?id=in.(${idsParam})&user_id=eq.${userId}` +
+      `&select=duration_seconds,total_time_seconds`
+    ),
+    supabaseRequest(
+      supabaseConfig,
+      `unassigned_activity?id=in.(${idsParam})&user_id=eq.${userId}` +
+      `&organization_id=eq.${organizationId}` +
+      `&select=time_spent_seconds`
+    )
+  ]);
+
+  let total = 0;
+  for (const row of ensureArray(activityRows)) {
+    total += row.duration_seconds || row.total_time_seconds || 0;
+  }
+  for (const row of ensureArray(legacyRows)) {
+    total += row.time_spent_seconds || 0;
+  }
+  return total;
+}
+
+async function assignMatchedSessions({
+  supabaseConfig,
+  userId,
+  organizationId,
+  accountId,
+  cloudId,
+  issueKey,
+  sessionIds
+}) {
+  const validSessionIds = sanitizeUUIDArray(sessionIds);
+  if (validSessionIds.length === 0) {
+    return 0;
+  }
+
+  await updateSessionsAndAnalysis({
+    validSessionIds,
+    issueKey,
+    userId,
+    organizationId,
+    supabaseConfig,
+    groupId: null
+  });
+
+  const idsParam = validSessionIds.join(',');
+  const members = ensureArray(await supabaseRequest(
+    supabaseConfig,
+    `unassigned_group_members?or=(activity_record_id.in.(${idsParam}),unassigned_activity_id.in.(${idsParam}))` +
+    `&select=group_id,activity_record_id,unassigned_activity_id`
+  ));
+
+  const sessionIdsSet = new Set(validSessionIds);
+  const groupIds = [...new Set(members.map((m) => m.group_id).filter(Boolean))];
+
+  for (const groupId of groupIds) {
+    const groupMembers = ensureArray(await supabaseRequest(
+      supabaseConfig,
+      `unassigned_group_members?group_id=eq.${groupId}&select=activity_record_id,unassigned_activity_id`
+    ));
+    const memberSessionIds = groupMembers
+      .flatMap((m) => [m.activity_record_id, m.unassigned_activity_id])
+      .filter(Boolean);
+    if (memberSessionIds.length > 0 && memberSessionIds.every((id) => sessionIdsSet.has(id))) {
+      await markGroupAsAssigned({ groupId, issueKey, userId, supabaseConfig });
+    }
+  }
+
+  const timeToLog = await sumSessionDurations(supabaseConfig, userId, organizationId, validSessionIds);
+  const autoSyncEnabled = await isAutoSyncEnabled(accountId, cloudId);
+  await createWorklogIfNeeded({
+    issueKey,
+    timeToLog,
+    sessionCount: validSessionIds.length,
+    autoSyncEnabled,
+    customComment: 'Time tracked from recent unassigned work, auto-matched after description update.'
+  });
+
+  return validSessionIds.length;
+}
+
+async function fetchRecentlyUpdatedIssueKeys(supabaseConfig, cloudId, windowMinutes = RECENT_UNASSIGNED_WINDOW_MINUTES) {
+  const cutoff = recentUnassignedCutoffIso(windowMinutes);
+  const rows = ensureArray(await supabaseRequest(
+    supabaseConfig,
+    `description_quality_events?org_id=eq.${cloudId}` +
+    `&event_type=in.(accept,edit)&created_at=gte.${cutoff}` +
+    `&select=issue_key,created_at&order=created_at.desc`
+  ));
+
+  const seen = new Set();
+  const keys = [];
+  for (const row of rows) {
+    if (!row?.issue_key || seen.has(row.issue_key)) continue;
+    seen.add(row.issue_key);
+    keys.push(row.issue_key);
+  }
+  return keys;
+}
+
+async function fetchIssuesFromJira(issueKeys) {
+  const issues = [];
+  for (const issueKey of issueKeys) {
+    try {
+      const { title, description } = await fetchIssueForAnalysis(issueKey);
+      issues.push({ issueKey, title, description });
+    } catch (err) {
+      console.warn(`[descriptionResolvers] Skipping issue ${issueKey}: ${err.message}`);
+    }
+  }
+  return issues;
+}
+
 export function registerDescriptionResolvers(resolver) {
   resolver.define('analyzeDescription', async (req) => {
     const { payload, context } = req;
@@ -540,6 +714,105 @@ export function registerDescriptionResolvers(resolver) {
       // Analytics is best-effort — never surface failures to the UI.
       console.warn('[descriptionResolvers] recordDescriptionEvent skipped:', err.message);
       return { success: true };
+    }
+  });
+
+  resolver.define('syncRecentUnassignedWorkForIssue', async (req) => {
+    const issueKey = req.payload?.issueKey;
+    if (!issueKey || !isValidIssueKey(issueKey)) {
+      return failure('Invalid or missing issueKey');
+    }
+
+    try {
+      const ctx = await initializeRequestContext(req);
+      if (!ctx.success) return ctx;
+
+      const { config: supabaseConfig, organization, userId, accountId, cloudId } = ctx;
+      const sessions = await fetchRecentUnassignedSessions(supabaseConfig, userId, organization.id);
+      if (sessions.length === 0) {
+        return { success: true, matchedCount: 0 };
+      }
+
+      const { title, description } = await fetchIssueForAnalysis(issueKey);
+      const matchData = await remoteRequest('/api/forge/description/sync-issue-unassigned', {
+        method: 'POST',
+        body: { issueKey, title, description, sessions }
+      });
+      const matchedSessionIds = matchData?.matchedSessionIds || [];
+      if (matchedSessionIds.length === 0) {
+        return { success: true, matchedCount: 0 };
+      }
+
+      const matchedCount = await assignMatchedSessions({
+        supabaseConfig,
+        userId,
+        organizationId: organization.id,
+        accountId,
+        cloudId,
+        issueKey,
+        sessionIds: matchedSessionIds
+      });
+
+      return { success: true, matchedCount };
+    } catch (err) {
+      console.error('[descriptionResolvers] syncRecentUnassignedWorkForIssue failed:', err.message);
+      return failure(err.message || 'Failed to sync recent unassigned work');
+    }
+  });
+
+  resolver.define('syncRecentUnassignedWorkWithAllUpdatedIssues', async (req) => {
+    try {
+      const ctx = await initializeRequestContext(req);
+      if (!ctx.success) return ctx;
+
+      const { config: supabaseConfig, organization, userId, accountId, cloudId } = ctx;
+      const [sessions, issueKeys] = await Promise.all([
+        fetchRecentUnassignedSessions(supabaseConfig, userId, organization.id),
+        fetchRecentlyUpdatedIssueKeys(supabaseConfig, cloudId)
+      ]);
+
+      if (sessions.length === 0 || issueKeys.length === 0) {
+        return { success: true, matchedCount: 0 };
+      }
+
+      const issues = await fetchIssuesFromJira(issueKeys);
+      if (issues.length === 0) {
+        return { success: true, matchedCount: 0 };
+      }
+
+      const matchData = await remoteRequest('/api/forge/description/sync-all-unassigned', {
+        method: 'POST',
+        body: { issues, sessions }
+      });
+      const assignments = Array.isArray(matchData?.assignments) ? matchData.assignments : [];
+      if (assignments.length === 0) {
+        return { success: true, matchedCount: 0 };
+      }
+
+      const byIssue = new Map();
+      for (const row of assignments) {
+        if (!row?.sessionId || !row?.issueKey) continue;
+        if (!byIssue.has(row.issueKey)) byIssue.set(row.issueKey, []);
+        byIssue.get(row.issueKey).push(row.sessionId);
+      }
+
+      let matchedCount = 0;
+      for (const [issueKey, sessionIds] of byIssue.entries()) {
+        matchedCount += await assignMatchedSessions({
+          supabaseConfig,
+          userId,
+          organizationId: organization.id,
+          accountId,
+          cloudId,
+          issueKey,
+          sessionIds
+        });
+      }
+
+      return { success: true, matchedCount };
+    } catch (err) {
+      console.error('[descriptionResolvers] syncRecentUnassignedWorkWithAllUpdatedIssues failed:', err.message);
+      return handleResolverError(err, 'syncing recent unassigned work with updated issues');
     }
   });
 }

@@ -512,6 +512,8 @@ app.get('/api/forge/issues/active-accounts', ...forgeMiddleware, forgeProxyContr
 // Description quality (AI-assisted ticket description enhancement)
 app.post('/api/forge/description/analyze', ...forgeMiddleware, descriptionController.analyze);
 app.post('/api/forge/description/event', ...forgeMiddleware, descriptionController.recordEvent);
+app.post('/api/forge/description/sync-issue-unassigned', ...forgeMiddleware, descriptionController.syncIssueUnassigned);
+app.post('/api/forge/description/sync-all-unassigned', ...forgeMiddleware, descriptionController.syncAllUnassigned);
 
 // Uninstall handler — called when app is uninstalled from Jira site (Forge-authenticated)
 // Marks organization for deletion with 30-day grace period

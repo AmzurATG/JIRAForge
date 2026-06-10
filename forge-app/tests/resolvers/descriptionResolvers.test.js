@@ -28,6 +28,33 @@ jest.mock('../../src/utils/remote.js', () => ({
   remoteRequest: (...args) => mockRemoteRequest(...args)
 }));
 
+const mockSupabaseRequest = jest.fn();
+const mockInitializeRequestContext = jest.fn();
+const mockUpdateSessionsAndAnalysis = jest.fn();
+const mockMarkGroupAsAssigned = jest.fn();
+const mockCreateWorklogIfNeeded = jest.fn();
+const mockIsAutoSyncEnabled = jest.fn();
+
+jest.mock('../../src/utils/supabase.js', () => ({
+  supabaseRequest: (...args) => mockSupabaseRequest(...args)
+}));
+
+jest.mock('../../src/resolvers/unassigned/helpers.js', () => ({
+  initializeRequestContext: (...args) => mockInitializeRequestContext(...args),
+  ensureArray: (value) => (Array.isArray(value) ? value : (value ? [value] : [])),
+  handleResolverError: (error, operation) => ({ success: false, error: `${operation}: ${error.message}` })
+}));
+
+jest.mock('../../src/resolvers/unassigned/assignmentResolvers.js', () => ({
+  updateSessionsAndAnalysis: (...args) => mockUpdateSessionsAndAnalysis(...args),
+  markGroupAsAssigned: (...args) => mockMarkGroupAsAssigned(...args)
+}));
+
+jest.mock('../../src/services/workAssignmentService.js', () => ({
+  createWorklogIfNeeded: (...args) => mockCreateWorklogIfNeeded(...args),
+  isAutoSyncEnabled: (...args) => mockIsAutoSyncEnabled(...args)
+}));
+
 const { registerDescriptionResolvers } = require('../../src/resolvers/descriptionResolvers.js');
 
 function makeResolver() {
@@ -51,8 +78,24 @@ function jsonResponse(payload, ok = true, status = 200) {
   });
 }
 
+const SESSION_ID_1 = 'aaaaaaaa-bbbb-4ccc-dddd-eeeeeeeeeeee';
+
 beforeEach(() => {
   jest.clearAllMocks();
+  mockSupabaseRequest.mockReset();
+  mockRemoteRequest.mockReset();
+  mockInitializeRequestContext.mockResolvedValue({
+    success: true,
+    config: { url: 'https://example.supabase.co', key: 'k' },
+    organization: { id: 'org-1' },
+    userId: 'user-1',
+    accountId: 'acct-1',
+    cloudId: 'cloud-1'
+  });
+  mockIsAutoSyncEnabled.mockResolvedValue(false);
+  mockCreateWorklogIfNeeded.mockResolvedValue({ worklog: null, worklogSkipped: true });
+  mockUpdateSessionsAndAnalysis.mockResolvedValue(0);
+  mockMarkGroupAsAssigned.mockResolvedValue(true);
 });
 
 describe('analyzeDescription resolver', () => {
@@ -330,5 +373,127 @@ describe('recordDescriptionEvent resolver', () => {
       payload: { issueKey: 'PROJ-1', eventType: 'reject' }
     });
     expect(result.success).toBe(true);
+  });
+});
+
+describe('syncRecentUnassignedWorkForIssue resolver', () => {
+  test('assigns matched sessions returned by AI server', async () => {
+    const r = makeResolver();
+    registerDescriptionResolvers(r);
+
+    mockSupabaseRequest
+      .mockResolvedValueOnce([{
+        id: SESSION_ID_1,
+        window_title: 'login.ts',
+        application_name: 'Code',
+        ocr_text: 'auth bug',
+        duration_seconds: 120
+      }])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ duration_seconds: 120 }])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([]);
+
+    mockRequestJira.mockReturnValue(jsonResponse({
+      fields: {
+        summary: 'Login bug',
+        description: {
+          type: 'doc', version: 1,
+          content: [{ type: 'paragraph', content: [{ type: 'text', text: 'Broken login' }] }]
+        },
+        issuetype: { name: 'Bug' },
+        project: { key: 'PROJ' },
+        attachment: [],
+        issuelinks: []
+      }
+    }));
+
+    mockRemoteRequest.mockResolvedValue({ matchedSessionIds: [SESSION_ID_1] });
+
+    const result = await r.invoke('syncRecentUnassignedWorkForIssue', {
+      payload: { issueKey: 'PROJ-1' },
+      context: { accountId: 'acct-1', cloudId: 'cloud-1' }
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.matchedCount).toBe(1);
+    expect(mockRemoteRequest).toHaveBeenCalledWith(
+      '/api/forge/description/sync-issue-unassigned',
+      expect.objectContaining({
+        body: expect.objectContaining({ issueKey: 'PROJ-1' })
+      })
+    );
+    expect(mockUpdateSessionsAndAnalysis).toHaveBeenCalledWith(
+      expect.objectContaining({ issueKey: 'PROJ-1', validSessionIds: [SESSION_ID_1] })
+    );
+  });
+
+  test('returns zero when no recent unassigned sessions exist', async () => {
+    const r = makeResolver();
+    registerDescriptionResolvers(r);
+    mockSupabaseRequest.mockResolvedValueOnce([]).mockResolvedValueOnce([]);
+
+    const result = await r.invoke('syncRecentUnassignedWorkForIssue', {
+      payload: { issueKey: 'PROJ-1' },
+      context: { accountId: 'acct-1', cloudId: 'cloud-1' }
+    });
+
+    expect(result).toEqual({ success: true, matchedCount: 0 });
+    expect(mockRemoteRequest).not.toHaveBeenCalled();
+  });
+});
+
+describe('syncRecentUnassignedWorkWithAllUpdatedIssues resolver', () => {
+  test('groups assignments by issue and assigns each batch', async () => {
+    const r = makeResolver();
+    registerDescriptionResolvers(r);
+
+    mockSupabaseRequest
+      .mockResolvedValueOnce([{
+        id: SESSION_ID_1,
+        window_title: 'api.ts',
+        application_name: 'Code',
+        ocr_text: 'api work',
+        duration_seconds: 90
+      }])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ issue_key: 'PROJ-1', created_at: '2026-06-10T10:00:00Z' }])
+      .mockResolvedValueOnce([{ duration_seconds: 90 }])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([]);
+
+    mockRequestJira.mockReturnValue(jsonResponse({
+      fields: {
+        summary: 'API task',
+        description: {
+          type: 'doc', version: 1,
+          content: [{ type: 'paragraph', content: [{ type: 'text', text: 'API changes' }] }]
+        },
+        issuetype: { name: 'Task' },
+        project: { key: 'PROJ' },
+        attachment: [],
+        issuelinks: []
+      }
+    }));
+
+    mockRemoteRequest.mockResolvedValue({
+      assignments: [{ sessionId: SESSION_ID_1, issueKey: 'PROJ-1' }]
+    });
+
+    const result = await r.invoke('syncRecentUnassignedWorkWithAllUpdatedIssues', {
+      payload: {},
+      context: { accountId: 'acct-1', cloudId: 'cloud-1' }
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.matchedCount).toBe(1);
+    expect(mockRemoteRequest).toHaveBeenCalledWith(
+      '/api/forge/description/sync-all-unassigned',
+      expect.objectContaining({
+        body: expect.objectContaining({
+          issues: [expect.objectContaining({ issueKey: 'PROJ-1' })]
+        })
+      })
+    );
   });
 });

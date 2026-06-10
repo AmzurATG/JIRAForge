@@ -22,6 +22,7 @@ logger = logging.getLogger(__name__)
 
 NUDGES_ENDPOINT = '/api/desktop/description-quality-nudges'
 TRIGGER_ENDPOINT = '/api/desktop/description-quality-nudges/trigger'
+SYNC_RECENT_UNASSIGNED_ENDPOINT = '/api/desktop/description-quality-nudges/sync-recent-unassigned'
 
 FOREGROUND_POLL_INTERVAL = 30 * 60    # 30 minutes
 IDLE_POLL_INTERVAL = 60 * 60          # 60 minutes
@@ -120,6 +121,57 @@ class DqNudgePoller:
             return []
 
         return list(data.get('nudges') or [])
+
+    def sync_recent_unassigned_once(
+        self,
+        timeout: float = 15.0,
+        limit: int = 5,
+        window_minutes: int = 30,
+        force: bool = False,
+    ) -> dict:
+        """One-time startup sync: scan recent unassigned work and create DQ nudge rows."""
+        headers = get_dq_headers(self.auth_manager)
+        if not headers:
+            logger.debug('[DqNudge.poller] No Supabase token; skipping recent-unassigned sync')
+            return {'success': False, 'generated': 0, 'nudges': [], 'reason': 'missing-token'}
+
+        try:
+            resp = requests.post(
+                self.ai_server_url + SYNC_RECENT_UNASSIGNED_ENDPOINT,
+                headers={**headers, 'Accept': 'application/json'},
+                json={
+                    'windowMinutes': int(window_minutes),
+                    'limit': int(limit),
+                    'force': bool(force),
+                },
+                timeout=timeout,
+            )
+        except requests.RequestException as exc:
+            logger.warning('[DqNudge.poller] Recent-unassigned sync HTTP exception: %s', exc)
+            return {'success': False, 'generated': 0, 'nudges': [], 'reason': 'request-exception'}
+
+        if not (200 <= resp.status_code < 300):
+            logger.warning('[DqNudge.poller] Recent-unassigned sync HTTP %s', resp.status_code)
+            return {
+                'success': False,
+                'generated': 0,
+                'nudges': [],
+                'reason': f'http-{resp.status_code}',
+            }
+
+        try:
+            data = resp.json() or {}
+            return {
+                'success': bool(data.get('success')),
+                'generated': int(data.get('generated') or 0),
+                'candidates': int(data.get('candidates') or 0),
+                'reason': data.get('reason') or None,
+                'skippedCooldown': int(data.get('skippedCooldown') or 0),
+                'nudges': list(data.get('nudges') or []),
+            }
+        except ValueError:
+            logger.warning('[DqNudge.poller] Recent-unassigned sync non-JSON response')
+            return {'success': False, 'generated': 0, 'nudges': [], 'reason': 'non-json'}
 
     def trigger_generation(self, timeout: float = 15.0, limit: int = 5, force: bool = True) -> dict:
         """Request server-side generation of desktop nudge rows for manual testing."""

@@ -579,10 +579,178 @@ async function analyzeDescription(params) {
   return result;
 }
 
+// ---------------------------------------------------------------------------
+// Recent unassigned work matching (post-description-update sync)
+// ---------------------------------------------------------------------------
+
+const MATCH_MIN_CONFIDENCE = 0.7;
+
+const SYNC_ISSUE_UNASSIGNED_SYSTEM_PROMPT = `You are an expert assistant matching time tracking activity records to a specific Jira issue.
+You will be given the Jira issue's key, title, and description, and a list of unassigned work sessions from the last 30 minutes.
+Determine which sessions represent work on this specific issue.
+
+MATCHING RULES:
+1. Look at application names, window titles, and screen text context to identify a semantic match.
+2. Be conservative. Only match if you are highly confident (confidence score >= 0.7) that the activity directly maps to the issue.
+3. Return a JSON object containing a "matches" array. Each match must include "sessionId" (string UUID) and "confidence" (number 0-1).
+4. Only include session IDs from the provided sessions list.`;
+
+const SYNC_ALL_UNASSIGNED_SYSTEM_PROMPT = `You are an expert assistant matching time tracking activity records to a list of recently updated Jira issues.
+You will be given a list of candidate Jira issues (each with its key, title, and description) and a list of unassigned work sessions from the last 30 minutes.
+Determine which session matches which issue.
+
+MATCHING RULES:
+1. Match a session to an issue key only if there is a strong semantic relationship (e.g. VS Code folder matches issue component, browser URL matches ticket context).
+2. Be conservative. Only match if you are highly confident (confidence score >= 0.7). If no candidate issue is a strong match, do not assign it.
+3. Return a JSON object with an "assignments" array. Each item must include "sessionId", "issueKey", and "confidence" (number 0-1).
+4. Each session may match at most one issue. Only use issue keys from the provided list.`;
+
+function validateSessionList(sessions) {
+  if (!Array.isArray(sessions)) return [];
+  return sessions.filter((s) => s && typeof s.sessionId === 'string' && s.sessionId.length > 0);
+}
+
+function filterMatchesByConfidence(matches, validSessionIds, validIssueKeys = null) {
+  const sessionSet = new Set(validSessionIds);
+  const issueSet = validIssueKeys ? new Set(validIssueKeys) : null;
+  const out = [];
+
+  for (const row of matches || []) {
+    if (!row || typeof row.sessionId !== 'string') continue;
+    if (!sessionSet.has(row.sessionId)) continue;
+    const confidence = Number(row.confidence);
+    if (!Number.isFinite(confidence) || confidence < MATCH_MIN_CONFIDENCE) continue;
+    if (issueSet && (!row.issueKey || !issueSet.has(row.issueKey))) continue;
+    out.push({
+      sessionId: row.sessionId,
+      issueKey: row.issueKey || null,
+      confidence
+    });
+  }
+
+  return out;
+}
+
+async function invokeMatchLLM({ systemPrompt, userPayload, deps = {} }) {
+  const runChat = deps.runChat || chatCompletionWithFallback;
+  if (!deps.runChat && !isPortkeyEnabled()) {
+    logger.warn('[DescQuality] Match LLM unavailable: Portkey not enabled');
+    return null;
+  }
+
+  const messages = [
+    { role: 'system', content: systemPrompt },
+    { role: 'user', content: JSON.stringify(userPayload) }
+  ];
+
+  try {
+    const { response } = await withTimeout(
+      runChat({
+        messages,
+        max_tokens: 1200,
+        temperature: 0.2,
+        response_format: { type: 'json_object' }
+      }),
+      LLM_TIMEOUT_MS,
+      'MatchLLM'
+    );
+    return parseLLMContent(response?.choices?.[0]?.message?.content || '');
+  } catch (err) {
+    logger.error('[DescQuality] Match LLM failed: %s', err.message);
+    return null;
+  }
+}
+
+/**
+ * Match recent unassigned sessions to a single updated issue.
+ * @returns {Promise<{matchedSessionIds: string[]}>}
+ */
+async function syncIssueUnassigned({ issueKey, title, description, sessions, deps = {} }) {
+  const validSessions = validateSessionList(sessions);
+  if (!issueKey || validSessions.length === 0) {
+    return { matchedSessionIds: [] };
+  }
+
+  const parsed = await invokeMatchLLM({
+    systemPrompt: SYNC_ISSUE_UNASSIGNED_SYSTEM_PROMPT,
+    userPayload: {
+      issueKey,
+      title: sanitizePII(title || ''),
+      description: sanitizePII(description || ''),
+      sessions: validSessions.map((s) => ({
+        sessionId: s.sessionId,
+        applicationName: sanitizePII(s.applicationName || ''),
+        windowTitle: sanitizePII(s.windowTitle || ''),
+        screenText: sanitizePII((s.screenText || '').slice(0, 500))
+      }))
+    },
+    deps
+  });
+
+  const matches = filterMatchesByConfidence(
+    parsed?.matches || parsed?.assignments || [],
+    validSessions.map((s) => s.sessionId)
+  );
+
+  return { matchedSessionIds: matches.map((m) => m.sessionId) };
+}
+
+/**
+ * Match recent unassigned sessions across multiple recently updated issues.
+ * @returns {Promise<{assignments: Array<{sessionId: string, issueKey: string}>}>}
+ */
+async function syncAllUnassigned({ issues, sessions, deps = {} }) {
+  const validSessions = validateSessionList(sessions);
+  const validIssues = Array.isArray(issues)
+    ? issues.filter((i) => i && typeof i.issueKey === 'string')
+    : [];
+
+  if (validIssues.length === 0 || validSessions.length === 0) {
+    return { assignments: [] };
+  }
+
+  const parsed = await invokeMatchLLM({
+    systemPrompt: SYNC_ALL_UNASSIGNED_SYSTEM_PROMPT,
+    userPayload: {
+      issues: validIssues.map((i) => ({
+        issueKey: i.issueKey,
+        title: sanitizePII(i.title || ''),
+        description: sanitizePII((i.description || '').slice(0, 3000))
+      })),
+      sessions: validSessions.map((s) => ({
+        sessionId: s.sessionId,
+        applicationName: sanitizePII(s.applicationName || ''),
+        windowTitle: sanitizePII(s.windowTitle || ''),
+        screenText: sanitizePII((s.screenText || '').slice(0, 500))
+      }))
+    },
+    deps
+  });
+
+  const issueKeys = validIssues.map((i) => i.issueKey);
+  const matches = filterMatchesByConfidence(
+    parsed?.assignments || parsed?.matches || [],
+    validSessions.map((s) => s.sessionId),
+    issueKeys
+  );
+
+  const seen = new Set();
+  const assignments = [];
+  for (const match of matches) {
+    if (seen.has(match.sessionId)) continue;
+    seen.add(match.sessionId);
+    assignments.push({ sessionId: match.sessionId, issueKey: match.issueKey });
+  }
+
+  return { assignments };
+}
+
 module.exports = {
   // Public
   analyzeDescription,
   recordEvent,
+  syncIssueUnassigned,
+  syncAllUnassigned,
   // Internals exposed for unit tests
   sanitizePII,
   scoreDeterministic,
@@ -590,5 +758,7 @@ module.exports = {
   parseLLMContent,
   generateContentHash,
   runLLMAnalysis,
-  LLM_GATE_THRESHOLD
+  filterMatchesByConfidence,
+  LLM_GATE_THRESHOLD,
+  MATCH_MIN_CONFIDENCE
 };
