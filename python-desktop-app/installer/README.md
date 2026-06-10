@@ -68,22 +68,61 @@ app's own `apply_update()` simply triggers this task on demand
 (`schtasks /Run`); the hourly schedule is the guarantee even if the on-demand
 trigger is denied.
 
-## How to build
+## How to build (for developers)
 
-1. Install **Inno Setup 6** on the build machine: <https://jrsoftware.org/isdl.php>
-   (provides `ISCC.exe`).
-2. (Optional, for signing) install the **Windows SDK** (`signtool`) and set:
+Building is the **same one-command workflow as before** (`build.bat`); the only
+new tool compared with the old "just an .exe" days is **Inno Setup** (used to
+compile the installer). End users never need it — it's a build-machine tool only.
+
+### Prerequisites (one-time, on the build machine)
+
+1. **Python 3.11** (match the build — it uses 3.11.x).
+2. **Inno Setup 6** — <https://jrsoftware.org/isdl.php>. Click through the
+   installer once; it provides `ISCC.exe`, which `build.bat` locates
+   automatically. *(This is the only new requirement.)*
+3. *(Optional, only if code-signing)* the **Windows SDK** for `signtool`, then:
    ```bat
    set SIGN_PFX=C:\path\to\codesign.pfx
    set SIGN_PFX_PASSWORD=yourpassword
    ```
-3. Run `build.bat`. It will:
-   - build the one-folder app to `dist\TimeTracker\`,
-   - (if `SIGN_PFX` set) sign every `*.exe` / `*.dll`,
-   - compile `installer\Output\TimeTrackerSetup.exe`,
-   - (if `SIGN_PFX` set) sign the installer.
+4. Create a virtual env in `python-desktop-app\` so `build.bat` picks it up
+   (it looks for `venv\` or `.venv\`):
+   ```powershell
+   cd python-desktop-app
+   python -m venv venv
+   ```
+   You do **not** need to `pip install` anything by hand — `build.bat` installs
+   `requirements.txt` (incl. spaCy + the en_core_web_sm model) and the OCR
+   engines for you.
 
-Distribute **`TimeTrackerSetup.exe`**.
+### Build
+
+```powershell
+.\build.bat
+```
+
+`build.bat` will:
+- install Python deps + the OCR engines configured in `.env`
+  (defaults to `rapidocr` + `winrtocr`; **no easyocr**),
+- build the one-folder app to `dist\TimeTracker\`,
+- **auto-read the version** from `APP_VERSION` in `desktop_app.py` (no need to
+  pass it; it aborts if the version can't be read),
+- (if `SIGN_PFX` set) sign every `*.exe` / `*.dll`, failing the build if signing
+  fails,
+- compile `installer\Output\TimeTrackerSetup.exe`,
+- (if `SIGN_PFX` set) sign the installer.
+
+Distribute the single file **`installer\Output\TimeTrackerSetup.exe`**.
+
+### Notes
+- **To change the version:** edit only `APP_VERSION = "x.y.z"` in
+  `desktop_app.py`, then run `build.bat` — the app, installer, and version-check
+  all follow from that one line.
+- **No Inno Setup installed?** `build.bat` does not fail — it still produces
+  `dist\TimeTracker\` and prints a warning that the installer step was skipped.
+  Install Inno Setup 6 and re-run to get `TimeTrackerSetup.exe`.
+- The **first** build is slower (it installs all dependencies); later builds are
+  fast.
 
 ## ⚠️ Required external steps (NOT done by this code)
 
