@@ -387,7 +387,7 @@ describe('syncRecentUnassignedWorkForIssue resolver', () => {
         return [{ id: GROUP_ID }];
       }
 
-      if (path.startsWith('unassigned_group_members?group_id=in.(')) {
+      if (path.includes('unassigned_group_members?') && path.includes('group_id=') && path.includes('created_at')) {
         return [{
           group_id: GROUP_ID,
           activity_record_id: SESSION_ID_1,
@@ -485,16 +485,19 @@ describe('syncRecentUnassignedWorkWithAllUpdatedIssues resolver', () => {
         return [{ id: GROUP_ID }];
       }
 
-      if (path.startsWith('unassigned_group_members?group_id=in.(')) {
-        return [{
-          group_id: GROUP_ID,
-          activity_record_id: SESSION_ID_1,
-          unassigned_activity_id: null,
-          created_at: '2026-06-10T15:10:55.843434+00:00'
-        }];
+      if (path.includes('unassigned_group_members?') && path.includes('group_id=')) {
+        // Handle both URL-encoded (from URLSearchParams) and plain formats
+        if (path.includes('created_at')) {
+          return [{
+            group_id: GROUP_ID,
+            activity_record_id: SESSION_ID_1,
+            unassigned_activity_id: null,
+            created_at: '2026-06-10T15:10:55.843434+00:00'
+          }];
+        }
       }
 
-      if (path.includes('activity_records?id=in.(') && path.includes('user_assigned_issue_key=is.null')) {
+      if (path.includes('activity_records?') && path.includes('id=') && path.includes('user_assigned_issue_key=')) {
         return [{
           id: SESSION_ID_1,
           window_title: 'api.ts',
@@ -504,7 +507,7 @@ describe('syncRecentUnassignedWorkWithAllUpdatedIssues resolver', () => {
         }];
       }
 
-      if (path.startsWith('unassigned_activity?id=in.(')) {
+      if (path.includes('unassigned_activity?') && path.includes('id=')) {
         return [];
       }
 

@@ -354,6 +354,17 @@ function previousUtcDayBoundsIso() {
   };
 }
 
+function chunkArray(items, chunkSize) {
+  if (!Array.isArray(items) || items.length === 0) return [];
+  const chunks = [];
+  for (let i = 0; i < items.length; i += chunkSize) {
+    chunks.push(items.slice(i, i + chunkSize));
+  }
+  return chunks;
+}
+
+const MAX_SESSIONS_PER_LLM_CALL = 50;
+
 async function fetchRecentUnassignedSessions(supabaseConfig, userId, organizationId, windowMinutes = RECENT_UNASSIGNED_WINDOW_MINUTES) {
   const cutoff = recentUnassignedCutoffIso(windowMinutes);
 
@@ -407,8 +418,11 @@ async function fetchRecentUnassignedSessions(supabaseConfig, userId, organizatio
   return sessions;
 }
 
-async function fetchPreviousDayUnassignedSessions(supabaseConfig, userId, organizationId) {
+async function fetchPreviousDayUnassignedSessions(supabaseConfig, userId, organizationId, options = {}) {
   const { startIso, endIso } = previousUtcDayBoundsIso();
+  const maxSessions = Number.isFinite(options.maxSessions) && options.maxSessions > 0
+    ? Math.floor(options.maxSessions)
+    : Number.POSITIVE_INFINITY;
 
   const groups = ensureArray(await supabaseRequest(
     supabaseConfig,
@@ -419,44 +433,80 @@ async function fetchPreviousDayUnassignedSessions(supabaseConfig, userId, organi
   const groupIds = sanitizeUUIDArray(groups.map((g) => g.id).filter(Boolean));
   if (groupIds.length === 0) return [];
 
-  const groupIdsParam = groupIds.join(',');
-  const members = ensureArray(await supabaseRequest(
-    supabaseConfig,
-    `unassigned_group_members?group_id=in.(${groupIdsParam})` +
-    `&created_at=gte.${startIso}&created_at=lt.${endIso}` +
-    `&select=group_id,activity_record_id,unassigned_activity_id,created_at`
-  ));
+  // Large IN-lists can exceed PostgREST URL/query limits and return 400.
+  // Query members in chunks and merge the results.
+  // Larger chunks reduce total remote calls and help stay within Forge invocation timeout.
+  const GROUP_QUERY_CHUNK_SIZE = 300;
+  const memberChunks = [];
+  for (let i = 0; i < groupIds.length; i += GROUP_QUERY_CHUNK_SIZE) {
+    memberChunks.push(groupIds.slice(i, i + GROUP_QUERY_CHUNK_SIZE));
+  }
+
+  const members = [];
+  for (const chunkIds of memberChunks) {
+    const params = new URLSearchParams();
+    params.append('group_id', `in.(${chunkIds.join(',')})`);
+    params.append('created_at', `gte.${startIso}`);
+    params.append('created_at', `lt.${endIso}`);
+    params.append('select', 'group_id,activity_record_id,unassigned_activity_id,created_at');
+    const rows = await supabaseRequest(supabaseConfig, `unassigned_group_members?${params.toString()}`);
+    members.push(...ensureArray(rows));
+    if (members.length >= maxSessions) {
+      break;
+    }
+  }
+
+  const limitedMembers = Number.isFinite(maxSessions)
+    ? members.slice(0, maxSessions)
+    : members;
 
   const activityIds = sanitizeUUIDArray(
-    members.map((m) => m.activity_record_id).filter(Boolean)
+    limitedMembers.map((m) => m.activity_record_id).filter(Boolean)
   );
   const legacyIds = sanitizeUUIDArray(
-    members.map((m) => m.unassigned_activity_id).filter(Boolean)
+    limitedMembers.map((m) => m.unassigned_activity_id).filter(Boolean)
   );
 
   if (activityIds.length === 0 && legacyIds.length === 0) return [];
 
-  const [activityResults, legacyResults] = await Promise.all([
-    activityIds.length > 0
-      ? supabaseRequest(
+  // Keep this aligned with member chunking to minimize request count.
+  const ID_QUERY_CHUNK_SIZE = 300;
+  const chunkIds = (ids) => {
+    const chunks = [];
+    for (let i = 0; i < ids.length; i += ID_QUERY_CHUNK_SIZE) {
+      chunks.push(ids.slice(i, i + ID_QUERY_CHUNK_SIZE));
+    }
+    return chunks;
+  };
+
+  const activityResults = [];
+  if (activityIds.length > 0) {
+    for (const chunk of chunkIds(activityIds)) {
+      const rows = await supabaseRequest(
         supabaseConfig,
-        `activity_records?id=in.(${activityIds.join(',')})&user_id=eq.${userId}` +
+        `activity_records?id=in.(${chunk.join(',')})&user_id=eq.${userId}` +
         `&organization_id=eq.${organizationId}` +
         `&user_assigned_issue_key=is.null&status=in.(pending,processing,analyzed)` +
         `&classification=in.(productive,unknown)&clustering_dismissed=eq.false` +
         `&select=id,window_title,application_name,ocr_text,duration_seconds,total_time_seconds`
-      )
-      : Promise.resolve([]),
-    legacyIds.length > 0
-      ? supabaseRequest(
+      );
+      activityResults.push(...ensureArray(rows));
+    }
+  }
+
+  const legacyResults = [];
+  if (legacyIds.length > 0) {
+    for (const chunk of chunkIds(legacyIds)) {
+      const rows = await supabaseRequest(
         supabaseConfig,
-        `unassigned_activity?id=in.(${legacyIds.join(',')})&user_id=eq.${userId}` +
+        `unassigned_activity?id=in.(${chunk.join(',')})&user_id=eq.${userId}` +
         `&organization_id=eq.${organizationId}` +
         `&manually_assigned=eq.false&clustering_dismissed=eq.false` +
         `&select=id,window_title,application_name,extracted_text,time_spent_seconds`
-      )
-      : Promise.resolve([])
-  ]);
+      );
+      legacyResults.push(...ensureArray(rows));
+    }
+  }
 
   const sessions = [];
   const seenIds = new Set();
@@ -863,18 +913,32 @@ export function registerDescriptionResolvers(resolver) {
       if (!ctx.success) return ctx;
 
       const { config: supabaseConfig, organization, userId, accountId, cloudId } = ctx;
-      const sessions = await fetchPreviousDayUnassignedSessions(supabaseConfig, userId, organization.id);
+      const sessions = await fetchPreviousDayUnassignedSessions(supabaseConfig, userId, organization.id, {
+        maxSessions: 100
+      });
       if (sessions.length === 0) {
         return { success: true, matchedCount: 0 };
       }
 
       const { title, description, rawAttachments } = await fetchIssueForAnalysis(issueKey);
       const attachmentContext = buildAttachmentContext(rawAttachments);
-      const matchData = await remoteRequest('/api/forge/description/sync-issue-unassigned', {
-        method: 'POST',
-        body: { issueKey, title, description, attachmentContext, sessions }
-      });
-      const matchedSessionIds = matchData?.matchedSessionIds || [];
+      const sessionChunks = chunkArray(sessions, MAX_SESSIONS_PER_LLM_CALL);
+      const matchedSessionIdSet = new Set();
+
+      for (const sessionChunk of sessionChunks) {
+        const matchData = await remoteRequest('/api/forge/description/sync-issue-unassigned', {
+          method: 'POST',
+          body: { issueKey, title, description, attachmentContext, sessions: sessionChunk }
+        });
+        const chunkMatchedSessionIds = Array.isArray(matchData?.matchedSessionIds)
+          ? matchData.matchedSessionIds
+          : [];
+        for (const sessionId of chunkMatchedSessionIds) {
+          matchedSessionIdSet.add(sessionId);
+        }
+      }
+
+      const matchedSessionIds = Array.from(matchedSessionIdSet);
       if (matchedSessionIds.length === 0) {
         return { success: true, matchedCount: 0 };
       }
@@ -903,7 +967,9 @@ export function registerDescriptionResolvers(resolver) {
 
       const { config: supabaseConfig, organization, userId, accountId, cloudId } = ctx;
       const [sessions, issueKeys] = await Promise.all([
-        fetchPreviousDayUnassignedSessions(supabaseConfig, userId, organization.id),
+        fetchPreviousDayUnassignedSessions(supabaseConfig, userId, organization.id, {
+          maxSessions: 100
+        }),
         fetchInProgressIssueKeysFromJira()
       ]);
 
@@ -950,11 +1016,17 @@ export function registerDescriptionResolvers(resolver) {
         issues.length
       );
 
-      const matchData = await remoteRequest('/api/forge/description/sync-all-unassigned', {
-        method: 'POST',
-        body: { issues, sessions }
-      });
-      const assignments = Array.isArray(matchData?.assignments) ? matchData.assignments : [];
+      const sessionChunks = chunkArray(sessions, MAX_SESSIONS_PER_LLM_CALL);
+      const assignments = [];
+      for (const sessionChunk of sessionChunks) {
+        const matchData = await remoteRequest('/api/forge/description/sync-all-unassigned', {
+          method: 'POST',
+          body: { issues, sessions: sessionChunk }
+        });
+        const chunkAssignments = Array.isArray(matchData?.assignments) ? matchData.assignments : [];
+        assignments.push(...chunkAssignments);
+      }
+
       if (assignments.length === 0) {
         return {
           success: true,

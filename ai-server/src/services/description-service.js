@@ -584,6 +584,8 @@ async function analyzeDescription(params) {
 // ---------------------------------------------------------------------------
 
 const MATCH_MIN_CONFIDENCE = 0.7;
+const MATCH_LLM_MAX_TOKENS = 1200;
+const MATCH_LLM_RETRY_MAX_TOKENS = 3000;
 
 const SYNC_ISSUE_UNASSIGNED_SYSTEM_PROMPT = `You are an expert assistant matching time tracking activity records to a specific Jira issue.
 You will be given the Jira issue's key, title, description, optional attachment context, and a list of unassigned work sessions from the previous day.
@@ -640,23 +642,60 @@ async function invokeMatchLLM({ systemPrompt, userPayload, deps = {} }) {
     return null;
   }
 
-  const messages = [
-    { role: 'system', content: systemPrompt },
-    { role: 'user', content: JSON.stringify(userPayload) }
-  ];
+  const baseUserContent = JSON.stringify(userPayload);
 
-  try {
+  const buildMessages = (stricterJson) => ([
+    {
+      role: 'system',
+      content: stricterJson
+        ? `${systemPrompt}\n5. Return only a complete JSON object. Do not truncate. Do not add prose or markdown.`
+        : systemPrompt
+    },
+    { role: 'user', content: baseUserContent }
+  ]);
+
+  const invokeOnce = async ({ maxTokens, stricterJson }) => {
     const { response } = await withTimeout(
       runChat({
-        messages,
-        max_tokens: 1200,
+        messages: buildMessages(stricterJson),
+        max_tokens: maxTokens,
         temperature: 0.2,
         response_format: { type: 'json_object' }
       }),
       LLM_TIMEOUT_MS,
       'MatchLLM'
     );
-    return parseLLMContent(response?.choices?.[0]?.message?.content || '');
+
+    const choice = response?.choices?.[0] || {};
+    const finishReason = choice.finish_reason || choice.finishReason || '';
+    const content = choice?.message?.content || '';
+    return {
+      parsed: parseLLMContent(content),
+      finishReason,
+      rawContent: content
+    };
+  };
+
+  try {
+    const first = await invokeOnce({
+      maxTokens: MATCH_LLM_MAX_TOKENS,
+      stricterJson: false
+    });
+
+    if (first.parsed) {
+      return first.parsed;
+    }
+
+    if (String(first.finishReason).toLowerCase() === 'length') {
+      logger.warn('[DescQuality] Match LLM response truncated by max tokens; retrying with higher limit');
+      const second = await invokeOnce({
+        maxTokens: MATCH_LLM_RETRY_MAX_TOKENS,
+        stricterJson: true
+      });
+      return second.parsed;
+    }
+
+    return null;
   } catch (err) {
     logger.error('[DescQuality] Match LLM failed: %s', err.message);
     return null;
