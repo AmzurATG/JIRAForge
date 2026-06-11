@@ -11478,15 +11478,33 @@ class TimeTracker:
         (or one, if the first succeeds) with 1-second timeouts each so they
         never block the 2-second tracking loop.
         """
+        # Logger for window detection diagnostics
+        _log = self.logger if hasattr(self, 'logger') and self.logger else None
+        
+        def _log_debug(msg):
+            if _log:
+                _log.debug(f"[WinDetect] {msg}")
+        
+        def _log_warning(msg):
+            if _log:
+                _log.warning(f"[WinDetect] {msg}")
+        
+        def _log_info(msg):
+            if _log:
+                _log.info(f"[WinDetect] {msg}")
+        
         def _from_xdotool():
             try:
+                _log_debug("xdotool: Trying getactivewindow...")
                 wid_res = subprocess.run(
                     ['xdotool', 'getactivewindow'],
                     capture_output=True, text=True, timeout=1
                 )
                 if wid_res.returncode != 0:
+                    _log_debug(f"xdotool: getactivewindow failed (rc={wid_res.returncode}, stderr={wid_res.stderr.strip()})")
                     return None
                 wid = wid_res.stdout.strip()
+                _log_debug(f"xdotool: Got window ID {wid}")
 
                 title = 'Unknown'
                 name_res = subprocess.run(
@@ -11506,15 +11524,24 @@ class TimeTracker:
                         pid = int(pid_res.stdout.strip())
                         proc = psutil.Process(pid)
                         app_name = proc.name()
-                except (ValueError, psutil.NoSuchProcess, psutil.AccessDenied):
-                    pass
+                except (ValueError, psutil.NoSuchProcess, psutil.AccessDenied) as e:
+                    _log_debug(f"xdotool: Could not get process name: {e}")
 
+                _log_debug(f"xdotool: SUCCESS - title='{title}', app='{app_name}'")
                 return title, app_name
-            except (FileNotFoundError, subprocess.TimeoutExpired, Exception):
+            except FileNotFoundError:
+                _log_debug("xdotool: FAILED - xdotool not installed")
+                return None
+            except subprocess.TimeoutExpired:
+                _log_debug("xdotool: FAILED - timeout expired")
+                return None
+            except Exception as e:
+                _log_debug(f"xdotool: FAILED - {type(e).__name__}: {e}")
                 return None
 
         def _from_gdbus():
             try:
+                _log_debug("gdbus: Trying Shell.Eval...")
                 result = subprocess.run(
                     [
                         'gdbus', 'call', '--session',
@@ -11529,31 +11556,74 @@ class TimeTracker:
                     ],
                     capture_output=True, text=True, timeout=2
                 )
-                if result.returncode != 0 or not result.stdout:
+                if result.returncode != 0:
+                    _log_debug(f"gdbus: Shell.Eval failed (rc={result.returncode}, stderr={result.stderr.strip()[:200]})")
+                    return None
+                if not result.stdout:
+                    _log_debug("gdbus: Shell.Eval returned empty stdout")
                     return None
                 import re as _re
                 m = _re.search(r"'([^']*)'", result.stdout)
                 if not m:
+                    _log_debug(f"gdbus: Could not parse response: {result.stdout[:200]}")
                     return None
                 raw = m.group(1)
                 if '|||' not in raw:
+                    _log_debug(f"gdbus: Response missing separator: {raw[:100]}")
                     return None
                 title, app_name = raw.split('|||', 1)
-                return title.strip() or 'Unknown', app_name.strip() or 'Unknown'
-            except (FileNotFoundError, subprocess.TimeoutExpired, Exception):
+                title = title.strip() or 'Unknown'
+                app_name = app_name.strip() or 'Unknown'
+                _log_debug(f"gdbus: SUCCESS - title='{title}', app='{app_name}'")
+                return title, app_name
+            except FileNotFoundError:
+                _log_debug("gdbus: FAILED - gdbus not installed")
+                return None
+            except subprocess.TimeoutExpired:
+                _log_debug("gdbus: FAILED - timeout expired (2s)")
+                return None
+            except Exception as e:
+                _log_debug(f"gdbus: FAILED - {type(e).__name__}: {e}")
                 return None
 
         def _from_gnome_introspect():
-            """Fallback for GNOME 45+ where Shell.Eval is disabled by default.
+            """GNOME Shell Introspect API - preferred method for GNOME 40+.
 
             org.gnome.Shell.Introspect.GetWindows() is available on GNOME 40+
             without unsafe mode and exposes a 'has-focus' field per window,
             making it possible to identify the focused window title and app-id
             even when Shell.Eval returns (false, ...).  This correctly tracks
             browser tab switches because each tab change updates window.title.
+            
+            This is the PRIMARY method for Wayland as it:
+            - Doesn't require Shell.Eval (disabled in GNOME 45+)
+            - Correctly reports native Wayland window focus
+            - Updates on browser tab switches
+            
             Returns (title, app_id) or None on failure.
             """
             try:
+                _log_debug("gnome_introspect: Checking interface availability...")
+                
+                # First, verify the interface is available (quick check)
+                check_result = subprocess.run(
+                    ['gdbus', 'introspect', '--session',
+                     '--dest', 'org.gnome.Shell',
+                     '--object-path', '/org/gnome/Shell/Introspect'],
+                    capture_output=True, text=True, timeout=3
+                )
+                
+                if check_result.returncode != 0:
+                    _log_debug(f"gnome_introspect: Interface not available (rc={check_result.returncode}, stderr={check_result.stderr.strip()[:100]})")
+                    return None
+                
+                if 'GetWindows' not in check_result.stdout:
+                    _log_debug("gnome_introspect: GetWindows method not found in Introspect interface")
+                    return None
+                
+                _log_debug("gnome_introspect: Interface available, calling GetWindows...")
+                
+                # Call GetWindows with increased timeout (5s for large window lists)
                 result = subprocess.run(
                     [
                         'gdbus', 'call', '--session',
@@ -11561,37 +11631,72 @@ class TimeTracker:
                         '--object-path', '/org/gnome/Shell/Introspect',
                         '--method', 'org.gnome.Shell.Introspect.GetWindows',
                     ],
-                    capture_output=True, text=True, timeout=2
+                    capture_output=True, text=True, timeout=5
                 )
-                if result.returncode != 0 or not result.stdout:
+                
+                if result.returncode != 0:
+                    _log_debug(f"gnome_introspect: GetWindows failed (rc={result.returncode}, stderr={result.stderr.strip()[:200]})")
+                    return None
+                if not result.stdout:
+                    _log_debug("gnome_introspect: GetWindows returned empty stdout")
                     return None
 
                 import re as _re2
                 stdout = result.stdout
+                window_count = stdout.count("'title':")
+                _log_debug(f"gnome_introspect: Got {window_count} windows, response length={len(stdout)}")
 
                 # gdbus renders a{ta{sv}} roughly as:
                 #   ({'uint64 ID': {'title': <'Tab Title'>, 'app-id': <'org.app'>,
                 #                   'has-focus': <true>, 'wm-class': <'App'>}, ...},)
                 # Properties are emitted in insertion order; 'title' always appears
                 # before 'has-focus' in GNOME Shell source, so scanning forward is safe.
+                
+                # Improved regex to handle edge cases (empty titles, special chars)
                 for title_m in _re2.finditer(r"'title':\s*<\s*'([^']*)'\s*>", stdout):
                     title = title_m.group(1)
-                    # Look ahead within one window block (≤ 500 chars) for has-focus
+                    # Look ahead within one window block (≤ 600 chars) for has-focus
                     ahead_start = title_m.end()
-                    lookahead = stdout[ahead_start:ahead_start + 500]
+                    lookahead = stdout[ahead_start:ahead_start + 600]
+                    
+                    # Check for has-focus: <true> in the same window block
                     hf_m = _re2.search(r"'has-focus':\s*<\s*(true|false)\s*>", lookahead)
                     if hf_m and hf_m.group(1) == 'true':
-                        block = stdout[title_m.start():ahead_start + 500]
+                        # Found the focused window - extract app info
+                        block = stdout[title_m.start():ahead_start + 600]
+                        
+                        # Try app-id first (native Wayland apps like Firefox, Chrome)
                         app_m = _re2.search(r"'app-id':\s*<\s*'([^']*)'\s*>", block)
                         app_id = (app_m.group(1) if app_m else '') or ''
-                        # XWayland apps may have empty app-id; fall back to wm-class
+                        
+                        # Fall back to wm-class (XWayland apps, Electron apps)
                         if not app_id:
                             wm_m = _re2.search(r"'wm-class':\s*<\s*'([^']*)'\s*>", block)
                             app_id = (wm_m.group(1) if wm_m else '') or 'Unknown'
+                        
+                        # Also try sandbox-app-id for Flatpak apps
+                        if not app_id or app_id == 'Unknown':
+                            sandbox_m = _re2.search(r"'sandbox-app-id':\s*<\s*'([^']*)'\s*>", block)
+                            if sandbox_m and sandbox_m.group(1):
+                                app_id = sandbox_m.group(1)
+                        
                         if title:
+                            _log_debug(f"gnome_introspect: SUCCESS - title='{title}', app='{app_id}'")
                             return title, app_id or 'Unknown'
+                        else:
+                            _log_debug(f"gnome_introspect: Found focused window but title is empty, app='{app_id}'")
+                
+                _log_debug("gnome_introspect: No focused window found (has-focus: <true> not found in any window)")
                 return None
-            except (FileNotFoundError, subprocess.TimeoutExpired, Exception):
+                
+            except FileNotFoundError:
+                _log_debug("gnome_introspect: FAILED - gdbus not installed")
+                return None
+            except subprocess.TimeoutExpired:
+                _log_debug("gnome_introspect: FAILED - timeout expired (5s) - may have many windows")
+                return None
+            except Exception as e:
+                _log_debug(f"gnome_introspect: FAILED - {type(e).__name__}: {e}")
                 return None
 
         def _from_atspi():
@@ -11604,14 +11709,35 @@ class TimeTracker:
             title — making in-browser tab switches trackable.
 
             Detection order:
-              1. In-process gi/Atspi import (fast; works when python-gi is
+              1. Check if AT-SPI2 D-Bus service is available
+              2. In-process gi/Atspi import (fast; works when python-gi is
                  available in the running Python, e.g. development/system mode).
-              2. System python3 subprocess (works in AppImage where gi is not
+              3. System python3 subprocess (works in AppImage where gi is not
                  bundled, as long as the host has python3-gi installed).
+              4. Try /usr/bin/python3 explicitly (some environments)
 
             Returns (title, app_name) for the first ACTIVE non-shell window,
             or None on failure.
             """
+            _log_debug("atspi: Trying AT-SPI2 accessibility API...")
+            
+            # Quick check: is AT-SPI2 D-Bus service available?
+            try:
+                atspi_check = subprocess.run(
+                    ['gdbus', 'call', '--session',
+                     '--dest', 'org.a11y.Bus',
+                     '--object-path', '/org/a11y/bus',
+                     '--method', 'org.a11y.Bus.GetAddress'],
+                    capture_output=True, text=True, timeout=2
+                )
+                if atspi_check.returncode != 0:
+                    _log_debug("atspi: AT-SPI2 D-Bus service not running - skipping")
+                    return None
+                _log_debug("atspi: AT-SPI2 D-Bus service available")
+            except Exception as e:
+                _log_debug(f"atspi: AT-SPI2 D-Bus check failed: {e}")
+                # Continue anyway - the service might still work
+            
             def _atspi_query():
                 import gi as _gi  # noqa: PLC0415
                 _gi.require_version('Atspi', '2.0')
@@ -11619,32 +11745,46 @@ class TimeTracker:
                 _Atspi.init()
                 desktop = _Atspi.get_desktop(0)
                 ACTIVE = _Atspi.StateType.ACTIVE
-                for i in range(desktop.get_child_count()):
+                app_count = desktop.get_child_count()
+                _log_debug(f"atspi: Desktop has {app_count} apps")
+                for i in range(app_count):
                     app = desktop.get_child_at_index(i)
-                    if not app or app.get_name() == 'gnome-shell':
+                    if not app:
+                        continue
+                    app_name = app.get_name() or ''
+                    # Skip shell and desktop components
+                    if app_name in ('gnome-shell', 'gnome-software', 'ibus-daemon', 'gsd-color'):
                         continue
                     for j in range(app.get_child_count()):
                         win = app.get_child_at_index(j)
                         if not win:
                             continue
                         try:
-                            if win.get_state_set().contains(ACTIVE):
+                            state_set = win.get_state_set()
+                            if state_set and state_set.contains(ACTIVE):
                                 title = win.get_name() or ''
                                 if title:
-                                    return title, app.get_name() or 'Unknown'
+                                    return title, app_name or 'Unknown'
                         except Exception:
                             continue
                 return None
 
             # Attempt 1: in-process (development / system Python with python3-gi)
             try:
+                _log_debug("atspi: Attempt 1 - in-process gi import")
                 result = _atspi_query()
                 if result:
+                    _log_debug(f"atspi: SUCCESS (in-process) - title='{result[0]}', app='{result[1]}'")
                     return result
-            except (ImportError, Exception):
-                pass
+                _log_debug("atspi: In-process query returned no focused window")
+            except ImportError as e:
+                _log_debug(f"atspi: In-process import failed: {e}")
+            except ValueError as e:
+                _log_debug(f"atspi: In-process Atspi typelib not found: {e}")
+            except Exception as e:
+                _log_debug(f"atspi: In-process query failed: {type(e).__name__}: {e}")
 
-            # Attempt 2: spawn the system python3 (AppImage where gi is not bundled)
+            # Attempt 2 & 3: spawn system python3 (AppImage where gi is not bundled)
             code = (
                 "import gi, sys\n"
                 "gi.require_version('Atspi','2.0')\n"
@@ -11654,42 +11794,104 @@ class TimeTracker:
                 "A = Atspi.StateType.ACTIVE\n"
                 "for i in range(d.get_child_count()):\n"
                 " a = d.get_child_at_index(i)\n"
-                " if not a or a.get_name() == 'gnome-shell': continue\n"
+                " if not a: continue\n"
+                " n = a.get_name() or ''\n"
+                " if n in ('gnome-shell','ibus-daemon','gsd-color'): continue\n"
                 " for j in range(a.get_child_count()):\n"
                 "  w = a.get_child_at_index(j)\n"
                 "  if not w: continue\n"
                 "  try:\n"
-                "   if w.get_state_set().contains(A) and w.get_name():\n"
-                "    print(w.get_name() + '|||' + (a.get_name() or 'Unknown'))\n"
+                "   ss = w.get_state_set()\n"
+                "   if ss and ss.contains(A) and w.get_name():\n"
+                "    print(w.get_name() + '|||' + (n or 'Unknown'))\n"
                 "    sys.exit(0)\n"
                 "  except: pass\n"
             )
-            try:
-                res = subprocess.run(
-                    ['python3', '-c', code],
-                    capture_output=True, text=True, timeout=2
-                )
-                if res.returncode == 0 and '|||' in (res.stdout or ''):
-                    parts = res.stdout.strip().split('|||', 1)
-                    title = parts[0].strip()
-                    app_name = parts[1].strip() if len(parts) > 1 else 'Unknown'
-                    if title:
-                        return title, app_name or 'Unknown'
-            except (FileNotFoundError, subprocess.TimeoutExpired, Exception):
-                pass
+            
+            # Try 'python3' first, then '/usr/bin/python3' explicitly
+            python_paths = ['python3', '/usr/bin/python3']
+            for python_path in python_paths:
+                try:
+                    _log_debug(f"atspi: Trying {python_path}")
+                    res = subprocess.run(
+                        [python_path, '-c', code],
+                        capture_output=True, text=True, timeout=3
+                    )
+                    if res.returncode == 0 and '|||' in (res.stdout or ''):
+                        parts = res.stdout.strip().split('|||', 1)
+                        title = parts[0].strip()
+                        app_name = parts[1].strip() if len(parts) > 1 else 'Unknown'
+                        if title:
+                            _log_debug(f"atspi: SUCCESS ({python_path}) - title='{title}', app='{app_name}'")
+                            return title, app_name or 'Unknown'
+                    elif res.stderr:
+                        _log_debug(f"atspi: {python_path} failed (rc={res.returncode}, stderr={res.stderr.strip()[:100]})")
+                except FileNotFoundError:
+                    _log_debug(f"atspi: {python_path} not found")
+                    continue
+                except subprocess.TimeoutExpired:
+                    _log_debug(f"atspi: {python_path} timeout (3s)")
+                    continue
+                except Exception as e:
+                    _log_debug(f"atspi: {python_path} error: {type(e).__name__}: {e}")
+                    continue
+            
+            _log_debug("atspi: All attempts failed")
             return None
 
         is_wayland = bool(
             os.environ.get('WAYLAND_DISPLAY') or
             os.environ.get('XDG_SESSION_TYPE', '').lower() == 'wayland'
         )
+        
+        # Detect GNOME Shell version for logging
+        gnome_version = None
+        if not hasattr(self, '_win_detect_gnome_version'):
+            try:
+                ver_result = subprocess.run(
+                    ['gnome-shell', '--version'],
+                    capture_output=True, text=True, timeout=2
+                )
+                if ver_result.returncode == 0:
+                    import re as _re_ver
+                    ver_match = _re_ver.search(r'(\d+)\.(\d+)', ver_result.stdout)
+                    if ver_match:
+                        gnome_version = (int(ver_match.group(1)), int(ver_match.group(2)))
+                        self._win_detect_gnome_version = gnome_version
+            except Exception:
+                pass
+        else:
+            gnome_version = getattr(self, '_win_detect_gnome_version', None)
+        
+        # Log session type (only on first call)
+        if not hasattr(self, '_win_detect_logged_session'):
+            session_type = 'Wayland' if is_wayland else 'X11'
+            gnome_str = f"{gnome_version[0]}.{gnome_version[1]}" if gnome_version else "N/A"
+            _log_info(f"Session type: {session_type}, GNOME Shell: {gnome_str}")
+            _log_info(f"Environment: WAYLAND_DISPLAY={os.environ.get('WAYLAND_DISPLAY', '')}, XDG_SESSION_TYPE={os.environ.get('XDG_SESSION_TYPE', '')}")
+            
+            # Log recommended method order
+            if is_wayland:
+                if gnome_version and gnome_version[0] >= 45:
+                    _log_info("GNOME 45+ detected: Shell.Eval disabled by default, using gnome_introspect as primary")
+                else:
+                    _log_info("Wayland session: method order = gnome_introspect -> atspi -> gdbus -> xdotool")
+            self._win_detect_logged_session = True
 
-        # Wayland: try Shell.Eval first (fast, GNOME < 45), then Introspect
-        # (works on GNOME 40+ without unsafe mode), then xdotool (XWayland fallback).
-        # X11: xdotool is most reliable; D-Bus methods are secondary.
+        # WAYLAND METHOD ORDER (optimized for GNOME 45+):
+        #   1. gnome_introspect - GetWindows API (GNOME 40+, no unsafe mode needed) ← PRIMARY
+        #   2. atspi - AT-SPI2 accessibility (for native Wayland apps)
+        #   3. gdbus - Shell.Eval (only works if user enabled development-tools)
+        #   4. xdotool - XWayland fallback (only sees XWayland apps)
+        #
+        # X11 METHOD ORDER:
+        #   1. xdotool - most reliable on X11
+        #   2. gdbus - Shell.Eval works on X11 GNOME
+        #   3. gnome_introspect - fallback
+        #   4. atspi - last resort
         method_pairs = (
-            [('gdbus', _from_gdbus), ('gnome_introspect', _from_gnome_introspect),
-             ('xdotool', _from_xdotool), ('atspi', _from_atspi)]
+            [('gnome_introspect', _from_gnome_introspect), ('atspi', _from_atspi),
+             ('gdbus', _from_gdbus), ('xdotool', _from_xdotool)]
             if is_wayland
             else [('xdotool', _from_xdotool), ('gdbus', _from_gdbus),
                   ('gnome_introspect', _from_gnome_introspect), ('atspi', _from_atspi)]
@@ -11707,9 +11909,11 @@ class TimeTracker:
             # Check circuit state
             _cb = self._win_method_failures.get(method_name, {'count': 0, 'open_until': 0})
             if _cb['count'] >= _CB_OPEN_AFTER and time.time() < _cb.get('open_until', 0):
+                _log_debug(f"CIRCUIT-BREAKER: Skipping '{method_name}' (failed {_cb['count']} times, open until {int(_cb['open_until'] - time.time())}s)")
                 continue  # circuit open — skip this method
             if _cb['count'] >= _CB_OPEN_AFTER and time.time() >= _cb.get('open_until', 0):
                 # Grace period expired — reset and allow one retry
+                _log_debug(f"CIRCUIT-BREAKER: Resetting '{method_name}' after grace period")
                 self._win_method_failures[method_name] = {'count': 0, 'open_until': 0}
 
             try:
@@ -11718,6 +11922,7 @@ class TimeTracker:
                     title, app_name = resolved
                     # On Wayland, xdotool often returns stale XWayland focus (commonly VS Code).
                     if title == 'Unknown' and app_name == 'Unknown':
+                        _log_debug(f"Method '{method_name}' returned Unknown/Unknown - counting as soft failure")
                         # Count as a soft failure
                         _cb2 = self._win_method_failures.setdefault(method_name, {'count': 0, 'open_until': 0})
                         _cb2['count'] += 1
@@ -11726,20 +11931,24 @@ class TimeTracker:
                         continue
                     # Success — reset failure counter for this method
                     self._win_method_failures[method_name] = {'count': 0, 'open_until': 0}
+                    _log_debug(f"FINAL RESULT: method='{method_name}', title='{title}', app='{app_name}'")
                     return title, app_name
                 else:
+                    _log_debug(f"Method '{method_name}' returned None - incrementing failure count")
                     _cb3 = self._win_method_failures.setdefault(method_name, {'count': 0, 'open_until': 0})
                     _cb3['count'] += 1
                     if _cb3['count'] >= _CB_OPEN_AFTER:
                         _cb3['open_until'] = time.time() + _CB_RESET_AFTER
-                        print(f"[WARN] FIX-6: Window detection method '{method_name}' circuit-open for {_CB_RESET_AFTER}s")
-            except Exception:
+                        _log_warning(f"CIRCUIT-BREAKER: Method '{method_name}' opened for {_CB_RESET_AFTER}s after {_CB_OPEN_AFTER} failures")
+            except Exception as e:
+                _log_debug(f"Method '{method_name}' raised exception: {type(e).__name__}: {e}")
                 _cb4 = self._win_method_failures.setdefault(method_name, {'count': 0, 'open_until': 0})
                 _cb4['count'] += 1
                 if _cb4['count'] >= _CB_OPEN_AFTER:
                     _cb4['open_until'] = time.time() + _CB_RESET_AFTER
-                    print(f"[WARN] FIX-6: Window detection method '{method_name}' circuit-open (exception) for {_CB_RESET_AFTER}s")
+                    _log_warning(f"CIRCUIT-BREAKER: Method '{method_name}' opened (exception) for {_CB_RESET_AFTER}s")
 
+        _log_warning("ALL METHODS FAILED - returning ('Unknown', 'Unknown')")
         return 'Unknown', 'Unknown'
 
     def get_active_window(self):
@@ -17161,8 +17370,241 @@ loadData();
 # MAIN ENTRY POINT
 # ============================================================================
 
+def diagnose_wayland():
+    """Run Wayland window detection diagnostics.
+    
+    Tests all window detection methods and reports which ones work/fail.
+    Use: python desktop_app.py --diagnose-wayland
+    """
+    print("=" * 60)
+    print("WAYLAND WINDOW DETECTION DIAGNOSTICS")
+    print("=" * 60)
+    print()
+    
+    # 1. Environment detection
+    print("1. ENVIRONMENT DETECTION")
+    print("-" * 40)
+    
+    wayland_display = os.environ.get('WAYLAND_DISPLAY', '')
+    xdg_session_type = os.environ.get('XDG_SESSION_TYPE', '')
+    display = os.environ.get('DISPLAY', '')
+    desktop = os.environ.get('XDG_CURRENT_DESKTOP', '')
+    
+    print(f"   WAYLAND_DISPLAY:    '{wayland_display}'")
+    print(f"   DISPLAY:            '{display}'")
+    print(f"   XDG_SESSION_TYPE:   '{xdg_session_type}'")
+    print(f"   XDG_CURRENT_DESKTOP: '{desktop}'")
+    
+    is_wayland = bool(wayland_display or xdg_session_type.lower() == 'wayland')
+    print(f"\n   Detected as Wayland: {is_wayland}")
+    
+    # GNOME version
+    gnome_version = None
+    try:
+        result = subprocess.run(['gnome-shell', '--version'], 
+                               capture_output=True, text=True, timeout=2)
+        if result.returncode == 0:
+            import re
+            match = re.search(r'(\d+)\.(\d+)', result.stdout)
+            if match:
+                gnome_version = f"{match.group(1)}.{match.group(2)}"
+    except Exception:
+        pass
+    print(f"   GNOME Shell version: {gnome_version or 'N/A'}")
+    print()
+    
+    # 2. gnome_introspect test
+    print("2. GNOME INTROSPECT API (GetWindows)")
+    print("-" * 40)
+    
+    try:
+        # Check interface
+        check = subprocess.run(
+            ['gdbus', 'introspect', '--session',
+             '--dest', 'org.gnome.Shell',
+             '--object-path', '/org/gnome/Shell/Introspect'],
+            capture_output=True, text=True, timeout=3
+        )
+        
+        if check.returncode != 0:
+            print("   ✗ Introspect interface NOT available")
+            print(f"   Error: {check.stderr.strip()[:100]}")
+        elif 'GetWindows' not in check.stdout:
+            print("   ✗ GetWindows method NOT found")
+        else:
+            print("   ✓ Introspect interface available")
+            
+            # Try GetWindows
+            result = subprocess.run(
+                ['gdbus', 'call', '--session',
+                 '--dest', 'org.gnome.Shell',
+                 '--object-path', '/org/gnome/Shell/Introspect',
+                 '--method', 'org.gnome.Shell.Introspect.GetWindows'],
+                capture_output=True, text=True, timeout=5
+            )
+            
+            if result.returncode == 0:
+                stdout = result.stdout
+                window_count = stdout.count("'title':")
+                print(f"   ✓ GetWindows succeeded ({window_count} windows)")
+                
+                # Find focused window
+                import re
+                for m in re.finditer(r"'title':\s*<\s*'([^']*)'\s*>", stdout):
+                    title = m.group(1)
+                    lookahead = stdout[m.end():m.end() + 500]
+                    if "'has-focus': <true>" in lookahead:
+                        print(f"   ✓ Focused window: '{title[:50]}'")
+                        break
+                else:
+                    print("   ⚠ No focused window found (try clicking a window)")
+            else:
+                print(f"   ✗ GetWindows failed: {result.stderr.strip()[:100]}")
+    except FileNotFoundError:
+        print("   ✗ gdbus not installed")
+    except subprocess.TimeoutExpired:
+        print("   ✗ Timeout (5s)")
+    except Exception as e:
+        print(f"   ✗ Error: {e}")
+    print()
+    
+    # 3. Shell.Eval test
+    print("3. GNOME SHELL.EVAL API")
+    print("-" * 40)
+    
+    try:
+        result = subprocess.run(
+            ['gdbus', 'call', '--session',
+             '--dest', 'org.gnome.Shell',
+             '--object-path', '/org/gnome/Shell',
+             '--method', 'org.gnome.Shell.Eval',
+             "let w=global.display.focus_window;w?w.title:'none'"],
+            capture_output=True, text=True, timeout=2
+        )
+        
+        if result.returncode != 0:
+            print("   ⚠ Shell.Eval is DISABLED (expected on GNOME 45+)")
+            print("   To enable: gsettings set org.gnome.shell development-tools true")
+        elif "(true," in result.stdout:
+            import re
+            match = re.search(r"'([^']*)'", result.stdout)
+            title = match.group(1) if match else "?"
+            print(f"   ✓ Shell.Eval is enabled")
+            print(f"   ✓ Focused window: '{title[:50]}'")
+        else:
+            print(f"   ⚠ Shell.Eval returned: {result.stdout[:100]}")
+    except FileNotFoundError:
+        print("   ✗ gdbus not installed")
+    except Exception as e:
+        print(f"   ✗ Error: {e}")
+    print()
+    
+    # 4. AT-SPI2 test
+    print("4. AT-SPI2 ACCESSIBILITY API")
+    print("-" * 40)
+    
+    # Check D-Bus service
+    try:
+        result = subprocess.run(
+            ['gdbus', 'call', '--session',
+             '--dest', 'org.a11y.Bus',
+             '--object-path', '/org/a11y/bus',
+             '--method', 'org.a11y.Bus.GetAddress'],
+            capture_output=True, text=True, timeout=2
+        )
+        atspi_running = result.returncode == 0
+        print(f"   AT-SPI2 D-Bus service: {'✓ Running' if atspi_running else '✗ Not running'}")
+    except Exception:
+        print("   AT-SPI2 D-Bus service: ✗ Check failed")
+    
+    # Check python3-gi
+    gi_available = False
+    try:
+        import gi
+        gi.require_version('Atspi', '2.0')
+        from gi.repository import Atspi
+        gi_available = True
+        print("   python3-gi (in-process): ✓ Available")
+    except (ImportError, ValueError) as e:
+        print(f"   python3-gi (in-process): ✗ Not available ({e})")
+    
+    # Check system python
+    if not gi_available:
+        try:
+            code = "import gi;gi.require_version('Atspi','2.0');print('OK')"
+            result = subprocess.run(['python3', '-c', code],
+                                   capture_output=True, text=True, timeout=3)
+            if 'OK' in result.stdout:
+                print("   python3-gi (system): ✓ Available")
+            else:
+                print("   python3-gi (system): ✗ Not available")
+                print("   Install: sudo apt install python3-gi gir1.2-atspi-2.0")
+        except Exception:
+            print("   python3-gi (system): ✗ Check failed")
+    print()
+    
+    # 5. xdotool test
+    print("5. XDOTOOL (XWayland)")
+    print("-" * 40)
+    
+    try:
+        wid_result = subprocess.run(['xdotool', 'getactivewindow'],
+                                   capture_output=True, text=True, timeout=2)
+        if wid_result.returncode == 0:
+            wid = wid_result.stdout.strip()
+            name_result = subprocess.run(['xdotool', 'getwindowname', wid],
+                                        capture_output=True, text=True, timeout=2)
+            title = name_result.stdout.strip() if name_result.returncode == 0 else 'Unknown'
+            print(f"   ✓ xdotool installed and working")
+            print(f"   ✓ Active XWayland window: '{title[:50]}'")
+        else:
+            print("   ⚠ xdotool: No active XWayland window")
+            print("   (The focused app may be running as native Wayland)")
+    except FileNotFoundError:
+        print("   ✗ xdotool not installed")
+        print("   Install: sudo apt install xdotool")
+    except subprocess.TimeoutExpired:
+        print("   ✗ xdotool timeout")
+    except Exception as e:
+        print(f"   ✗ Error: {e}")
+    print()
+    
+    # Summary
+    print("=" * 60)
+    print("SUMMARY")
+    print("=" * 60)
+    print()
+    
+    if is_wayland:
+        print("You are running on Wayland.")
+        if gnome_version:
+            major = int(gnome_version.split('.')[0])
+            if major >= 45:
+                print(f"GNOME {gnome_version} detected - Shell.Eval is disabled by default.")
+                print("The gnome_introspect method (GetWindows) is the primary method.")
+        print()
+        print("For best results, ensure gnome_introspect works.")
+        print("AT-SPI2 is a good fallback for native Wayland apps.")
+    else:
+        print("You are running on X11.")
+        print("xdotool should work reliably for window detection.")
+    
+    print()
+    print("For detailed logs, run the app and check:")
+    print("  ~/.local/share/timetracker/logs/timetracker.log")
+    print()
+    print("Filter window detection logs with:")
+    print("  grep '[WinDetect]' ~/.local/share/timetracker/logs/timetracker.log")
+    print()
+
+
 def main():
     """Main entry point"""
+    # Check for diagnostic command first
+    if len(sys.argv) > 1 and sys.argv[1] in ('--diagnose-wayland', '-dw', '--diagnose'):
+        diagnose_wayland()
+        return
+    
     # Setup logging FIRST before anything else
     if APP_LOGGER_AVAILABLE:
         try:
