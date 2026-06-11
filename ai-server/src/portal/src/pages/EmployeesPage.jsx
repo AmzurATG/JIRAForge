@@ -39,7 +39,10 @@ function EmployeesPage() {
   const [savingLocation, setSavingLocation] = useState(false);
 
   useEffect(() => {
-    locationsApi.list()
+    // Include inactive: employees can stay assigned to a retired location, so
+    // it must remain visible in the filter and in the edit modal (where it is
+    // shown but not newly assignable).
+    locationsApi.list({ includeInactive: true })
       .then((res) => setLocations(res.data || []))
       .catch((err) => console.error('Failed to load locations:', err));
   }, []);
@@ -91,6 +94,13 @@ function EmployeesPage() {
   };
 
   const saveLocation = async () => {
+    // No-op save: skip the request. Matters when the current assignment is an
+    // INACTIVE location — re-sending it would be rejected by the server (400),
+    // even though nothing changed.
+    if ((editLocationId || '') === (editingEmployee.location?.id || '')) {
+      setEditingEmployee(null);
+      return;
+    }
     setSavingLocation(true);
     setError(null);
     try {
@@ -313,7 +323,9 @@ function EmployeesPage() {
               >
                 <option value="">All Locations</option>
                 {locations.map((loc) => (
-                  <option key={loc.id} value={loc.id}>{loc.name}</option>
+                  <option key={loc.id} value={loc.id}>
+                    {loc.isActive ? loc.name : `${loc.name} (inactive)`}
+                  </option>
                 ))}
               </select>
             </div>
@@ -362,7 +374,12 @@ function EmployeesPage() {
             >
               <option value="">No location</option>
               {locations.map((loc) => (
-                <option key={loc.id} value={loc.id}>{loc.name}</option>
+                // Inactive locations are shown (so a current assignment still
+                // displays correctly) but disabled — the server rejects NEW
+                // assignments to inactive locations.
+                <option key={loc.id} value={loc.id} disabled={!loc.isActive}>
+                  {loc.isActive ? loc.name : `${loc.name} (inactive)`}
+                </option>
               ))}
             </select>
             {locations.length === 0 && (

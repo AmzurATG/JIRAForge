@@ -55,7 +55,10 @@ blocked. See the team analysis for the full evidence trail.
 ```
 TimeTracker Updater scheduled task  (runs as SYSTEM, hourly)
         │
-        ├─ GET https://timetracker-forge.amzur.com/api/app-version/check?platform=windows&current=<ver>
+        ├─ GET {server}/api/app-version/check?platform=windows&current=<ver>
+        │     ({server} = registry ServerUrl if set, else the script default —
+        │      see $DefaultServer in update_service.ps1; keep it in sync with
+        │      the app's AI_SERVER_URL)
         ├─ if updateAvailable: download downloadUrl  ->  C:\ProgramData\TimeTracker\updates\stage\  (ACL-locked: SYSTEM+Admins)
         ├─ verify SHA256 == checksum
         └─ run TimeTrackerSetup.exe /VERYSILENT   (SYSTEM => writes Program Files, NO prompt)
