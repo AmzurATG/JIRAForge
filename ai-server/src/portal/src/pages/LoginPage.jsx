@@ -19,7 +19,7 @@ const features = [
       </svg>
     ),
     title: 'AI-Powered Matching',
-    desc: 'Work is intelligently matched to Jira issues using AI analysis.',
+    desc: 'Work is intelligently categorized using AI analysis.',
   },
   {
     icon: (
@@ -68,8 +68,7 @@ function LoginPage() {
             </svg>
           </div>
           <div>
-            <p className="text-white font-bold text-lg leading-tight">Time Tracking</p>
-            <p className="text-primary-200 text-xs">Portal by Amzur</p>
+            <p className="text-white font-bold text-lg leading-tight">Amzur Time Tracker</p>
           </div>
         </div>
 
@@ -78,7 +77,7 @@ function LoginPage() {
           <div>
             <h2 className="text-4xl font-extrabold text-white leading-tight">
               Track work.<br />
-              <span className="text-primary-200">Sync to Jira.</span><br />
+              <span className="text-primary-200">See the full picture.</span><br />
               Ship faster.
             </h2>
             <p className="mt-4 text-primary-100 text-base leading-relaxed max-w-sm">
@@ -113,10 +112,13 @@ function LoginPage() {
         <div className="w-full max-w-md animate-fade-in">
           {/* Mobile-only logo */}
           <div className="lg:hidden mb-8">
+            {/* JPG has a white background (no alpha) — show it on a rounded
+                white chip instead of the old invert filter, which would
+                render a solid white box in dark mode. */}
             <img
-              src="/amzur-logo.png"
+              src="/amzur-logo.jpg"
               alt="Amzur Technologies"
-              className="h-9 w-auto dark:brightness-0 dark:invert"
+              className="h-9 w-auto rounded-md"
             />
           </div>
 
@@ -125,9 +127,9 @@ function LoginPage() {
             {/* Header */}
             <div className="mb-8 flex justify-center">
               <img
-                src="/amzur-logo.png"
+                src="/amzur-logo.jpg"
                 alt="Amzur Technologies"
-                className="h-10 w-auto dark:brightness-0 dark:invert"
+                className="h-10 w-auto rounded-md"
               />
             </div>
 

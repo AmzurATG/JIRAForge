@@ -9,6 +9,7 @@
 const logger = require('../utils/logger');
 const portalService = require('../services/portal-service');
 const lobService = require('../services/portal-lob-service');
+const profileService = require('../services/portal-employee-profile-service');
 
 /** LOB scoping is only enforced when the flag is on (safe rollout). */
 function lobEnforced() {
@@ -19,21 +20,28 @@ function lobEnforced() {
  * Resolve the employee user_ids the caller may see.
  * - null  → no restriction (scoping off, or superadmin)
  * - array → restrict to these employees (empty array ⇒ sees nothing)
- * Honors an optional ?lobId filter; throws (status 403) if it's out of scope.
+ * Honors an optional ?lobId filter (throws status 403 if out of scope) and an
+ * optional ?locationId filter, which narrows the set further. Unlike lobId,
+ * locationId works regardless of PORTAL_LOB_ENFORCEMENT — it is a data
+ * filter, not an authorization scope.
  */
 async function resolveVisibleUserIds(req) {
-  if (!lobEnforced()) return null;
-  const scope = await lobService.resolveScope(req.portalUser);
-  const { lobId } = req.query;
-  if (lobId) {
-    if (!lobService.canAccessLob(scope, lobId)) {
-      const e = new Error('Insufficient permissions for this LOB');
-      e.status = 403;
-      throw e;
+  let visibleUserIds = null;
+  if (lobEnforced()) {
+    const scope = await lobService.resolveScope(req.portalUser);
+    const { lobId } = req.query;
+    if (lobId) {
+      if (!lobService.canAccessLob(scope, lobId)) {
+        const e = new Error('Insufficient permissions for this LOB');
+        e.status = 403;
+        throw e;
+      }
+      visibleUserIds = await lobService.userIdsForLobs([lobId]);
+    } else {
+      visibleUserIds = scope.visibleUserIds;
     }
-    return lobService.userIdsForLobs([lobId]);
   }
-  return scope.visibleUserIds;
+  return profileService.applyLocationScope(visibleUserIds, req.query.locationId);
 }
 
 /**
@@ -112,9 +120,9 @@ async function getEmployees(req, res) {
   const startTime = Date.now();
   try {
     const { orgId } = req.portalUser;
-    const { search, productivityRange, from, to, page = 1, limit = 20 } = req.query;
-    
-    const filters = { search, productivityRange, from, to };
+    const { search, productivityRange, from, to, locationId, page = 1, limit = 20 } = req.query;
+
+    const filters = { search, productivityRange, from, to, locationId };
     const pagination = { page: parseInt(page), limit: parseInt(limit) };
     
     logger.info('[Portal] getEmployees called', { orgId, filters, pagination });

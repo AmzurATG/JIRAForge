@@ -5,13 +5,15 @@
  */
 
 import { useState, useEffect } from 'react';
-import { FileText, FileDown, File } from 'lucide-react';
+import { FileText, FileDown, File, FileSpreadsheet } from 'lucide-react';
 import { reportsApi } from '../api/reports';
 import { employeesApi } from '../api/employees';
 import DataTable from '../components/common/DataTable';
 import DateRangePicker from '../components/common/DateRangePicker';
 import LobFilter from '../components/common/LobFilter';
+import LocationFilter from '../components/common/LocationFilter';
 import EmployeeSelect from '../components/common/EmployeeSelect';
+import CategoryBadge from '../components/common/CategoryBadge';
 import ErrorBanner from '../components/common/ErrorBanner';
 import { formatDate, formatDuration, formatDateTime } from '../utils/formatters';
 
@@ -42,6 +44,7 @@ function ReportsPage() {
   const [page, setPage] = useState(1);
   const [limit] = useState(20);
   const [exportingCSV, setExportingCSV] = useState(false);
+  const [exportingExcel, setExportingExcel] = useState(false);
   const [exportingPDF, setExportingPDF] = useState(false);
   
   // Report type
@@ -51,6 +54,7 @@ function ReportsPage() {
   const [classification, setClassification] = useState('');
   const [selectedEmployee, setSelectedEmployee] = useState('');
   const [lobId, setLobId] = useState('');
+  const [locationId, setLocationId] = useState('');
   
   // Employee list for filter
   const [employees, setEmployees] = useState([]);
@@ -68,11 +72,11 @@ function ReportsPage() {
 
   useEffect(() => {
     loadEmployees();
-  }, [lobId]);
+  }, [lobId, locationId]);
 
   const loadEmployees = async () => {
     try {
-      const response = await employeesApi.getSimpleList(undefined, lobId || undefined);
+      const response = await employeesApi.getSimpleList(undefined, lobId || undefined, locationId || undefined);
       setEmployees(response.data || []);
     } catch (err) {
       console.error('Failed to load employees:', err);
@@ -89,6 +93,7 @@ function ReportsPage() {
         classification: classification || undefined,
         employee: selectedEmployee || undefined,
         lobId: lobId || undefined,
+        locationId: locationId || undefined,
         from: dateRange.from,
         to: dateRange.to,
         page: newPage,
@@ -120,6 +125,7 @@ function ReportsPage() {
         classification: classification || undefined,
         employee: selectedEmployee || undefined,
         lobId: lobId || undefined,
+        locationId: locationId || undefined,
         from: dateRange.from,
         to: dateRange.to,
       });
@@ -143,6 +149,40 @@ function ReportsPage() {
     }
   };
 
+  const handleExportExcel = async () => {
+    setExportingExcel(true);
+    setError(null);
+
+    try {
+      const blob = await reportsApi.exportExcel({
+        type: reportType,
+        classification: classification || undefined,
+        employee: selectedEmployee || undefined,
+        lobId: lobId || undefined,
+        locationId: locationId || undefined,
+        from: dateRange.from,
+        to: dateRange.to,
+      });
+
+      // Create download link
+      const url = window.URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      const timestamp = new Date().toISOString().split('T')[0];
+      link.setAttribute('download', `${reportType}-${timestamp}.xlsx`);
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.URL.revokeObjectURL(url);
+
+    } catch (err) {
+      console.error('Failed to export Excel:', err);
+      setError(err.response?.data?.error || 'Failed to export Excel');
+    } finally {
+      setExportingExcel(false);
+    }
+  };
+
   const handleExportPDF = async () => {
     setExportingPDF(true);
     setError(null);
@@ -153,6 +193,7 @@ function ReportsPage() {
         classification: classification || undefined,
         employee: selectedEmployee || undefined,
         lobId: lobId || undefined,
+        locationId: locationId || undefined,
         from: dateRange.from,
         to: dateRange.to,
       });
@@ -186,8 +227,8 @@ function ReportsPage() {
           { key: 'nonProductiveHours', label: 'Non-Productive Hours', sortable: true, render: (v) => v?.toFixed(2) || '0.00' },
           { key: 'totalHours', label: 'Total Hours', sortable: true, render: (v) => v?.toFixed(2) || '0.00' },
           { key: 'productivityPercentage', label: 'Productivity %', sortable: true, render: (v) => `${v?.toFixed(1) || 0}%` },
-          { key: 'employeeCount', label: 'Employees', sortable: true },
-          { key: 'employees', label: 'Employee Names', sortable: false, render: (v) => v || 'N/A' },
+          { key: 'neutralHours', label: 'Neutral Hours', sortable: true, render: (v) => v?.toFixed(2) || '0.00' },
+          { key: 'idleHours', label: 'Idle Hours', sortable: true, render: (v) => v?.toFixed(2) || '0.00' },
         ];
       case 'employee-summary':
         return [
@@ -197,6 +238,9 @@ function ReportsPage() {
           { key: 'nonProductiveHours', label: 'Non-Productive Hours', sortable: true, render: (v) => v?.toFixed(2) || '0.00' },
           { key: 'totalHours', label: 'Total Hours', sortable: true, render: (v) => v?.toFixed(2) || '0.00' },
           { key: 'productivityPercentage', label: 'Productivity %', sortable: true, render: (v) => `${v?.toFixed(1) || 0}%` },
+          { key: 'location', label: 'Location', sortable: true, render: (v) => v || '—' },
+          { key: 'neutralHours', label: 'Neutral Hours', sortable: true, render: (v) => v?.toFixed(2) || '0.00' },
+          { key: 'idleHours', label: 'Idle Hours', sortable: true, render: (v) => v?.toFixed(2) || '0.00' },
         ];
       case 'application-usage':
         return [
@@ -217,17 +261,7 @@ function ReportsPage() {
             key: 'classification',
             label: 'Classification',
             sortable: true,
-            render: (value) => (
-              <span
-                className={`px-2 py-1 rounded text-xs font-semibold ${
-                  value === 'productive'
-                    ? 'bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200'
-                    : 'bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200'
-                }`}
-              >
-                {value || 'N/A'}
-              </span>
-            ),
+            render: (value, row) => <CategoryBadge value={row.category || value} />,
           },
         ];
     }
@@ -251,6 +285,14 @@ function ReportsPage() {
           >
             <FileDown className="w-4 h-4" />
             {exportingCSV ? 'Exporting...' : 'Export CSV'}
+          </button>
+          <button
+            onClick={handleExportExcel}
+            disabled={exportingExcel || previewData.length === 0}
+            className="btn-primary flex items-center gap-2"
+          >
+            <FileSpreadsheet className="w-4 h-4" />
+            {exportingExcel ? 'Exporting...' : 'Export Excel'}
           </button>
           <button
             onClick={handleExportPDF}
@@ -311,6 +353,7 @@ function ReportsPage() {
                 <option value="">All Classifications</option>
                 <option value="productive">Productive</option>
                 <option value="non-productive">Non-Productive</option>
+                <option value="neutral">Neutral</option>
               </select>
             </div>
 
@@ -336,12 +379,16 @@ function ReportsPage() {
 
             {/* LOB Filter */}
             <LobFilter value={lobId} onChange={(v) => { setLobId(v); setSelectedEmployee(''); setPreviewData([]); setPage(1); }} />
+
+            {/* Location Filter */}
+            <LocationFilter value={locationId} onChange={(v) => { setLocationId(v); setSelectedEmployee(''); setPreviewData([]); setPage(1); }} />
           </div>
           </div>
 
-          {/* Generate Button */}
+          {/* Generate Button — explicit page 1 (passing the raw click event
+              would corrupt the page param/state) */}
           <button
-            onClick={handleGeneratePreview}
+            onClick={() => handleGeneratePreview(1)}
             disabled={loading}
             className="btn-primary w-full flex items-center justify-center gap-2"
           >

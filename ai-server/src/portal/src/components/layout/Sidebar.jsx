@@ -56,9 +56,9 @@ function Sidebar({ collapsed, onToggle }) {
             </div>
             <div>
               <h1 className="text-sm font-bold text-white">
-                Time Tracker
+                Amzur
               </h1>
-              <p className="text-[10px] text-gray-400">Portal</p>
+              <p className="text-[10px] text-gray-400">Time Tracker</p>
             </div>
           </div>
         )}
@@ -122,7 +122,7 @@ function Sidebar({ collapsed, onToggle }) {
         <div className="absolute bottom-0 left-0 right-0 p-3 border-t border-gray-700/50">
           <div className="px-2 py-1.5 bg-gray-800/50 rounded-lg">
             <p className="text-[10px] text-gray-500">Version 1.0.0</p>
-            <p className="text-[10px] text-gray-600">© 2026 BRD Tracker</p>
+            <p className="text-[10px] text-gray-600">© {new Date().getFullYear()} Amzur Technologies</p>
           </div>
         </div>
       )}

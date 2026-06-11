@@ -44,8 +44,9 @@ blocked. See the team analysis for the full evidence trail.
   `HKLM\Software\Amzur Technologies\TimeTracker`, registers the
   `TimeTracker Updater` SYSTEM scheduled task, and generates the uninstaller.
 - **`update_service.ps1`** — the SYSTEM updater the scheduled task runs hourly.
-  Checks the version endpoint, downloads the new installer to a SYSTEM-only
-  staging dir, verifies SHA256, and runs it silently (`/VERYSILENT`).
+  Checks the version endpoint, downloads the new installer to an ACL-locked
+  staging dir (SYSTEM + Administrators only), verifies SHA256, and runs it
+  silently (`/VERYSILENT`).
 - **`Output/TimeTrackerSetup.exe`** — the compiled installer you distribute
   (created by `build.bat`).
 
@@ -54,8 +55,11 @@ blocked. See the team analysis for the full evidence trail.
 ```
 TimeTracker Updater scheduled task  (runs as SYSTEM, hourly)
         │
-        ├─ GET https://forgesync.amzur.com/api/app-version/check?platform=windows&current=<ver>
-        ├─ if updateAvailable: download downloadUrl  ->  C:\Windows\Temp\TimeTrackerUpdate\
+        ├─ GET {server}/api/app-version/check?platform=windows&current=<ver>
+        │     ({server} = registry ServerUrl if set, else the script default —
+        │      see $DefaultServer in update_service.ps1; keep it in sync with
+        │      the app's AI_SERVER_URL)
+        ├─ if updateAvailable: download downloadUrl  ->  C:\ProgramData\TimeTracker\updates\stage\  (ACL-locked: SYSTEM+Admins)
         ├─ verify SHA256 == checksum
         └─ run TimeTrackerSetup.exe /VERYSILENT   (SYSTEM => writes Program Files, NO prompt)
                  └─ Inno closes the running app, replaces files, restarts it
@@ -67,22 +71,61 @@ app's own `apply_update()` simply triggers this task on demand
 (`schtasks /Run`); the hourly schedule is the guarantee even if the on-demand
 trigger is denied.
 
-## How to build
+## How to build (for developers)
 
-1. Install **Inno Setup 6** on the build machine: <https://jrsoftware.org/isdl.php>
-   (provides `ISCC.exe`).
-2. (Optional, for signing) install the **Windows SDK** (`signtool`) and set:
+Building is the **same one-command workflow as before** (`build.bat`); the only
+new tool compared with the old "just an .exe" days is **Inno Setup** (used to
+compile the installer). End users never need it — it's a build-machine tool only.
+
+### Prerequisites (one-time, on the build machine)
+
+1. **Python 3.11** (match the build — it uses 3.11.x).
+2. **Inno Setup 6** — <https://jrsoftware.org/isdl.php>. Click through the
+   installer once; it provides `ISCC.exe`, which `build.bat` locates
+   automatically. *(This is the only new requirement.)*
+3. *(Optional, only if code-signing)* the **Windows SDK** for `signtool`, then:
    ```bat
    set SIGN_PFX=C:\path\to\codesign.pfx
    set SIGN_PFX_PASSWORD=yourpassword
    ```
-3. Run `build.bat`. It will:
-   - build the one-folder app to `dist\TimeTracker\`,
-   - (if `SIGN_PFX` set) sign every `*.exe` / `*.dll`,
-   - compile `installer\Output\TimeTrackerSetup.exe`,
-   - (if `SIGN_PFX` set) sign the installer.
+4. Create a virtual env in `python-desktop-app\` so `build.bat` picks it up
+   (it looks for `venv\` or `.venv\`):
+   ```powershell
+   cd python-desktop-app
+   python -m venv venv
+   ```
+   You do **not** need to `pip install` anything by hand — `build.bat` installs
+   `requirements.txt` (incl. spaCy + the en_core_web_sm model) and the OCR
+   engines for you.
 
-Distribute **`TimeTrackerSetup.exe`**.
+### Build
+
+```powershell
+.\build.bat
+```
+
+`build.bat` will:
+- install Python deps + the OCR engines configured in `.env`
+  (defaults to `rapidocr` + `winrtocr`; **no easyocr**),
+- build the one-folder app to `dist\TimeTracker\`,
+- **auto-read the version** from `APP_VERSION` in `desktop_app.py` (no need to
+  pass it; it aborts if the version can't be read),
+- (if `SIGN_PFX` set) sign every `*.exe` / `*.dll`, failing the build if signing
+  fails,
+- compile `installer\Output\TimeTrackerSetup.exe`,
+- (if `SIGN_PFX` set) sign the installer.
+
+Distribute the single file **`installer\Output\TimeTrackerSetup.exe`**.
+
+### Notes
+- **To change the version:** edit only `APP_VERSION = "x.y.z"` in
+  `desktop_app.py`, then run `build.bat` — the app, installer, and version-check
+  all follow from that one line.
+- **No Inno Setup installed?** `build.bat` does not fail — it still produces
+  `dist\TimeTracker\` and prints a warning that the installer step was skipped.
+  Install Inno Setup 6 and re-run to get `TimeTrackerSetup.exe`.
+- The **first** build is slower (it installs all dependencies); later builds are
+  fast.
 
 ## ⚠️ Required external steps (NOT done by this code)
 
@@ -114,10 +157,12 @@ The updater runs as SYSTEM, so its trust inputs matter:
 
 - **Transport:** HTTPS (TLS 1.2) to the trusted server.
 - **Integrity:** SHA256 from the server manifest is verified before running.
-- **Tamper resistance:** the installer is staged in `C:\Windows\Temp\...`
-  (SYSTEM/admin-only), so a standard user **cannot** swap the file between
-  download and execution. This avoids the classic "SYSTEM executes a
-  user-writable file" privilege-escalation hole.
+- **Tamper resistance:** the installer is staged in
+  `C:\ProgramData\TimeTracker\updates\stage\`, which the updater **explicitly
+  ACL-locks to SYSTEM + Administrators** (inheritance disabled) immediately after
+  creating it, and **fails closed** if that ACL cannot be applied. So a standard
+  user **cannot** swap the file between download/verify and execution — avoiding
+  the classic "SYSTEM executes a user-writable file" privilege-escalation hole.
 - **Future hardening:** enable `$RequireValidSignature` once signed so the
   updater additionally requires a valid Authenticode signature from your
   publisher.
@@ -150,6 +195,7 @@ environment** (no Inno Setup / Windows installer execution available here):
   applies updates regardless; if you want instant "Update now", grant Users run
   permission on the task (the app treats a denied trigger as *deferred*, not a
   failure).
-- **`AppId` GUID in `TimeTracker.iss`** uses a placeholder
-  (`...-TIMETRACKER01`). Replace with a real, stable GUID before shipping so
-  upgrades are tracked correctly in Add/Remove Programs.
+- **`AppId` GUID in `TimeTracker.iss`** is a fixed, real GUID
+  (`{0302495E-0DC4-460E-85CE-92C26EFE0FF0}`). Do **NOT** change it between
+  versions — it is the upgrade/uninstall identity in Add/Remove Programs, so
+  changing it would orphan existing installs.

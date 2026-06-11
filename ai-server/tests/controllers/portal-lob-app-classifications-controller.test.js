@@ -1,11 +1,13 @@
 'use strict';
 
 jest.mock('../../src/services/portal-lob-service');
+jest.mock('../../src/services/portal-service');
 jest.mock('../../src/utils/logger', () => ({
   info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn(),
 }));
 
 const lobService = require('../../src/services/portal-lob-service');
+const portalService = require('../../src/services/portal-service');
 const ctrl = require('../../src/controllers/portal-lob-app-classifications-controller');
 
 function makeRes() {
@@ -64,5 +66,38 @@ describe('Per-LOB classifications: superadmin or head of the LOB only', () => {
     const res = makeRes();
     await ctrl.setClassification(makeReq({ role: 'superadmin', params: { lobId: 'missing' }, body: { appId: 'a', classification: 'productive' } }), res);
     expect(res._status).toBe(404);
+  });
+});
+
+describe('getUnlistedApps cleans display names (AC-A1)', () => {
+  test('rows carry a cleaned displayName alongside the raw identifier', async () => {
+    lobService.resolveScope.mockResolvedValue({ isSuperadmin: true, visibleLobIds: null });
+    lobService.canAccessLob.mockReturnValue(true);
+    lobService.userIdsForLobs.mockResolvedValue(['u1']);
+    lobService.listCatalog.mockResolvedValue({ data: [{ identifier: 'code.exe' }], totalCount: 1 });
+    portalService.getApplicationUsage.mockResolvedValue({
+      data: [
+        { applicationName: 'ShellExperienceHost.exe', totalHours: 1.2, sessionCount: 3, employeeCount: 2 },
+        { applicationName: 'org.gnome.Nautilus', totalHours: 0.5, sessionCount: 1, employeeCount: 1 },
+        // already in the catalog — must be excluded
+        { applicationName: 'code.exe', totalHours: 9, sessionCount: 9, employeeCount: 3 },
+      ],
+      pagination: { totalCount: 3 },
+    });
+
+    const res = makeRes();
+    await ctrl.getUnlistedApps(makeReq({ params: { lobId: 'L1' } }), res);
+
+    expect(res._status).toBe(200);
+    const rows = res._body.data;
+    expect(rows).toHaveLength(2);
+    expect(rows[0]).toMatchObject({
+      identifier: 'ShellExperienceHost.exe',
+      displayName: 'Shell Experience Host',
+    });
+    expect(rows[1]).toMatchObject({
+      identifier: 'org.gnome.Nautilus',
+      displayName: 'Nautilus',
+    });
   });
 });

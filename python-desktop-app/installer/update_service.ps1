@@ -20,17 +20,18 @@
    1. Read installed version + install dir + server from HKLM.
    2. GET {server}/api/app-version/check?platform=windows&current={version}
       (the SAME endpoint the app uses).
-   3. If an update is available, download the NEW INSTALLER to a SYSTEM-only
-      folder (C:\Windows\Temp -> not writable by standard users => tamper-safe).
+   3. If an update is available, download the NEW INSTALLER to an ACL-locked
+      staging dir under ProgramData (restricted to SYSTEM + Administrators after
+      creation => a standard user cannot tamper with the staged installer).
    4. Verify the server's SHA256 checksum.
    5. Run the installer silently (/VERYSILENT). The installer (CloseApplications)
       closes & restarts the running app.
 
  SECURITY / TRUST MODEL  (see installer/README.md)
-   Trust anchors today: HTTPS to the trusted server + server SHA256 + a
-   SYSTEM-only staging dir. Once a code-signing certificate exists, set
-   $RequireValidSignature = $true so the service refuses any installer that is
-   not validly Authenticode-signed by your publisher.
+   Trust anchors today: HTTPS to the trusted server + server SHA256 + an
+   ACL-locked staging dir (SYSTEM + Administrators only). Once a code-signing
+   certificate exists, set $RequireValidSignature = $true so the service refuses
+   any installer that is not validly Authenticode-signed by your publisher.
 
  NOTES
    - REQUIRED SERVER CHANGE: downloadUrl must point at the Inno installer
@@ -57,7 +58,7 @@ $DefaultServer = 'https://timetracker-forge.amzur.com'
 $RegKey        = "HKLM:\Software\$Publisher\$AppName"
 
 # Flip to $true once the installer is code-signed (see README). Until then we
-# rely on HTTPS + SHA256 + a SYSTEM-only staging dir.
+# rely on HTTPS + SHA256 + an ACL-locked staging dir (SYSTEM + Administrators).
 $RequireValidSignature = $false
 
 # Resolve this script's own path (used when registering the task action).
@@ -69,7 +70,7 @@ $DataRoot   = Join-Path $env:ProgramData $AppName            # C:\ProgramData\Ti
 $UpdatesDir = Join-Path $DataRoot 'updates'
 $LogFile    = Join-Path $UpdatesDir 'update_service.log'
 $LockFile   = Join-Path $UpdatesDir 'update_service.lock'
-$StageDir   = Join-Path $env:windir 'Temp\TimeTrackerUpdate'  # SYSTEM/admin-only
+$StageDir   = Join-Path $UpdatesDir 'stage'  # ProgramData\TimeTracker\updates\stage; ACL-locked to SYSTEM+Admins after creation
 
 if (-not (Test-Path $UpdatesDir)) {
     New-Item -ItemType Directory -Path $UpdatesDir -Force | Out-Null
@@ -230,9 +231,27 @@ try {
     }
     Write-Log "Update available: v$latest"
 
-    # Download the installer into the SYSTEM-only staging dir.
+    # Download the installer into a freshly-created, ACL-locked staging dir.
+    # The installer is later executed AS SYSTEM, so the dir is restricted to
+    # SYSTEM + Administrators (no standard-user write) to remove any window for a
+    # local user to swap the file between download/verify and execution.
     if (Test-Path $StageDir) { Remove-Item $StageDir -Recurse -Force -ErrorAction SilentlyContinue }
     New-Item -ItemType Directory -Path $StageDir -Force | Out-Null
+    try {
+        $stageAcl = New-Object System.Security.AccessControl.DirectorySecurity
+        $stageAcl.SetAccessRuleProtection($true, $false)   # disable inheritance + drop inherited ACEs
+        $idSystem = New-Object System.Security.Principal.SecurityIdentifier 'S-1-5-18'      # LocalSystem
+        $idAdmins = New-Object System.Security.Principal.SecurityIdentifier 'S-1-5-32-544'  # Administrators
+        foreach ($sid in @($idSystem, $idAdmins)) {
+            $stageAcl.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule(
+                $sid, 'FullControl', 'ContainerInherit,ObjectInherit', 'None', 'Allow')))
+        }
+        Set-Acl -Path $StageDir -AclObject $stageAcl
+        Write-Log "Staging dir locked to SYSTEM + Administrators only: $StageDir"
+    } catch {
+        Write-Log "Could not lock down staging dir ($StageDir): $($_.Exception.Message). Aborting -- refusing to stage a SYSTEM-executed installer in a non-hardened directory." 'ERROR'
+        return
+    }
     $dest = Join-Path $StageDir "TimeTrackerSetup_$latest.exe"
 
     Write-Log "Downloading $downloadUrl -> $dest"

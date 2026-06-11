@@ -12,7 +12,7 @@ class ResendAdapter extends IMailAdapter {
     super();
     this.apiKey = config.hasOwnProperty('apiKey') ? config.apiKey : process.env.RESEND_API_KEY;
     this.defaultFrom = config.defaultFrom || process.env.MAIL_FROM_ADDRESS || 'noreply@example.com';
-    this.defaultFromName = config.defaultFromName || process.env.MAIL_FROM_NAME || 'Productivity Portal';
+    this.defaultFromName = config.defaultFromName || process.env.MAIL_FROM_NAME || 'Amzur Time Tracker';
     
     if (this.apiKey) {
       this.client = new Resend(this.apiKey);

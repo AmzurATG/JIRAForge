@@ -6,8 +6,10 @@
 
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Search } from 'lucide-react';
+import { Search, MapPin, Edit2 } from 'lucide-react';
 import { employeesApi } from '../api/employees';
+import { locationsApi } from '../api/locations';
+import { useAuth } from '../contexts/AuthContext';
 import DataTable from '../components/common/DataTable';
 import DateRangePicker from '../components/common/DateRangePicker';
 import LobFilter from '../components/common/LobFilter';
@@ -17,6 +19,8 @@ import { useDebounce } from '../hooks/useDebounce';
 
 function EmployeesPage() {
   const navigate = useNavigate();
+  const { user } = useAuth();
+  const isSuperadmin = user?.role === 'superadmin';
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [employees, setEmployees] = useState([]);
@@ -26,6 +30,70 @@ function EmployeesPage() {
   const debouncedSearch = useDebounce(search, 500);
   const [productivityRange, setProductivityRange] = useState('');
   const [lobId, setLobId] = useState('');
+
+  // Locations (WS-B): filter dropdown for everyone, edit modal for superadmin.
+  const [locations, setLocations] = useState([]);
+  const [locationId, setLocationId] = useState('');
+  const [editingEmployee, setEditingEmployee] = useState(null); // row being edited
+  const [editLocationId, setEditLocationId] = useState('');
+  const [savingLocation, setSavingLocation] = useState(false);
+  const [success, setSuccess] = useState(null);
+
+  // Bulk selection (superadmin): selection persists across pages/filters so
+  // the action-bar count reflects everything ticked, not just this page.
+  const [selected, setSelected] = useState({}); // userId -> true
+  const [bulkLocationId, setBulkLocationId] = useState('');
+  const [bulkApplying, setBulkApplying] = useState(false);
+  const selectedIds = Object.keys(selected);
+  const allOnPageSelected = employees.length > 0 && employees.every((e) => selected[e.userId]);
+
+  const toggleSelected = (userId) => {
+    setSelected((s) => {
+      const next = { ...s };
+      if (next[userId]) delete next[userId];
+      else next[userId] = true;
+      return next;
+    });
+  };
+
+  const togglePageSelection = (checked) => {
+    setSelected((s) => {
+      const next = { ...s };
+      employees.forEach((e) => {
+        if (checked) next[e.userId] = true;
+        else delete next[e.userId];
+      });
+      return next;
+    });
+  };
+
+  const applyBulkLocation = async () => {
+    setBulkApplying(true);
+    setError(null);
+    try {
+      const target = bulkLocationId === '__clear__' ? null : bulkLocationId;
+      const res = await locationsApi.bulkAssign(selectedIds, target);
+      const targetName = target ? (locations.find((l) => l.id === target)?.name || 'location') : 'no location';
+      setSuccess(`Updated ${res.updatedCount} employee(s) → ${targetName}`);
+      setSelected({});
+      setBulkLocationId('');
+      loadEmployees();
+    } catch (err) {
+      console.error('Bulk location assignment failed:', err);
+      setError(err.response?.data?.error || 'Failed to assign location');
+    } finally {
+      setBulkApplying(false);
+    }
+  };
+
+  useEffect(() => {
+    // Include inactive: employees can stay assigned to a retired location, so
+    // it must remain visible in the filter and in the edit modal (where it is
+    // shown but not newly assignable).
+    locationsApi.list({ includeInactive: true })
+      .then((res) => setLocations(res.data || []))
+      .catch((err) => console.error('Failed to load locations:', err));
+  }, []);
   
   // Default to last 7 days
   const [dateRange, setDateRange] = useState(() => {
@@ -40,23 +108,24 @@ function EmployeesPage() {
 
   useEffect(() => {
     loadEmployees();
-  }, [page, debouncedSearch, productivityRange, dateRange, lobId]);
+  }, [page, debouncedSearch, productivityRange, dateRange, lobId, locationId]);
 
   const loadEmployees = async () => {
     setLoading(true);
     setError(null);
-    
+
     try {
       const response = await employeesApi.getList({
         search: debouncedSearch,
         productivityRange: productivityRange || undefined,
         lobId: lobId || undefined,
+        locationId: locationId || undefined,
         from: dateRange.from,
         to: dateRange.to,
         page,
         limit: 10,
       });
-      
+
       setEmployees(response.data || []);
       setTotalCount(response.pagination?.totalCount || 0);
     } catch (err) {
@@ -64,6 +133,33 @@ function EmployeesPage() {
       setError(err.response?.data?.error || 'Failed to load employees');
     } finally {
       setLoading(false);
+    }
+  };
+
+  const openLocationEditor = (employee) => {
+    setEditingEmployee(employee);
+    setEditLocationId(employee.location?.id || '');
+  };
+
+  const saveLocation = async () => {
+    // No-op save: skip the request. Matters when the current assignment is an
+    // INACTIVE location — re-sending it would be rejected by the server (400),
+    // even though nothing changed.
+    if ((editLocationId || '') === (editingEmployee.location?.id || '')) {
+      setEditingEmployee(null);
+      return;
+    }
+    setSavingLocation(true);
+    setError(null);
+    try {
+      await locationsApi.setEmployeeLocation(editingEmployee.userId, editLocationId || null);
+      setEditingEmployee(null);
+      loadEmployees();
+    } catch (err) {
+      console.error('Failed to update location:', err);
+      setError(err.response?.data?.error || 'Failed to update employee location');
+    } finally {
+      setSavingLocation(false);
     }
   };
 
@@ -87,6 +183,28 @@ function EmployeesPage() {
   };
 
   const columns = [
+    ...(isSuperadmin ? [{
+      key: '_select',
+      label: (
+        <input
+          type="checkbox"
+          checked={allOnPageSelected}
+          onChange={(e) => togglePageSelection(e.target.checked)}
+          title="Select all on this page"
+          className="w-3.5 h-3.5 rounded border-gray-300 dark:border-gray-600"
+        />
+      ),
+      sortable: false,
+      render: (_, row) => (
+        <input
+          type="checkbox"
+          checked={!!selected[row.userId]}
+          onClick={(e) => e.stopPropagation()}
+          onChange={() => toggleSelected(row.userId)}
+          className="w-3.5 h-3.5 rounded border-gray-300 dark:border-gray-600"
+        />
+      ),
+    }] : []),
     {
       key: 'name',
       label: 'Name',
@@ -128,11 +246,42 @@ function EmployeesPage() {
       ),
     },
     {
+      key: 'location',
+      label: 'Location',
+      sortable: false,
+      render: (value) =>
+        value?.name ? (
+          <span className="inline-flex items-center gap-1 text-xs text-gray-700 dark:text-gray-300">
+            <MapPin className="w-3 h-3 text-gray-400" />
+            {value.name}
+          </span>
+        ) : (
+          <span className="text-xs text-gray-400">—</span>
+        ),
+    },
+    {
       key: 'lastActivityAt',
       label: 'Last Activity',
       sortable: true,
       render: (value) => value ? new Date(value).toLocaleDateString() : 'N/A',
     },
+    ...(isSuperadmin ? [{
+      key: 'actions',
+      label: '',
+      sortable: false,
+      render: (_, employee) => (
+        <button
+          onClick={(e) => {
+            e.stopPropagation();
+            openLocationEditor(employee);
+          }}
+          className="p-1 hover:bg-gray-100 dark:hover:bg-gray-700 rounded"
+          title="Edit employee location"
+        >
+          <Edit2 className="w-4 h-4 text-gray-500" />
+        </button>
+      ),
+    }] : []),
   ];
 
   return (
@@ -145,6 +294,13 @@ function EmployeesPage() {
 
       {error && (
         <ErrorBanner message={error} onClose={() => setError(null)} />
+      )}
+
+      {success && (
+        <div className="p-3 bg-green-100 dark:bg-green-900 text-green-800 dark:text-green-200 rounded text-sm flex justify-between items-center">
+          {success}
+          <button onClick={() => setSuccess(null)} className="font-bold ml-3">×</button>
+        </div>
       )}
 
       {/* Filters */}
@@ -221,8 +377,8 @@ function EmployeesPage() {
           </div>
         </div>
 
-        {/* Date Range + LOB */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+        {/* Date Range + LOB + Location */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
           <div>
             <label className="filter-label">Date Range</label>
             <DateRangePicker
@@ -232,6 +388,25 @@ function EmployeesPage() {
             />
           </div>
           <LobFilter value={lobId} onChange={(v) => { setLobId(v); setPage(1); }} />
+          {locations.length > 0 && (
+            <div>
+              <label className="filter-label text-xs flex items-center gap-1">
+                <MapPin className="w-3 h-3" /> Location
+              </label>
+              <select
+                value={locationId}
+                onChange={(e) => { setLocationId(e.target.value); setPage(1); }}
+                className="select-field"
+              >
+                <option value="">All Locations</option>
+                {locations.map((loc) => (
+                  <option key={loc.id} value={loc.id}>
+                    {loc.isActive ? loc.name : `${loc.name} (inactive)`}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
         </div>
         </div>
       </div>
@@ -259,6 +434,85 @@ function EmployeesPage() {
           }}
         />
       </div>
+
+      {/* Bulk action bar — appears on selection, stable position (superadmin) */}
+      {isSuperadmin && selectedIds.length > 0 && (
+        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-40 flex items-center gap-3 bg-gray-900 text-white rounded-xl shadow-2xl px-4 py-3 border border-gray-700">
+          <span className="text-sm font-semibold whitespace-nowrap">{selectedIds.length} selected</span>
+          <select
+            value={bulkLocationId}
+            onChange={(e) => setBulkLocationId(e.target.value)}
+            className="text-sm rounded-lg bg-gray-800 border border-gray-700 text-white px-2 py-1.5"
+          >
+            <option value="">Assign location…</option>
+            {locations.filter((l) => l.isActive).map((loc) => (
+              <option key={loc.id} value={loc.id}>{loc.name}</option>
+            ))}
+            <option value="__clear__">Remove location</option>
+          </select>
+          <button
+            onClick={applyBulkLocation}
+            disabled={!bulkLocationId || bulkApplying}
+            className="px-3 py-1.5 rounded-lg bg-primary-600 text-sm font-medium hover:bg-primary-700 disabled:opacity-50 disabled:cursor-not-allowed whitespace-nowrap"
+          >
+            {bulkApplying ? 'Applying…' : 'Apply'}
+          </button>
+          <button
+            onClick={() => { setSelected({}); setBulkLocationId(''); }}
+            className="text-sm text-gray-300 hover:text-white whitespace-nowrap"
+          >
+            Clear
+          </button>
+        </div>
+      )}
+
+      {/* Edit Employee Location Modal (superadmin) */}
+      {editingEmployee && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+          <div className="bg-white dark:bg-gray-800 rounded-lg p-6 max-w-sm w-full mx-4">
+            <h3 className="text-lg font-semibold mb-1">Edit Employee</h3>
+            <p className="text-sm text-gray-500 dark:text-gray-400 mb-4">
+              {editingEmployee.name} · {editingEmployee.email}
+            </p>
+            <label className="block text-sm font-medium mb-2">Location</label>
+            <select
+              value={editLocationId}
+              onChange={(e) => setEditLocationId(e.target.value)}
+              className="select-field w-full"
+            >
+              <option value="">No location</option>
+              {locations.map((loc) => (
+                // Inactive locations are shown (so a current assignment still
+                // displays correctly) but disabled — the server rejects NEW
+                // assignments to inactive locations.
+                <option key={loc.id} value={loc.id} disabled={!loc.isActive}>
+                  {loc.isActive ? loc.name : `${loc.name} (inactive)`}
+                </option>
+              ))}
+            </select>
+            {locations.length === 0 && (
+              <p className="mt-2 text-xs text-gray-500 dark:text-gray-400">
+                No locations yet — create them under Settings.
+              </p>
+            )}
+            <div className="flex gap-2 justify-end mt-5">
+              <button
+                onClick={() => setEditingEmployee(null)}
+                className="px-4 py-2 rounded border border-gray-300 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-800"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={saveLocation}
+                disabled={savingLocation}
+                className="px-4 py-2 rounded bg-primary-600 text-white hover:bg-primary-700 disabled:opacity-50"
+              >
+                {savingLocation ? 'Saving…' : 'Save'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
