@@ -268,8 +268,17 @@ async function syncAllUnassigned(req, res) {
   if (validationError) return badRequest(res, validationError);
 
   const { issues, sessions } = req.body;
+  logger.info(
+    '[DescQuality] syncAllUnassigned | issues=%d sessions=%d',
+    Array.isArray(issues) ? issues.length : 0,
+    Array.isArray(sessions) ? sessions.length : 0
+  );
   try {
     const result = await descriptionService.syncAllUnassigned({ issues, sessions });
+    logger.info(
+      '[DescQuality] syncAllUnassigned complete | assignments=%d',
+      Array.isArray(result?.assignments) ? result.assignments.length : 0
+    );
     return res.json({ success: true, data: result });
   } catch (err) {
     logger.error('[DescQuality] syncAllUnassigned failed: %s', err.message);

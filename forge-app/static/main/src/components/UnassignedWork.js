@@ -677,12 +677,19 @@ This will permanently dismiss these sessions from clustering. They won't appear 
         return;
       }
       const count = result.matchedCount || 0;
-      setSyncBanner({
-        type: 'success',
-        message: count > 0
-          ? `Sync complete. Automatically assigned ${count} session${count === 1 ? '' : 's'} to updated tickets.`
-          : 'Sync complete. No matching unassigned work found in the last 30 minutes.'
-      });
+      let message;
+      if (count > 0) {
+        message = `Sync complete. Automatically assigned ${count} session${count === 1 ? '' : 's'} to updated tickets.`;
+      } else if (result.reason === 'no_recent_sessions') {
+        message = 'Sync complete. No unassigned work sessions were captured in the last 30 minutes.';
+      } else if (result.reason === 'no_recent_updated_issues') {
+        message = 'Sync complete. No tickets with description updates were found in the last 30 minutes.';
+      } else if (result.reason === 'no_llm_matches') {
+        message = `Sync complete. Reviewed ${result.sessionsScanned || 0} recent session(s) against ${result.issuesScanned || 0} updated ticket(s) — no high-confidence matches.`;
+      } else {
+        message = 'Sync complete. No matching unassigned work found in the last 30 minutes.';
+      }
+      setSyncBanner({ type: 'success', message });
       await loadUnassignedWork();
     } catch (err) {
       setSyncBanner({ type: 'error', message: err?.message || 'Sync failed' });

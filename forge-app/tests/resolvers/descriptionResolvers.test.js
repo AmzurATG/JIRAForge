@@ -458,23 +458,26 @@ describe('syncRecentUnassignedWorkWithAllUpdatedIssues resolver', () => {
       }])
       .mockResolvedValueOnce([])
       .mockResolvedValueOnce([{ issue_key: 'PROJ-1', created_at: '2026-06-10T10:00:00Z' }])
+      .mockResolvedValueOnce([{ issue_key: 'PROJ-1', updated_at: '2026-06-10T10:00:00Z' }])
       .mockResolvedValueOnce([{ duration_seconds: 90 }])
       .mockResolvedValueOnce([])
       .mockResolvedValueOnce([]);
 
-    mockRequestJira.mockReturnValue(jsonResponse({
-      fields: {
-        summary: 'API task',
-        description: {
-          type: 'doc', version: 1,
-          content: [{ type: 'paragraph', content: [{ type: 'text', text: 'API changes' }] }]
-        },
-        issuetype: { name: 'Task' },
-        project: { key: 'PROJ' },
-        attachment: [],
-        issuelinks: []
-      }
-    }));
+    mockRequestJira
+      .mockReturnValueOnce(jsonResponse({ issues: [] }))
+      .mockReturnValueOnce(jsonResponse({
+        fields: {
+          summary: 'API task',
+          description: {
+            type: 'doc', version: 1,
+            content: [{ type: 'paragraph', content: [{ type: 'text', text: 'API changes' }] }]
+          },
+          issuetype: { name: 'Task' },
+          project: { key: 'PROJ' },
+          attachment: [],
+          issuelinks: []
+        }
+      }));
 
     mockRemoteRequest.mockResolvedValue({
       assignments: [{ sessionId: SESSION_ID_1, issueKey: 'PROJ-1' }]
@@ -495,5 +498,30 @@ describe('syncRecentUnassignedWorkWithAllUpdatedIssues resolver', () => {
         })
       })
     );
+  });
+
+  test('returns no_recent_sessions without calling LLM', async () => {
+    const r = makeResolver();
+    registerDescriptionResolvers(r);
+
+    mockSupabaseRequest
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([]);
+
+    mockRequestJira.mockReturnValue(jsonResponse({ issues: [{ key: 'PROJ-1' }] }));
+
+    const result = await r.invoke('syncRecentUnassignedWorkWithAllUpdatedIssues', {
+      payload: {},
+      context: { accountId: 'acct-1', cloudId: 'cloud-1' }
+    });
+
+    expect(result).toEqual(expect.objectContaining({
+      success: true,
+      matchedCount: 0,
+      reason: 'no_recent_sessions'
+    }));
+    expect(mockRemoteRequest).not.toHaveBeenCalled();
   });
 });

@@ -339,14 +339,17 @@ function recentUnassignedCutoffIso(windowMinutes = RECENT_UNASSIGNED_WINDOW_MINU
 async function fetchRecentUnassignedSessions(supabaseConfig, userId, organizationId, windowMinutes = RECENT_UNASSIGNED_WINDOW_MINUTES) {
   const cutoff = recentUnassignedCutoffIso(windowMinutes);
 
+  // Match the Unassigned Work UI: filter by when work occurred (start_time / end_time),
+  // not when the DB row was created. Clustered groups can be days old while member
+  // activity still falls inside the 30-minute sync window.
   const [activityResults, legacyResults] = await Promise.all([
     supabaseRequest(
       supabaseConfig,
       `activity_records?user_id=eq.${userId}&organization_id=eq.${organizationId}` +
       `&user_assigned_issue_key=is.null&status=in.(pending,processing,analyzed)` +
       `&classification=in.(productive,unknown)&clustering_dismissed=eq.false` +
-      `&created_at=gte.${cutoff}` +
-      `&select=id,window_title,application_name,ocr_text,duration_seconds,total_time_seconds`
+      `&or=(start_time.gte.${cutoff},end_time.gte.${cutoff},created_at.gte.${cutoff})` +
+      `&select=id,window_title,application_name,ocr_text,duration_seconds,total_time_seconds,start_time,end_time,created_at`
     ),
     supabaseRequest(
       supabaseConfig,
@@ -358,7 +361,10 @@ async function fetchRecentUnassignedSessions(supabaseConfig, userId, organizatio
   ]);
 
   const sessions = [];
+  const seenIds = new Set();
   for (const record of ensureArray(activityResults)) {
+    if (!record?.id || seenIds.has(record.id)) continue;
+    seenIds.add(record.id);
     sessions.push({
       sessionId: record.id,
       applicationName: record.application_name || '',
@@ -369,6 +375,8 @@ async function fetchRecentUnassignedSessions(supabaseConfig, userId, organizatio
     });
   }
   for (const record of ensureArray(legacyResults)) {
+    if (!record?.id || seenIds.has(record.id)) continue;
+    seenIds.add(record.id);
     sessions.push({
       sessionId: record.id,
       applicationName: record.application_name || '',
@@ -469,21 +477,76 @@ async function assignMatchedSessions({
   return validSessionIds.length;
 }
 
-async function fetchRecentlyUpdatedIssueKeys(supabaseConfig, cloudId, windowMinutes = RECENT_UNASSIGNED_WINDOW_MINUTES) {
+async function fetchRecentlyUpdatedIssueKeysFromDb(supabaseConfig, cloudId, windowMinutes = RECENT_UNASSIGNED_WINDOW_MINUTES) {
   const cutoff = recentUnassignedCutoffIso(windowMinutes);
-  const rows = ensureArray(await supabaseRequest(
-    supabaseConfig,
-    `description_quality_events?org_id=eq.${cloudId}` +
-    `&event_type=in.(accept,edit)&created_at=gte.${cutoff}` +
-    `&select=issue_key,created_at&order=created_at.desc`
-  ));
+  const [eventRows, cacheRows] = await Promise.all([
+    supabaseRequest(
+      supabaseConfig,
+      `description_quality_events?org_id=eq.${cloudId}` +
+      `&event_type=in.(accept,edit,improve)&created_at=gte.${cutoff}` +
+      `&select=issue_key,created_at&order=created_at.desc`
+    ),
+    supabaseRequest(
+      supabaseConfig,
+      `description_quality_cache?org_id=eq.${cloudId}` +
+      `&updated_at=gte.${cutoff}` +
+      `&select=issue_key,updated_at&order=updated_at.desc`
+    )
+  ]);
 
   const seen = new Set();
   const keys = [];
-  for (const row of rows) {
+  for (const row of [...ensureArray(eventRows), ...ensureArray(cacheRows)]) {
     if (!row?.issue_key || seen.has(row.issue_key)) continue;
     seen.add(row.issue_key);
     keys.push(row.issue_key);
+  }
+  return keys;
+}
+
+async function fetchRecentlyUpdatedIssueKeysFromJira(windowMinutes = RECENT_UNASSIGNED_WINDOW_MINUTES) {
+  const jql = `assignee = currentUser() AND updated >= -${windowMinutes}m ORDER BY updated DESC`;
+  try {
+    const response = await api.asUser().requestJira(
+      route`/rest/api/3/search/jql`,
+      {
+        method: 'POST',
+        headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          jql,
+          maxResults: 20,
+          fields: ['summary', 'description', 'updated']
+        })
+      }
+    );
+    if (!response.ok) {
+      const text = await response.text();
+      console.warn('[descriptionResolvers] Jira recent-updated search failed:', response.status, text.slice(0, 200));
+      return [];
+    }
+    const body = await response.json();
+    const issues = Array.isArray(body.issues) ? body.issues : [];
+    return issues
+      .map((issue) => issue?.key)
+      .filter((key) => key && isValidIssueKey(key));
+  } catch (err) {
+    console.warn('[descriptionResolvers] Jira recent-updated search error:', err.message);
+    return [];
+  }
+}
+
+async function fetchRecentlyUpdatedIssueCandidates(supabaseConfig, cloudId, windowMinutes = RECENT_UNASSIGNED_WINDOW_MINUTES) {
+  const [dbKeys, jiraKeys] = await Promise.all([
+    fetchRecentlyUpdatedIssueKeysFromDb(supabaseConfig, cloudId, windowMinutes),
+    fetchRecentlyUpdatedIssueKeysFromJira(windowMinutes)
+  ]);
+
+  const seen = new Set();
+  const keys = [];
+  for (const key of [...dbKeys, ...jiraKeys]) {
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    keys.push(key);
   }
   return keys;
 }
@@ -768,17 +831,51 @@ export function registerDescriptionResolvers(resolver) {
       const { config: supabaseConfig, organization, userId, accountId, cloudId } = ctx;
       const [sessions, issueKeys] = await Promise.all([
         fetchRecentUnassignedSessions(supabaseConfig, userId, organization.id),
-        fetchRecentlyUpdatedIssueKeys(supabaseConfig, cloudId)
+        fetchRecentlyUpdatedIssueCandidates(supabaseConfig, cloudId)
       ]);
 
-      if (sessions.length === 0 || issueKeys.length === 0) {
-        return { success: true, matchedCount: 0 };
+      console.log(
+        '[descriptionResolvers] syncRecentUnassignedWorkWithAllUpdatedIssues: sessions=%d issueCandidates=%d',
+        sessions.length,
+        issueKeys.length
+      );
+
+      if (sessions.length === 0) {
+        return {
+          success: true,
+          matchedCount: 0,
+          reason: 'no_recent_sessions',
+          sessionsScanned: 0,
+          issuesScanned: 0
+        };
+      }
+
+      if (issueKeys.length === 0) {
+        return {
+          success: true,
+          matchedCount: 0,
+          reason: 'no_recent_updated_issues',
+          sessionsScanned: sessions.length,
+          issuesScanned: 0
+        };
       }
 
       const issues = await fetchIssuesFromJira(issueKeys);
       if (issues.length === 0) {
-        return { success: true, matchedCount: 0 };
+        return {
+          success: true,
+          matchedCount: 0,
+          reason: 'no_issue_details',
+          sessionsScanned: sessions.length,
+          issuesScanned: 0
+        };
       }
+
+      console.log(
+        '[descriptionResolvers] Invoking LLM match for %d sessions against %d issues',
+        sessions.length,
+        issues.length
+      );
 
       const matchData = await remoteRequest('/api/forge/description/sync-all-unassigned', {
         method: 'POST',
@@ -786,7 +883,13 @@ export function registerDescriptionResolvers(resolver) {
       });
       const assignments = Array.isArray(matchData?.assignments) ? matchData.assignments : [];
       if (assignments.length === 0) {
-        return { success: true, matchedCount: 0 };
+        return {
+          success: true,
+          matchedCount: 0,
+          reason: 'no_llm_matches',
+          sessionsScanned: sessions.length,
+          issuesScanned: issues.length
+        };
       }
 
       const byIssue = new Map();
@@ -809,7 +912,13 @@ export function registerDescriptionResolvers(resolver) {
         });
       }
 
-      return { success: true, matchedCount };
+      return {
+        success: true,
+        matchedCount,
+        reason: matchedCount > 0 ? 'assigned' : 'no_llm_matches',
+        sessionsScanned: sessions.length,
+        issuesScanned: issues.length
+      };
     } catch (err) {
       console.error('[descriptionResolvers] syncRecentUnassignedWorkWithAllUpdatedIssues failed:', err.message);
       return handleResolverError(err, 'syncing recent unassigned work with updated issues');

@@ -340,7 +340,7 @@ async function hasRecentUnassignedWork({ userId, organizationId, windowMinutes =
       .in('status', ['pending', 'processing', 'analyzed'])
       .in('classification', ['productive', 'unknown'])
       .eq('clustering_dismissed', false)
-      .gte('created_at', cutoff),
+      .or(`start_time.gte.${cutoff},end_time.gte.${cutoff},created_at.gte.${cutoff}`),
     supabase
       .from('unassigned_activity')
       .select('id', { count: 'exact', head: true })
