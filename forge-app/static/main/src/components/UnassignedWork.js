@@ -679,15 +679,15 @@ This will permanently dismiss these sessions from clustering. They won't appear 
       const count = result.matchedCount || 0;
       let message;
       if (count > 0) {
-        message = `Sync complete. Automatically assigned ${count} session${count === 1 ? '' : 's'} to updated tickets.`;
-      } else if (result.reason === 'no_recent_sessions') {
-        message = 'Sync complete. No unassigned work sessions were captured in the last 30 minutes.';
-      } else if (result.reason === 'no_recent_updated_issues') {
-        message = 'Sync complete. No tickets with description updates were found in the last 30 minutes.';
+        message = `Sync complete. Automatically assigned ${count} session${count === 1 ? '' : 's'} to in-progress tickets.`;
+      } else if (result.reason === 'no_previous_day_sessions') {
+        message = 'Sync complete. No unassigned work sessions were found from the previous day.';
+      } else if (result.reason === 'no_in_progress_issues') {
+        message = 'Sync complete. No in-progress tickets were found for matching.';
       } else if (result.reason === 'no_llm_matches') {
-        message = `Sync complete. Reviewed ${result.sessionsScanned || 0} recent session(s) against ${result.issuesScanned || 0} updated ticket(s) — no high-confidence matches.`;
+        message = `Sync complete. Reviewed ${result.sessionsScanned || 0} previous-day session(s) against ${result.issuesScanned || 0} in-progress ticket(s) — no high-confidence matches.`;
       } else {
-        message = 'Sync complete. No matching unassigned work found in the last 30 minutes.';
+        message = 'Sync complete. No matching unassigned work found for the previous day.';
       }
       setSyncBanner({ type: 'success', message });
       await loadUnassignedWork();
@@ -789,7 +789,7 @@ This will permanently dismiss these sessions from clustering. They won't appear 
               className="sync-with-jira-btn"
               onClick={handleSyncWithJira}
               disabled={syncingWithJira}
-              title="Match recent unassigned work to tickets updated in the last 30 minutes"
+              title="Match previous-day unassigned work to your in-progress Jira tickets"
             >
               {syncingWithJira ? (
                 <span className="sync-with-jira-spinner" aria-hidden="true" />

@@ -336,6 +336,24 @@ function recentUnassignedCutoffIso(windowMinutes = RECENT_UNASSIGNED_WINDOW_MINU
   return new Date(Date.now() - windowMinutes * 60 * 1000).toISOString();
 }
 
+function previousUtcDayBoundsIso() {
+  const now = new Date();
+  const todayStartUtc = new Date(Date.UTC(
+    now.getUTCFullYear(),
+    now.getUTCMonth(),
+    now.getUTCDate(),
+    0,
+    0,
+    0,
+    0
+  ));
+  const yesterdayStartUtc = new Date(todayStartUtc.getTime() - (24 * 60 * 60 * 1000));
+  return {
+    startIso: yesterdayStartUtc.toISOString(),
+    endIso: todayStartUtc.toISOString()
+  };
+}
+
 async function fetchRecentUnassignedSessions(supabaseConfig, userId, organizationId, windowMinutes = RECENT_UNASSIGNED_WINDOW_MINUTES) {
   const cutoff = recentUnassignedCutoffIso(windowMinutes);
 
@@ -386,6 +404,88 @@ async function fetchRecentUnassignedSessions(supabaseConfig, userId, organizatio
       source: 'unassigned_activity'
     });
   }
+  return sessions;
+}
+
+async function fetchPreviousDayUnassignedSessions(supabaseConfig, userId, organizationId) {
+  const { startIso, endIso } = previousUtcDayBoundsIso();
+
+  const groups = ensureArray(await supabaseRequest(
+    supabaseConfig,
+    `unassigned_work_groups?user_id=eq.${userId}&organization_id=eq.${organizationId}` +
+    `&is_assigned=eq.false&is_dismissed=eq.false&select=id`
+  ));
+
+  const groupIds = sanitizeUUIDArray(groups.map((g) => g.id).filter(Boolean));
+  if (groupIds.length === 0) return [];
+
+  const groupIdsParam = groupIds.join(',');
+  const members = ensureArray(await supabaseRequest(
+    supabaseConfig,
+    `unassigned_group_members?group_id=in.(${groupIdsParam})` +
+    `&created_at=gte.${startIso}&created_at=lt.${endIso}` +
+    `&select=group_id,activity_record_id,unassigned_activity_id,created_at`
+  ));
+
+  const activityIds = sanitizeUUIDArray(
+    members.map((m) => m.activity_record_id).filter(Boolean)
+  );
+  const legacyIds = sanitizeUUIDArray(
+    members.map((m) => m.unassigned_activity_id).filter(Boolean)
+  );
+
+  if (activityIds.length === 0 && legacyIds.length === 0) return [];
+
+  const [activityResults, legacyResults] = await Promise.all([
+    activityIds.length > 0
+      ? supabaseRequest(
+        supabaseConfig,
+        `activity_records?id=in.(${activityIds.join(',')})&user_id=eq.${userId}` +
+        `&organization_id=eq.${organizationId}` +
+        `&user_assigned_issue_key=is.null&status=in.(pending,processing,analyzed)` +
+        `&classification=in.(productive,unknown)&clustering_dismissed=eq.false` +
+        `&select=id,window_title,application_name,ocr_text,duration_seconds,total_time_seconds`
+      )
+      : Promise.resolve([]),
+    legacyIds.length > 0
+      ? supabaseRequest(
+        supabaseConfig,
+        `unassigned_activity?id=in.(${legacyIds.join(',')})&user_id=eq.${userId}` +
+        `&organization_id=eq.${organizationId}` +
+        `&manually_assigned=eq.false&clustering_dismissed=eq.false` +
+        `&select=id,window_title,application_name,extracted_text,time_spent_seconds`
+      )
+      : Promise.resolve([])
+  ]);
+
+  const sessions = [];
+  const seenIds = new Set();
+  for (const record of ensureArray(activityResults)) {
+    if (!record?.id || seenIds.has(record.id)) continue;
+    seenIds.add(record.id);
+    sessions.push({
+      sessionId: record.id,
+      applicationName: record.application_name || '',
+      windowTitle: record.window_title || '',
+      screenText: (record.ocr_text || '').slice(0, 500),
+      durationSeconds: record.duration_seconds || record.total_time_seconds || 0,
+      source: 'activity_records'
+    });
+  }
+
+  for (const record of ensureArray(legacyResults)) {
+    if (!record?.id || seenIds.has(record.id)) continue;
+    seenIds.add(record.id);
+    sessions.push({
+      sessionId: record.id,
+      applicationName: record.application_name || '',
+      windowTitle: record.window_title || '',
+      screenText: (record.extracted_text || '').slice(0, 500),
+      durationSeconds: record.time_spent_seconds || 0,
+      source: 'unassigned_activity'
+    });
+  }
+
   return sessions;
 }
 
@@ -471,41 +571,14 @@ async function assignMatchedSessions({
     timeToLog,
     sessionCount: validSessionIds.length,
     autoSyncEnabled,
-    customComment: 'Time tracked from recent unassigned work, auto-matched after description update.'
+    customComment: 'Time tracked from unassigned work, auto-matched during Jira sync.'
   });
 
   return validSessionIds.length;
 }
 
-async function fetchRecentlyUpdatedIssueKeysFromDb(supabaseConfig, cloudId, windowMinutes = RECENT_UNASSIGNED_WINDOW_MINUTES) {
-  const cutoff = recentUnassignedCutoffIso(windowMinutes);
-  const [eventRows, cacheRows] = await Promise.all([
-    supabaseRequest(
-      supabaseConfig,
-      `description_quality_events?org_id=eq.${cloudId}` +
-      `&event_type=in.(accept,edit,improve)&created_at=gte.${cutoff}` +
-      `&select=issue_key,created_at&order=created_at.desc`
-    ),
-    supabaseRequest(
-      supabaseConfig,
-      `description_quality_cache?org_id=eq.${cloudId}` +
-      `&updated_at=gte.${cutoff}` +
-      `&select=issue_key,updated_at&order=updated_at.desc`
-    )
-  ]);
-
-  const seen = new Set();
-  const keys = [];
-  for (const row of [...ensureArray(eventRows), ...ensureArray(cacheRows)]) {
-    if (!row?.issue_key || seen.has(row.issue_key)) continue;
-    seen.add(row.issue_key);
-    keys.push(row.issue_key);
-  }
-  return keys;
-}
-
-async function fetchRecentlyUpdatedIssueKeysFromJira(windowMinutes = RECENT_UNASSIGNED_WINDOW_MINUTES) {
-  const jql = `assignee = currentUser() AND updated >= -${windowMinutes}m ORDER BY updated DESC`;
+async function fetchInProgressIssueKeysFromJira() {
+  const jql = 'assignee = currentUser() AND resolution = EMPTY AND statusCategory = "In Progress" ORDER BY updated DESC';
   try {
     const response = await api.asUser().requestJira(
       route`/rest/api/3/search/jql`,
@@ -514,7 +587,7 @@ async function fetchRecentlyUpdatedIssueKeysFromJira(windowMinutes = RECENT_UNAS
         headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
         body: JSON.stringify({
           jql,
-          maxResults: 20,
+          maxResults: 50,
           fields: ['summary', 'description', 'updated']
         })
       }
@@ -535,28 +608,32 @@ async function fetchRecentlyUpdatedIssueKeysFromJira(windowMinutes = RECENT_UNAS
   }
 }
 
-async function fetchRecentlyUpdatedIssueCandidates(supabaseConfig, cloudId, windowMinutes = RECENT_UNASSIGNED_WINDOW_MINUTES) {
-  const [dbKeys, jiraKeys] = await Promise.all([
-    fetchRecentlyUpdatedIssueKeysFromDb(supabaseConfig, cloudId, windowMinutes),
-    fetchRecentlyUpdatedIssueKeysFromJira(windowMinutes)
-  ]);
+function buildAttachmentContext(rawAttachments) {
+  if (!Array.isArray(rawAttachments) || rawAttachments.length === 0) return '';
 
-  const seen = new Set();
-  const keys = [];
-  for (const key of [...dbKeys, ...jiraKeys]) {
-    if (!key || seen.has(key)) continue;
-    seen.add(key);
-    keys.push(key);
-  }
-  return keys;
+  return rawAttachments
+    .slice(0, 8)
+    .map((att) => {
+      const filename = att?.filename || 'unnamed';
+      const mimeType = att?.mimeType || 'unknown';
+      const size = Number(att?.size) || 0;
+      const sizeText = size > 0 ? `${size} bytes` : 'size unknown';
+      return `${filename} (${mimeType}, ${sizeText})`;
+    })
+    .join('\n');
 }
 
 async function fetchIssuesFromJira(issueKeys) {
   const issues = [];
   for (const issueKey of issueKeys) {
     try {
-      const { title, description } = await fetchIssueForAnalysis(issueKey);
-      issues.push({ issueKey, title, description });
+      const { title, description, rawAttachments } = await fetchIssueForAnalysis(issueKey);
+      issues.push({
+        issueKey,
+        title,
+        description,
+        attachmentContext: buildAttachmentContext(rawAttachments)
+      });
     } catch (err) {
       console.warn(`[descriptionResolvers] Skipping issue ${issueKey}: ${err.message}`);
     }
@@ -596,17 +673,14 @@ export function registerDescriptionResolvers(resolver) {
         description,
         issueType: normalizeIssueType(issueType),
         projectKey,
-        requestImprovement
+        requestImprovement,
+        parentContext,
+        attachments,
+        documents,
+        linkedIssues,
+        accountId: context?.accountId,
+        cloudId: context?.cloudId
       };
-
-      // Only include optional context fields if they have data (saves payload size)
-      if (parentContext) body.parentContext = parentContext;
-      if (attachments && attachments.length > 0) body.attachments = attachments;
-      if (documents && documents.length > 0) body.documents = documents;
-      if (linkedIssues && linkedIssues.length > 0) body.linkedIssues = linkedIssues;
-
-      const bodySize = JSON.stringify(body).length;
-      console.log(`[descriptionResolvers] Sending to ai-server: bodySize=${bodySize} bytes, hasParent=${!!body.parentContext}, hasAttachments=${!!body.attachments}, attachmentCount=${body.attachments?.length || 0}, documents=${body.documents?.length || 0}, linkedIssues=${body.linkedIssues?.length || 0}`);
 
       const data = await remoteRequest('/api/forge/description/analyze', {
         method: 'POST',
@@ -614,8 +688,6 @@ export function registerDescriptionResolvers(resolver) {
       });
 
       // remoteRequest unwraps { success, data } when the upstream uses that
-      // shape. The description controller returns the analysis fields directly
-      // on the response object, so `data` here may be undefined if the server
       // returned a plain { success: true, ... } payload. Fall back to a sane
       // shape so the UI always sees the expected keys.
       const result = data || {};
@@ -791,15 +863,16 @@ export function registerDescriptionResolvers(resolver) {
       if (!ctx.success) return ctx;
 
       const { config: supabaseConfig, organization, userId, accountId, cloudId } = ctx;
-      const sessions = await fetchRecentUnassignedSessions(supabaseConfig, userId, organization.id);
+      const sessions = await fetchPreviousDayUnassignedSessions(supabaseConfig, userId, organization.id);
       if (sessions.length === 0) {
         return { success: true, matchedCount: 0 };
       }
 
-      const { title, description } = await fetchIssueForAnalysis(issueKey);
+      const { title, description, rawAttachments } = await fetchIssueForAnalysis(issueKey);
+      const attachmentContext = buildAttachmentContext(rawAttachments);
       const matchData = await remoteRequest('/api/forge/description/sync-issue-unassigned', {
         method: 'POST',
-        body: { issueKey, title, description, sessions }
+        body: { issueKey, title, description, attachmentContext, sessions }
       });
       const matchedSessionIds = matchData?.matchedSessionIds || [];
       if (matchedSessionIds.length === 0) {
@@ -830,12 +903,12 @@ export function registerDescriptionResolvers(resolver) {
 
       const { config: supabaseConfig, organization, userId, accountId, cloudId } = ctx;
       const [sessions, issueKeys] = await Promise.all([
-        fetchRecentUnassignedSessions(supabaseConfig, userId, organization.id),
-        fetchRecentlyUpdatedIssueCandidates(supabaseConfig, cloudId)
+        fetchPreviousDayUnassignedSessions(supabaseConfig, userId, organization.id),
+        fetchInProgressIssueKeysFromJira()
       ]);
 
       console.log(
-        '[descriptionResolvers] syncRecentUnassignedWorkWithAllUpdatedIssues: sessions=%d issueCandidates=%d',
+        '[descriptionResolvers] syncRecentUnassignedWorkWithAllUpdatedIssues: previousDaySessions=%d inProgressIssues=%d',
         sessions.length,
         issueKeys.length
       );
@@ -844,7 +917,7 @@ export function registerDescriptionResolvers(resolver) {
         return {
           success: true,
           matchedCount: 0,
-          reason: 'no_recent_sessions',
+          reason: 'no_previous_day_sessions',
           sessionsScanned: 0,
           issuesScanned: 0
         };
@@ -854,7 +927,7 @@ export function registerDescriptionResolvers(resolver) {
         return {
           success: true,
           matchedCount: 0,
-          reason: 'no_recent_updated_issues',
+          reason: 'no_in_progress_issues',
           sessionsScanned: sessions.length,
           issuesScanned: 0
         };

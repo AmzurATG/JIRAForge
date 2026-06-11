@@ -483,6 +483,33 @@ Investigate and fix.`,
     expect(result.matchedSessionIds).toEqual(['sess-1']);
   });
 
+  test('syncIssueUnassigned forwards attachment context to matcher', async () => {
+    const runChat = jest.fn().mockResolvedValue({
+      response: {
+        choices: [{
+          message: {
+            content: JSON.stringify({ matches: [] })
+          }
+        }]
+      }
+    });
+
+    await syncIssueUnassigned({
+      issueKey: 'PROJ-1',
+      title: 'Login bug',
+      description: 'Broken login flow',
+      attachmentContext: 'screenshot.png (image/png, 1234 bytes)',
+      sessions: [
+        { sessionId: 'sess-1', applicationName: 'Code', windowTitle: 'login.ts' }
+      ],
+      deps: { runChat }
+    });
+
+    const userMessage = runChat.mock.calls[0][0].messages.find((m) => m.role === 'user');
+    const payload = JSON.parse(userMessage.content);
+    expect(payload.attachmentContext).toContain('screenshot.png');
+  });
+
   test('syncAllUnassigned returns one assignment per session', async () => {
     const runChat = jest.fn().mockResolvedValue({
       response: {
@@ -509,6 +536,35 @@ Investigate and fix.`,
     });
 
     expect(result.assignments).toEqual([{ sessionId: 'sess-1', issueKey: 'PROJ-1' }]);
+  });
+
+  test('syncAllUnassigned forwards description and attachment context to matcher', async () => {
+    const runChat = jest.fn().mockResolvedValue({
+      response: {
+        choices: [{
+          message: {
+            content: JSON.stringify({ assignments: [] })
+          }
+        }]
+      }
+    });
+
+    await syncAllUnassigned({
+      issues: [{
+        issueKey: 'PROJ-1',
+        title: 'Login bug',
+        description: 'Fails on Safari after SSO redirect',
+        attachmentContext: 'auth-flow-diagram.png (image/png, 22131 bytes)'
+      }],
+      sessions: [{ sessionId: 'sess-1', applicationName: 'Code', windowTitle: 'auth.ts' }],
+      deps: { runChat }
+    });
+
+    const callArg = runChat.mock.calls[0][0];
+    const userMessage = callArg.messages.find((m) => m.role === 'user');
+    const payload = JSON.parse(userMessage.content);
+    expect(payload.issues[0].description).toContain('SSO redirect');
+    expect(payload.issues[0].attachmentContext).toContain('auth-flow-diagram.png');
   });
 
   test('sanitizes title + description before calling LLM', async () => {

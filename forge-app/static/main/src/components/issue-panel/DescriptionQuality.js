@@ -169,7 +169,7 @@ export default function DescriptionQuality({ issueKey }) {
         setSyncMessage(`Matched and assigned ${count} session${count === 1 ? '' : 's'}!`);
         window.setTimeout(() => router.reload(), 2000);
       } else {
-        setSyncMessage('No matching recent unassigned work found in the last 30 minutes.');
+        setSyncMessage('No matching previous-day unassigned work found for this ticket.');
         setSyncingRecentWork(false);
       }
     } catch (err) {
@@ -247,7 +247,7 @@ export default function DescriptionQuality({ issueKey }) {
             {syncingRecentWork && (
               <div className="dq-loading dq-loading--inline">
                 <div className="dq-spinner" aria-hidden="true" />
-                <span>Syncing recent unassigned work…</span>
+                <span>Syncing previous-day unassigned work…</span>
               </div>
             )}
             {syncMessage && !syncingRecentWork && (

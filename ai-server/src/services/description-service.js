@@ -586,21 +586,23 @@ async function analyzeDescription(params) {
 const MATCH_MIN_CONFIDENCE = 0.7;
 
 const SYNC_ISSUE_UNASSIGNED_SYSTEM_PROMPT = `You are an expert assistant matching time tracking activity records to a specific Jira issue.
-You will be given the Jira issue's key, title, and description, and a list of unassigned work sessions from the last 30 minutes.
+You will be given the Jira issue's key, title, description, optional attachment context, and a list of unassigned work sessions from the previous day.
 Determine which sessions represent work on this specific issue.
 
 MATCHING RULES:
 1. Look at application names, window titles, and screen text context to identify a semantic match.
+  Use the issue description and attachment context to disambiguate similar-looking sessions.
 2. Be conservative. Only match if you are highly confident (confidence score >= 0.7) that the activity directly maps to the issue.
 3. Return a JSON object containing a "matches" array. Each match must include "sessionId" (string UUID) and "confidence" (number 0-1).
 4. Only include session IDs from the provided sessions list.`;
 
-const SYNC_ALL_UNASSIGNED_SYSTEM_PROMPT = `You are an expert assistant matching time tracking activity records to a list of recently updated Jira issues.
-You will be given a list of candidate Jira issues (each with its key, title, and description) and a list of unassigned work sessions from the last 30 minutes.
+const SYNC_ALL_UNASSIGNED_SYSTEM_PROMPT = `You are an expert assistant matching time tracking activity records to a list of in-progress Jira issues.
+You will be given a list of candidate Jira issues (each with key, title, description, and optional attachment context) and a list of unassigned work sessions from the previous day.
 Determine which session matches which issue.
 
 MATCHING RULES:
 1. Match a session to an issue key only if there is a strong semantic relationship (e.g. VS Code folder matches issue component, browser URL matches ticket context).
+  Use the issue description and attachment context to disambiguate similar issue titles.
 2. Be conservative. Only match if you are highly confident (confidence score >= 0.7). If no candidate issue is a strong match, do not assign it.
 3. Return a JSON object with an "assignments" array. Each item must include "sessionId", "issueKey", and "confidence" (number 0-1).
 4. Each session may match at most one issue. Only use issue keys from the provided list.`;
@@ -665,7 +667,7 @@ async function invokeMatchLLM({ systemPrompt, userPayload, deps = {} }) {
  * Match recent unassigned sessions to a single updated issue.
  * @returns {Promise<{matchedSessionIds: string[]}>}
  */
-async function syncIssueUnassigned({ issueKey, title, description, sessions, deps = {} }) {
+async function syncIssueUnassigned({ issueKey, title, description, attachmentContext = '', sessions, deps = {} }) {
   const validSessions = validateSessionList(sessions);
   if (!issueKey || validSessions.length === 0) {
     return { matchedSessionIds: [] };
@@ -677,6 +679,7 @@ async function syncIssueUnassigned({ issueKey, title, description, sessions, dep
       issueKey,
       title: sanitizePII(title || ''),
       description: sanitizePII(description || ''),
+      attachmentContext: sanitizePII((attachmentContext || '').slice(0, 1500)),
       sessions: validSessions.map((s) => ({
         sessionId: s.sessionId,
         applicationName: sanitizePII(s.applicationName || ''),
@@ -715,7 +718,8 @@ async function syncAllUnassigned({ issues, sessions, deps = {} }) {
       issues: validIssues.map((i) => ({
         issueKey: i.issueKey,
         title: sanitizePII(i.title || ''),
-        description: sanitizePII((i.description || '').slice(0, 3000))
+        description: sanitizePII((i.description || '').slice(0, 3000)),
+        attachmentContext: sanitizePII((i.attachmentContext || '').slice(0, 1500))
       })),
       sessions: validSessions.map((s) => ({
         sessionId: s.sessionId,

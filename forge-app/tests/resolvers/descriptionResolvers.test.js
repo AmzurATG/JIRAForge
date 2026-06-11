@@ -380,19 +380,42 @@ describe('syncRecentUnassignedWorkForIssue resolver', () => {
   test('assigns matched sessions returned by AI server', async () => {
     const r = makeResolver();
     registerDescriptionResolvers(r);
+    const GROUP_ID = '11111111-2222-4333-8444-555555555555';
 
-    mockSupabaseRequest
-      .mockResolvedValueOnce([{
-        id: SESSION_ID_1,
-        window_title: 'login.ts',
-        application_name: 'Code',
-        ocr_text: 'auth bug',
-        duration_seconds: 120
-      }])
-      .mockResolvedValueOnce([])
-      .mockResolvedValueOnce([{ duration_seconds: 120 }])
-      .mockResolvedValueOnce([])
-      .mockResolvedValueOnce([]);
+    mockSupabaseRequest.mockImplementation(async (_config, path) => {
+      if (path.startsWith('unassigned_work_groups?')) {
+        return [{ id: GROUP_ID }];
+      }
+
+      if (path.startsWith('unassigned_group_members?group_id=in.(')) {
+        return [{
+          group_id: GROUP_ID,
+          activity_record_id: SESSION_ID_1,
+          unassigned_activity_id: null,
+          created_at: '2026-06-10T15:10:55.843434+00:00'
+        }];
+      }
+
+      if (path.includes('activity_records?id=in.(') && path.includes('user_assigned_issue_key=is.null')) {
+        return [{
+          id: SESSION_ID_1,
+          window_title: 'login.ts',
+          application_name: 'Code',
+          ocr_text: 'auth bug',
+          duration_seconds: 120
+        }];
+      }
+
+      if (path.startsWith('unassigned_activity?id=in.(')) {
+        return [];
+      }
+
+      if (path.includes('activity_records?id=in.(') && path.includes('select=duration_seconds,total_time_seconds')) {
+        return [{ duration_seconds: 120 }];
+      }
+
+      return [];
+    });
 
     mockRequestJira.mockReturnValue(jsonResponse({
       fields: {
@@ -403,7 +426,7 @@ describe('syncRecentUnassignedWorkForIssue resolver', () => {
         },
         issuetype: { name: 'Bug' },
         project: { key: 'PROJ' },
-        attachment: [],
+        attachment: [{ filename: 'screenshot.png', mimeType: 'image/png', size: 1234 }],
         issuelinks: []
       }
     }));
@@ -420,7 +443,10 @@ describe('syncRecentUnassignedWorkForIssue resolver', () => {
     expect(mockRemoteRequest).toHaveBeenCalledWith(
       '/api/forge/description/sync-issue-unassigned',
       expect.objectContaining({
-        body: expect.objectContaining({ issueKey: 'PROJ-1' })
+        body: expect.objectContaining({
+          issueKey: 'PROJ-1',
+          attachmentContext: expect.stringContaining('screenshot.png')
+        })
       })
     );
     expect(mockUpdateSessionsAndAnalysis).toHaveBeenCalledWith(
@@ -431,7 +457,12 @@ describe('syncRecentUnassignedWorkForIssue resolver', () => {
   test('returns zero when no recent unassigned sessions exist', async () => {
     const r = makeResolver();
     registerDescriptionResolvers(r);
-    mockSupabaseRequest.mockResolvedValueOnce([]).mockResolvedValueOnce([]);
+    mockSupabaseRequest.mockImplementation(async (_config, path) => {
+      if (path.startsWith('unassigned_work_groups?')) {
+        return [];
+      }
+      return [];
+    });
 
     const result = await r.invoke('syncRecentUnassignedWorkForIssue', {
       payload: { issueKey: 'PROJ-1' },
@@ -447,24 +478,49 @@ describe('syncRecentUnassignedWorkWithAllUpdatedIssues resolver', () => {
   test('groups assignments by issue and assigns each batch', async () => {
     const r = makeResolver();
     registerDescriptionResolvers(r);
+    const GROUP_ID = '11111111-2222-4333-8444-555555555555';
 
-    mockSupabaseRequest
-      .mockResolvedValueOnce([{
-        id: SESSION_ID_1,
-        window_title: 'api.ts',
-        application_name: 'Code',
-        ocr_text: 'api work',
-        duration_seconds: 90
-      }])
-      .mockResolvedValueOnce([])
-      .mockResolvedValueOnce([{ issue_key: 'PROJ-1', created_at: '2026-06-10T10:00:00Z' }])
-      .mockResolvedValueOnce([{ issue_key: 'PROJ-1', updated_at: '2026-06-10T10:00:00Z' }])
-      .mockResolvedValueOnce([{ duration_seconds: 90 }])
-      .mockResolvedValueOnce([])
-      .mockResolvedValueOnce([]);
+    mockSupabaseRequest.mockImplementation(async (_config, path) => {
+      if (path.startsWith('unassigned_work_groups?')) {
+        return [{ id: GROUP_ID }];
+      }
+
+      if (path.startsWith('unassigned_group_members?group_id=in.(')) {
+        return [{
+          group_id: GROUP_ID,
+          activity_record_id: SESSION_ID_1,
+          unassigned_activity_id: null,
+          created_at: '2026-06-10T15:10:55.843434+00:00'
+        }];
+      }
+
+      if (path.includes('activity_records?id=in.(') && path.includes('user_assigned_issue_key=is.null')) {
+        return [{
+          id: SESSION_ID_1,
+          window_title: 'api.ts',
+          application_name: 'Code',
+          ocr_text: 'api work',
+          duration_seconds: 90
+        }];
+      }
+
+      if (path.startsWith('unassigned_activity?id=in.(')) {
+        return [];
+      }
+
+      if (path.includes('activity_records?id=in.(') && path.includes('select=duration_seconds,total_time_seconds')) {
+        return [{ duration_seconds: 90 }];
+      }
+
+      if (path.startsWith('unassigned_group_members?or=(')) {
+        return [];
+      }
+
+      return [];
+    });
 
     mockRequestJira
-      .mockReturnValueOnce(jsonResponse({ issues: [] }))
+      .mockReturnValueOnce(jsonResponse({ issues: [{ key: 'PROJ-1' }] }))
       .mockReturnValueOnce(jsonResponse({
         fields: {
           summary: 'API task',
@@ -494,21 +550,25 @@ describe('syncRecentUnassignedWorkWithAllUpdatedIssues resolver', () => {
       '/api/forge/description/sync-all-unassigned',
       expect.objectContaining({
         body: expect.objectContaining({
-          issues: [expect.objectContaining({ issueKey: 'PROJ-1' })]
+          issues: [expect.objectContaining({
+            issueKey: 'PROJ-1',
+            attachmentContext: expect.any(String)
+          })]
         })
       })
     );
   });
 
-  test('returns no_recent_sessions without calling LLM', async () => {
+  test('returns no_previous_day_sessions without calling LLM', async () => {
     const r = makeResolver();
     registerDescriptionResolvers(r);
 
-    mockSupabaseRequest
-      .mockResolvedValueOnce([])
-      .mockResolvedValueOnce([])
-      .mockResolvedValueOnce([])
-      .mockResolvedValueOnce([]);
+    mockSupabaseRequest.mockImplementation(async (_config, path) => {
+      if (path.startsWith('unassigned_work_groups?')) {
+        return [];
+      }
+      return [];
+    });
 
     mockRequestJira.mockReturnValue(jsonResponse({ issues: [{ key: 'PROJ-1' }] }));
 
@@ -520,7 +580,7 @@ describe('syncRecentUnassignedWorkWithAllUpdatedIssues resolver', () => {
     expect(result).toEqual(expect.objectContaining({
       success: true,
       matchedCount: 0,
-      reason: 'no_recent_sessions'
+      reason: 'no_previous_day_sessions'
     }));
     expect(mockRemoteRequest).not.toHaveBeenCalled();
   });
