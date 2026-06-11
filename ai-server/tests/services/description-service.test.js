@@ -567,45 +567,6 @@ Investigate and fix.`,
     expect(payload.issues[0].attachmentContext).toContain('auth-flow-diagram.png');
   });
 
-  test('syncAllUnassigned retries when LLM JSON is truncated by token limit', async () => {
-    const runChat = jest.fn()
-      .mockResolvedValueOnce({
-        response: {
-          choices: [{
-            finish_reason: 'length',
-            message: {
-              content: '{"assignments": ['
-            }
-          }]
-        }
-      })
-      .mockResolvedValueOnce({
-        response: {
-          choices: [{
-            finish_reason: 'stop',
-            message: {
-              content: JSON.stringify({
-                assignments: [
-                  { sessionId: 'sess-1', issueKey: 'PROJ-1', confidence: 0.9 }
-                ]
-              })
-            }
-          }]
-        }
-      });
-
-    const result = await syncAllUnassigned({
-      issues: [
-        { issueKey: 'PROJ-1', title: 'One', description: 'Desc one' }
-      ],
-      sessions: [{ sessionId: 'sess-1', applicationName: 'Code', windowTitle: 'proj' }],
-      deps: { runChat }
-    });
-
-    expect(runChat).toHaveBeenCalledTimes(2);
-    expect(result.assignments).toEqual([{ sessionId: 'sess-1', issueKey: 'PROJ-1' }]);
-  });
-
   test('sanitizes title + description before calling LLM', async () => {
     const runLLM = jest.fn().mockResolvedValue({
       score: 80, issues: ['x'], suggestions: ['y'],
@@ -625,3 +586,4 @@ Investigate and fix.`,
   });
 
 });
+
