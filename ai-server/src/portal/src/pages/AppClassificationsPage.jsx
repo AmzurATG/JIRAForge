@@ -12,6 +12,7 @@ import DataTable from '../components/common/DataTable';
 import ConfirmDialog from '../components/common/ConfirmDialog';
 import LoadingSpinner from '../components/common/LoadingSpinner';
 import ErrorBanner from '../components/common/ErrorBanner';
+import AppKindBadge from '../components/common/AppKindBadge';
 
 function AppClassificationsPage() {
   const { user } = useAuth();
@@ -249,11 +250,7 @@ function AppClassificationsPage() {
       key: 'match_by',
       label: 'Match By',
       sortable: true,
-      render: (value) => (
-        <span className="px-2 py-1 rounded text-xs bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200">
-          {value}
-        </span>
-      ),
+      render: (value) => <AppKindBadge matchBy={value} />,
     },
     {
       key: 'project_key',
@@ -396,8 +393,8 @@ function AppClassificationsPage() {
                 className="px-3 py-2 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900"
               >
                 <option value="">All</option>
-                <option value="process">Process</option>
-                <option value="url">URL</option>
+                <option value="process">Desktop app (process)</option>
+                <option value="url">Website (URL)</option>
               </select>
             </div>
             <button
@@ -504,8 +501,8 @@ function AppClassificationsPage() {
                   disabled={modalMode === 'edit'}
                   className="w-full px-3 py-2 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 disabled:bg-gray-100 dark:disabled:bg-gray-800"
                 >
-                  <option value="process">Process Name</option>
-                  <option value="url">URL Pattern</option>
+                  <option value="process">Desktop app (process name)</option>
+                  <option value="url">Website (URL pattern)</option>
                 </select>
               </div>
               

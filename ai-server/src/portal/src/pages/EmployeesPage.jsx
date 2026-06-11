@@ -6,8 +6,10 @@
 
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Search } from 'lucide-react';
+import { Search, MapPin, Edit2 } from 'lucide-react';
 import { employeesApi } from '../api/employees';
+import { locationsApi } from '../api/locations';
+import { useAuth } from '../contexts/AuthContext';
 import DataTable from '../components/common/DataTable';
 import DateRangePicker from '../components/common/DateRangePicker';
 import LobFilter from '../components/common/LobFilter';
@@ -17,6 +19,8 @@ import { useDebounce } from '../hooks/useDebounce';
 
 function EmployeesPage() {
   const navigate = useNavigate();
+  const { user } = useAuth();
+  const isSuperadmin = user?.role === 'superadmin';
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [employees, setEmployees] = useState([]);
@@ -26,6 +30,19 @@ function EmployeesPage() {
   const debouncedSearch = useDebounce(search, 500);
   const [productivityRange, setProductivityRange] = useState('');
   const [lobId, setLobId] = useState('');
+
+  // Locations (WS-B): filter dropdown for everyone, edit modal for superadmin.
+  const [locations, setLocations] = useState([]);
+  const [locationId, setLocationId] = useState('');
+  const [editingEmployee, setEditingEmployee] = useState(null); // row being edited
+  const [editLocationId, setEditLocationId] = useState('');
+  const [savingLocation, setSavingLocation] = useState(false);
+
+  useEffect(() => {
+    locationsApi.list()
+      .then((res) => setLocations(res.data || []))
+      .catch((err) => console.error('Failed to load locations:', err));
+  }, []);
   
   // Default to last 7 days
   const [dateRange, setDateRange] = useState(() => {
@@ -40,23 +57,24 @@ function EmployeesPage() {
 
   useEffect(() => {
     loadEmployees();
-  }, [page, debouncedSearch, productivityRange, dateRange, lobId]);
+  }, [page, debouncedSearch, productivityRange, dateRange, lobId, locationId]);
 
   const loadEmployees = async () => {
     setLoading(true);
     setError(null);
-    
+
     try {
       const response = await employeesApi.getList({
         search: debouncedSearch,
         productivityRange: productivityRange || undefined,
         lobId: lobId || undefined,
+        locationId: locationId || undefined,
         from: dateRange.from,
         to: dateRange.to,
         page,
         limit: 10,
       });
-      
+
       setEmployees(response.data || []);
       setTotalCount(response.pagination?.totalCount || 0);
     } catch (err) {
@@ -64,6 +82,26 @@ function EmployeesPage() {
       setError(err.response?.data?.error || 'Failed to load employees');
     } finally {
       setLoading(false);
+    }
+  };
+
+  const openLocationEditor = (employee) => {
+    setEditingEmployee(employee);
+    setEditLocationId(employee.location?.id || '');
+  };
+
+  const saveLocation = async () => {
+    setSavingLocation(true);
+    setError(null);
+    try {
+      await locationsApi.setEmployeeLocation(editingEmployee.userId, editLocationId || null);
+      setEditingEmployee(null);
+      loadEmployees();
+    } catch (err) {
+      console.error('Failed to update location:', err);
+      setError(err.response?.data?.error || 'Failed to update employee location');
+    } finally {
+      setSavingLocation(false);
     }
   };
 
@@ -128,11 +166,42 @@ function EmployeesPage() {
       ),
     },
     {
+      key: 'location',
+      label: 'Location',
+      sortable: false,
+      render: (value) =>
+        value?.name ? (
+          <span className="inline-flex items-center gap-1 text-xs text-gray-700 dark:text-gray-300">
+            <MapPin className="w-3 h-3 text-gray-400" />
+            {value.name}
+          </span>
+        ) : (
+          <span className="text-xs text-gray-400">—</span>
+        ),
+    },
+    {
       key: 'lastActivityAt',
       label: 'Last Activity',
       sortable: true,
       render: (value) => value ? new Date(value).toLocaleDateString() : 'N/A',
     },
+    ...(isSuperadmin ? [{
+      key: 'actions',
+      label: '',
+      sortable: false,
+      render: (_, employee) => (
+        <button
+          onClick={(e) => {
+            e.stopPropagation();
+            openLocationEditor(employee);
+          }}
+          className="p-1 hover:bg-gray-100 dark:hover:bg-gray-700 rounded"
+          title="Edit employee location"
+        >
+          <Edit2 className="w-4 h-4 text-gray-500" />
+        </button>
+      ),
+    }] : []),
   ];
 
   return (
@@ -221,8 +290,8 @@ function EmployeesPage() {
           </div>
         </div>
 
-        {/* Date Range + LOB */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+        {/* Date Range + LOB + Location */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
           <div>
             <label className="filter-label">Date Range</label>
             <DateRangePicker
@@ -232,6 +301,23 @@ function EmployeesPage() {
             />
           </div>
           <LobFilter value={lobId} onChange={(v) => { setLobId(v); setPage(1); }} />
+          {locations.length > 0 && (
+            <div>
+              <label className="filter-label text-xs flex items-center gap-1">
+                <MapPin className="w-3 h-3" /> Location
+              </label>
+              <select
+                value={locationId}
+                onChange={(e) => { setLocationId(e.target.value); setPage(1); }}
+                className="select-field"
+              >
+                <option value="">All Locations</option>
+                {locations.map((loc) => (
+                  <option key={loc.id} value={loc.id}>{loc.name}</option>
+                ))}
+              </select>
+            </div>
+          )}
         </div>
         </div>
       </div>
@@ -259,6 +345,49 @@ function EmployeesPage() {
           }}
         />
       </div>
+
+      {/* Edit Employee Location Modal (superadmin) */}
+      {editingEmployee && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+          <div className="bg-white dark:bg-gray-800 rounded-lg p-6 max-w-sm w-full mx-4">
+            <h3 className="text-lg font-semibold mb-1">Edit Employee</h3>
+            <p className="text-sm text-gray-500 dark:text-gray-400 mb-4">
+              {editingEmployee.name} · {editingEmployee.email}
+            </p>
+            <label className="block text-sm font-medium mb-2">Location</label>
+            <select
+              value={editLocationId}
+              onChange={(e) => setEditLocationId(e.target.value)}
+              className="select-field w-full"
+            >
+              <option value="">No location</option>
+              {locations.map((loc) => (
+                <option key={loc.id} value={loc.id}>{loc.name}</option>
+              ))}
+            </select>
+            {locations.length === 0 && (
+              <p className="mt-2 text-xs text-gray-500 dark:text-gray-400">
+                No locations yet — create them under Settings.
+              </p>
+            )}
+            <div className="flex gap-2 justify-end mt-5">
+              <button
+                onClick={() => setEditingEmployee(null)}
+                className="px-4 py-2 rounded border border-gray-300 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-800"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={saveLocation}
+                disabled={savingLocation}
+                className="px-4 py-2 rounded bg-primary-600 text-white hover:bg-primary-700 disabled:opacity-50"
+              >
+                {savingLocation ? 'Saving…' : 'Save'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

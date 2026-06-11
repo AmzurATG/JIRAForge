@@ -12,7 +12,7 @@ class SendGridAdapter extends IMailAdapter {
     super();
     this.apiKey = config.hasOwnProperty('apiKey') ? config.apiKey : process.env.SENDGRID_API_KEY;
     this.defaultFrom = config.defaultFrom || process.env.MAIL_FROM_ADDRESS || 'noreply@example.com';
-    this.defaultFromName = config.defaultFromName || process.env.MAIL_FROM_NAME || 'Productivity Portal';
+    this.defaultFromName = config.defaultFromName || process.env.MAIL_FROM_NAME || 'Amzur Time Tracker';
     
     if (this.apiKey) {
       sgMail.setApiKey(this.apiKey);

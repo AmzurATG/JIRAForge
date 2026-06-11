@@ -11,7 +11,9 @@ import { employeesApi } from '../api/employees';
 import DataTable from '../components/common/DataTable';
 import DateRangePicker from '../components/common/DateRangePicker';
 import LobFilter from '../components/common/LobFilter';
+import LocationFilter from '../components/common/LocationFilter';
 import EmployeeSelect from '../components/common/EmployeeSelect';
+import CategoryBadge from '../components/common/CategoryBadge';
 import ErrorBanner from '../components/common/ErrorBanner';
 import { formatDate, formatDuration, formatDateTime } from '../utils/formatters';
 import { useDebounce } from '../hooks/useDebounce';
@@ -35,6 +37,7 @@ function TimeLogsPage() {
   const debouncedAppFilter = useDebounce(appFilter, 500);
   const [durationMax, setDurationMax] = useState('');
   const [lobId, setLobId] = useState('');
+  const [locationId, setLocationId] = useState('');
   
   // Column visibility
   const [visibleColumns, setVisibleColumns] = useState({
@@ -63,11 +66,11 @@ function TimeLogsPage() {
 
   useEffect(() => {
     loadEmployees();
-  }, [lobId]);
+  }, [lobId, locationId]);
 
   useEffect(() => {
     loadTimeLogs();
-  }, [page, classification, selectedEmployee, debouncedAppFilter, durationMax, dateRange, lobId]);
+  }, [page, classification, selectedEmployee, debouncedAppFilter, durationMax, dateRange, lobId, locationId]);
 
   // Close column selector when clicking outside
   useEffect(() => {
@@ -87,7 +90,7 @@ function TimeLogsPage() {
 
   const loadEmployees = async () => {
     try {
-      const response = await employeesApi.getSimpleList(undefined, lobId || undefined);
+      const response = await employeesApi.getSimpleList(undefined, lobId || undefined, locationId || undefined);
       setEmployees(response.data || []);
     } catch (err) {
       console.error('Failed to load employees:', err);
@@ -104,6 +107,7 @@ function TimeLogsPage() {
         employee: selectedEmployee || undefined,
         app: debouncedAppFilter || undefined,
         lobId: lobId || undefined,
+        locationId: locationId || undefined,
         durationMax: durationMax ? parseInt(durationMax, 10) * 60 : undefined, // Convert minutes to seconds
         from: dateRange.from,
         to: dateRange.to,
@@ -135,6 +139,7 @@ function TimeLogsPage() {
     setSelectedEmployee('');
     setAppFilter('');
     setDurationMax('');
+    setLocationId('');
     setPage(1);
   };
 
@@ -198,17 +203,7 @@ function TimeLogsPage() {
       key: 'classification',
       label: 'Classification',
       sortable: true,
-      render: (value) => (
-        <span
-          className={`px-2 py-1 rounded text-xs font-semibold ${
-            value === 'productive'
-              ? 'bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200'
-              : 'bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200'
-          }`}
-        >
-          {value || 'N/A'}
-        </span>
-      ),
+      render: (value, row) => <CategoryBadge value={row.category || value} />,
     },
   ].filter(col => visibleColumns[col.key]);
 
@@ -298,6 +293,7 @@ function TimeLogsPage() {
                 <option value="">All Classifications</option>
                 <option value="productive">Productive</option>
                 <option value="non-productive">Non-Productive</option>
+                <option value="neutral">Neutral</option>
               </select>
             </div>
 
@@ -364,6 +360,9 @@ function TimeLogsPage() {
 
             {/* LOB Filter */}
             <LobFilter value={lobId} onChange={(v) => { setLobId(v); setSelectedEmployee(''); setPage(1); }} />
+
+            {/* Location Filter */}
+            <LocationFilter value={locationId} onChange={(v) => { setLocationId(v); setSelectedEmployee(''); setPage(1); }} />
           </div>
         </div>
       )}

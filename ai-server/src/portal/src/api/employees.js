@@ -11,10 +11,11 @@ export const employeesApi = {
    * @param {string} search - Optional search term
    * @returns {Promise<Array>} [{userId, name, email}]
    */
-  async getSimpleList(search, lobId) {
+  async getSimpleList(search, lobId, locationId) {
     const params = {};
     if (search) params.search = search;
     if (lobId) params.lobId = lobId;
+    if (locationId) params.locationId = locationId;
     const response = await apiClient.get('/api/portal/employees/list', { params });
     return response.data;
   },

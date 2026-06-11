@@ -15,7 +15,7 @@ async function sendPasswordResetEmail(userEmail, userName, resetToken) {
   
   const result = await mailService.send({
     to: userEmail,
-    subject: 'Password Reset Request - Productivity Portal',
+    subject: 'Password Reset Request - Amzur Time Tracker',
     html: `
       <!DOCTYPE html>
       <html>
@@ -30,7 +30,7 @@ async function sendPasswordResetEmail(userEmail, userName, resetToken) {
           </div>
           <div style="background: #ffffff; padding: 30px; border: 1px solid #e0e0e0; border-top: none; border-radius: 0 0 8px 8px;">
             <p style="margin-top: 0;">Hi ${userName},</p>
-            <p>We received a request to reset your password for your Productivity Portal account.</p>
+            <p>We received a request to reset your password for your Amzur Time Tracker account.</p>
             <div style="text-align: center; margin: 30px 0;">
               <a href="${resetUrl}" 
                  style="display: inline-block; padding: 14px 32px; background-color: #667eea; 
@@ -47,7 +47,7 @@ async function sendPasswordResetEmail(userEmail, userName, resetToken) {
             </p>
             <hr style="border: none; border-top: 1px solid #e0e0e0; margin: 30px 0;">
             <p style="color: #999; font-size: 12px; margin-bottom: 0;">
-              Productivity Portal Team<br>
+              Amzur Time Tracker Team<br>
               This is an automated message, please do not reply to this email.
             </p>
           </div>
@@ -60,7 +60,7 @@ Password Reset Request
 
 Hi ${userName},
 
-We received a request to reset your password for your Productivity Portal account.
+We received a request to reset your password for your Amzur Time Tracker account.
 
 Click here to reset your password:
 ${resetUrl}
@@ -70,7 +70,7 @@ This link will expire in 1 hour.
 If you didn't request this password reset, please ignore this email.
 
 ---
-Productivity Portal Team
+Amzur Time Tracker Team
 This is an automated message, please do not reply to this email.
     `.trim(),
     replyTo: process.env.MAIL_SUPPORT_ADDRESS || 'support@example.com',
@@ -87,13 +87,13 @@ async function sendWelcomeEmail(userEmail, userName, orgName) {
   
   const result = await mailService.send({
     to: userEmail,
-    subject: `Welcome to ${orgName} - Productivity Portal`,
+    subject: `Welcome to ${orgName} - Amzur Time Tracker`,
     html: `
       <!DOCTYPE html>
       <html>
       <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
         <div style="max-width: 600px; margin: 0 auto; padding: 20px;">
-          <h1 style="color: #667eea;">Welcome to Productivity Portal!</h1>
+          <h1 style="color: #667eea;">Welcome to Amzur Time Tracker!</h1>
           <p>Hi ${userName},</p>
           <p>Your account has been created for <strong>${orgName}</strong>.</p>
           <h3>What's Next?</h3>
@@ -114,7 +114,7 @@ async function sendWelcomeEmail(userEmail, userName, orgName) {
       </html>
     `,
     text: `
-Welcome to Productivity Portal!
+Welcome to Amzur Time Tracker!
 
 Hi ${userName},
 
@@ -228,7 +228,7 @@ Keep up the great work!
 async function sendAccountDeletionConfirmation(userEmail, userName) {
   const result = await mailService.send({
     to: userEmail,
-    subject: 'Account Deletion Confirmation - Productivity Portal',
+    subject: 'Account Deletion Confirmation - Amzur Time Tracker',
     html: `
       <!DOCTYPE html>
       <html>
@@ -236,7 +236,7 @@ async function sendAccountDeletionConfirmation(userEmail, userName) {
         <div style="max-width: 600px; margin: 0 auto; padding: 20px;">
           <h2>Account Deletion Confirmation</h2>
           <p>Hi ${userName},</p>
-          <p>This email confirms that your Productivity Portal account has been permanently deleted as per your request.</p>
+          <p>This email confirms that your Amzur Time Tracker account has been permanently deleted as per your request.</p>
           
           <div style="background: #fff3cd; border-left: 4px solid #ffc107; padding: 15px; margin: 20px 0;">
             <p style="margin: 0; color: #856404;">
@@ -246,7 +246,7 @@ async function sendAccountDeletionConfirmation(userEmail, userName) {
 
           <p>If you deleted your account by mistake or wish to return in the future, you'll need to create a new account.</p>
           
-          <p>Thank you for using Productivity Portal. We're sorry to see you go!</p>
+          <p>Thank you for using Amzur Time Tracker. We're sorry to see you go!</p>
           
           <p style="margin-top: 30px; color: #666; font-size: 14px;">
             If you didn't request this deletion, please contact support immediately at support@example.com
@@ -260,13 +260,13 @@ Account Deletion Confirmation
 
 Hi ${userName},
 
-This email confirms that your Productivity Portal account has been permanently deleted as per your request.
+This email confirms that your Amzur Time Tracker account has been permanently deleted as per your request.
 
 IMPORTANT: All your data, including activity logs, reports, and settings have been removed from our systems.
 
 If you deleted your account by mistake or wish to return in the future, you'll need to create a new account.
 
-Thank you for using Productivity Portal. We're sorry to see you go!
+Thank you for using Amzur Time Tracker. We're sorry to see you go!
 
 If you didn't request this deletion, please contact support immediately at support@example.com
     `.trim(),

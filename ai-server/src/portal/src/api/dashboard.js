@@ -12,9 +12,10 @@ export const dashboardApi = {
    * @param {string} to - End date (YYYY-MM-DD)
    * @returns {Promise<Object>}
    */
-  async getData(from, to, lobId) {
+  async getData(from, to, lobId, locationId) {
     const params = { from, to };
     if (lobId) params.lobId = lobId;
+    if (locationId) params.locationId = locationId;
     const response = await apiClient.get('/api/portal/dashboard', { params });
     return response.data;
   },
