@@ -1,18 +1,37 @@
 /**
  * ProductivityDonutChart Component
- * 
- * Displays a donut chart showing productive vs non-productive percentage.
+ *
+ * Distribution of ACTIVE time across the canonical categories (AC-C2):
+ * productive / non-productive / neutral. The neutral segment renders only
+ * when neutral data is available (i.e. the 20260610 category-breakdown
+ * migration is applied); otherwise the chart falls back to the original
+ * two-segment percentage view.
  */
 
 import { PieChart, Pie, Cell, Tooltip, Legend, ResponsiveContainer } from 'recharts';
 
-function ProductivityDonutChart({ productivePercentage, nonProductivePercentage }) {
-  const data = [
-    { name: 'Productive', value: productivePercentage || 0 },
-    { name: 'Non-Productive', value: nonProductivePercentage || 0 },
-  ];
+const COLORS = {
+  Productive: '#10b981',
+  'Non-Productive': '#ef4444',
+  Neutral: '#64748b',
+};
 
-  const COLORS = ['#10b981', '#ef4444'];
+function ProductivityDonutChart({ productivePercentage, nonProductivePercentage, productiveHours, nonProductiveHours, neutralHours }) {
+  let data;
+  if (neutralHours !== undefined) {
+    const total = (productiveHours || 0) + (nonProductiveHours || 0) + (neutralHours || 0);
+    const pct = (v) => (total > 0 ? ((v || 0) / total) * 100 : 0);
+    data = [
+      { name: 'Productive', value: pct(productiveHours) },
+      { name: 'Non-Productive', value: pct(nonProductiveHours) },
+      { name: 'Neutral', value: pct(neutralHours) },
+    ];
+  } else {
+    data = [
+      { name: 'Productive', value: productivePercentage || 0 },
+      { name: 'Non-Productive', value: nonProductivePercentage || 0 },
+    ];
+  }
 
   return (
     <div className="card">
@@ -29,8 +48,8 @@ function ProductivityDonutChart({ productivePercentage, nonProductivePercentage 
             dataKey="value"
             label={({ name, value }) => `${name}: ${value.toFixed(1)}%`}
           >
-            {data.map((entry, index) => (
-              <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
+            {data.map((entry) => (
+              <Cell key={entry.name} fill={COLORS[entry.name]} />
             ))}
           </Pie>
           <Tooltip formatter={(value) => `${value.toFixed(1)}%`} />

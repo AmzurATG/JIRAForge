@@ -19,6 +19,7 @@ import { appCatalogApi } from '../api/appCatalog';
 import DataTable from '../components/common/DataTable';
 import ConfirmDialog from '../components/common/ConfirmDialog';
 import ErrorBanner from '../components/common/ErrorBanner';
+import AppKindBadge from '../components/common/AppKindBadge';
 import { useDebounce } from '../hooks/useDebounce';
 
 const CLASSIFICATION_OPTIONS = [
@@ -343,6 +344,7 @@ function AppsTab({ lobId, setError, flash, unlisted, unlistedLoading, onScan, on
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
+  const [kindFilter, setKindFilter] = useState('all'); // 'all' | 'process' | 'url'
   const debouncedSearch = useDebounce(search, 400);
 
   // Add-application modal state
@@ -364,7 +366,8 @@ function AppsTab({ lobId, setError, flash, unlisted, unlistedLoading, onScan, on
   useEffect(() => { load(); }, [load]);
 
   const openAddFor = (app) => {
-    setAddPrefill(app ? { identifier: app.identifier, matchBy: 'process', displayName: app.identifier } : null);
+    // Pre-fill the CLEANED name (from the server), never the raw identifier.
+    setAddPrefill(app ? { identifier: app.identifier, matchBy: 'process', displayName: app.displayName || app.identifier } : null);
     setShowAdd(true);
   };
 
@@ -374,6 +377,18 @@ function AppsTab({ lobId, setError, flash, unlisted, unlistedLoading, onScan, on
     setAddPrefill(null);
     load();
     onRemoveUnlisted(row.identifier || '');
+  };
+
+  // One-step classify for a discovered app: create/reuse the catalog entry
+  // (cleaned display name, no org default) + set this LOB's rule.
+  const quickAdd = async (app, classification) => {
+    const res = await lobAppClassificationsApi.addApp(lobId, {
+      identifier: app.identifier,
+      displayName: app.displayName || app.identifier,
+      matchBy: 'process',
+      classification,
+    });
+    handleAdded(res.data);
   };
 
   const handleChange = async (row, value) => {
@@ -405,8 +420,11 @@ function AppsTab({ lobId, setError, flash, unlisted, unlistedLoading, onScan, on
       key: 'displayName', label: 'Application', sortable: true,
       render: (v, row) => (
         <div>
-          <div className="font-medium">{v}</div>
-          <div className="text-xs text-gray-500">{row.identifier} · {row.matchBy === 'url' ? 'website' : 'desktop'}</div>
+          <div className="font-medium flex items-center gap-2">
+            {v}
+            <AppKindBadge matchBy={row.matchBy} />
+          </div>
+          <div className="text-xs text-gray-500">{row.identifier}</div>
         </div>
       ),
     },
@@ -432,9 +450,24 @@ function AppsTab({ lobId, setError, flash, unlisted, unlistedLoading, onScan, on
 
   return (
     <div className="card">
-      <div className="flex justify-between items-center mb-3 gap-3">
+      <div className="flex justify-between items-center mb-3 gap-3 flex-wrap">
         <h3 className="section-title">App Classifications</h3>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap">
+          <div className="flex gap-1 p-0.5 bg-gray-100 dark:bg-gray-800 rounded-lg">
+            {[['all', 'All'], ['process', 'Desktop'], ['url', 'Website']].map(([value, label]) => (
+              <button
+                key={value}
+                onClick={() => setKindFilter(value)}
+                className={`px-2.5 py-1 rounded-md text-xs font-medium transition-all ${
+                  kindFilter === value
+                    ? 'bg-white dark:bg-gray-700 text-primary-600 dark:text-primary-400 shadow'
+                    : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-200'
+                }`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
           <div className="relative">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
             <input
@@ -457,9 +490,14 @@ function AppsTab({ lobId, setError, flash, unlisted, unlistedLoading, onScan, on
         Apps stay <span className="font-medium">Unclassified</span> (excluded from productivity) until you set a rule here. "Org Default" is a hint only — it is not applied automatically.
       </p>
 
-      <UnlistedApps unlisted={unlisted} loading={unlistedLoading} onScan={onScan} onAdd={openAddFor} />
+      <UnlistedApps unlisted={unlisted} loading={unlistedLoading} onScan={onScan} onAdd={openAddFor} onQuickAdd={quickAdd} setError={setError} />
 
-      <DataTable columns={columns} data={rows} loading={loading} emptyMessage="No applications in the catalog yet" />
+      <DataTable
+        columns={columns}
+        data={kindFilter === 'all' ? rows : rows.filter((r) => r.matchBy === kindFilter)}
+        loading={loading}
+        emptyMessage="No applications in the catalog yet"
+      />
 
       {showAdd && (
         <AddAppModal
@@ -475,9 +513,26 @@ function AppsTab({ lobId, setError, flash, unlisted, unlistedLoading, onScan, on
 }
 
 // "Apps used but not yet classified" — discovery from real activity.
-function UnlistedApps({ unlisted, loading, onScan, onAdd }) {
+// Each row offers one-step classification (select + Add) and a "Customize…"
+// action that opens the full Add Application modal pre-filled.
+function UnlistedApps({ unlisted, loading, onScan, onAdd, onQuickAdd, setError }) {
   const [collapsed, setCollapsed] = useState(false);
+  const [quickSel, setQuickSel] = useState({}); // identifier -> chosen classification
+  const [addingId, setAddingId] = useState(null); // identifier currently being added
   const hasItems = Array.isArray(unlisted) && unlisted.length > 0;
+
+  const quickAdd = async (app) => {
+    const classification = quickSel[app.identifier];
+    if (!classification) return;
+    setAddingId(app.identifier);
+    try {
+      await onQuickAdd(app, classification);
+    } catch (err) {
+      setError(err.response?.data?.error || 'Failed to add application');
+    } finally {
+      setAddingId(null);
+    }
+  };
 
   return (
     <div className="mb-3 rounded-lg border border-dashed border-amber-300 dark:border-amber-800/60 bg-amber-50/40 dark:bg-amber-900/10 p-3">
@@ -507,21 +562,44 @@ function UnlistedApps({ unlisted, loading, onScan, onAdd }) {
         unlisted.length === 0 ? (
           <p className="text-xs text-gray-500 mt-2">Nothing new — every app your team used is already in the catalog.</p>
         ) : (
-          <div className="mt-2 max-h-48 overflow-y-auto divide-y divide-gray-100 dark:divide-gray-700/50">
+          <div className="mt-2 max-h-60 overflow-y-auto divide-y divide-gray-100 dark:divide-gray-700/50">
             {unlisted.map((a) => (
               <div key={a.identifier} className="flex items-center justify-between gap-2 py-1.5 text-sm">
                 <div className="min-w-0">
-                  <span className="font-medium">{a.identifier}</span>
-                  <span className="text-xs text-gray-500 ml-2">
-                    {(a.totalHours || 0).toFixed(1)}h · {a.employeeCount} emp
+                  <span className="font-medium flex items-center gap-2">
+                    {a.displayName || a.identifier}
+                    <AppKindBadge matchBy="process" />
+                  </span>
+                  <span className="text-xs text-gray-500">
+                    {a.identifier} · {(a.totalHours || 0).toFixed(1)}h · {a.employeeCount} emp
                   </span>
                 </div>
-                <button
-                  onClick={() => onAdd(a)}
-                  className="flex items-center gap-1 px-2 py-1 rounded bg-primary-600 text-white text-xs hover:bg-primary-700 flex-shrink-0"
-                >
-                  <Plus className="w-3 h-3" /> Add
-                </button>
+                <div className="flex items-center gap-1.5 flex-shrink-0">
+                  <select
+                    value={quickSel[a.identifier] || ''}
+                    onChange={(e) => setQuickSel((s) => ({ ...s, [a.identifier]: e.target.value }))}
+                    className="select-field text-xs py-1"
+                  >
+                    <option value="">Classify as…</option>
+                    {CLASSIFICATION_OPTIONS.filter((o) => o.value).map((o) => (
+                      <option key={o.value} value={o.value}>{o.label}</option>
+                    ))}
+                  </select>
+                  <button
+                    onClick={() => quickAdd(a)}
+                    disabled={!quickSel[a.identifier] || addingId === a.identifier}
+                    className="flex items-center gap-1 px-2 py-1 rounded bg-primary-600 text-white text-xs hover:bg-primary-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    <Plus className="w-3 h-3" /> {addingId === a.identifier ? 'Adding…' : 'Add'}
+                  </button>
+                  <button
+                    onClick={() => onAdd(a)}
+                    className="px-2 py-1 rounded border border-gray-300 dark:border-gray-600 text-xs text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800"
+                    title="Open the full Add Application form (AI suggestions, website matching)"
+                  >
+                    Customize…
+                  </button>
+                </div>
               </div>
             ))}
           </div>
@@ -548,6 +626,14 @@ function AddAppModal({ lobId, prefill, onAdded, onClose, setError }) {
   const [aiLoading, setAiLoading] = useState(false);
   const [aiTried, setAiTried] = useState(false);
   const [suggestion, setSuggestion] = useState(null);
+
+  // Opened from a discovered app → fire the AI lookup automatically so the
+  // admin sees suggestions without an extra click. Flag off / failure is
+  // handled by runLookup (panel hides, manual entry unaffected).
+  useEffect(() => {
+    if (prefill?.identifier) runLookup();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const runLookup = async () => {
     const q = lookupName.trim();

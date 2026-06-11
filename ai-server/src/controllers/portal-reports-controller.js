@@ -9,7 +9,9 @@
 const logger = require('../utils/logger');
 const portalService = require('../services/portal-service');
 const lobService = require('../services/portal-lob-service');
+const profileService = require('../services/portal-employee-profile-service');
 const PDFDocument = require('pdfkit');
+const ExcelJS = require('exceljs');
 
 const SUPPORTED_REPORT_TYPES = ['activity-logs', 'daily-summary', 'employee-summary', 'application-usage'];
 
@@ -20,21 +22,27 @@ function lobEnforced() {
 
 /**
  * Resolve the employee user_ids the caller may see for reports.
- * null → no restriction; array → restrict (empty ⇒ nothing). Honors ?lobId.
+ * null → no restriction; array → restrict (empty ⇒ nothing). Honors ?lobId
+ * (403 when out of scope) and ?locationId (data filter — applies regardless
+ * of PORTAL_LOB_ENFORCEMENT).
  */
 async function resolveVisibleUserIds(req) {
-  if (!lobEnforced()) return null;
-  const scope = await lobService.resolveScope(req.portalUser);
-  const { lobId } = req.query;
-  if (lobId) {
-    if (!lobService.canAccessLob(scope, lobId)) {
-      const e = new Error('Insufficient permissions for this LOB');
-      e.status = 403;
-      throw e;
+  let visibleUserIds = null;
+  if (lobEnforced()) {
+    const scope = await lobService.resolveScope(req.portalUser);
+    const { lobId } = req.query;
+    if (lobId) {
+      if (!lobService.canAccessLob(scope, lobId)) {
+        const e = new Error('Insufficient permissions for this LOB');
+        e.status = 403;
+        throw e;
+      }
+      visibleUserIds = await lobService.userIdsForLobs([lobId]);
+    } else {
+      visibleUserIds = scope.visibleUserIds;
     }
-    return lobService.userIdsForLobs([lobId]);
   }
-  return scope.visibleUserIds;
+  return profileService.applyLocationScope(visibleUserIds, req.query.locationId);
 }
 
 /**
@@ -83,10 +91,14 @@ async function getDailySummaryData(orgId, filters, visibleUserIds) {
     date: day.date,
     productiveHours: day.productiveHours,
     nonProductiveHours: day.nonProductiveHours,
+    // Total keeps its original meaning (productive + non-productive) so
+    // existing consumers' numbers don't shift; neutral/idle are new columns.
     totalHours: day.productiveHours + day.nonProductiveHours,
     productivityPercentage: (day.productiveHours + day.nonProductiveHours) > 0
       ? (day.productiveHours / (day.productiveHours + day.nonProductiveHours)) * 100
-      : 0
+      : 0,
+    neutralHours: day.neutralHours || 0,
+    idleHours: day.idleHours || 0
   }));
 
   return { data, pagination: { totalCount: data.length } };
@@ -106,7 +118,10 @@ async function getEmployeeSummaryData(orgId, filters, visibleUserIds) {
     productiveHours: emp.productiveHours,
     nonProductiveHours: emp.nonProductiveHours,
     totalHours: emp.productiveHours + emp.nonProductiveHours,
-    productivityPercentage: emp.productivityPercentage
+    productivityPercentage: emp.productivityPercentage,
+    location: emp.location ? emp.location.name : '',
+    neutralHours: emp.neutralHours || 0,
+    idleHours: emp.idleHours || 0
   }));
   
   // Filter by specific employee if provided
@@ -230,7 +245,9 @@ async function exportCSV(req, res) {
     
     switch (type) {
       case 'daily-summary':
-        headers = ['Date', 'Productive Hours', 'Non-Productive Hours', 'Total Hours', 'Productivity %'];
+        // New columns are APPENDED (never reordered) so existing downstream
+        // spreadsheet consumers keep their column positions.
+        headers = ['Date', 'Productive Hours', 'Non-Productive Hours', 'Total Hours', 'Productivity %', 'Neutral Hours', 'Idle Hours'];
         csvRows = [headers.join(',')];
         result.data.forEach(row => {
           csvRows.push([
@@ -238,13 +255,17 @@ async function exportCSV(req, res) {
             row.productiveHours?.toFixed(2) || '0.00',
             row.nonProductiveHours?.toFixed(2) || '0.00',
             row.totalHours?.toFixed(2) || '0.00',
-            row.productivityPercentage?.toFixed(1) || '0.0'
+            row.productivityPercentage?.toFixed(1) || '0.0',
+            row.neutralHours?.toFixed(2) || '0.00',
+            row.idleHours?.toFixed(2) || '0.00'
           ].join(','));
         });
         break;
         
       case 'employee-summary':
-        headers = ['Employee Name', 'Email', 'Productive Hours', 'Non-Productive Hours', 'Total Hours', 'Productivity %'];
+        // New columns are APPENDED (never reordered) so existing downstream
+        // spreadsheet consumers keep their column positions.
+        headers = ['Employee Name', 'Email', 'Productive Hours', 'Non-Productive Hours', 'Total Hours', 'Productivity %', 'Location', 'Neutral Hours', 'Idle Hours'];
         csvRows = [headers.join(',')];
         result.data.forEach(row => {
           csvRows.push([
@@ -253,7 +274,10 @@ async function exportCSV(req, res) {
             row.productiveHours?.toFixed(2) || '0.00',
             row.nonProductiveHours?.toFixed(2) || '0.00',
             row.totalHours?.toFixed(2) || '0.00',
-            row.productivityPercentage?.toFixed(1) || '0.0'
+            row.productivityPercentage?.toFixed(1) || '0.0',
+            `"${row.location || ''}"`,
+            row.neutralHours?.toFixed(2) || '0.00',
+            row.idleHours?.toFixed(2) || '0.00'
           ].join(','));
         });
         break;
@@ -308,8 +332,131 @@ async function exportCSV(req, res) {
 }
 
 /**
+ * Excel column definitions per report type. Mirrors the CSV columns exactly
+ * (same order, including the appended Location/Neutral/Idle columns) but with
+ * REAL numeric cells so totals are summable in Excel. `key` matches the field
+ * name on the report data rows, so `sheet.addRow(row)` maps by key.
+ */
+function getExcelColumnsForType(type) {
+  switch (type) {
+    case 'daily-summary':
+      return [
+        { header: 'Date', key: 'date', width: 12 },
+        { header: 'Productive Hours', key: 'productiveHours', width: 17, numFmt: '0.00' },
+        { header: 'Non-Productive Hours', key: 'nonProductiveHours', width: 21, numFmt: '0.00' },
+        { header: 'Total Hours', key: 'totalHours', width: 12, numFmt: '0.00' },
+        { header: 'Productivity %', key: 'productivityPercentage', width: 14, numFmt: '0.0' },
+        { header: 'Neutral Hours', key: 'neutralHours', width: 14, numFmt: '0.00' },
+        { header: 'Idle Hours', key: 'idleHours', width: 12, numFmt: '0.00' },
+      ];
+    case 'employee-summary':
+      return [
+        { header: 'Employee Name', key: 'employeeName', width: 24 },
+        { header: 'Email', key: 'employeeEmail', width: 28 },
+        { header: 'Productive Hours', key: 'productiveHours', width: 17, numFmt: '0.00' },
+        { header: 'Non-Productive Hours', key: 'nonProductiveHours', width: 21, numFmt: '0.00' },
+        { header: 'Total Hours', key: 'totalHours', width: 12, numFmt: '0.00' },
+        { header: 'Productivity %', key: 'productivityPercentage', width: 14, numFmt: '0.0' },
+        { header: 'Location', key: 'location', width: 16 },
+        { header: 'Neutral Hours', key: 'neutralHours', width: 14, numFmt: '0.00' },
+        { header: 'Idle Hours', key: 'idleHours', width: 12, numFmt: '0.00' },
+      ];
+    case 'application-usage':
+      return [
+        { header: 'Application', key: 'application', width: 32 },
+        { header: 'Total Hours', key: 'totalHours', width: 12, numFmt: '0.00' },
+        { header: 'Session Count', key: 'sessionCount', width: 14 },
+        { header: 'Employees', key: 'employeeCount', width: 11 },
+      ];
+    default: // activity-logs
+      return [
+        { header: 'Employee Name', key: 'userName', width: 24 },
+        { header: 'Employee Email', key: 'userEmail', width: 28 },
+        { header: 'Start Time', key: 'startTime', width: 22 },
+        { header: 'End Time', key: 'endTime', width: 22 },
+        { header: 'Application', key: 'application', width: 24 },
+        { header: 'Window Title', key: 'windowTitle', width: 40 },
+        { header: 'Duration (seconds)', key: 'durationSeconds', width: 18 },
+        { header: 'Classification', key: 'classification', width: 15 },
+      ];
+  }
+}
+
+const EXCEL_SHEET_TITLES = {
+  'activity-logs': 'Activity Logs',
+  'daily-summary': 'Daily Summary',
+  'employee-summary': 'Employee Summary',
+  'application-usage': 'Application Usage',
+};
+
+/**
+ * Export report as Excel (.xlsx).
+ *
+ * GET /api/portal/reports/export/excel?type=&filters...
+ * Complete export (walks all pages like the CSV path, 50k cap).
+ */
+async function exportExcel(req, res) {
+  try {
+    const { orgId, role } = req.portalUser;
+    const { type, classification, employee, from, to } = req.query;
+
+    // Role check
+    if (role === 'viewer') {
+      return res.status(403).json({
+        success: false,
+        error: 'Insufficient permissions to export reports'
+      });
+    }
+
+    if (!type) {
+      return res.status(400).json({
+        success: false,
+        error: 'Report type is required'
+      });
+    }
+
+    if (!SUPPORTED_REPORT_TYPES.includes(type)) {
+      return res.status(400).json({
+        success: false,
+        error: `Unsupported report type. Available: ${SUPPORTED_REPORT_TYPES.join(', ')}`
+      });
+    }
+
+    // Get all data (scoped to the caller's LOB/location when applicable).
+    const filters = { classification, employee, from, to };
+    const visibleUserIds = await resolveVisibleUserIds(req);
+    const result = await getReportDataByType(orgId, type, filters, visibleUserIds, { fetchAll: true });
+
+    const workbook = new ExcelJS.Workbook();
+    const sheet = workbook.addWorksheet(EXCEL_SHEET_TITLES[type] || 'Report');
+    const columns = getExcelColumnsForType(type);
+    sheet.columns = columns.map(({ header, key, width }) => ({ header, key, width }));
+    sheet.getRow(1).font = { bold: true };
+    columns.forEach((col, i) => {
+      if (col.numFmt) sheet.getColumn(i + 1).numFmt = col.numFmt;
+    });
+    for (const row of result.data) {
+      sheet.addRow(row);
+    }
+
+    const timestamp = new Date().toISOString().split('T')[0];
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename="${type}-${timestamp}.xlsx"`);
+    const buffer = await workbook.xlsx.writeBuffer();
+    return res.send(Buffer.from(buffer));
+
+  } catch (error) {
+    logger.error('[PortalReports] Export Excel failed', error);
+    return res.status(error.status || 500).json({
+      success: false,
+      error: error.message
+    });
+  }
+}
+
+/**
  * Export report as PDF.
- * 
+ *
  * GET /api/portal/reports/export/pdf?type=&filters...
  */
 async function exportPDF(req, res) {
@@ -420,25 +567,29 @@ function getTableConfigForType(type) {
   switch (type) {
     case 'daily-summary':
       return {
-        headers: ['Date', 'Productive Hrs', 'Non-Prod Hrs', 'Total Hrs', 'Productivity %'],
+        headers: ['Date', 'Productive Hrs', 'Non-Prod Hrs', 'Total Hrs', 'Productivity %', 'Neutral Hrs', 'Idle Hrs'],
         columns: [
-          { key: 'date', width: 100 },
-          { key: 'productiveHours', width: 100, format: v => v?.toFixed(2) || '0.00' },
-          { key: 'nonProductiveHours', width: 100, format: v => v?.toFixed(2) || '0.00' },
-          { key: 'totalHours', width: 100, format: v => v?.toFixed(2) || '0.00' },
-          { key: 'productivityPercentage', width: 100, format: v => `${v?.toFixed(1) || 0}%` }
+          { key: 'date', width: 90 },
+          { key: 'productiveHours', width: 90, format: v => v?.toFixed(2) || '0.00' },
+          { key: 'nonProductiveHours', width: 90, format: v => v?.toFixed(2) || '0.00' },
+          { key: 'totalHours', width: 90, format: v => v?.toFixed(2) || '0.00' },
+          { key: 'productivityPercentage', width: 90, format: v => `${v?.toFixed(1) || 0}%` },
+          { key: 'neutralHours', width: 80, format: v => v?.toFixed(2) || '0.00' },
+          { key: 'idleHours', width: 80, format: v => v?.toFixed(2) || '0.00' }
         ]
       };
     case 'employee-summary':
       return {
-        headers: ['Employee', 'Email', 'Productive Hrs', 'Non-Prod Hrs', 'Total Hrs', 'Productivity %'],
+        headers: ['Employee', 'Email', 'Productive Hrs', 'Non-Prod Hrs', 'Total Hrs', 'Productivity %', 'Neutral Hrs', 'Idle Hrs'],
         columns: [
-          { key: 'employeeName', width: 120 },
-          { key: 'employeeEmail', width: 150 },
-          { key: 'productiveHours', width: 80, format: v => v?.toFixed(2) || '0.00' },
-          { key: 'nonProductiveHours', width: 80, format: v => v?.toFixed(2) || '0.00' },
-          { key: 'totalHours', width: 80, format: v => v?.toFixed(2) || '0.00' },
-          { key: 'productivityPercentage', width: 80, format: v => `${v?.toFixed(1) || 0}%` }
+          { key: 'employeeName', width: 110 },
+          { key: 'employeeEmail', width: 140 },
+          { key: 'productiveHours', width: 75, format: v => v?.toFixed(2) || '0.00' },
+          { key: 'nonProductiveHours', width: 75, format: v => v?.toFixed(2) || '0.00' },
+          { key: 'totalHours', width: 70, format: v => v?.toFixed(2) || '0.00' },
+          { key: 'productivityPercentage', width: 80, format: v => `${v?.toFixed(1) || 0}%` },
+          { key: 'neutralHours', width: 70, format: v => v?.toFixed(2) || '0.00' },
+          { key: 'idleHours', width: 70, format: v => v?.toFixed(2) || '0.00' }
         ]
       };
     case 'application-usage':
@@ -541,5 +692,6 @@ function drawTable(doc, headers, data, columns) {
 module.exports = {
   getReportData,
   exportCSV,
+  exportExcel,
   exportPDF
 };

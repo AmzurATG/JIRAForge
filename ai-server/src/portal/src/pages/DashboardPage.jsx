@@ -5,11 +5,13 @@
  */
 
 import { useState, useEffect } from 'react';
-import { Clock, TrendingUp, Users, Activity } from 'lucide-react';
+import { Clock, TrendingUp, Users, Activity, CircleDashed } from 'lucide-react';
 import { dashboardApi } from '../api/dashboard';
 import KPICard from '../components/common/KPICard';
+import CategoryLegend from '../components/common/CategoryLegend';
 import DateRangePicker from '../components/common/DateRangePicker';
 import LobFilter from '../components/common/LobFilter';
+import LocationFilter from '../components/common/LocationFilter';
 import ProductivityTrendChart from '../components/charts/ProductivityTrendChart';
 import ProductivityDonutChart from '../components/charts/ProductivityDonutChart';
 import LoadingSpinner from '../components/common/LoadingSpinner';
@@ -21,6 +23,7 @@ function DashboardPage() {
   const [error, setError] = useState(null);
   const [dashboardData, setDashboardData] = useState(null);
   const [lobId, setLobId] = useState('');
+  const [locationId, setLocationId] = useState('');
 
   // Default to last 7 days
   const [dateRange, setDateRange] = useState(() => {
@@ -35,14 +38,14 @@ function DashboardPage() {
 
   useEffect(() => {
     loadDashboardData();
-  }, [dateRange, lobId]);
+  }, [dateRange, lobId, locationId]);
 
   const loadDashboardData = async () => {
     setLoading(true);
     setError(null);
 
     try {
-      const response = await dashboardApi.getData(dateRange.from, dateRange.to, lobId);
+      const response = await dashboardApi.getData(dateRange.from, dateRange.to, lobId, locationId);
       setDashboardData(response.data);
     } catch (err) {
       console.error('Failed to load dashboard:', err);
@@ -79,7 +82,7 @@ function DashboardPage() {
       )}
 
       {/* Filters */}
-      <div className="card grid grid-cols-1 sm:grid-cols-2 gap-4">
+      <div className="card grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
         <div>
           <label className="filter-label">Date Range</label>
           <DateRangePicker
@@ -89,9 +92,15 @@ function DashboardPage() {
           />
         </div>
         <LobFilter value={lobId} onChange={setLobId} />
+        <LocationFilter value={locationId} onChange={setLocationId} />
       </div>
 
-      {/* KPI Cards */}
+      {/* KPI Cards — Neutral renders only when the category-breakdown
+          migration is applied (the API omits the field otherwise). */}
+      <div className="flex items-center gap-1">
+        <h3 className="section-title">Overview</h3>
+        <CategoryLegend />
+      </div>
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
         <KPICard
           title="Total Productive Hours"
@@ -107,10 +116,19 @@ function DashboardPage() {
           icon={Activity}
           variant="danger"
         />
+        {dashboardData?.summary?.totalNeutralHours !== undefined && (
+          <KPICard
+            title="Total Neutral Hours"
+            value={dashboardData.summary.totalNeutralHours.toFixed(2)}
+            subtitle="Unclassified / private — outside the ratio"
+            icon={CircleDashed}
+            variant="default"
+          />
+        )}
         <KPICard
           title="Productivity Rate"
           value={`${dashboardData?.summary?.productivityPercentage?.toFixed(1) || '0.0'}%`}
-          subtitle="Overall efficiency"
+          subtitle="Productive ÷ (productive + non-productive)"
           icon={TrendingUp}
           variant="info"
         />
@@ -134,6 +152,9 @@ function DashboardPage() {
           <ProductivityDonutChart
             productivePercentage={dashboardData?.summary?.productivityPercentage || 0}
             nonProductivePercentage={100 - (dashboardData?.summary?.productivityPercentage || 0)}
+            productiveHours={dashboardData?.summary?.totalProductiveHours}
+            nonProductiveHours={dashboardData?.summary?.totalNonProductiveHours}
+            neutralHours={dashboardData?.summary?.totalNeutralHours}
           />
         </div>
       </div>

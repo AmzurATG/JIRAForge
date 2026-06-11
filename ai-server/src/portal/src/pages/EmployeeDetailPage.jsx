@@ -6,9 +6,11 @@
 
 import { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { ArrowLeft, Clock, TrendingUp, Activity, BarChart3 } from 'lucide-react';
+import { ArrowLeft, Clock, TrendingUp, Activity, BarChart3, MapPin, Briefcase, Moon, CircleDashed } from 'lucide-react';
 import { employeesApi } from '../api/employees';
 import KPICard from '../components/common/KPICard';
+import CategoryBadge from '../components/common/CategoryBadge';
+import CategoryLegend from '../components/common/CategoryLegend';
 import DateRangePicker from '../components/common/DateRangePicker';
 import DailyLineChart from '../components/charts/DailyLineChart';
 import DataTable from '../components/common/DataTable';
@@ -67,10 +69,10 @@ function EmployeeDetailPage() {
 
   const loadEmployeeLogs = async () => {
     setLogsLoading(true);
-    
+
     try {
       const response = await employeesApi.getLogs(userId, {
-        classification: activeTab === 'all' ? undefined : activeTab === 'productive' ? 'productive' : 'non-productive',
+        classification: activeTab === 'all' ? undefined : activeTab,
         from: dateRange.from,
         to: dateRange.to,
         page: logsPage,
@@ -131,20 +133,10 @@ function EmployeeDetailPage() {
       render: (value) => formatDuration(value),
     },
     {
-      key: 'classification',
+      key: 'category',
       label: 'Classification',
       sortable: true,
-      render: (value) => (
-        <span
-          className={`px-2 py-1 rounded text-xs font-semibold ${
-            value === 'productive'
-              ? 'bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200'
-              : 'bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200'
-          }`}
-        >
-          {value || 'N/A'}
-        </span>
-      ),
+      render: (value, row) => <CategoryBadge value={value || row.classification} />,
     },
   ];
 
@@ -168,7 +160,14 @@ function EmployeeDetailPage() {
         </button>
         <div>
           <h1 className="page-title">{employeeDetail?.user?.name || 'Employee Detail'}</h1>
-          <p className="text-gray-500 dark:text-gray-400 mt-0.5">{employeeDetail?.user?.email}</p>
+          <p className="text-gray-500 dark:text-gray-400 mt-0.5 flex items-center gap-2">
+            {employeeDetail?.user?.email}
+            {employeeDetail?.user?.location?.name && (
+              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-gray-100 dark:bg-gray-800 text-xs text-gray-600 dark:text-gray-300">
+                <MapPin className="w-3 h-3" /> {employeeDetail.user.location.name}
+              </span>
+            )}
+          </p>
         </div>
       </div>
 
@@ -186,8 +185,27 @@ function EmployeeDetailPage() {
         />
       </div>
 
-      {/* KPI Cards */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+      {/* KPI Cards — canonical categories: Office = Active + Idle;
+          Active = Productive + Non-Productive + Neutral (see legend). */}
+      <div className="flex items-center gap-1">
+        <h3 className="section-title">Time Breakdown</h3>
+        <CategoryLegend />
+      </div>
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+        <KPICard
+          title="Office Time"
+          value={employeeDetail?.summary?.officeHours?.toFixed(2) || '0.00'}
+          subtitle="Active + idle"
+          icon={Briefcase}
+          variant="info"
+        />
+        <KPICard
+          title="Active Time"
+          value={employeeDetail?.summary?.activeHours?.toFixed(2) || '0.00'}
+          subtitle="All tracked activity"
+          icon={BarChart3}
+          variant="default"
+        />
         <KPICard
           title="Productive Hours"
           value={employeeDetail?.summary?.productiveHours?.toFixed(2) || '0.00'}
@@ -203,18 +221,25 @@ function EmployeeDetailPage() {
           variant="danger"
         />
         <KPICard
-          title="Productivity Rate"
-          value={`${employeeDetail?.summary?.productivityPercentage?.toFixed(1) || '0.0'}%`}
-          subtitle="Overall efficiency"
-          icon={TrendingUp}
-          variant="info"
+          title="Neutral Hours"
+          value={employeeDetail?.summary?.neutralHours?.toFixed(2) || '0.00'}
+          subtitle="Unclassified / private — outside the ratio"
+          icon={CircleDashed}
+          variant="default"
         />
         <KPICard
-          title="Total Hours"
-          value={((employeeDetail?.summary?.productiveHours || 0) + (employeeDetail?.summary?.nonProductiveHours || 0)).toFixed(2)}
-          subtitle="Combined time"
-          icon={BarChart3}
-          variant="default"
+          title="Idle Hours"
+          value={employeeDetail?.summary?.idleHours?.toFixed(2) || '0.00'}
+          subtitle="Away / locked / asleep"
+          icon={Moon}
+          variant="warning"
+        />
+        <KPICard
+          title="Productivity Rate"
+          value={`${employeeDetail?.summary?.productivityPercentage?.toFixed(1) || '0.0'}%`}
+          subtitle="Productive ÷ (productive + non-productive)"
+          icon={TrendingUp}
+          variant="info"
         />
       </div>
 
@@ -259,6 +284,16 @@ function EmployeeDetailPage() {
             }`}
           >
             Non-Productive
+          </button>
+          <button
+            onClick={() => handleTabChange('neutral')}
+            className={`px-4 py-2 rounded-lg text-sm font-medium transition-all ${
+              activeTab === 'neutral'
+                ? 'bg-white dark:bg-gray-700 text-slate-600 dark:text-slate-300 shadow-md'
+                : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-200'
+            }`}
+          >
+            Neutral
           </button>
         </div>
         

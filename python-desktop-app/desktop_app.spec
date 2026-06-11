@@ -541,14 +541,23 @@ a = Analysis(
         'pandas.tests.plotting',
         'pandas.tests.io',
         'xmlrpc',
-        # Security: spacy/NLP not needed
+        # detect_secrets is intentionally not bundled (secrets detector disabled).
         'detect_secrets',
         'privacy.detectors.secrets_detector',
+        # spaCy / thinc / en_core_web_sm ARE required by Presidio's NER and ARE
+        # bundled above (collect_all + the force-included .pyd block) as loose
+        # files in _internal/, which IS importable at runtime (verified: Presidio
+        # loads spaCy fine). They are listed here ONLY to keep them OUT of the PYZ
+        # archive -- `excludes` filters the import graph / PYZ, NOT the collect_all
+        # file copies. Without this, PyInstaller would ALSO compile them into the
+        # PYZ, duplicating ~25 MB that already ships as loose files. So this is a
+        # deliberate size optimization, not a contradiction.
         'spacy',
         'spacy_legacy',
         'spacy_loggers',
         'thinc',
         'en_core_web_sm',
+        # Larger NER models are unused (only en_core_web_sm is needed) -> exclude.
         'en_core_web_md',
         'en_core_web_lg',
         # Mock/demo engines never needed in EXE

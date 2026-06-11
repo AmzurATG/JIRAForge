@@ -395,14 +395,14 @@ SCREENSHOT_MONITORING_HARD_DISABLED = True
 # Embedded credentials (for production builds - no .env file needed)
 # SECURITY: All sensitive keys moved to AI Server - fetched at runtime after authentication
 EMBEDDED_CONFIG = {
-    'ATLASSIAN_CLIENT_ID': 'k2Xwzy8c1g3Wk6Xpbeev0x70CXEp9lJH',
+    'ATLASSIAN_CLIENT_ID': 'Q8HT4Jn205AuTiAarj088oWNDrOqwvM5',
     # Google OAuth (non-Jira users). PUBLIC client ID only — the client SECRET
     # stays on the AI Server, never in the desktop build. Same handling as
     # ATLASSIAN_CLIENT_ID above. Must match GOOGLE_DESKTOP_CLIENT_ID on the AI server.
     'GOOGLE_DESKTOP_CLIENT_ID': '508843846019-glrru7r3m622vt75e215lmf5ih1bcgju.apps.googleusercontent.com',
     # REMOVED: ATLASSIAN_CLIENT_SECRET - now on AI Server only (security fix)
     # REMOVED: SUPABASE_URL, SUPABASE_ANON_KEY, SUPABASE_SERVICE_ROLE_KEY - fetched from AI Server
-    'AI_SERVER_URL': 'https://timetracker-forge.amzur.com',  # AI Server for secure token exchange & config
+    'AI_SERVER_URL': 'https://forgesync.amzur.com',  # AI Server for secure token exchange & config
     'CAPTURE_INTERVAL': '300',
     'WEB_PORT': '51777',
 }
@@ -2058,7 +2058,7 @@ class AtlassianAuthManager:
         self.google_authorization_url = 'https://accounts.google.com/o/oauth2/v2/auth'
         self.google_redirect_uri = f'http://127.0.0.1:{web_port}/auth/google/callback'
         # Token exchange now goes through AI Server
-        self.ai_server_url = get_env_var('AI_SERVER_URL', 'https://timetracker-forge.amzur.com')
+        self.ai_server_url = get_env_var('AI_SERVER_URL', 'https://forgesync.amzur.com')
         self.store_path = store_path or os.path.join(get_app_data_dir(), 'time_tracker_auth.json')
         self.metadata_path = os.path.join(get_app_data_dir(), 'auth_metadata.json')  # For non-sensitive data
 
@@ -3131,7 +3131,7 @@ class AtlassianAuthManager:
             print("[ERROR] No valid Atlassian token - cannot fetch OCR config")
             return False
 
-        ai_server_url = get_env_var('AI_SERVER_URL', 'https://timetracker-forge.amzur.com')
+        ai_server_url = get_env_var('AI_SERVER_URL', 'https://forgesync.amzur.com')
         
         try:
             print("[INFO] Fetching OCR config from AI Server...")
@@ -6157,10 +6157,31 @@ class TimeTracker:
             latest = update_info.get('latest_version', 'unknown')
             print(f"[UPDATE] Auto-applying update v{latest}...")
             self.add_admin_log('INFO', f'Auto-applying update v{latest}')
-            # Trigger the update FIRST, then notify based on the actual result -- so we do
-            # not promise "installing / will restart" when the on-demand trigger was denied
-            # (a standard user may not be able to run the SYSTEM task on demand; in that
-            # case it installs on the hourly schedule instead).
+            # Legacy (non-Program-Files / dev) builds: auto_apply() spawns the
+            # updater and IMMEDIATELY exits this process (os._exit in
+            # _shutdown_for_update), so any toast shown AFTER auto_apply() would
+            # never render. Notify FIRST in that case, then apply.
+            if not _is_running_from_program_files():
+                if WINOTIFY_AVAILABLE:
+                    try:
+                        notification = Notification(
+                            app_id="Time Tracker",
+                            title="Updating Time Tracker",
+                            msg=f"Installing v{latest}. The app will restart shortly.",
+                            duration="short"
+                        )
+                        notification.set_audio(audio.Default, loop=False)
+                        notification.show()
+                    except Exception:
+                        pass
+                self.update_manager.auto_apply()
+                return
+
+            # Program Files build: the SYSTEM task does the install and this
+            # process keeps running, so trigger FIRST and word the toast by the
+            # actual result -- we do not promise "installing / will restart" when
+            # the on-demand trigger was denied (a standard user may not be able to
+            # run the SYSTEM task on demand; it then installs on the hourly run).
             triggered = self.update_manager.auto_apply()
             if WINOTIFY_AVAILABLE:
                 try:

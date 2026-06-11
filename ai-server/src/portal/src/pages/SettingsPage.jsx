@@ -5,10 +5,11 @@
  */
 
 import { useState, useEffect } from 'react';
-import { UserPlus, Edit2, Trash2, Shield } from 'lucide-react';
+import { UserPlus, Edit2, Trash2, Shield, MapPin, Plus, Check, X } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { adminUsersApi } from '../api/adminUsers';
 import { lobsApi } from '../api/lobs';
+import { locationsApi } from '../api/locations';
 import DataTable from '../components/common/DataTable';
 import ConfirmDialog from '../components/common/ConfirmDialog';
 import LoadingSpinner from '../components/common/LoadingSpinner';
@@ -317,6 +318,9 @@ function SettingsPage() {
         />
       </div>
 
+      {/* Employee locations (WS-B) — managed list used by the Employees page */}
+      <LocationsCard setError={setError} setSuccess={setSuccess} />
+
       {/* Create/Edit Modal */}
       {showModal && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
@@ -436,6 +440,187 @@ function SettingsPage() {
         message={`Are you sure you want to delete ${deletingAdmin?.display_name}? This action cannot be undone.`}
         onConfirm={confirmDelete}
         onCancel={() => setShowDeleteDialog(false)}
+      />
+    </div>
+  );
+}
+
+/**
+ * Managed list of employee locations (superadmin only — the page already
+ * gates access). Create / rename / activate-deactivate / delete; deleting a
+ * location that is assigned to employees is rejected by the server (409).
+ */
+function LocationsCard({ setError, setSuccess }) {
+  const [locations, setLocations] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [newName, setNewName] = useState('');
+  const [adding, setAdding] = useState(false);
+  const [editingId, setEditingId] = useState(null);
+  const [editName, setEditName] = useState('');
+  const [deleting, setDeleting] = useState(null);
+
+  const load = async () => {
+    setLoading(true);
+    try {
+      const res = await locationsApi.list({ includeInactive: true });
+      setLocations(res.data || []);
+    } catch (err) {
+      console.error('Failed to load locations:', err);
+      setError(err.response?.data?.error || 'Failed to load locations');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => { load(); }, []);
+
+  const addLocation = async (e) => {
+    e.preventDefault();
+    if (!newName.trim()) return;
+    setAdding(true);
+    setError(null);
+    try {
+      await locationsApi.create(newName.trim());
+      setNewName('');
+      setSuccess('Location created');
+      load();
+    } catch (err) {
+      setError(err.response?.data?.error || 'Failed to create location');
+    } finally {
+      setAdding(false);
+    }
+  };
+
+  const saveRename = async (loc) => {
+    if (!editName.trim() || editName.trim() === loc.name) { setEditingId(null); return; }
+    setError(null);
+    try {
+      await locationsApi.update(loc.id, { name: editName.trim() });
+      setEditingId(null);
+      setSuccess('Location renamed');
+      load();
+    } catch (err) {
+      setError(err.response?.data?.error || 'Failed to rename location');
+    }
+  };
+
+  const toggleActive = async (loc) => {
+    setError(null);
+    try {
+      await locationsApi.update(loc.id, { isActive: !loc.isActive });
+      load();
+    } catch (err) {
+      setError(err.response?.data?.error || 'Failed to update location');
+    }
+  };
+
+  const confirmDelete = async () => {
+    setError(null);
+    try {
+      await locationsApi.remove(deleting.id);
+      setDeleting(null);
+      setSuccess('Location deleted');
+      load();
+    } catch (err) {
+      setDeleting(null);
+      setError(err.response?.data?.error || 'Failed to delete location');
+    }
+  };
+
+  return (
+    <div className="card mb-6">
+      <h3 className="text-lg font-semibold mb-1 flex items-center gap-2">
+        <MapPin className="w-4 h-4 text-primary-600 dark:text-primary-400" /> Employee Locations
+      </h3>
+      <p className="text-xs text-gray-500 dark:text-gray-400 mb-4">
+        Locations are assigned to employees on the Employees page and drive its Location filter.
+      </p>
+
+      <form onSubmit={addLocation} className="flex gap-2 mb-4">
+        <input
+          type="text"
+          value={newName}
+          onChange={(e) => setNewName(e.target.value)}
+          placeholder="New location, e.g. Hyderabad"
+          maxLength={120}
+          className="input-field flex-1"
+        />
+        <button
+          type="submit"
+          disabled={adding || !newName.trim()}
+          className="flex items-center gap-1.5 px-3 py-1.5 rounded bg-primary-600 text-white text-sm hover:bg-primary-700 disabled:opacity-50 whitespace-nowrap"
+        >
+          <Plus className="w-4 h-4" /> {adding ? 'Adding…' : 'Add Location'}
+        </button>
+      </form>
+
+      {loading ? (
+        <p className="text-sm text-gray-500">Loading…</p>
+      ) : locations.length === 0 ? (
+        <p className="text-sm text-gray-500">No locations yet — add the first one above.</p>
+      ) : (
+        <div className="divide-y divide-gray-100 dark:divide-gray-700/50 border border-gray-200 dark:border-gray-700 rounded">
+          {locations.map((loc) => (
+            <div key={loc.id} className="flex items-center justify-between gap-2 px-3 py-2 text-sm">
+              {editingId === loc.id ? (
+                <div className="flex items-center gap-2 flex-1">
+                  <input
+                    type="text"
+                    value={editName}
+                    onChange={(e) => setEditName(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); saveRename(loc); } }}
+                    maxLength={120}
+                    className="input-field flex-1"
+                    autoFocus
+                  />
+                  <button onClick={() => saveRename(loc)} className="p-1 rounded text-emerald-600 hover:bg-emerald-50 dark:hover:bg-emerald-900/30" title="Save">
+                    <Check className="w-4 h-4" />
+                  </button>
+                  <button onClick={() => setEditingId(null)} className="p-1 rounded text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-700" title="Cancel">
+                    <X className="w-4 h-4" />
+                  </button>
+                </div>
+              ) : (
+                <>
+                  <span className={loc.isActive ? '' : 'text-gray-400 line-through'}>
+                    {loc.name}
+                    {!loc.isActive && <span className="ml-2 text-[10px] uppercase text-gray-400 no-underline">inactive</span>}
+                  </span>
+                  <div className="flex items-center gap-1">
+                    <button
+                      onClick={() => { setEditingId(loc.id); setEditName(loc.name); }}
+                      className="p-1 rounded hover:bg-gray-100 dark:hover:bg-gray-700"
+                      title="Rename"
+                    >
+                      <Edit2 className="w-4 h-4 text-gray-500" />
+                    </button>
+                    <button
+                      onClick={() => toggleActive(loc)}
+                      className="px-2 py-0.5 rounded border border-gray-300 dark:border-gray-600 text-xs text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800"
+                    >
+                      {loc.isActive ? 'Deactivate' : 'Activate'}
+                    </button>
+                    <button
+                      onClick={() => setDeleting(loc)}
+                      className="p-1 rounded text-red-600 hover:bg-red-50 dark:hover:bg-red-900/30"
+                      title="Delete (only if unassigned)"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </button>
+                  </div>
+                </>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+
+      <ConfirmDialog
+        isOpen={!!deleting}
+        title="Delete Location"
+        message={`Delete "${deleting?.name}"? This fails if any employee is assigned to it — deactivate instead to retire it.`}
+        onConfirm={confirmDelete}
+        onCancel={() => setDeleting(null)}
       />
     </div>
   );

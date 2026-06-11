@@ -9,6 +9,7 @@
 
 const logger = require('../utils/logger');
 const { getClient } = require('./db/supabase-client');
+const profileService = require('./portal-employee-profile-service');
 
 function isNonProductiveClassification(classification) {
   return classification === 'non_productive' || classification === 'non-productive';
@@ -33,6 +34,26 @@ function formatDate(date) {
 }
 
 /**
+ * Canonical category for one activity row (WS-C taxonomy):
+ * idle (is_idle) | productive | non-productive (both spellings) | neutral.
+ */
+function categorizeActivity(row) {
+  if (row.is_idle === true) return 'idle';
+  if (row.classification === 'productive') return 'productive';
+  if (isNonProductiveClassification(row.classification)) return 'non-productive';
+  return 'neutral';
+}
+
+// Warn once (per process) when the 20260610 category-breakdown migration has
+// not been applied — the portal then renders the pre-breakdown view (AC-C6).
+let warnedMissingBreakdown = false;
+function warnMissingBreakdownOnce(context) {
+  if (warnedMissingBreakdown) return;
+  warnedMissingBreakdown = true;
+  logger.warn('[PortalService] RPC result has no neutral/idle fields — is migration 20260610_portal_analytics_category_breakdown.sql applied?', context);
+}
+
+/**
  * Portal Service Class
  */
 class PortalService {
@@ -52,7 +73,7 @@ class PortalService {
     // Empty scope (e.g. a head with no members) → zeroed dashboard, never .in('user_id', []).
     if (Array.isArray(visibleUserIds) && visibleUserIds.length === 0) {
       return {
-        summary: { totalProductiveHours: 0, totalNonProductiveHours: 0, productivityPercentage: 0, employeeCount: 0 },
+        summary: { totalProductiveHours: 0, totalNonProductiveHours: 0, totalNeutralHours: 0, productivityPercentage: 0, employeeCount: 0 },
         dailyTrend: []
       };
     }
@@ -75,35 +96,52 @@ class PortalService {
     const summary = data || {};
     const daily = Array.isArray(summary.daily) ? summary.daily : [];
 
+    // Degraded mode (AC-C6): before the 20260610 migration the RPC rows have
+    // no neutral/idle keys — render the pre-breakdown view and warn once.
+    // The frontend hides the Neutral card when totalNeutralHours is absent.
+    const hasBreakdown = daily.length === 0 || daily.some(day => 'neutral_seconds' in day);
+    if (!hasBreakdown) warnMissingBreakdownOnce({ orgId, from, to });
+
     // The function already orders `daily` by work_date ascending.
     let productiveSeconds = 0;
     let nonProductiveSeconds = 0;
+    let neutralSeconds = 0;
     const dailyTrend = daily.map(day => {
       const prod = Number(day.productive_seconds) || 0;
       const nonProd = Number(day.nonproductive_seconds) || 0;
+      const neutral = Number(day.neutral_seconds) || 0;
+      const idle = Number(day.idle_seconds) || 0;
       productiveSeconds += prod;
       nonProductiveSeconds += nonProd;
-      return {
+      neutralSeconds += neutral;
+      const entry = {
         date: day.work_date,
         productiveHours: prod / 3600,
         nonProductiveHours: nonProd / 3600
       };
+      if (hasBreakdown) {
+        entry.neutralHours = neutral / 3600;
+        entry.idleHours = idle / 3600;
+      }
+      return entry;
     });
 
+    // Productivity % stays productive ÷ (productive + non-productive) —
+    // neutral and idle are visible as time but excluded from the ratio.
     const totalSeconds = productiveSeconds + nonProductiveSeconds;
     const productivityPercentage = totalSeconds > 0
       ? (productiveSeconds / totalSeconds) * 100
       : 0;
 
-    return {
-      summary: {
-        totalProductiveHours: productiveSeconds / 3600,
-        totalNonProductiveHours: nonProductiveSeconds / 3600,
-        productivityPercentage: Math.round(productivityPercentage * 10) / 10,
-        employeeCount: Number(summary.employeeCount) || 0
-      },
-      dailyTrend
+    const summaryOut = {
+      totalProductiveHours: productiveSeconds / 3600,
+      totalNonProductiveHours: nonProductiveSeconds / 3600,
+      productivityPercentage: Math.round(productivityPercentage * 10) / 10,
+      employeeCount: Number(summary.employeeCount) || 0
     };
+    if (hasBreakdown) summaryOut.totalNeutralHours = neutralSeconds / 3600;
+
+    return { summary: summaryOut, dailyTrend };
   }
   
   /**
@@ -161,7 +199,7 @@ class PortalService {
     const supabase = getClient();
     if (!supabase) throw new Error('Supabase client not initialized');
 
-    let { search, productivityRange, from, to } = filters;
+    let { search, productivityRange, from, to, locationId } = filters;
     const { page = 1, limit = 20 } = pagination;
 
     // visibleUserIds: array → restrict to those employees (LOB scope); null/undefined → all.
@@ -207,6 +245,9 @@ class PortalService {
         email: row.email,
         productiveHours: prod / 3600,
         nonProductiveHours: nonProd / 3600,
+        // 0 until migration 20260610_portal_analytics_category_breakdown is applied.
+        neutralHours: (Number(row.neutral_seconds) || 0) / 3600,
+        idleHours: (Number(row.idle_seconds) || 0) / 3600,
         productivityPercentage: Math.round(productivityPercentage * 10) / 10,
         lastActivityAt: row.last_activity
       };
@@ -233,6 +274,15 @@ class PortalService {
       });
     }
 
+    // Location filter (portal_employee_profiles merge) — applied BEFORE
+    // pagination so counts stay correct. Without the filter, the (cheaper)
+    // page-only merge below suffices.
+    if (locationId) {
+      const locMap = await profileService.getLocationMapForUsers(employees.map((e) => e.userId));
+      employees = employees.filter((e) => locMap[e.userId] && locMap[e.userId].id === locationId);
+      employees.forEach((e) => { e.location = locMap[e.userId] || null; });
+    }
+
     // Sort by name
     employees.sort((a, b) => (a.name || '').localeCompare(b.name || ''));
 
@@ -240,6 +290,12 @@ class PortalService {
     const totalCount = employees.length;
     const offset = (page - 1) * limit;
     const paginatedEmployees = employees.slice(offset, offset + limit);
+
+    // Attach each employee's portal location (only the page when unfiltered).
+    if (!locationId && paginatedEmployees.length) {
+      const locMap = await profileService.getLocationMapForUsers(paginatedEmployees.map((e) => e.userId));
+      paginatedEmployees.forEach((e) => { e.location = locMap[e.userId] || null; });
+    }
 
     return {
       data: paginatedEmployees,
@@ -271,10 +327,14 @@ class PortalService {
       logger.error('[PortalService] User query failed', { orgId, userId, error: userError });
       throw userError;
     }
-    
+
+    // Portal-owned location attribute (null when none assigned).
+    const locationMap = await profileService.getLocationMapForUsers([userId]);
+
     // Get activity data (no org filter), fetched in pages. A single request is
     // capped at 1000 rows by PostgREST, which would undercount an active
     // employee over a longer range. Order by the primary key for stable paging.
+    // Idle rows are INCLUDED here (WS-C) and bucketed separately below.
     const activities = [];
     const PAGE_SIZE = 1000;
     const MAX_ROWS = 100000; // bound memory on pathological ranges
@@ -282,11 +342,10 @@ class PortalService {
     for (;;) {
       const { data: batch, error: activityError } = await supabase
         .from('activity_records')
-        .select('classification, duration_seconds, work_date')
+        .select('classification, duration_seconds, work_date, is_idle')
         .eq('user_id', userId)
         .gte('work_date', from)
         .lte('work_date', to)
-        .neq('is_idle', true)
         .order('id', { ascending: true })
         .range(pageStart, pageStart + PAGE_SIZE - 1);
 
@@ -308,57 +367,71 @@ class PortalService {
       pageStart += PAGE_SIZE;
     }
     
-    // Calculate summary
-    let productiveSeconds = 0;
-    let nonProductiveSeconds = 0;
+    // Calculate summary — single pass, canonical WS-C taxonomy:
+    // Productive / Non-Productive (both spellings) / Neutral (everything
+    // else non-idle) / Idle. Active = P + NP + Neutral; Office = Active + Idle.
+    const totals = { productive: 0, 'non-productive': 0, neutral: 0, idle: 0 };
     const dailyTrend = {};
-    
+
     activities.forEach(activity => {
+      // Parity with the pre-WS-C `.neq('is_idle', true)` filter and with the
+      // SQL aggregates: rows where is_idle IS NULL fall in NO bucket (the old
+      // query excluded them entirely; `is_idle <> true` drops NULL in SQL).
+      if (activity.is_idle !== true && activity.is_idle !== false) return;
       const seconds = activity.duration_seconds || 0;
-      
-      if (activity.classification === 'productive') {
-        productiveSeconds += seconds;
-      } else if (isNonProductiveClassification(activity.classification)) {
-        nonProductiveSeconds += seconds;
-      }
-      
-      // Daily aggregation
+      const category = categorizeActivity(activity);
+      totals[category] += seconds;
+
       const date = activity.work_date;
       if (!dailyTrend[date]) {
-        dailyTrend[date] = { date, productiveSeconds: 0, totalSeconds: 0 };
+        dailyTrend[date] = { date, productive: 0, 'non-productive': 0, neutral: 0, idle: 0 };
       }
-      
-      if (activity.classification === 'productive') {
-        dailyTrend[date].productiveSeconds += seconds;
-      }
-      dailyTrend[date].totalSeconds += seconds;
+      dailyTrend[date][category] += seconds;
     });
-    
-    const totalSeconds = productiveSeconds + nonProductiveSeconds;
-    const productivityPercentage = totalSeconds > 0 
-      ? (productiveSeconds / totalSeconds) * 100 
+
+    const productiveSeconds = totals.productive;
+    const nonProductiveSeconds = totals['non-productive'];
+    const activeSeconds = productiveSeconds + nonProductiveSeconds + totals.neutral;
+
+    // Productivity % = productive ÷ (productive + non-productive); neutral and
+    // idle are shown as time but excluded from the ratio (same denominator as
+    // the daily trend below — AC-C4 consistency fix).
+    const ratioDenominator = productiveSeconds + nonProductiveSeconds;
+    const productivityPercentage = ratioDenominator > 0
+      ? (productiveSeconds / ratioDenominator) * 100
       : 0;
-    
+
     return {
       user: {
         userId: user.id,
         name: user.display_name,
-        email: user.email
+        email: user.email,
+        location: locationMap[userId] || null
       },
       summary: {
         productiveHours: productiveSeconds / 3600,
         nonProductiveHours: nonProductiveSeconds / 3600,
-        idleHours: 0, // Not tracked separately in v1
+        neutralHours: totals.neutral / 3600,
+        idleHours: totals.idle / 3600,
+        activeHours: activeSeconds / 3600,
+        officeHours: (activeSeconds + totals.idle) / 3600,
         productivityPercentage: Math.round(productivityPercentage * 10) / 10
       },
-      dailyTrend: Object.values(dailyTrend).map(day => ({
-        date: day.date,
-        productivityPercentage: day.totalSeconds > 0 
-          ? Math.round((day.productiveSeconds / day.totalSeconds) * 1000) / 10 
-          : 0,
-        productiveHours: day.productiveSeconds / 3600,
-        totalHours: day.totalSeconds / 3600
-      })).sort((a, b) => a.date.localeCompare(b.date))
+      dailyTrend: Object.values(dailyTrend).map(day => {
+        const dayDenominator = day.productive + day['non-productive'];
+        return {
+          date: day.date,
+          productivityPercentage: dayDenominator > 0
+            ? Math.round((day.productive / dayDenominator) * 1000) / 10
+            : 0,
+          productiveHours: day.productive / 3600,
+          nonProductiveHours: day['non-productive'] / 3600,
+          neutralHours: day.neutral / 3600,
+          idleHours: day.idle / 3600,
+          // Active time (idle excluded) — same meaning the field had before.
+          totalHours: (day.productive + day['non-productive'] + day.neutral) / 3600
+        };
+      }).sort((a, b) => a.date.localeCompare(b.date))
     };
   }
   
@@ -374,7 +447,7 @@ class PortalService {
     const supabase = getClient();
     if (!supabase) throw new Error('Supabase client not initialized');
 
-    let { classification, employee, app, from, to, durationMin, durationMax, confidenceMin, confidenceMax } = filters;
+    let { classification, employee, app, from, to, durationMin, durationMax, confidenceMin, confidenceMax, includeIdle } = filters;
     const { page = 1, limit = 20 } = pagination;
     const normalizedClassification = normalizeClassificationFilter(classification);
 
@@ -401,17 +474,33 @@ class PortalService {
         window_title,
         application_name,
         classification,
+        is_idle,
         start_time,
         end_time,
         duration_seconds,
         ocr_confidence,
         users!activity_records_user_id_fkey!inner(display_name, email)
-      `, { count: 'estimated' })  // Use estimated count instead of exact to avoid timeout
-      .neq('is_idle', true);
-    
-    // Apply filters
+      `, { count: 'estimated' });  // Use estimated count instead of exact to avoid timeout
+
+    // Idle rows stay excluded by default (today's behavior); callers may opt in.
+    if (!includeIdle) {
+      query = query.neq('is_idle', true);
+    }
+
+    // Apply filters — canonical categories (WS-C):
+    //   non_productive matches BOTH stored spellings; neutral = everything
+    //   that is neither productive nor non-productive (private/unknown/NULL).
     if (normalizedClassification && normalizedClassification !== 'all') {
-      query = query.eq('classification', normalizedClassification);
+      if (normalizedClassification === 'non_productive') {
+        query = query.in('classification', ['non_productive', 'non-productive']);
+      } else if (normalizedClassification === 'neutral') {
+        // Neutral = NOT productive and NOT non-productive (private/unknown/
+        // NULL/anything else). True idle blocks are already excluded by the
+        // is_idle filter above, matching categorizeActivity exactly.
+        query = query.or('classification.is.null,classification.not.in.(productive,non_productive,non-productive)');
+      } else {
+        query = query.eq('classification', normalizedClassification);
+      }
     }
     
     if (employee) {
@@ -482,6 +571,10 @@ class PortalService {
         windowTitle,
         application,
         classification: toPortalClassification(record.classification),
+        // Canonical category (productive | non-productive | neutral | idle) —
+        // what badges/filters should use; `classification` stays raw-ish for
+        // backward compatibility.
+        category: categorizeActivity(record),
         startTime: record.start_time,
         endTime: record.end_time,
         durationSeconds: record.duration_seconds,

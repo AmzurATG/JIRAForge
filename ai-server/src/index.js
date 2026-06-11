@@ -22,6 +22,7 @@ const portalAppClassificationsController = require('./controllers/portal-app-cla
 const portalLobController = require('./controllers/portal-lob-controller');
 const portalAppCatalogController = require('./controllers/portal-app-catalog-controller');
 const portalLobAppClassificationsController = require('./controllers/portal-lob-app-classifications-controller');
+const portalEmployeeProfileController = require('./controllers/portal-employee-profile-controller');
 const authMiddleware = require('./middleware/auth');
 const forgeAuthMiddleware = require('./middleware/forge-auth');
 const atlassianAuthMiddleware = require('./middleware/atlassian-auth');
@@ -733,9 +734,18 @@ app.get('/api/portal/employees/:userId', portalAuthMiddleware.verifyPortalToken,
 app.get('/api/portal/employees/:userId/logs', portalAuthMiddleware.verifyPortalToken, portalController.getEmployeeLogs);
 app.get('/api/portal/time-logs', portalAuthMiddleware.verifyPortalToken, portalController.getTimeLogs);
 
+// Employee locations (WS-B) — list: any portal user; manage: superadmin only
+app.get('/api/portal/locations', portalAuthMiddleware.verifyPortalToken, portalEmployeeProfileController.getLocations);
+app.post('/api/portal/locations', portalAuthMiddleware.verifyPortalToken, portalEmployeeProfileController.createLocation);
+app.put('/api/portal/locations/:id', portalAuthMiddleware.verifyPortalToken, portalEmployeeProfileController.updateLocation);
+app.delete('/api/portal/locations/:id', portalAuthMiddleware.verifyPortalToken, portalEmployeeProfileController.deleteLocation);
+// Per-employee portal profile (location assignment) — superadmin only
+app.put('/api/portal/employees/:userId/profile', portalAuthMiddleware.verifyPortalToken, portalEmployeeProfileController.setEmployeeProfile);
+
 // Portal reports endpoints (authenticated)
 app.get('/api/portal/reports/data', portalAuthMiddleware.verifyPortalToken, portalReportsController.getReportData);
 app.get('/api/portal/reports/export/csv', portalAuthMiddleware.verifyPortalToken, portalReportsController.exportCSV);
+app.get('/api/portal/reports/export/excel', portalAuthMiddleware.verifyPortalToken, portalReportsController.exportExcel);
 app.get('/api/portal/reports/export/pdf', portalAuthMiddleware.verifyPortalToken, portalReportsController.exportPDF);
 
 // Portal admin users endpoints (authenticated - superadmin only)

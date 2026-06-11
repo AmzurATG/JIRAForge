@@ -11,6 +11,7 @@
 const logger = require('../utils/logger');
 const lobService = require('../services/portal-lob-service');
 const portalService = require('../services/portal-service');
+const appNameService = require('../services/portal-app-name-service');
 
 /** Default discovery window (days) for "apps used but not yet classified". */
 const UNLISTED_LOOKBACK_DAYS = 30;
@@ -100,6 +101,7 @@ async function getUnlistedApps(req, res) {
       .slice(0, UNLISTED_LIMIT)
       .map((u) => ({
         identifier: u.applicationName,
+        displayName: appNameService.cleanDisplayName(u.applicationName),
         totalHours: u.totalHours,
         sessionCount: u.sessionCount,
         employeeCount: u.employeeCount,
