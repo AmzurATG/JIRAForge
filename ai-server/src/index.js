@@ -741,6 +741,8 @@ app.put('/api/portal/locations/:id', portalAuthMiddleware.verifyPortalToken, por
 app.delete('/api/portal/locations/:id', portalAuthMiddleware.verifyPortalToken, portalEmployeeProfileController.deleteLocation);
 // Per-employee portal profile (location assignment) — superadmin only
 app.put('/api/portal/employees/:userId/profile', portalAuthMiddleware.verifyPortalToken, portalEmployeeProfileController.setEmployeeProfile);
+// Bulk location assignment (Employees action bar + Locations members picker) — superadmin only
+app.put('/api/portal/employees/profiles', portalAuthMiddleware.verifyPortalToken, portalEmployeeProfileController.bulkSetEmployeeProfiles);
 
 // Portal reports endpoints (authenticated)
 app.get('/api/portal/reports/data', portalAuthMiddleware.verifyPortalToken, portalReportsController.getReportData);

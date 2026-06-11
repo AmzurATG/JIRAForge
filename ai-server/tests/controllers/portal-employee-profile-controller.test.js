@@ -96,3 +96,30 @@ describe('employee profile assignment is superadmin-only (AC-B2)', () => {
     expect(res._status).toBe(404);
   });
 });
+
+describe('bulk location assignment is superadmin-only', () => {
+  test('non-superadmin denied (403), service not called', async () => {
+    const res = makeRes();
+    await ctrl.bulkSetEmployeeProfiles(makeReq({ role: 'admin', body: { userIds: ['u1'], locationId: 'l1' } }), res);
+    expect(res._status).toBe(403);
+    expect(profileService.setEmployeeLocations).not.toHaveBeenCalled();
+  });
+
+  test('superadmin bulk-assigns (200) and the count + invalid ids pass through', async () => {
+    profileService.setEmployeeLocations.mockResolvedValue({ updatedCount: 2, invalidUserIds: ['ghost'] });
+    const res = makeRes();
+    await ctrl.bulkSetEmployeeProfiles(makeReq({ body: { userIds: ['u1', 'u2', 'ghost'], locationId: 'l1' } }), res);
+    expect(res._status).toBe(200);
+    expect(res._body).toEqual({ success: true, updatedCount: 2, invalidUserIds: ['ghost'] });
+    expect(profileService.setEmployeeLocations).toHaveBeenCalledWith(['u1', 'u2', 'ghost'], 'l1', 'admin1');
+  });
+
+  test('missing/empty/oversized userIds → 400', async () => {
+    for (const body of [{}, { userIds: [] }, { userIds: Array.from({ length: 501 }, (_, i) => `u${i}`) }]) {
+      const res = makeRes();
+      await ctrl.bulkSetEmployeeProfiles(makeReq({ body }), res);
+      expect(res._status).toBe(400);
+    }
+    expect(profileService.setEmployeeLocations).not.toHaveBeenCalled();
+  });
+});

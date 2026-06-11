@@ -141,6 +141,41 @@ async function setEmployeeLocation(userId, locationId, updatedBy) {
   };
 }
 
+/**
+ * Bulk-assign (or clear, with locationId = null) a location for many
+ * employees in one operation (Pattern A action bar + Pattern B members
+ * picker). Validates the location once, validates employees against the
+ * Jira-owned users table in chunks (read-only), upserts the valid ones.
+ *
+ * @returns {Promise<{updatedCount:number, invalidUserIds:string[]}>}
+ */
+async function setEmployeeLocations(userIds, locationId, updatedBy) {
+  if (!Array.isArray(userIds) || userIds.length === 0) {
+    throw httpError('userIds array is required', 400);
+  }
+
+  if (locationId !== null && locationId !== undefined) {
+    const location = await db.getLocationById(locationId);
+    if (!location) throw httpError('Location not found', 404);
+    if (!location.is_active) throw httpError('Location is inactive — reactivate it before assigning', 400);
+  }
+
+  // Validate existence in chunks — getUsersByIds is a URL-encoded IN query.
+  const CHUNK = 200;
+  const existingIds = new Set();
+  for (let i = 0; i < userIds.length; i += CHUNK) {
+    const users = await lobDb.getUsersByIds(userIds.slice(i, i + CHUNK));
+    for (const u of users) existingIds.add(u.id);
+  }
+  const validIds = [...new Set(userIds)].filter((id) => existingIds.has(id));
+  const invalidUserIds = [...new Set(userIds)].filter((id) => !existingIds.has(id));
+
+  if (validIds.length) {
+    await db.bulkUpsertProfiles(validIds, locationId ?? null, updatedBy);
+  }
+  return { updatedCount: validIds.length, invalidUserIds };
+}
+
 module.exports = {
   listLocations,
   createLocation,
@@ -149,4 +184,5 @@ module.exports = {
   getLocationMapForUsers,
   applyLocationScope,
   setEmployeeLocation,
+  setEmployeeLocations,
 };
