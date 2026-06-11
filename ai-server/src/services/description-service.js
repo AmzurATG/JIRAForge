@@ -24,6 +24,7 @@ const { extractAllDocuments } = require('./document-extractor');
 
 const LLM_GATE_THRESHOLD = 80;          // Score >= threshold skips LLM
 const LLM_TIMEOUT_MS = 8000;            // 8 second LLM timeout per attempt
+const MATCH_LLM_TIMEOUT_MS = 30000;     // 30 second timeout for match LLM calls (larger payload)
 const LLM_MAX_TOKENS = 2000;
 const LLM_TEMPERATURE = 0.3;
 const TITLE_MIN = 10;
@@ -281,6 +282,55 @@ function parseLLMContent(content) {
     } catch {
       return null;
     }
+  }
+}
+
+/**
+ * Attempt to repair truncated JSON from LLM responses.
+ * When the LLM hits a token limit, the JSON is typically cut off mid-object
+ * inside an array. This function strips the incomplete last entry, closes
+ * open brackets, and attempts to parse the result.
+ *
+ * Handles the pattern: {"assignments": [..., {"sessionId": "abc", "issueKey": "FE
+ * Returns null if the content is unrecoverable.
+ */
+function repairTruncatedJSON(content) {
+  if (!content || typeof content !== 'string') return null;
+
+  // Find the outermost JSON object start
+  const objStart = content.indexOf('{');
+  if (objStart === -1) return null;
+
+  let candidate = content.slice(objStart);
+
+  // Try progressively stripping from the end to find parseable JSON
+  // First, try to remove everything after the last complete object in an array
+  const lastCompleteObjEnd = candidate.lastIndexOf('}');
+  if (lastCompleteObjEnd === -1) return null;
+
+  // Find the last complete array entry by looking for the last ", {" or "[{"
+  // Strip from after the last complete object closing brace
+  const trimmed = candidate.slice(0, lastCompleteObjEnd + 1);
+
+  // Count open vs close brackets to determine what needs closing
+  let openBraces = 0;
+  let openBrackets = 0;
+  for (const ch of trimmed) {
+    if (ch === '{') openBraces++;
+    if (ch === '}') openBraces--;
+    if (ch === '[') openBrackets++;
+    if (ch === ']') openBrackets--;
+  }
+
+  // Close any unclosed brackets/braces
+  let repaired = trimmed;
+  for (let i = 0; i < openBrackets; i++) repaired += ']';
+  for (let i = 0; i < openBraces; i++) repaired += '}';
+
+  try {
+    return JSON.parse(repaired);
+  } catch {
+    return null;
   }
 }
 
@@ -584,7 +634,7 @@ async function analyzeDescription(params) {
 // ---------------------------------------------------------------------------
 
 const MATCH_MIN_CONFIDENCE = 0.7;
-const MATCH_LLM_MAX_TOKENS = 2500;
+const MATCH_LLM_MAX_TOKENS = 8192;
 
 const SYNC_ISSUE_UNASSIGNED_SYSTEM_PROMPT = `You are an expert assistant matching time tracking activity records to a specific Jira issue.
 You will be given the Jira issue's key, title, description, optional attachment context, and a list of unassigned work sessions from the previous day.
@@ -654,7 +704,7 @@ async function invokeMatchLLM({ systemPrompt, userPayload, deps = {} }) {
         temperature: 0.2,
         response_format: { type: 'json_object' }
       }),
-      LLM_TIMEOUT_MS,
+      MATCH_LLM_TIMEOUT_MS,
       'MatchLLM'
     );
 
@@ -662,14 +712,24 @@ async function invokeMatchLLM({ systemPrompt, userPayload, deps = {} }) {
     const finishReason = choice.finish_reason || choice.finishReason || '';
     const content = choice?.message?.content || '';
 
-    // Parse response. If truncated (finish_reason: length), accept partial JSON.
-    // Retrying is too risky in a time-constrained Forge environment.
+    // Parse response. If truncated (finish_reason: length), attempt to repair
+    // the partial JSON by closing open brackets and stripping incomplete entries.
     const parsed = parseLLMContent(content);
-    if (String(finishReason).toLowerCase() === 'length' && !parsed) {
-      logger.warn('[DescQuality] Match LLM response truncated; unable to parse. Returning empty assignments.');
+    if (parsed) return parsed;
+
+    if (String(finishReason).toLowerCase() === 'length') {
+      logger.warn('[DescQuality] Match LLM response truncated (finish_reason=length). Attempting JSON repair.');
+      const repaired = repairTruncatedJSON(content);
+      if (repaired) {
+        logger.info('[DescQuality] Truncated JSON repaired successfully. Recovered %d assignment(s).',
+          Array.isArray(repaired.assignments) ? repaired.assignments.length :
+          Array.isArray(repaired.matches) ? repaired.matches.length : 0);
+        return repaired;
+      }
+      logger.warn('[DescQuality] Truncated JSON repair failed. Returning empty assignments.');
     }
 
-    return parsed;
+    return null;
   } catch (err) {
     logger.error('[DescQuality] Match LLM failed: %s', err.message);
     return null;
@@ -773,6 +833,7 @@ module.exports = {
   scoreDeterministic,
   validateLLMResponse,
   parseLLMContent,
+  repairTruncatedJSON,
   generateContentHash,
   runLLMAnalysis,
   filterMatchesByConfidence,
