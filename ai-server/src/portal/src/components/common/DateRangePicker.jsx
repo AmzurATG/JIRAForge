@@ -25,6 +25,7 @@ function DateRangePicker({ from, to, onChange }) {
     const today = formatDate(new Date());
     if (to === today) {
       const presets = [
+        { days: 0, name: 'today' },
         { days: 7, name: '7d' },
         { days: 30, name: '30d' },
         { days: 90, name: '90d' },
@@ -88,6 +89,7 @@ function DateRangePicker({ from, to, onChange }) {
   };
 
   const presets = [
+    { days: 0, label: 'Today', name: 'today' },
     { days: 7, label: 'Last 7 days', name: '7d' },
     { days: 30, label: 'Last 30 days', name: '30d' },
     { days: 90, label: 'Last 90 days', name: '90d' },

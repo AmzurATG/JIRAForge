@@ -53,15 +53,10 @@ function TimeLogsPage() {
   // Employee list for filter
   const [employees, setEmployees] = useState([]);
   
-  // Default to last 7 days
+  // Default to today (shown as the "Today" preset in the picker)
   const [dateRange, setDateRange] = useState(() => {
-    const to = new Date();
-    const from = new Date();
-    from.setDate(to.getDate() - 7);
-    return {
-      from: formatDate(from),
-      to: formatDate(to),
-    };
+    const today = formatDate(new Date());
+    return { from: today, to: today };
   });
 
   useEffect(() => {
