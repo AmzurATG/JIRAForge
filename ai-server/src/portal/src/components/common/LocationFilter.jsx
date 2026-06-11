@@ -18,7 +18,9 @@ function LocationFilter({ value, onChange }) {
     let active = true;
     (async () => {
       try {
-        const res = await locationsApi.list();
+        // Include inactive: employees can stay assigned to a retired location,
+        // so it must remain filterable (labeled) — plan §11.2.
+        const res = await locationsApi.list({ includeInactive: true });
         if (active) setLocations(res.data || []);
       } catch {
         if (active) setLocations([]);
@@ -37,7 +39,9 @@ function LocationFilter({ value, onChange }) {
       <select value={value || ''} onChange={(e) => onChange(e.target.value)} className="select-field">
         <option value="">All Locations</option>
         {locations.map((loc) => (
-          <option key={loc.id} value={loc.id}>{loc.name}</option>
+          <option key={loc.id} value={loc.id}>
+            {loc.isActive ? loc.name : `${loc.name} (inactive)`}
+          </option>
         ))}
       </select>
     </div>

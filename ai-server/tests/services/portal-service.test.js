@@ -304,7 +304,7 @@ describe('getEmployeeDetail — canonical categories incl. idle (WS-C)', () => {
 describe('getTimeLogs — category filters and field (WS-C)', () => {
   function buildLogsClient(rows) {
     const chain = {};
-    for (const m of ['select', 'eq', 'gte', 'lte', 'neq', 'in', 'or', 'ilike', 'order', 'limit', 'range']) {
+    for (const m of ['select', 'eq', 'gte', 'lte', 'neq', 'not', 'in', 'or', 'ilike', 'order', 'limit', 'range']) {
       chain[m] = jest.fn(function () { return this; });
     }
     // The supabase query builder is awaitable.
@@ -322,13 +322,26 @@ describe('getTimeLogs — category filters and field (WS-C)', () => {
     expect(chain.neq).toHaveBeenCalledWith('is_idle', true);
   });
 
-  test('neutral filter targets private/unknown/NULL (AC-C3)', async () => {
+  test('neutral filter targets private/unknown/NULL and never idle blocks (AC-C3)', async () => {
     const { from, chain } = buildLogsClient([]);
     getClient.mockReturnValue({ from });
 
     await portalService.getTimeLogs('org', { classification: 'neutral', from: '2026-06-01', to: '2026-06-02' }, { page: 1, limit: 20 }, null);
 
     expect(chain.or).toHaveBeenCalledWith('classification.is.null,classification.not.in.(productive,non_productive,non-productive)');
+    // Parity with categorizeActivity: a true idle block is 'idle', never
+    // 'neutral' — enforced even when includeIdle is set.
+    expect(chain.eq).toHaveBeenCalledWith('is_idle', false);
+  });
+
+  test('includeIdle=true drops the idle exclusion but still excludes NULL is_idle rows', async () => {
+    const { from, chain } = buildLogsClient([]);
+    getClient.mockReturnValue({ from });
+
+    await portalService.getTimeLogs('org', { from: '2026-06-01', to: '2026-06-02', includeIdle: true }, { page: 1, limit: 20 }, null);
+
+    expect(chain.neq).not.toHaveBeenCalledWith('is_idle', true);
+    expect(chain.not).toHaveBeenCalledWith('is_idle', 'is', null);
   });
 
   test('rows expose the canonical category field (AC-C3)', async () => {

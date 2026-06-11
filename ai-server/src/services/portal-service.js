@@ -482,8 +482,13 @@ class PortalService {
         users!activity_records_user_id_fkey!inner(display_name, email)
       `, { count: 'estimated' });  // Use estimated count instead of exact to avoid timeout
 
-    // Idle rows stay excluded by default (today's behavior); callers may opt in.
-    if (!includeIdle) {
+    // Idle rows stay excluded by default (today's behavior); callers may opt
+    // in. Rows with is_idle NULL are excluded on BOTH paths — parity with the
+    // SQL aggregates and the employee-detail bucketing, where NULL falls in
+    // no bucket (`is_idle <> true` drops NULL in SQL).
+    if (includeIdle) {
+      query = query.not('is_idle', 'is', null);
+    } else {
       query = query.neq('is_idle', true);
     }
 
@@ -495,9 +500,12 @@ class PortalService {
         query = query.in('classification', ['non_productive', 'non-productive']);
       } else if (normalizedClassification === 'neutral') {
         // Neutral = NOT productive and NOT non-productive (private/unknown/
-        // NULL/anything else). True idle blocks are already excluded by the
-        // is_idle filter above, matching categorizeActivity exactly.
-        query = query.or('classification.is.null,classification.not.in.(productive,non_productive,non-productive)');
+        // NULL/anything else) — and never a true idle block, even when
+        // includeIdle is set (parity with categorizeActivity, which maps
+        // is_idle rows to 'idle', not 'neutral').
+        query = query
+          .eq('is_idle', false)
+          .or('classification.is.null,classification.not.in.(productive,non_productive,non-productive)');
       } else {
         query = query.eq('classification', normalizedClassification);
       }
