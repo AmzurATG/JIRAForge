@@ -359,6 +359,14 @@ from monitor_capture import (
     get_capture_stats,
 )
 
+# System dependency checker (PipeWire, GStreamer, XDG Portal)
+try:
+    from system_check import check_dependencies_startup
+    SYSTEM_CHECK_AVAILABLE = True
+except ImportError:
+    SYSTEM_CHECK_AVAILABLE = False
+    print("[WARN] system_check module not found - dependency checks disabled")
+
 # OCR dependency check is deferred until after AI server config is fetched
 # (so it uses the correct engines from the server, not local defaults)
 
@@ -702,7 +710,7 @@ load_dotenv()
 
 # Application version - IMPORTANT: Update this when releasing new versions
 # This is used for update checking and notifications
-APP_VERSION = "1.0.4"
+APP_VERSION = "1.0.0"
 
 # True when the process is running inside an AppImage bundle.
 # In FUSE mode, the AppImage runtime sets $APPIMAGE to the .AppImage file path.
@@ -6683,6 +6691,23 @@ class TimeTracker:
             self.logger.info("TimeTracker.__init__() starting...")
         else:
             self.logger = None
+
+        # Check system dependencies (PipeWire, GStreamer, XDG Portal)
+        # This helps users understand why screenshot capture might fail
+        self.screenshot_dependencies_ok = True
+        self.missing_dependencies = []
+        if SYSTEM_CHECK_AVAILABLE:
+            deps_ok, missing_deps = check_dependencies_startup()
+            self.screenshot_dependencies_ok = deps_ok
+            self.missing_dependencies = missing_deps
+            if not deps_ok:
+                if self.logger:
+                    self.logger.warning(f"Missing screenshot dependencies: {', '.join(missing_deps)}")
+                    self.logger.warning("Screenshot capture will not work - running in metadata-only mode")
+                    self.logger.warning("Run ./scripts/fix-screenshot-capture.sh to install dependencies")
+        else:
+            if self.logger:
+                self.logger.debug("System dependency check module not available")
 
         # Configuration (defaults, will be overridden by server settings)
         self.capture_interval = int(get_env_var('CAPTURE_INTERVAL', 300))

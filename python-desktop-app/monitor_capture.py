@@ -705,6 +705,75 @@ _SCREENCAST_SESSION_CACHE = {
 }
 
 
+def _get_restore_token_file():
+    """Get path to restore token file for persistent ScreenCast sessions."""
+    # Store in user's config directory
+    config_dir = os.path.expanduser('~/.config/timetracker')
+    os.makedirs(config_dir, exist_ok=True)
+    return os.path.join(config_dir, 'screencast_restore_token.json')
+
+
+def _save_restore_token(restore_token, session_handle=None, node_id=None):
+    """Save restore token to disk for persistent sessions across app restarts."""
+    try:
+        import json
+        data = {
+            'restore_token': restore_token,
+            'saved_at': time.time(),
+            'session_handle': session_handle,
+            'node_id': node_id
+        }
+        with open(_get_restore_token_file(), 'w') as f:
+            json.dump(data, f)
+        logger.info(f"ScreenCast restore token saved for persistent sessions")
+        return True
+    except Exception as e:
+        logger.warning(f"Failed to save restore token: {e}")
+        return False
+
+
+def _load_restore_token():
+    """Load restore token from disk.
+    
+    Returns:
+        dict with keys: restore_token, session_handle, node_id, saved_at
+        or None if not found or invalid
+    """
+    try:
+        import json
+        token_file = _get_restore_token_file()
+        if not os.path.exists(token_file):
+            return None
+        
+        with open(token_file, 'r') as f:
+            data = json.load(f)
+        
+        # Check if token is too old (older than 30 days) - conservative safety
+        if 'saved_at' in data:
+            age_days = (time.time() - data['saved_at']) / 86400
+            if age_days > 30:
+                logger.info(f"Restore token is {age_days:.1f} days old, discarding")
+                _clear_restore_token()
+                return None
+        
+        logger.info("Loaded ScreenCast restore token from disk")
+        return data
+    except Exception as e:
+        logger.debug(f"Could not load restore token: {e}")
+        return None
+
+
+def _clear_restore_token():
+    """Remove restore token file."""
+    try:
+        token_file = _get_restore_token_file()
+        if os.path.exists(token_file):
+            os.unlink(token_file)
+            logger.info("ScreenCast restore token cleared")
+    except Exception as e:
+        logger.debug(f"Could not clear restore token: {e}")
+
+
 def _generate_portal_token():
     """Generate random token for Portal D-Bus requests."""
     chars = string.ascii_letters + string.digits
@@ -716,6 +785,10 @@ def _check_screencast_available():
     
     ScreenCast portal is used for flash-free screenshots by capturing
     a single frame from a video stream instead of using the Screenshot API.
+    
+    CRITICAL: Requires BOTH the ScreenCast D-Bus interface AND the GStreamer
+    pipewiresrc plugin. If pipewiresrc is missing, ScreenCast will fail and
+    fall back to Screenshot Portal which causes permission dialogs every time.
     
     Returns:
         bool: True if available, False otherwise
@@ -731,6 +804,29 @@ def _check_screencast_available():
         _SCREENCAST_AVAILABLE = False
         return False
     
+    # CRITICAL FIX: Check if pipewiresrc plugin is installed
+    # Without this plugin, ScreenCast will fail and cause repeated permission dialogs
+    try:
+        result = subprocess.run(
+            ['gst-inspect-1.0', 'pipewiresrc'],
+            capture_output=True,
+            timeout=3
+        )
+        if result.returncode != 0:
+            logger.warning("ScreenCast unavailable: GStreamer pipewiresrc plugin not installed")
+            logger.info("Install with: sudo apt install gstreamer1.0-pipewire")
+            _SCREENCAST_AVAILABLE = False
+            return False
+    except FileNotFoundError:
+        logger.debug("ScreenCast unavailable: gst-inspect-1.0 not found")
+        _SCREENCAST_AVAILABLE = False
+        return False
+    except Exception as e:
+        logger.debug(f"GStreamer plugin check failed: {e}")
+        _SCREENCAST_AVAILABLE = False
+        return False
+    
+    # Check if ScreenCast Portal D-Bus interface exists
     try:
         result = subprocess.run(
             ['gdbus', 'introspect', '--session',
@@ -749,9 +845,9 @@ def _check_screencast_available():
         _SCREENCAST_AVAILABLE = False
     
     if _SCREENCAST_AVAILABLE:
-        logger.info("ScreenCast Portal available - flash-free captures enabled")
+        logger.info("ScreenCast Portal available - flash-free captures enabled (pipewiresrc verified)")
     else:
-        logger.debug("ScreenCast Portal not available - falling back to Screenshot Portal")
+        logger.debug("ScreenCast Portal not available - will use alternative capture methods")
     
     return _SCREENCAST_AVAILABLE
 
@@ -789,11 +885,20 @@ def _capture_screencast():
         gi.require_version('GLib', '2.0')
         from gi.repository import Gio, GLib
         
+        # Try to load restore token from disk first (persistent across app restarts)
+        if not _SCREENCAST_SESSION_CACHE.get('restore_token'):
+            saved_token_data = _load_restore_token()
+            if saved_token_data and saved_token_data.get('restore_token'):
+                _SCREENCAST_SESSION_CACHE['restore_token'] = saved_token_data['restore_token']
+                _SCREENCAST_SESSION_CACHE['session_handle'] = saved_token_data.get('session_handle')
+                _SCREENCAST_SESSION_CACHE['node_id'] = saved_token_data.get('node_id')
+                logger.info("Loaded persistent ScreenCast session from restore token")
+        
         # Try to reuse cached session first (avoids repeated consent dialogs)
         if (_SCREENCAST_SESSION_CACHE['session_handle'] and 
             _SCREENCAST_SESSION_CACHE['node_id']):
             
-            logger.debug("Reusing cached ScreenCast session (no consent needed)")
+            logger.debug("Attempting to reuse cached ScreenCast session (no consent needed)")
             
             try:
                 bus = Gio.bus_get_sync(Gio.BusType.SESSION, None)
@@ -839,17 +944,25 @@ def _capture_screencast():
                     import array as _array
                     bands = im.split()
                     if any(max(_array.array('B', b.tobytes())) > 0 for b in bands):
-                        logger.debug("ScreenCast: Reused session successfully")
+                        logger.info("ScreenCast: Successfully reused session - no permission dialog needed")
                         return im.copy()
                 
             except Exception as e:
-                logger.debug(f"Cached session failed: {e}, creating new session...")
-                # Clear cache and fall through to create new session
+                import traceback
+                logger.warning(
+                    f"Cached ScreenCast session reuse failed: {e.__class__.__name__}: {e}\n"
+                    f"Session handle: {_SCREENCAST_SESSION_CACHE['session_handle']}\n"
+                    f"Node ID: {_SCREENCAST_SESSION_CACHE['node_id']}\n"
+                    f"This is expected after system restarts or long idle periods.\n"
+                    f"Will create new session (may require user consent).\n"
+                    f"Traceback: {traceback.format_exc()[:500]}"
+                )
+                # Clear in-memory cache but keep restore token on disk for next attempt
                 _SCREENCAST_SESSION_CACHE = {
                     'session_handle': None,
                     'pipewire_fd': None,
                     'node_id': None,
-                    'restore_token': None
+                    'restore_token': _SCREENCAST_SESSION_CACHE.get('restore_token')  # Preserve restore token
                 }
         
         # No cache or cache failed - create new session
@@ -924,18 +1037,35 @@ def _capture_screencast():
                             session_state['node_id'] = node_id
                             logger.debug(f"ScreenCast stream node_id: {node_id}")
                     
+                    # Extract and save restore_token for persistent sessions
+                    if 'restore_token' in results:
+                        restore_token = results['restore_token']
+                        session_state['restore_token'] = restore_token
+                        logger.info(f"ScreenCast: Received restore token for persistent session")
+                        # Save to disk immediately for use across app restarts
+                        _save_restore_token(
+                            restore_token,
+                            session_handle=session_state.get('session_handle'),
+                            node_id=session_state.get('node_id')
+                        )
+                    else:
+                        logger.warning("ScreenCast: No restore_token in Start response - session may not persist")
+                    
                     session_state['step'] = 'started'
                     logger.debug("ScreenCast capture started")
                     # Continue to open PipeWire
                     GLib.idle_add(_open_pipewire)
                 elif response_code == 1:
                     session_state['error'] = "User denied consent"
+                    logger.info("ScreenCast: User denied screen sharing permission")
                     loop.quit()
                 else:
                     session_state['error'] = f"Start failed: response {response_code}"
+                    logger.warning(f"ScreenCast Start failed with response code {response_code}")
                     loop.quit()
             except Exception as e:
                 session_state['error'] = f"Start error: {e}"
+                logger.error(f"ScreenCast Start response handler error: {e}")
                 loop.quit()
         
         def _create_session():
@@ -969,8 +1099,16 @@ def _capture_screencast():
                 
                 options = {
                     'handle_token': GLib.Variant('s', request_token),
-                    'session_handle_token': GLib.Variant('s', session_token)
+                    'session_handle_token': GLib.Variant('s', session_token),
+                    # persist_mode: 2 = persist until explicitly revoked by user
+                    # This allows sessions to survive app restarts and avoids repeated permission dialogs
+                    'persist_mode': GLib.Variant('u', 2)
                 }
+                
+                # If we have a restore token from previous session, try to use it
+                if _SCREENCAST_SESSION_CACHE.get('restore_token'):
+                    options['restore_token'] = GLib.Variant('s', _SCREENCAST_SESSION_CACHE['restore_token'])
+                    logger.info("CreateSession: Using restore token from previous session")
                 
                 proxy.call(
                     'CreateSession',
@@ -1176,12 +1314,16 @@ def _capture_screencast():
         import array as _array
         bands = im.split()
         if any(max(_array.array('B', b.tobytes())) > 0 for b in bands):
-            logger.debug("Linux capture: ScreenCast Portal (NO FLASH)")
+            logger.info("Linux capture: ScreenCast Portal (NO FLASH, NO SOUND)")
             
             # Cache session info for future captures (avoids repeated consent dialogs)
             _SCREENCAST_SESSION_CACHE['session_handle'] = session_state['session_handle']
             _SCREENCAST_SESSION_CACHE['node_id'] = session_state['node_id']
-            logger.debug("ScreenCast session cached for reuse")
+            if 'restore_token' in session_state:
+                _SCREENCAST_SESSION_CACHE['restore_token'] = session_state['restore_token']
+                logger.info("ScreenCast session cached with restore token - permission will persist")
+            else:
+                logger.info("ScreenCast session cached for reuse (no restore token)")
             
             return im.copy()
         

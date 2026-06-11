@@ -1,316 +1,316 @@
-289 INFO: PyInstaller: 6.2.0
-291 INFO: Python: 3.12.3
-296 INFO: Platform: Linux-6.17.0-35-generic-x86_64-with-glibc2.39
-300 INFO: Removing temporary files and cleaning cache in /home/iswaryak/.cache/pyinstaller
-281 WARNING: Failed to collect submodules for 'onnxruntime.backend' because importing 'onnxruntime.backend' raised: ModuleNotFoundError: No module named 'onnx'
-5025 INFO: Using device of type: cpu
-556 WARNING: Failed to collect submodules for 'numpy.f2py.tests' because importing 'numpy.f2py.tests' raised: ModuleNotFoundError: No module named 'pytest'
-16935 WARNING: collect_data_files - skipping data collection for module 'tzdata' as it is not a package.
-17403 INFO: Extending PYTHONPATH with paths
+79 INFO: PyInstaller: 6.2.0
+79 INFO: Python: 3.12.3
+81 INFO: Platform: Linux-6.17.0-35-generic-x86_64-with-glibc2.39
+82 INFO: Removing temporary files and cleaning cache in /home/iswaryak/.cache/pyinstaller
+141 WARNING: Failed to collect submodules for 'onnxruntime.backend' because importing 'onnxruntime.backend' raised: ModuleNotFoundError: No module named 'onnx'
+1764 INFO: Using device of type: cpu
+234 WARNING: Failed to collect submodules for 'numpy.f2py.tests' because importing 'numpy.f2py.tests' raised: ModuleNotFoundError: No module named 'pytest'
+6640 WARNING: collect_data_files - skipping data collection for module 'tzdata' as it is not a package.
+6817 INFO: Extending PYTHONPATH with paths
 ['/home/iswaryak/ATG/new-main-linux/JIRAForge/python-desktop-app',
  '/home/iswaryak/ATG/new-main-linux/JIRAForge/python-desktop-app']
-17841 INFO: Appending 'binaries' from .spec
-17841 INFO: Appending 'datas' from .spec
-17868 INFO: checking Analysis
-17868 INFO: Building Analysis because Analysis-00.toc is non existent
-17869 INFO: Initializing module dependency graph...
-17871 INFO: Caching module graph hooks...
-17891 INFO: Analyzing base_library.zip ...
-19480 INFO: Loading module hook 'hook-encodings.py' from '/home/iswaryak/ATG/new-main-linux/JIRAForge/python-desktop-app/venv/lib/python3.12/site-packages/PyInstaller/hooks'...
-20476 INFO: Loading module hook 'hook-heapq.py' from '/home/iswaryak/ATG/new-main-linux/JIRAForge/python-desktop-app/venv/lib/python3.12/site-packages/PyInstaller/hooks'...
-22381 INFO: Loading module hook 'hook-pickle.py' from '/home/iswaryak/ATG/new-main-linux/JIRAForge/python-desktop-app/venv/lib/python3.12/site-packages/PyInstaller/hooks'...
-25204 INFO: Caching module dependency graph...
-25405 INFO: Running Analysis Analysis-00.toc
-25405 INFO: Looking for Python shared library...
-25515 INFO: Using Python shared library: /lib/x86_64-linux-gnu/libpython3.12.so.1.0
-25515 INFO: Analyzing /home/iswaryak/ATG/new-main-linux/JIRAForge/python-desktop-app/desktop_app.py
-26821 INFO: Loading module hook 'hook-platform.py' from '/home/iswaryak/ATG/new-main-linux/JIRAForge/python-desktop-app/venv/lib/python3.12/site-packages/PyInstaller/hooks'...
-26826 INFO: Processing pre-safe import module hook gi from '/home/iswaryak/ATG/new-main-linux/JIRAForge/python-desktop-app/venv/lib/python3.12/site-packages/PyInstaller/hooks/pre_safe_import_module/hook-gi.py'.
-26912 INFO: Loading module hook 'hook-certifi.py' from '/home/iswaryak/ATG/new-main-linux/JIRAForge/python-desktop-app/venv/lib/python3.12/site-packages/_pyinstaller_hooks_contrib/stdhooks'...
-26922 INFO: Loading module hook 'hook-PIL.py' from '/home/iswaryak/ATG/new-main-linux/JIRAForge/python-desktop-app/venv/lib/python3.12/site-packages/PyInstaller/hooks'...
-27120 INFO: Loading module hook 'hook-PIL.Image.py' from '/home/iswaryak/ATG/new-main-linux/JIRAForge/python-desktop-app/venv/lib/python3.12/site-packages/PyInstaller/hooks'...
-27882 INFO: Loading module hook 'hook-pycparser.py' from '/home/iswaryak/ATG/new-main-linux/JIRAForge/python-desktop-app/venv/lib/python3.12/site-packages/_pyinstaller_hooks_contrib/stdhooks'...
-28224 INFO: Loading module hook 'hook-setuptools.py' from '/home/iswaryak/ATG/new-main-linux/JIRAForge/python-desktop-app/venv/lib/python3.12/site-packages/PyInstaller/hooks'...
-29894 INFO: Processing pre-safe import module hook distutils from '/home/iswaryak/ATG/new-main-linux/JIRAForge/python-desktop-app/venv/lib/python3.12/site-packages/PyInstaller/hooks/pre_safe_import_module/hook-distutils.py'.
-30730 INFO: Loading module hook 'hook-packaging.py' from '/home/iswaryak/ATG/new-main-linux/JIRAForge/python-desktop-app/venv/lib/python3.12/site-packages/PyInstaller/hooks'...
-30958 INFO: Loading module hook 'hook-sysconfig.py' from '/home/iswaryak/ATG/new-main-linux/JIRAForge/python-desktop-app/venv/lib/python3.12/site-packages/PyInstaller/hooks'...
-31519 INFO: Loading module hook 'hook-multiprocessing.util.py' from '/home/iswaryak/ATG/new-main-linux/JIRAForge/python-desktop-app/venv/lib/python3.12/site-packages/PyInstaller/hooks'...
-33081 INFO: Loading module hook 'hook-jaraco.text.py' from '/home/iswaryak/ATG/new-main-linux/JIRAForge/python-desktop-app/venv/lib/python3.12/site-packages/_pyinstaller_hooks_contrib/stdhooks'...
-36177 INFO: Loading module hook 'hook-numpy.py' from '/home/iswaryak/ATG/new-main-linux/JIRAForge/python-desktop-app/venv/lib/python3.12/site-packages/numpy/_pyinstaller'...
-37044 INFO: Loading module hook 'hook-difflib.py' from '/home/iswaryak/ATG/new-main-linux/JIRAForge/python-desktop-app/venv/lib/python3.12/site-packages/PyInstaller/hooks'...
-39110 INFO: Loading module hook 'hook-psutil.py' from '/home/iswaryak/ATG/new-main-linux/JIRAForge/python-desktop-app/venv/lib/python3.12/site-packages/_pyinstaller_hooks_contrib/stdhooks'...
-41815 INFO: Loading module hook 'hook-charset_normalizer.py' from '/home/iswaryak/ATG/new-main-linux/JIRAForge/python-desktop-app/venv/lib/python3.12/site-packages/_pyinstaller_hooks_contrib/stdhooks'...
-42404 INFO: Loading module hook 'hook-PIL.ImageFilter.py' from '/home/iswaryak/ATG/new-main-linux/JIRAForge/python-desktop-app/venv/lib/python3.12/site-packages/PyInstaller/hooks'...
-42578 INFO: Loading module hook 'hook-urllib3.py' from '/home/iswaryak/ATG/new-main-linux/JIRAForge/python-desktop-app/venv/lib/python3.12/site-packages/_pyinstaller_hooks_contrib/stdhooks'...
-43408 INFO: Loading module hook 'hook-cryptography.py' from '/home/iswaryak/ATG/new-main-linux/JIRAForge/python-desktop-app/venv/lib/python3.12/site-packages/_pyinstaller_hooks_contrib/stdhooks'...
-44534 INFO: hook-cryptography: cryptography does not seem to be using dynamically linked OpenSSL.
-47581 INFO: Loading module hook 'hook-jinja2.py' from '/home/iswaryak/ATG/new-main-linux/JIRAForge/python-desktop-app/venv/lib/python3.12/site-packages/_pyinstaller_hooks_contrib/stdhooks'...
-48923 INFO: Loading module hook 'hook-pystray.py' from '/home/iswaryak/ATG/new-main-linux/JIRAForge/python-desktop-app/venv/lib/python3.12/site-packages/_pyinstaller_hooks_contrib/stdhooks'...
-49406 INFO: Processing pre-safe import module hook six.moves from '/home/iswaryak/ATG/new-main-linux/JIRAForge/python-desktop-app/venv/lib/python3.12/site-packages/PyInstaller/hooks/pre_safe_import_module/hook-six.moves.py'.
-49621 INFO: Loading module hook 'hook-Xlib.py' from '/home/iswaryak/ATG/new-main-linux/JIRAForge/python-desktop-app/venv/lib/python3.12/site-packages/_pyinstaller_hooks_contrib/stdhooks'...
-51123 INFO: Loading module hook 'hook-anyio.py' from '/home/iswaryak/ATG/new-main-linux/JIRAForge/python-desktop-app/venv/lib/python3.12/site-packages/_pyinstaller_hooks_contrib/stdhooks'...
-52747 INFO: Loading module hook 'hook-pygments.py' from '/home/iswaryak/ATG/new-main-linux/JIRAForge/python-desktop-app/venv/lib/python3.12/site-packages/PyInstaller/hooks'...
-54209 INFO: Loading module hook 'hook-rich.py' from '/home/iswaryak/ATG/new-main-linux/JIRAForge/python-desktop-app/venv/lib/python3.12/site-packages/_pyinstaller_hooks_contrib/stdhooks'...
-56664 INFO: Loading module hook 'hook-pydantic.py' from '/home/iswaryak/ATG/new-main-linux/JIRAForge/python-desktop-app/venv/lib/python3.12/site-packages/_pyinstaller_hooks_contrib/stdhooks'...
-57942 INFO: Loading module hook 'hook-zoneinfo.py' from '/home/iswaryak/ATG/new-main-linux/JIRAForge/python-desktop-app/venv/lib/python3.12/site-packages/_pyinstaller_hooks_contrib/stdhooks'...
-59873 INFO: Loading module hook 'hook-dateutil.py' from '/home/iswaryak/ATG/new-main-linux/JIRAForge/python-desktop-app/venv/lib/python3.12/site-packages/_pyinstaller_hooks_contrib/stdhooks'...
-60627 INFO: Loading module hook 'hook-websockets.py' from '/home/iswaryak/ATG/new-main-linux/JIRAForge/python-desktop-app/venv/lib/python3.12/site-packages/_pyinstaller_hooks_contrib/stdhooks'...
-61372 INFO: Loading module hook 'hook-sqlite3.py' from '/home/iswaryak/ATG/new-main-linux/JIRAForge/python-desktop-app/venv/lib/python3.12/site-packages/PyInstaller/hooks'...
-61821 INFO: Loading module hook 'hook-cv2.py' from '/home/iswaryak/ATG/new-main-linux/JIRAForge/python-desktop-app/pyinstaller_hooks'...
-62024 INFO: Loading module hook 'hook-regex.py' from '/home/iswaryak/ATG/new-main-linux/JIRAForge/python-desktop-app/venv/lib/python3.12/site-packages/_pyinstaller_hooks_contrib/stdhooks'...
-63114 INFO: Loading module hook 'hook-phonenumbers.py' from '/home/iswaryak/ATG/new-main-linux/JIRAForge/python-desktop-app/venv/lib/python3.12/site-packages/_pyinstaller_hooks_contrib/stdhooks'...
-65446 INFO: Loading module hook 'hook-keyring.py' from '/home/iswaryak/ATG/new-main-linux/JIRAForge/python-desktop-app/venv/lib/python3.12/site-packages/PyInstaller/hooks'...
-66502 INFO: Loading module hook 'hook-pynput.py' from '/home/iswaryak/ATG/new-main-linux/JIRAForge/python-desktop-app/venv/lib/python3.12/site-packages/_pyinstaller_hooks_contrib/stdhooks'...
-66961 INFO: Analyzing hidden import 'pystray._info'
-66963 INFO: Analyzing hidden import 'optparse'
-67048 INFO: Analyzing hidden import 'pywintypes'
-67048 ERROR: Hidden import 'pywintypes' not found
-67048 INFO: Analyzing hidden import 'pythoncom'
-67049 ERROR: Hidden import 'pythoncom' not found
-67049 INFO: Analyzing hidden import 'pynput.mouse._win32'
-67107 INFO: Analyzing hidden import 'pynput.keyboard._win32'
-67168 INFO: Analyzing hidden import 'keyring.backends.Windows'
-67186 INFO: Analyzing hidden import 'tzdata'
-67188 ERROR: Hidden import 'tzdata' not found
-67188 INFO: Analyzing hidden import 'presidio_anonymizer'
-67392 INFO: Analyzing hidden import 'tkinter.ttk'
-67392 ERROR: Hidden import 'tkinter.ttk' not found
-67393 INFO: Analyzing hidden import 'sqlcipher3.dbapi2'
-67393 ERROR: Hidden import 'sqlcipher3.dbapi2' not found
-67393 INFO: Analyzing hidden import 'platformdirs'
-67416 INFO: Loading module hook 'hook-platformdirs.py' from '/home/iswaryak/ATG/new-main-linux/JIRAForge/python-desktop-app/venv/lib/python3.12/site-packages/_pyinstaller_hooks_contrib/stdhooks'...
-67530 INFO: Analyzing hidden import 'ocr.runtime_installer'
-67533 INFO: Analyzing hidden import 'ocr.ocr_engine'
-67540 INFO: Analyzing hidden import 'ocr.text_extractor'
-67549 INFO: Analyzing hidden import 'unittest.mock'
-67705 INFO: Analyzing hidden import 'setuptools._distutils'
-67709 INFO: Analyzing hidden import 'setuptools._distutils.command'
-67710 INFO: Analyzing hidden import 'setuptools._distutils.command.sdist'
-67997 INFO: Analyzing hidden import 'presidio_anonymizer.services.app_entities_convertor'
-68002 INFO: Analyzing hidden import 'keyring.__main__'
-68024 INFO: Analyzing hidden import 'keyring.backends.SecretService'
-68215 INFO: Analyzing hidden import 'keyring.backends.chainer'
-68220 INFO: Analyzing hidden import 'keyring.backends.kwallet'
-68232 INFO: Analyzing hidden import 'keyring.backends.libsecret'
-68244 INFO: Analyzing hidden import 'keyring.backends.macOS'
-68261 INFO: Analyzing hidden import 'keyring.backends.null'
-68264 INFO: Analyzing hidden import 'keyring.devpi_client'
-68267 INFO: Analyzing hidden import 'keyring.http'
-68271 INFO: Analyzing hidden import 'keyring.testing'
-68272 INFO: Analyzing hidden import 'keyring.testing.backend'
-68359 INFO: Analyzing hidden import 'pynput._info'
-68361 INFO: Analyzing hidden import 'pynput._util.darwin'
-68388 INFO: Analyzing hidden import 'pynput._util.darwin_vks'
-68392 INFO: Analyzing hidden import 'pynput._util.uinput'
-68709 INFO: Analyzing hidden import 'pynput._util.xorg'
-68833 INFO: Analyzing hidden import 'pynput.keyboard._darwin'
-68854 INFO: Analyzing hidden import 'pynput.keyboard._dummy'
-68856 INFO: Analyzing hidden import 'pynput.keyboard._uinput'
-68884 INFO: Analyzing hidden import 'pynput.keyboard._xorg'
-68931 INFO: Analyzing hidden import 'pynput.mouse._darwin'
-68943 INFO: Analyzing hidden import 'pynput.mouse._dummy'
-68944 INFO: Analyzing hidden import 'pynput.mouse._xorg'
-68957 INFO: Analyzing hidden import 'numpy._configtool'
-68960 INFO: Analyzing hidden import 'numpy._core._exceptions'
-68971 INFO: Analyzing hidden import 'numpy._core._multiarray_tests'
-68971 INFO: Analyzing hidden import 'numpy._core._operand_flag_tests'
-68972 INFO: Analyzing hidden import 'numpy._core._rational_tests'
-68972 INFO: Analyzing hidden import 'numpy._core._simd'
-68972 INFO: Analyzing hidden import 'numpy._core._struct_ufunc_tests'
-68973 INFO: Analyzing hidden import 'numpy._core._umath_tests'
-68973 INFO: Analyzing hidden import 'numpy._core.cversions'
-68976 INFO: Analyzing hidden import 'numpy._pyinstaller'
-68977 INFO: Analyzing hidden import 'numpy._pyinstaller.hook-numpy'
-69449 INFO: Analyzing hidden import 'numpy._typing._extended_precision'
-69452 INFO: Analyzing hidden import 'numpy._utils._pep440'
-69474 INFO: Analyzing hidden import 'numpy.conftest'
-69486 INFO: Analyzing hidden import 'numpy.core._dtype'
-69489 INFO: Analyzing hidden import 'numpy.core._dtype_ctypes'
-69491 INFO: Analyzing hidden import 'numpy.core._internal'
-69493 INFO: Analyzing hidden import 'numpy.core._multiarray_umath'
-69497 INFO: Analyzing hidden import 'numpy.core.arrayprint'
-69500 INFO: Analyzing hidden import 'numpy.core.defchararray'
-69503 INFO: Analyzing hidden import 'numpy.core.einsumfunc'
-69506 INFO: Analyzing hidden import 'numpy.core.fromnumeric'
-69508 INFO: Analyzing hidden import 'numpy.core.function_base'
-69510 INFO: Analyzing hidden import 'numpy.core.getlimits'
-69512 INFO: Analyzing hidden import 'numpy.core.numeric'
-69514 INFO: Analyzing hidden import 'numpy.core.numerictypes'
-69516 INFO: Analyzing hidden import 'numpy.core.overrides'
-69518 INFO: Analyzing hidden import 'numpy.core.records'
-69519 INFO: Analyzing hidden import 'numpy.core.shape_base'
-69521 INFO: Analyzing hidden import 'numpy.core.umath'
-69523 INFO: Analyzing hidden import 'numpy.f2py.__main__'
-69525 INFO: Analyzing hidden import 'numpy.f2py._src_pyf'
-69539 INFO: Analyzing hidden import 'numpy.fft.tests'
-69540 INFO: Analyzing hidden import 'numpy.fft.tests.test_helper'
-69558 INFO: Analyzing hidden import 'numpy.fft.tests.test_pocketfft'
-69624 INFO: Analyzing hidden import 'numpy.lib._user_array_impl'
-69645 INFO: Analyzing hidden import 'numpy.lib.tests'
-69646 INFO: Analyzing hidden import 'numpy.lib.tests.test__datasource'
-69670 INFO: Analyzing hidden import 'numpy.lib.tests.test__iotools'
-69700 INFO: Analyzing hidden import 'numpy.lib.tests.test__version'
-69706 INFO: Analyzing hidden import 'numpy.lib.tests.test_array_utils'
-69710 INFO: Analyzing hidden import 'numpy.lib.tests.test_arraypad'
-69825 INFO: Analyzing hidden import 'numpy.lib.tests.test_arraysetops'
-69934 INFO: Analyzing hidden import 'numpy.lib.tests.test_arrayterator'
-69943 INFO: Analyzing hidden import 'numpy.lib.tests.test_format'
-70001 INFO: Analyzing hidden import 'numpy.lib.tests.test_function_base'
-70581 INFO: Analyzing hidden import 'numpy.lib.tests.test_histograms'
-70674 INFO: Analyzing hidden import 'numpy.lib.tests.test_index_tricks'
-70742 INFO: Analyzing hidden import 'numpy.lib.tests.test_io'
-71024 INFO: Analyzing hidden import 'numpy.lib.tests.test_loadtxt'
-71114 INFO: Analyzing hidden import 'numpy.lib.tests.test_mixins'
-71133 INFO: Analyzing hidden import 'numpy.lib.tests.test_nanfunctions'
-71273 INFO: Analyzing hidden import 'numpy.lib.tests.test_packbits'
-71312 INFO: Analyzing hidden import 'numpy.lib.tests.test_polynomial'
-71345 INFO: Analyzing hidden import 'numpy.lib.tests.test_recfunctions'
-71448 INFO: Analyzing hidden import 'numpy.lib.tests.test_regression'
-71471 INFO: Analyzing hidden import 'numpy.lib.tests.test_shape_base'
-71561 INFO: Analyzing hidden import 'numpy.lib.tests.test_stride_tricks'
-71625 INFO: Analyzing hidden import 'numpy.lib.tests.test_twodim_base'
-71676 INFO: Analyzing hidden import 'numpy.lib.tests.test_type_check'
-71725 INFO: Analyzing hidden import 'numpy.lib.tests.test_ufunclike'
-71737 INFO: Analyzing hidden import 'numpy.lib.tests.test_utils'
-71745 INFO: Analyzing hidden import 'numpy.lib.user_array'
-71747 INFO: Analyzing hidden import 'numpy.linalg.lapack_lite'
-71747 INFO: Analyzing hidden import 'numpy.linalg.tests'
-71748 INFO: Analyzing hidden import 'numpy.linalg.tests.test_deprecations'
-71750 INFO: Analyzing hidden import 'numpy.linalg.tests.test_linalg'
-71973 INFO: Analyzing hidden import 'numpy.linalg.tests.test_regression'
-71992 INFO: Analyzing hidden import 'numpy.ma.tests'
-71993 INFO: Analyzing hidden import 'numpy.ma.tests.test_arrayobject'
-71998 INFO: Analyzing hidden import 'numpy.ma.tests.test_core'
-72681 INFO: Analyzing hidden import 'numpy.ma.tests.test_deprecations'
-72688 INFO: Analyzing hidden import 'numpy.ma.tests.test_extras'
-72954 INFO: Analyzing hidden import 'numpy.ma.tests.test_mrecords'
-73043 INFO: Analyzing hidden import 'numpy.ma.tests.test_old_ma'
-73170 INFO: Analyzing hidden import 'numpy.ma.tests.test_regression'
-73186 INFO: Analyzing hidden import 'numpy.ma.tests.test_subclassing'
-73229 INFO: Analyzing hidden import 'numpy.matrixlib.tests'
-73230 INFO: Analyzing hidden import 'numpy.matrixlib.tests.test_defmatrix'
-73289 INFO: Analyzing hidden import 'numpy.matrixlib.tests.test_interaction'
-73324 INFO: Analyzing hidden import 'numpy.matrixlib.tests.test_masked_matrix'
-73356 INFO: Analyzing hidden import 'numpy.matrixlib.tests.test_matrix_linalg'
-73363 INFO: Analyzing hidden import 'numpy.matrixlib.tests.test_multiarray'
-73367 INFO: Analyzing hidden import 'numpy.matrixlib.tests.test_numeric'
-73371 INFO: Analyzing hidden import 'numpy.matrixlib.tests.test_regression'
-73376 INFO: Analyzing hidden import 'numpy.polynomial.tests'
-73377 INFO: Analyzing hidden import 'numpy.polynomial.tests.test_chebyshev'
-73444 INFO: Analyzing hidden import 'numpy.polynomial.tests.test_classes'
-73515 INFO: Analyzing hidden import 'numpy.polynomial.tests.test_hermite'
-73584 INFO: Analyzing hidden import 'numpy.polynomial.tests.test_hermite_e'
-73660 INFO: Analyzing hidden import 'numpy.polynomial.tests.test_laguerre'
-73728 INFO: Analyzing hidden import 'numpy.polynomial.tests.test_legendre'
-73789 INFO: Analyzing hidden import 'numpy.polynomial.tests.test_polynomial'
-73856 INFO: Analyzing hidden import 'numpy.polynomial.tests.test_polyutils'
-73867 INFO: Analyzing hidden import 'numpy.polynomial.tests.test_printing'
-73917 INFO: Analyzing hidden import 'numpy.polynomial.tests.test_symbol'
-73940 INFO: Analyzing hidden import 'numpy.random.tests'
-73941 INFO: Analyzing hidden import 'numpy.random.tests.data'
-73942 INFO: Analyzing hidden import 'numpy.random.tests.test_direct'
-73999 INFO: Analyzing hidden import 'numpy.random.tests.test_extending'
-74065 INFO: Analyzing hidden import 'numpy.random.tests.test_generator_mt19937'
-74355 INFO: Analyzing hidden import 'numpy.random.tests.test_generator_mt19937_regressions'
-74375 INFO: Analyzing hidden import 'numpy.random.tests.test_random'
-74544 INFO: Analyzing hidden import 'numpy.random.tests.test_randomstate'
-74734 INFO: Analyzing hidden import 'numpy.random.tests.test_randomstate_regression'
-74755 INFO: Analyzing hidden import 'numpy.random.tests.test_regression'
-74771 INFO: Analyzing hidden import 'numpy.random.tests.test_seed_sequence'
-74778 INFO: Analyzing hidden import 'numpy.random.tests.test_smoke'
-74863 INFO: Analyzing hidden import 'numpy.testing.print_coercion_tables'
-74878 INFO: Analyzing hidden import 'numpy.testing.tests'
-74880 INFO: Analyzing hidden import 'numpy.testing.tests.test_utils'
-75045 INFO: Analyzing hidden import 'numpy.tests'
-75047 INFO: Analyzing hidden import 'numpy.tests.test__all__'
-75051 INFO: Analyzing hidden import 'numpy.tests.test_configtool'
-75058 INFO: Analyzing hidden import 'numpy.tests.test_ctypeslib'
-75091 INFO: Analyzing hidden import 'numpy.tests.test_lazyloading'
-75094 INFO: Analyzing hidden import 'numpy.tests.test_matlib'
-75101 INFO: Analyzing hidden import 'numpy.tests.test_numpy_config'
-75105 INFO: Analyzing hidden import 'numpy.tests.test_numpy_version'
-75108 INFO: Analyzing hidden import 'numpy.tests.test_public_api'
-75140 INFO: Analyzing hidden import 'numpy.tests.test_reloading'
-75147 INFO: Analyzing hidden import 'numpy.tests.test_scripts'
-75153 INFO: Analyzing hidden import 'numpy.tests.test_warnings'
-75160 INFO: Analyzing hidden import 'numpy.typing.mypy_plugin'
-75172 INFO: Analyzing hidden import 'numpy.typing.tests'
-75173 INFO: Analyzing hidden import 'numpy.typing.tests.test_isfile'
-75177 INFO: Analyzing hidden import 'numpy.typing.tests.test_runtime'
-75187 INFO: Analyzing hidden import 'numpy.typing.tests.test_typing'
-75202 INFO: Analyzing hidden import 'platformdirs.__main__'
-75207 INFO: Analyzing hidden import 'rapidocr_onnxruntime'
-75313 INFO: Loading module hook 'hook-onnxruntime.py' from '/home/iswaryak/ATG/new-main-linux/JIRAForge/python-desktop-app/venv/lib/python3.12/site-packages/_pyinstaller_hooks_contrib/stdhooks'...
-75517 INFO: Loading module hook 'hook-shapely.py' from '/home/iswaryak/ATG/new-main-linux/JIRAForge/python-desktop-app/venv/lib/python3.12/site-packages/_pyinstaller_hooks_contrib/stdhooks'...
-75910 INFO: Analyzing hidden import 'ocr.engines.rapidocr_engine'
-75919 INFO: Analyzing hidden import 'onnxruntime.capi.convert_npz_to_onnx_adapter'
-75924 INFO: Analyzing hidden import 'onnxruntime.capi.libonnxruntime_providers_shared'
-75924 INFO: Analyzing hidden import 'onnxruntime.datasets'
-75926 INFO: Analyzing hidden import 'cv2.config'
-75928 INFO: Analyzing hidden import 'cv2.config-3'
-75930 INFO: Analyzing hidden import 'cv2.cv2'
-75931 INFO: Analyzing hidden import 'cv2.data'
-75932 INFO: Analyzing hidden import 'cv2.gapi'
-75958 INFO: Analyzing hidden import 'cv2.mat_wrapper'
-75962 INFO: Analyzing hidden import 'cv2.misc'
-75964 INFO: Analyzing hidden import 'cv2.typing'
-75976 INFO: Analyzing hidden import 'cv2.utils'
-75979 INFO: Processing module hooks...
-77382 WARNING: Hidden import "pycparser.lextab" not found!
-77382 WARNING: Hidden import "pycparser.yacctab" not found!
-114283 INFO: Loading module hook 'hook-distutils.command.check.py' from '/home/iswaryak/ATG/new-main-linux/JIRAForge/python-desktop-app/venv/lib/python3.12/site-packages/PyInstaller/hooks'...
-114286 INFO: Loading module hook 'hook-distutils.util.py' from '/home/iswaryak/ATG/new-main-linux/JIRAForge/python-desktop-app/venv/lib/python3.12/site-packages/PyInstaller/hooks'...
-114354 INFO: Loading module hook 'hook-setuptools.msvc.py' from '/home/iswaryak/ATG/new-main-linux/JIRAForge/python-desktop-app/venv/lib/python3.12/site-packages/PyInstaller/hooks'...
-115703 INFO: Loading module hook 'hook-setuptools._distutils.command.check.py' from '/home/iswaryak/ATG/new-main-linux/JIRAForge/python-desktop-app/venv/lib/python3.12/site-packages/PyInstaller/hooks'...
-117041 INFO: Loading module hook 'hook-PIL.SpiderImagePlugin.py' from '/home/iswaryak/ATG/new-main-linux/JIRAForge/python-desktop-app/venv/lib/python3.12/site-packages/PyInstaller/hooks'...
-117130 INFO: Loading module hook 'hook-distutils.py' from '/home/iswaryak/ATG/new-main-linux/JIRAForge/python-desktop-app/venv/lib/python3.12/site-packages/PyInstaller/hooks'...
-117376 INFO: Loading module hook 'hook-pkg_resources.py' from '/home/iswaryak/ATG/new-main-linux/JIRAForge/python-desktop-app/venv/lib/python3.12/site-packages/PyInstaller/hooks'...
+7005 INFO: Appending 'binaries' from .spec
+7005 INFO: Appending 'datas' from .spec
+7015 INFO: checking Analysis
+7015 INFO: Building Analysis because Analysis-00.toc is non existent
+7015 INFO: Initializing module dependency graph...
+7016 INFO: Caching module graph hooks...
+7022 INFO: Analyzing base_library.zip ...
+7453 INFO: Loading module hook 'hook-encodings.py' from '/home/iswaryak/ATG/new-main-linux/JIRAForge/python-desktop-app/venv/lib/python3.12/site-packages/PyInstaller/hooks'...
+9633 INFO: Loading module hook 'hook-pickle.py' from '/home/iswaryak/ATG/new-main-linux/JIRAForge/python-desktop-app/venv/lib/python3.12/site-packages/PyInstaller/hooks'...
+10324 INFO: Loading module hook 'hook-heapq.py' from '/home/iswaryak/ATG/new-main-linux/JIRAForge/python-desktop-app/venv/lib/python3.12/site-packages/PyInstaller/hooks'...
+10694 INFO: Caching module dependency graph...
+10822 INFO: Running Analysis Analysis-00.toc
+10822 INFO: Looking for Python shared library...
+10863 INFO: Using Python shared library: /lib/x86_64-linux-gnu/libpython3.12.so.1.0
+10863 INFO: Analyzing /home/iswaryak/ATG/new-main-linux/JIRAForge/python-desktop-app/desktop_app.py
+11411 INFO: Loading module hook 'hook-platform.py' from '/home/iswaryak/ATG/new-main-linux/JIRAForge/python-desktop-app/venv/lib/python3.12/site-packages/PyInstaller/hooks'...
+11414 INFO: Processing pre-safe import module hook gi from '/home/iswaryak/ATG/new-main-linux/JIRAForge/python-desktop-app/venv/lib/python3.12/site-packages/PyInstaller/hooks/pre_safe_import_module/hook-gi.py'.
+11447 INFO: Loading module hook 'hook-certifi.py' from '/home/iswaryak/ATG/new-main-linux/JIRAForge/python-desktop-app/venv/lib/python3.12/site-packages/_pyinstaller_hooks_contrib/stdhooks'...
+11450 INFO: Loading module hook 'hook-PIL.py' from '/home/iswaryak/ATG/new-main-linux/JIRAForge/python-desktop-app/venv/lib/python3.12/site-packages/PyInstaller/hooks'...
+11528 INFO: Loading module hook 'hook-PIL.Image.py' from '/home/iswaryak/ATG/new-main-linux/JIRAForge/python-desktop-app/venv/lib/python3.12/site-packages/PyInstaller/hooks'...
+11771 INFO: Loading module hook 'hook-pycparser.py' from '/home/iswaryak/ATG/new-main-linux/JIRAForge/python-desktop-app/venv/lib/python3.12/site-packages/_pyinstaller_hooks_contrib/stdhooks'...
+11922 INFO: Loading module hook 'hook-setuptools.py' from '/home/iswaryak/ATG/new-main-linux/JIRAForge/python-desktop-app/venv/lib/python3.12/site-packages/PyInstaller/hooks'...
+12640 INFO: Processing pre-safe import module hook distutils from '/home/iswaryak/ATG/new-main-linux/JIRAForge/python-desktop-app/venv/lib/python3.12/site-packages/PyInstaller/hooks/pre_safe_import_module/hook-distutils.py'.
+12990 INFO: Loading module hook 'hook-packaging.py' from '/home/iswaryak/ATG/new-main-linux/JIRAForge/python-desktop-app/venv/lib/python3.12/site-packages/PyInstaller/hooks'...
+13077 INFO: Loading module hook 'hook-sysconfig.py' from '/home/iswaryak/ATG/new-main-linux/JIRAForge/python-desktop-app/venv/lib/python3.12/site-packages/PyInstaller/hooks'...
+13389 INFO: Loading module hook 'hook-multiprocessing.util.py' from '/home/iswaryak/ATG/new-main-linux/JIRAForge/python-desktop-app/venv/lib/python3.12/site-packages/PyInstaller/hooks'...
+13990 INFO: Loading module hook 'hook-jaraco.text.py' from '/home/iswaryak/ATG/new-main-linux/JIRAForge/python-desktop-app/venv/lib/python3.12/site-packages/_pyinstaller_hooks_contrib/stdhooks'...
+15416 INFO: Loading module hook 'hook-numpy.py' from '/home/iswaryak/ATG/new-main-linux/JIRAForge/python-desktop-app/venv/lib/python3.12/site-packages/numpy/_pyinstaller'...
+15797 INFO: Loading module hook 'hook-difflib.py' from '/home/iswaryak/ATG/new-main-linux/JIRAForge/python-desktop-app/venv/lib/python3.12/site-packages/PyInstaller/hooks'...
+16741 INFO: Loading module hook 'hook-psutil.py' from '/home/iswaryak/ATG/new-main-linux/JIRAForge/python-desktop-app/venv/lib/python3.12/site-packages/_pyinstaller_hooks_contrib/stdhooks'...
+17938 INFO: Loading module hook 'hook-charset_normalizer.py' from '/home/iswaryak/ATG/new-main-linux/JIRAForge/python-desktop-app/venv/lib/python3.12/site-packages/_pyinstaller_hooks_contrib/stdhooks'...
+18208 INFO: Loading module hook 'hook-PIL.ImageFilter.py' from '/home/iswaryak/ATG/new-main-linux/JIRAForge/python-desktop-app/venv/lib/python3.12/site-packages/PyInstaller/hooks'...
+18281 INFO: Loading module hook 'hook-urllib3.py' from '/home/iswaryak/ATG/new-main-linux/JIRAForge/python-desktop-app/venv/lib/python3.12/site-packages/_pyinstaller_hooks_contrib/stdhooks'...
+18749 INFO: Loading module hook 'hook-cryptography.py' from '/home/iswaryak/ATG/new-main-linux/JIRAForge/python-desktop-app/venv/lib/python3.12/site-packages/_pyinstaller_hooks_contrib/stdhooks'...
+19209 INFO: hook-cryptography: cryptography does not seem to be using dynamically linked OpenSSL.
+20513 INFO: Loading module hook 'hook-jinja2.py' from '/home/iswaryak/ATG/new-main-linux/JIRAForge/python-desktop-app/venv/lib/python3.12/site-packages/_pyinstaller_hooks_contrib/stdhooks'...
+21121 INFO: Loading module hook 'hook-pystray.py' from '/home/iswaryak/ATG/new-main-linux/JIRAForge/python-desktop-app/venv/lib/python3.12/site-packages/_pyinstaller_hooks_contrib/stdhooks'...
+21313 INFO: Processing pre-safe import module hook six.moves from '/home/iswaryak/ATG/new-main-linux/JIRAForge/python-desktop-app/venv/lib/python3.12/site-packages/PyInstaller/hooks/pre_safe_import_module/hook-six.moves.py'.
+21404 INFO: Loading module hook 'hook-Xlib.py' from '/home/iswaryak/ATG/new-main-linux/JIRAForge/python-desktop-app/venv/lib/python3.12/site-packages/_pyinstaller_hooks_contrib/stdhooks'...
+22052 INFO: Loading module hook 'hook-anyio.py' from '/home/iswaryak/ATG/new-main-linux/JIRAForge/python-desktop-app/venv/lib/python3.12/site-packages/_pyinstaller_hooks_contrib/stdhooks'...
+22782 INFO: Loading module hook 'hook-pygments.py' from '/home/iswaryak/ATG/new-main-linux/JIRAForge/python-desktop-app/venv/lib/python3.12/site-packages/PyInstaller/hooks'...
+23412 INFO: Loading module hook 'hook-rich.py' from '/home/iswaryak/ATG/new-main-linux/JIRAForge/python-desktop-app/venv/lib/python3.12/site-packages/_pyinstaller_hooks_contrib/stdhooks'...
+24566 INFO: Loading module hook 'hook-pydantic.py' from '/home/iswaryak/ATG/new-main-linux/JIRAForge/python-desktop-app/venv/lib/python3.12/site-packages/_pyinstaller_hooks_contrib/stdhooks'...
+25090 INFO: Loading module hook 'hook-zoneinfo.py' from '/home/iswaryak/ATG/new-main-linux/JIRAForge/python-desktop-app/venv/lib/python3.12/site-packages/_pyinstaller_hooks_contrib/stdhooks'...
+25974 INFO: Loading module hook 'hook-dateutil.py' from '/home/iswaryak/ATG/new-main-linux/JIRAForge/python-desktop-app/venv/lib/python3.12/site-packages/_pyinstaller_hooks_contrib/stdhooks'...
+26309 INFO: Loading module hook 'hook-websockets.py' from '/home/iswaryak/ATG/new-main-linux/JIRAForge/python-desktop-app/venv/lib/python3.12/site-packages/_pyinstaller_hooks_contrib/stdhooks'...
+26649 INFO: Loading module hook 'hook-sqlite3.py' from '/home/iswaryak/ATG/new-main-linux/JIRAForge/python-desktop-app/venv/lib/python3.12/site-packages/PyInstaller/hooks'...
+26870 INFO: Loading module hook 'hook-cv2.py' from '/home/iswaryak/ATG/new-main-linux/JIRAForge/python-desktop-app/pyinstaller_hooks'...
+26959 INFO: Loading module hook 'hook-regex.py' from '/home/iswaryak/ATG/new-main-linux/JIRAForge/python-desktop-app/venv/lib/python3.12/site-packages/_pyinstaller_hooks_contrib/stdhooks'...
+27494 INFO: Loading module hook 'hook-phonenumbers.py' from '/home/iswaryak/ATG/new-main-linux/JIRAForge/python-desktop-app/venv/lib/python3.12/site-packages/_pyinstaller_hooks_contrib/stdhooks'...
+28471 INFO: Loading module hook 'hook-keyring.py' from '/home/iswaryak/ATG/new-main-linux/JIRAForge/python-desktop-app/venv/lib/python3.12/site-packages/PyInstaller/hooks'...
+28932 INFO: Loading module hook 'hook-pynput.py' from '/home/iswaryak/ATG/new-main-linux/JIRAForge/python-desktop-app/venv/lib/python3.12/site-packages/_pyinstaller_hooks_contrib/stdhooks'...
+29193 INFO: Analyzing hidden import 'pystray._info'
+29194 INFO: Analyzing hidden import 'optparse'
+29224 INFO: Analyzing hidden import 'pywintypes'
+29224 ERROR: Hidden import 'pywintypes' not found
+29224 INFO: Analyzing hidden import 'pythoncom'
+29224 ERROR: Hidden import 'pythoncom' not found
+29224 INFO: Analyzing hidden import 'pynput.mouse._win32'
+29249 INFO: Analyzing hidden import 'pynput.keyboard._win32'
+29267 INFO: Analyzing hidden import 'keyring.backends.Windows'
+29272 INFO: Analyzing hidden import 'tzdata'
+29273 ERROR: Hidden import 'tzdata' not found
+29273 INFO: Analyzing hidden import 'presidio_anonymizer'
+29336 INFO: Analyzing hidden import 'tkinter.ttk'
+29336 ERROR: Hidden import 'tkinter.ttk' not found
+29336 INFO: Analyzing hidden import 'sqlcipher3.dbapi2'
+29336 ERROR: Hidden import 'sqlcipher3.dbapi2' not found
+29336 INFO: Analyzing hidden import 'platformdirs'
+29345 INFO: Loading module hook 'hook-platformdirs.py' from '/home/iswaryak/ATG/new-main-linux/JIRAForge/python-desktop-app/venv/lib/python3.12/site-packages/_pyinstaller_hooks_contrib/stdhooks'...
+29408 INFO: Analyzing hidden import 'ocr.runtime_installer'
+29410 INFO: Analyzing hidden import 'ocr.ocr_engine'
+29413 INFO: Analyzing hidden import 'ocr.text_extractor'
+29416 INFO: Analyzing hidden import 'unittest.mock'
+29484 INFO: Analyzing hidden import 'setuptools._distutils'
+29485 INFO: Analyzing hidden import 'setuptools._distutils.command'
+29486 INFO: Analyzing hidden import 'setuptools._distutils.command.sdist'
+29613 INFO: Analyzing hidden import 'presidio_anonymizer.services.app_entities_convertor'
+29616 INFO: Analyzing hidden import 'keyring.__main__'
+29624 INFO: Analyzing hidden import 'keyring.backends.SecretService'
+29703 INFO: Analyzing hidden import 'keyring.backends.chainer'
+29705 INFO: Analyzing hidden import 'keyring.backends.kwallet'
+29766 INFO: Analyzing hidden import 'keyring.backends.libsecret'
+29770 INFO: Analyzing hidden import 'keyring.backends.macOS'
+29778 INFO: Analyzing hidden import 'keyring.backends.null'
+29779 INFO: Analyzing hidden import 'keyring.devpi_client'
+29781 INFO: Analyzing hidden import 'keyring.http'
+29782 INFO: Analyzing hidden import 'keyring.testing'
+29782 INFO: Analyzing hidden import 'keyring.testing.backend'
+29790 INFO: Analyzing hidden import 'pynput._info'
+29791 INFO: Analyzing hidden import 'pynput._util.darwin'
+29796 INFO: Analyzing hidden import 'pynput._util.darwin_vks'
+29798 INFO: Analyzing hidden import 'pynput._util.uinput'
+29949 INFO: Analyzing hidden import 'pynput._util.xorg'
+30016 INFO: Analyzing hidden import 'pynput.keyboard._darwin'
+30024 INFO: Analyzing hidden import 'pynput.keyboard._dummy'
+30025 INFO: Analyzing hidden import 'pynput.keyboard._uinput'
+30036 INFO: Analyzing hidden import 'pynput.keyboard._xorg'
+30055 INFO: Analyzing hidden import 'pynput.mouse._darwin'
+30059 INFO: Analyzing hidden import 'pynput.mouse._dummy'
+30061 INFO: Analyzing hidden import 'pynput.mouse._xorg'
+30067 INFO: Analyzing hidden import 'numpy._configtool'
+30068 INFO: Analyzing hidden import 'numpy._core._exceptions'
+30073 INFO: Analyzing hidden import 'numpy._core._multiarray_tests'
+30074 INFO: Analyzing hidden import 'numpy._core._operand_flag_tests'
+30074 INFO: Analyzing hidden import 'numpy._core._rational_tests'
+30074 INFO: Analyzing hidden import 'numpy._core._simd'
+30074 INFO: Analyzing hidden import 'numpy._core._struct_ufunc_tests'
+30074 INFO: Analyzing hidden import 'numpy._core._umath_tests'
+30074 INFO: Analyzing hidden import 'numpy._core.cversions'
+30075 INFO: Analyzing hidden import 'numpy._pyinstaller'
+30076 INFO: Analyzing hidden import 'numpy._pyinstaller.hook-numpy'
+30284 INFO: Analyzing hidden import 'numpy._typing._extended_precision'
+30284 INFO: Analyzing hidden import 'numpy._utils._pep440'
+30293 INFO: Analyzing hidden import 'numpy.conftest'
+30298 INFO: Analyzing hidden import 'numpy.core._dtype'
+30299 INFO: Analyzing hidden import 'numpy.core._dtype_ctypes'
+30300 INFO: Analyzing hidden import 'numpy.core._internal'
+30301 INFO: Analyzing hidden import 'numpy.core._multiarray_umath'
+30302 INFO: Analyzing hidden import 'numpy.core.arrayprint'
+30303 INFO: Analyzing hidden import 'numpy.core.defchararray'
+30304 INFO: Analyzing hidden import 'numpy.core.einsumfunc'
+30304 INFO: Analyzing hidden import 'numpy.core.fromnumeric'
+30305 INFO: Analyzing hidden import 'numpy.core.function_base'
+30306 INFO: Analyzing hidden import 'numpy.core.getlimits'
+30306 INFO: Analyzing hidden import 'numpy.core.numeric'
+30307 INFO: Analyzing hidden import 'numpy.core.numerictypes'
+30308 INFO: Analyzing hidden import 'numpy.core.overrides'
+30308 INFO: Analyzing hidden import 'numpy.core.records'
+30309 INFO: Analyzing hidden import 'numpy.core.shape_base'
+30309 INFO: Analyzing hidden import 'numpy.core.umath'
+30310 INFO: Analyzing hidden import 'numpy.f2py.__main__'
+30310 INFO: Analyzing hidden import 'numpy.f2py._src_pyf'
+30317 INFO: Analyzing hidden import 'numpy.fft.tests'
+30317 INFO: Analyzing hidden import 'numpy.fft.tests.test_helper'
+30323 INFO: Analyzing hidden import 'numpy.fft.tests.test_pocketfft'
+30356 INFO: Analyzing hidden import 'numpy.lib._user_array_impl'
+30364 INFO: Analyzing hidden import 'numpy.lib.tests'
+30365 INFO: Analyzing hidden import 'numpy.lib.tests.test__datasource'
+30376 INFO: Analyzing hidden import 'numpy.lib.tests.test__iotools'
+30388 INFO: Analyzing hidden import 'numpy.lib.tests.test__version'
+30391 INFO: Analyzing hidden import 'numpy.lib.tests.test_array_utils'
+30393 INFO: Analyzing hidden import 'numpy.lib.tests.test_arraypad'
+30448 INFO: Analyzing hidden import 'numpy.lib.tests.test_arraysetops'
+30496 INFO: Analyzing hidden import 'numpy.lib.tests.test_arrayterator'
+30499 INFO: Analyzing hidden import 'numpy.lib.tests.test_format'
+30526 INFO: Analyzing hidden import 'numpy.lib.tests.test_function_base'
+30769 INFO: Analyzing hidden import 'numpy.lib.tests.test_histograms'
+30803 INFO: Analyzing hidden import 'numpy.lib.tests.test_index_tricks'
+30833 INFO: Analyzing hidden import 'numpy.lib.tests.test_io'
+30974 INFO: Analyzing hidden import 'numpy.lib.tests.test_loadtxt'
+31013 INFO: Analyzing hidden import 'numpy.lib.tests.test_mixins'
+31024 INFO: Analyzing hidden import 'numpy.lib.tests.test_nanfunctions'
+31084 INFO: Analyzing hidden import 'numpy.lib.tests.test_packbits'
+31100 INFO: Analyzing hidden import 'numpy.lib.tests.test_polynomial'
+31115 INFO: Analyzing hidden import 'numpy.lib.tests.test_recfunctions'
+31159 INFO: Analyzing hidden import 'numpy.lib.tests.test_regression'
+31169 INFO: Analyzing hidden import 'numpy.lib.tests.test_shape_base'
+31205 INFO: Analyzing hidden import 'numpy.lib.tests.test_stride_tricks'
+31232 INFO: Analyzing hidden import 'numpy.lib.tests.test_twodim_base'
+31254 INFO: Analyzing hidden import 'numpy.lib.tests.test_type_check'
+31275 INFO: Analyzing hidden import 'numpy.lib.tests.test_ufunclike'
+31280 INFO: Analyzing hidden import 'numpy.lib.tests.test_utils'
+31282 INFO: Analyzing hidden import 'numpy.lib.user_array'
+31283 INFO: Analyzing hidden import 'numpy.linalg.lapack_lite'
+31283 INFO: Analyzing hidden import 'numpy.linalg.tests'
+31283 INFO: Analyzing hidden import 'numpy.linalg.tests.test_deprecations'
+31284 INFO: Analyzing hidden import 'numpy.linalg.tests.test_linalg'
+31387 INFO: Analyzing hidden import 'numpy.linalg.tests.test_regression'
+31395 INFO: Analyzing hidden import 'numpy.ma.tests'
+31396 INFO: Analyzing hidden import 'numpy.ma.tests.test_arrayobject'
+31398 INFO: Analyzing hidden import 'numpy.ma.tests.test_core'
+31691 INFO: Analyzing hidden import 'numpy.ma.tests.test_deprecations'
+31694 INFO: Analyzing hidden import 'numpy.ma.tests.test_extras'
+31792 INFO: Analyzing hidden import 'numpy.ma.tests.test_mrecords'
+31812 INFO: Analyzing hidden import 'numpy.ma.tests.test_old_ma'
+31876 INFO: Analyzing hidden import 'numpy.ma.tests.test_regression'
+31880 INFO: Analyzing hidden import 'numpy.ma.tests.test_subclassing'
+31896 INFO: Analyzing hidden import 'numpy.matrixlib.tests'
+31896 INFO: Analyzing hidden import 'numpy.matrixlib.tests.test_defmatrix'
+31920 INFO: Analyzing hidden import 'numpy.matrixlib.tests.test_interaction'
+31933 INFO: Analyzing hidden import 'numpy.matrixlib.tests.test_masked_matrix'
+31946 INFO: Analyzing hidden import 'numpy.matrixlib.tests.test_matrix_linalg'
+31949 INFO: Analyzing hidden import 'numpy.matrixlib.tests.test_multiarray'
+31951 INFO: Analyzing hidden import 'numpy.matrixlib.tests.test_numeric'
+31952 INFO: Analyzing hidden import 'numpy.matrixlib.tests.test_regression'
+31954 INFO: Analyzing hidden import 'numpy.polynomial.tests'
+31954 INFO: Analyzing hidden import 'numpy.polynomial.tests.test_chebyshev'
+31980 INFO: Analyzing hidden import 'numpy.polynomial.tests.test_classes'
+32005 INFO: Analyzing hidden import 'numpy.polynomial.tests.test_hermite'
+32029 INFO: Analyzing hidden import 'numpy.polynomial.tests.test_hermite_e'
+32052 INFO: Analyzing hidden import 'numpy.polynomial.tests.test_laguerre'
+32075 INFO: Analyzing hidden import 'numpy.polynomial.tests.test_legendre'
+32099 INFO: Analyzing hidden import 'numpy.polynomial.tests.test_polynomial'
+32128 INFO: Analyzing hidden import 'numpy.polynomial.tests.test_polyutils'
+32133 INFO: Analyzing hidden import 'numpy.polynomial.tests.test_printing'
+32149 INFO: Analyzing hidden import 'numpy.polynomial.tests.test_symbol'
+32156 INFO: Analyzing hidden import 'numpy.random.tests'
+32156 INFO: Analyzing hidden import 'numpy.random.tests.data'
+32157 INFO: Analyzing hidden import 'numpy.random.tests.test_direct'
+32179 INFO: Analyzing hidden import 'numpy.random.tests.test_extending'
+32197 INFO: Analyzing hidden import 'numpy.random.tests.test_generator_mt19937'
+32319 INFO: Analyzing hidden import 'numpy.random.tests.test_generator_mt19937_regressions'
+32326 INFO: Analyzing hidden import 'numpy.random.tests.test_random'
+32396 INFO: Analyzing hidden import 'numpy.random.tests.test_randomstate'
+32488 INFO: Analyzing hidden import 'numpy.random.tests.test_randomstate_regression'
+32498 INFO: Analyzing hidden import 'numpy.random.tests.test_regression'
+32504 INFO: Analyzing hidden import 'numpy.random.tests.test_seed_sequence'
+32507 INFO: Analyzing hidden import 'numpy.random.tests.test_smoke'
+32545 INFO: Analyzing hidden import 'numpy.testing.print_coercion_tables'
+32552 INFO: Analyzing hidden import 'numpy.testing.tests'
+32553 INFO: Analyzing hidden import 'numpy.testing.tests.test_utils'
+32629 INFO: Analyzing hidden import 'numpy.tests'
+32630 INFO: Analyzing hidden import 'numpy.tests.test__all__'
+32631 INFO: Analyzing hidden import 'numpy.tests.test_configtool'
+32634 INFO: Analyzing hidden import 'numpy.tests.test_ctypeslib'
+32646 INFO: Analyzing hidden import 'numpy.tests.test_lazyloading'
+32647 INFO: Analyzing hidden import 'numpy.tests.test_matlib'
+32650 INFO: Analyzing hidden import 'numpy.tests.test_numpy_config'
+32652 INFO: Analyzing hidden import 'numpy.tests.test_numpy_version'
+32654 INFO: Analyzing hidden import 'numpy.tests.test_public_api'
+32668 INFO: Analyzing hidden import 'numpy.tests.test_reloading'
+32671 INFO: Analyzing hidden import 'numpy.tests.test_scripts'
+32673 INFO: Analyzing hidden import 'numpy.tests.test_warnings'
+32676 INFO: Analyzing hidden import 'numpy.typing.mypy_plugin'
+32681 INFO: Analyzing hidden import 'numpy.typing.tests'
+32682 INFO: Analyzing hidden import 'numpy.typing.tests.test_isfile'
+32683 INFO: Analyzing hidden import 'numpy.typing.tests.test_runtime'
+32687 INFO: Analyzing hidden import 'numpy.typing.tests.test_typing'
+32694 INFO: Analyzing hidden import 'platformdirs.__main__'
+32696 INFO: Analyzing hidden import 'rapidocr_onnxruntime'
+32740 INFO: Loading module hook 'hook-onnxruntime.py' from '/home/iswaryak/ATG/new-main-linux/JIRAForge/python-desktop-app/venv/lib/python3.12/site-packages/_pyinstaller_hooks_contrib/stdhooks'...
+32831 INFO: Loading module hook 'hook-shapely.py' from '/home/iswaryak/ATG/new-main-linux/JIRAForge/python-desktop-app/venv/lib/python3.12/site-packages/_pyinstaller_hooks_contrib/stdhooks'...
+33086 INFO: Analyzing hidden import 'ocr.engines.rapidocr_engine'
+33090 INFO: Analyzing hidden import 'onnxruntime.capi.convert_npz_to_onnx_adapter'
+33092 INFO: Analyzing hidden import 'onnxruntime.capi.libonnxruntime_providers_shared'
+33092 INFO: Analyzing hidden import 'onnxruntime.datasets'
+33093 INFO: Analyzing hidden import 'cv2.config'
+33094 INFO: Analyzing hidden import 'cv2.config-3'
+33095 INFO: Analyzing hidden import 'cv2.cv2'
+33095 INFO: Analyzing hidden import 'cv2.data'
+33096 INFO: Analyzing hidden import 'cv2.gapi'
+33106 INFO: Analyzing hidden import 'cv2.mat_wrapper'
+33108 INFO: Analyzing hidden import 'cv2.misc'
+33108 INFO: Analyzing hidden import 'cv2.typing'
+33113 INFO: Analyzing hidden import 'cv2.utils'
+33114 INFO: Processing module hooks...
+33699 WARNING: Hidden import "pycparser.lextab" not found!
+33699 WARNING: Hidden import "pycparser.yacctab" not found!
+52223 INFO: Loading module hook 'hook-distutils.command.check.py' from '/home/iswaryak/ATG/new-main-linux/JIRAForge/python-desktop-app/venv/lib/python3.12/site-packages/PyInstaller/hooks'...
+52224 INFO: Loading module hook 'hook-distutils.util.py' from '/home/iswaryak/ATG/new-main-linux/JIRAForge/python-desktop-app/venv/lib/python3.12/site-packages/PyInstaller/hooks'...
+52250 INFO: Loading module hook 'hook-setuptools.msvc.py' from '/home/iswaryak/ATG/new-main-linux/JIRAForge/python-desktop-app/venv/lib/python3.12/site-packages/PyInstaller/hooks'...
+52859 INFO: Loading module hook 'hook-setuptools._distutils.command.check.py' from '/home/iswaryak/ATG/new-main-linux/JIRAForge/python-desktop-app/venv/lib/python3.12/site-packages/PyInstaller/hooks'...
+53450 INFO: Loading module hook 'hook-PIL.SpiderImagePlugin.py' from '/home/iswaryak/ATG/new-main-linux/JIRAForge/python-desktop-app/venv/lib/python3.12/site-packages/PyInstaller/hooks'...
+53486 INFO: Loading module hook 'hook-distutils.py' from '/home/iswaryak/ATG/new-main-linux/JIRAForge/python-desktop-app/venv/lib/python3.12/site-packages/PyInstaller/hooks'...
+53606 INFO: Loading module hook 'hook-pkg_resources.py' from '/home/iswaryak/ATG/new-main-linux/JIRAForge/python-desktop-app/venv/lib/python3.12/site-packages/PyInstaller/hooks'...
 <frozen importlib.util>:92: UserWarning: pkg_resources is deprecated as an API. See https://setuptools.pypa.io/en/latest/pkg_resources.html. The pkg_resources package is slated for removal as early as 2025-11-30. Refrain from using this package or pin to Setuptools<81.
 /home/iswaryak/ATG/new-main-linux/JIRAForge/python-desktop-app/venv/lib/python3.12/site-packages/PyInstaller/utils/hooks/__init__.py:241: UserWarning: pkg_resources is deprecated as an API. See https://setuptools.pypa.io/en/latest/pkg_resources.html. The pkg_resources package is slated for removal as early as 2025-11-30. Refrain from using this package or pin to Setuptools<81.
   __import__(module_name)
-118475 INFO: Loading module hook 'hook-xml.py' from '/home/iswaryak/ATG/new-main-linux/JIRAForge/python-desktop-app/venv/lib/python3.12/site-packages/PyInstaller/hooks'...
-122826 WARNING: Hidden import "pkg_resources._vendor.jaraco.functools" not found!
-122827 WARNING: Hidden import "pkg_resources._vendor.jaraco.context" not found!
-122827 WARNING: Hidden import "pkg_resources._vendor.jaraco.text" not found!
-125441 INFO: Looking for ctypes DLLs
-125614 WARNING: Library user32 required via ctypes not found
-125897 WARNING: Library ole32 required via ctypes not found
-125941 WARNING: Library shell32 required via ctypes not found
-126164 WARNING: Library vcruntime140.dll required via ctypes not found
-126186 WARNING: Library msvcp140.dll required via ctypes not found
-126212 WARNING: Library vcruntime140_1.dll required via ctypes not found
-126395 INFO: Analyzing run-time hooks ...
-126395 INFO: Including custom run-time hook 'pyinstaller_hooks/pyi_rth_cv2.py'
-126398 INFO: Including custom run-time hook 'pyinstaller_hooks/pyi_rth_pystray_wayland.py'
-126404 INFO: Including custom run-time hook 'pyinstaller_hooks/pyi_rth_onnxruntime.py'
-126431 INFO: Including run-time hook '/home/iswaryak/ATG/new-main-linux/JIRAForge/python-desktop-app/venv/lib/python3.12/site-packages/PyInstaller/hooks/rthooks/pyi_rth_inspect.py'
-126435 INFO: Including run-time hook '/home/iswaryak/ATG/new-main-linux/JIRAForge/python-desktop-app/venv/lib/python3.12/site-packages/PyInstaller/hooks/rthooks/pyi_rth_pkgutil.py'
-126443 INFO: Processing pre-find module path hook _pyi_rth_utils from '/home/iswaryak/ATG/new-main-linux/JIRAForge/python-desktop-app/venv/lib/python3.12/site-packages/PyInstaller/hooks/pre_find_module_path/hook-_pyi_rth_utils.py'.
-126445 INFO: Loading module hook 'hook-_pyi_rth_utils.py' from '/home/iswaryak/ATG/new-main-linux/JIRAForge/python-desktop-app/venv/lib/python3.12/site-packages/PyInstaller/hooks'...
-126446 INFO: Including run-time hook '/home/iswaryak/ATG/new-main-linux/JIRAForge/python-desktop-app/venv/lib/python3.12/site-packages/PyInstaller/hooks/rthooks/pyi_rth_multiprocessing.py'
-126454 INFO: Including run-time hook '/home/iswaryak/ATG/new-main-linux/JIRAForge/python-desktop-app/venv/lib/python3.12/site-packages/PyInstaller/hooks/rthooks/pyi_rth_pkgres.py'
-126464 INFO: Including run-time hook '/home/iswaryak/ATG/new-main-linux/JIRAForge/python-desktop-app/venv/lib/python3.12/site-packages/PyInstaller/hooks/rthooks/pyi_rth_setuptools.py'
-126468 INFO: Including run-time hook '/home/iswaryak/ATG/new-main-linux/JIRAForge/python-desktop-app/venv/lib/python3.12/site-packages/_pyinstaller_hooks_contrib/rthooks/pyi_rth_cryptography_openssl.py'
-126591 INFO: Looking for dynamic libraries
+54094 INFO: Loading module hook 'hook-xml.py' from '/home/iswaryak/ATG/new-main-linux/JIRAForge/python-desktop-app/venv/lib/python3.12/site-packages/PyInstaller/hooks'...
+56165 WARNING: Hidden import "pkg_resources._vendor.jaraco.functools" not found!
+56165 WARNING: Hidden import "pkg_resources._vendor.jaraco.context" not found!
+56165 WARNING: Hidden import "pkg_resources._vendor.jaraco.text" not found!
+57341 INFO: Looking for ctypes DLLs
+57420 WARNING: Library user32 required via ctypes not found
+57557 WARNING: Library shell32 required via ctypes not found
+57577 WARNING: Library ole32 required via ctypes not found
+57699 WARNING: Library msvcp140.dll required via ctypes not found
+57709 WARNING: Library vcruntime140_1.dll required via ctypes not found
+57719 WARNING: Library vcruntime140.dll required via ctypes not found
+57798 INFO: Analyzing run-time hooks ...
+57798 INFO: Including custom run-time hook 'pyinstaller_hooks/pyi_rth_cv2.py'
+57801 INFO: Including custom run-time hook 'pyinstaller_hooks/pyi_rth_pystray_wayland.py'
+57805 INFO: Including custom run-time hook 'pyinstaller_hooks/pyi_rth_onnxruntime.py'
+57819 INFO: Including run-time hook '/home/iswaryak/ATG/new-main-linux/JIRAForge/python-desktop-app/venv/lib/python3.12/site-packages/PyInstaller/hooks/rthooks/pyi_rth_inspect.py'
+57821 INFO: Including run-time hook '/home/iswaryak/ATG/new-main-linux/JIRAForge/python-desktop-app/venv/lib/python3.12/site-packages/PyInstaller/hooks/rthooks/pyi_rth_pkgutil.py'
+57824 INFO: Processing pre-find module path hook _pyi_rth_utils from '/home/iswaryak/ATG/new-main-linux/JIRAForge/python-desktop-app/venv/lib/python3.12/site-packages/PyInstaller/hooks/pre_find_module_path/hook-_pyi_rth_utils.py'.
+57825 INFO: Loading module hook 'hook-_pyi_rth_utils.py' from '/home/iswaryak/ATG/new-main-linux/JIRAForge/python-desktop-app/venv/lib/python3.12/site-packages/PyInstaller/hooks'...
+57825 INFO: Including run-time hook '/home/iswaryak/ATG/new-main-linux/JIRAForge/python-desktop-app/venv/lib/python3.12/site-packages/PyInstaller/hooks/rthooks/pyi_rth_multiprocessing.py'
+57828 INFO: Including run-time hook '/home/iswaryak/ATG/new-main-linux/JIRAForge/python-desktop-app/venv/lib/python3.12/site-packages/PyInstaller/hooks/rthooks/pyi_rth_pkgres.py'
+57832 INFO: Including run-time hook '/home/iswaryak/ATG/new-main-linux/JIRAForge/python-desktop-app/venv/lib/python3.12/site-packages/PyInstaller/hooks/rthooks/pyi_rth_setuptools.py'
+57834 INFO: Including run-time hook '/home/iswaryak/ATG/new-main-linux/JIRAForge/python-desktop-app/venv/lib/python3.12/site-packages/_pyinstaller_hooks_contrib/rthooks/pyi_rth_cryptography_openssl.py'
+57897 INFO: Looking for dynamic libraries
 	not a dynamic executable
 	not a dynamic executable
-128184 INFO: Warnings written to /home/iswaryak/ATG/new-main-linux/JIRAForge/python-desktop-app/build/desktop_app/warn-desktop_app.txt
-128442 INFO: Graph cross-reference written to /home/iswaryak/ATG/new-main-linux/JIRAForge/python-desktop-app/build/desktop_app/xref-desktop_app.html
-128665 INFO: checking PYZ
-128665 INFO: Building PYZ because PYZ-00.toc is non existent
-128665 INFO: Building PYZ (ZlibArchive) /home/iswaryak/ATG/new-main-linux/JIRAForge/python-desktop-app/build/desktop_app/PYZ-00.pyz
-134390 INFO: Building PYZ (ZlibArchive) /home/iswaryak/ATG/new-main-linux/JIRAForge/python-desktop-app/build/desktop_app/PYZ-00.pyz completed successfully.
-134551 INFO: checking PKG
-134551 INFO: Building PKG because PKG-00.toc is non existent
-134551 INFO: Building PKG (CArchive) TimeTracker.pkg
-220595 INFO: Building PKG (CArchive) TimeTracker.pkg completed successfully.
-220624 INFO: Bootloader /home/iswaryak/ATG/new-main-linux/JIRAForge/python-desktop-app/venv/lib/python3.12/site-packages/PyInstaller/bootloader/Linux-64bit-intel/run
-220624 INFO: checking EXE
-220625 INFO: Building EXE because EXE-00.toc is non existent
-220625 INFO: Building EXE from EXE-00.toc
-220625 INFO: Copying bootloader EXE to /home/iswaryak/ATG/new-main-linux/JIRAForge/python-desktop-app/dist/TimeTracker
-220626 INFO: Appending PKG archive to custom ELF section in EXE
-221619 INFO: Building EXE from EXE-00.toc completed successfully.
+58586 INFO: Warnings written to /home/iswaryak/ATG/new-main-linux/JIRAForge/python-desktop-app/build/desktop_app/warn-desktop_app.txt
+58707 INFO: Graph cross-reference written to /home/iswaryak/ATG/new-main-linux/JIRAForge/python-desktop-app/build/desktop_app/xref-desktop_app.html
+58825 INFO: checking PYZ
+58825 INFO: Building PYZ because PYZ-00.toc is non existent
+58825 INFO: Building PYZ (ZlibArchive) /home/iswaryak/ATG/new-main-linux/JIRAForge/python-desktop-app/build/desktop_app/PYZ-00.pyz
+61351 INFO: Building PYZ (ZlibArchive) /home/iswaryak/ATG/new-main-linux/JIRAForge/python-desktop-app/build/desktop_app/PYZ-00.pyz completed successfully.
+61436 INFO: checking PKG
+61436 INFO: Building PKG because PKG-00.toc is non existent
+61436 INFO: Building PKG (CArchive) TimeTracker.pkg
+97873 INFO: Building PKG (CArchive) TimeTracker.pkg completed successfully.
+97886 INFO: Bootloader /home/iswaryak/ATG/new-main-linux/JIRAForge/python-desktop-app/venv/lib/python3.12/site-packages/PyInstaller/bootloader/Linux-64bit-intel/run
+97886 INFO: checking EXE
+97886 INFO: Building EXE because EXE-00.toc is non existent
+97886 INFO: Building EXE from EXE-00.toc
+97886 INFO: Copying bootloader EXE to /home/iswaryak/ATG/new-main-linux/JIRAForge/python-desktop-app/dist/TimeTracker
+97886 INFO: Appending PKG archive to custom ELF section in EXE
+98341 INFO: Building EXE from EXE-00.toc completed successfully.
 [INFO] Building for platform: linux
 [INFO] Linux build - excluding Windows-specific dependencies
 [INFO] Configured OCR engines from .env: ['rapidocr', 'winrtocr']
@@ -334,7 +334,7 @@ BUILD CONFIGURATION SUMMARY
   Configured engines: rapidocr, winrtocr
   OCR Python files:  15 files
   Engine imports:    48 hidden imports
-  Excluded engines:  ocr.engines.easyocr_engine, onnxruntime.transformers, pytesseract, winrtocr, easyocr, tensorboard, ppstructure, winsdk, ocr.engines.paddle_engine, paddleocr, torch, torchaudio, ppocr, torch.utils.tensorboard, ocr.engines.tesseract_engine, torchvision, paddle
+  Excluded engines:  paddleocr, torchaudio, torch.utils.tensorboard, ppocr, winrtocr, tensorboard, onnxruntime.transformers, ocr.engines.tesseract_engine, ocr.engines.easyocr_engine, ppstructure, easyocr, paddle, torchvision, ocr.engines.paddle_engine, torch, winsdk, pytesseract
 ======================================================================
 
 appimagetool, continuous build (commit 5735cc5), build <local dev build> built on 2023-03-08 22:52:04 UTC
@@ -347,28 +347,28 @@ WARNING: AppStream upstream metadata is missing, please consider creating it
          for more information or use the generator at http://output.jsbin.com/qoqukof.
 Generating squashfs...
 Parallel mksquashfs: Using 8 processors
-Creating 4.0 filesystem on dist/TimeTracker-v1.0.4-x86_64.AppImage, block size 131072.
-[=============================================================-] 1131/1131 100%
+Creating 4.0 filesystem on dist/TimeTracker-v1.0.0-x86_64.AppImage, block size 131072.
+[=============================================================|] 1171/1171 100%
 
 Exportable Squashfs 4.0 filesystem, gzip compressed, data block size 131072
 	compressed data, compressed metadata, compressed fragments,
 	compressed xattrs, compressed ids
 	duplicates are removed
-Filesystem size 142637.96 Kbytes (139.29 Mbytes)
-	98.97% of uncompressed filesystem size (144123.00 Kbytes)
-Inode table size 1778 bytes (1.74 Kbytes)
-	35.38% of uncompressed inode table size (5025 bytes)
-Directory table size 211 bytes (0.21 Kbytes)
-	57.18% of uncompressed directory table size (369 bytes)
+Filesystem size 144372.60 Kbytes (140.99 Mbytes)
+	97.29% of uncompressed filesystem size (148399.44 Kbytes)
+Inode table size 2134 bytes (2.08 Kbytes)
+	36.57% of uncompressed inode table size (5835 bytes)
+Directory table size 471 bytes (0.46 Kbytes)
+	51.53% of uncompressed directory table size (914 bytes)
 Number of duplicate files found 2
-Number of inodes 16
-Number of files 6
-Number of fragments 1
-Number of symbolic links  1
+Number of inodes 35
+Number of files 19
+Number of fragments 5
+Number of symbolic links  5
 Number of device nodes 0
 Number of fifo nodes 0
 Number of socket nodes 0
-Number of directories 9
+Number of directories 11
 Number of ids (unique uids + gids) 1
 Number of uids 1
 	root (0)
@@ -382,5 +382,5 @@ Success
 Please consider submitting your AppImage to AppImageHub, the crowd-sourced
 central directory of available AppImages, by opening a pull request
 at https://github.com/AppImage/appimage.github.io
-/home/iswaryak/ATG/new-main-linux/JIRAForge/python-desktop-app/AppDir should be packaged as dist/TimeTracker-v1.0.4-x86_64.AppImage
-dpkg-deb: building package 'timetracker' in 'dist/timetracker_1.0.4_amd64.deb'.
+/home/iswaryak/ATG/new-main-linux/JIRAForge/python-desktop-app/AppDir should be packaged as dist/TimeTracker-v1.0.0-x86_64.AppImage
+dpkg-deb: building package 'timetracker' in 'dist/timetracker_1.0.0_amd64.deb'.

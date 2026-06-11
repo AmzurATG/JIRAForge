@@ -565,6 +565,10 @@ a = Analysis(
         'sqlcipher3.dbapi2',
         # Database connection manager
         'db_connection',
+        # System dependency checker (PipeWire, GStreamer, XDG Portal)
+        'system_check',
+        # Monitor capture module
+        'monitor_capture',
         # jaraco (required by pkg_resources)
         'jaraco',
         'jaraco.text',

@@ -31,6 +31,20 @@ export LD_LIBRARY_PATH="${HERE}/usr/lib:${HERE}/usr/lib/$(uname -m)-linux-gnu:${
 #   AppIndicator3:        /usr/lib/girepository-1.0/
 export GI_TYPELIB_PATH="${HERE}/usr/lib/girepository-1.0:/usr/lib/$(uname -m)-linux-gnu/girepository-1.0:/usr/lib/girepository-1.0:${GI_TYPELIB_PATH}"
 
+# --- GStreamer plugin path ----------------------------------------------------
+# CRITICAL: GStreamer needs access to system plugins (especially pipewiresrc)
+# for ScreenCast Portal screenshot capture. Without this, GStreamer can't find
+# pipewiresrc and falls back to Screenshot Portal which causes permission
+# dialogs on every window switch (the "flash" issue).
+#
+# Set GST_PLUGIN_SYSTEM_PATH to include:
+#   1. Bundled plugins in AppDir (if any)
+#   2. System plugins (where pipewiresrc lives)
+#
+# GST_PLUGIN_SYSTEM_PATH is preferred over GST_PLUGIN_PATH because it allows
+# GStreamer to still use its default plugin discovery while adding our paths.
+export GST_PLUGIN_SYSTEM_PATH="${HERE}/usr/lib/gstreamer-1.0:/usr/lib/$(uname -m)-linux-gnu/gstreamer-1.0:/usr/lib/gstreamer-1.0:${GST_PLUGIN_SYSTEM_PATH}"
+
 # --- Wayland / GTK display backend -------------------------------------------
 # On Wayland, GTK3 apps launched from an AppImage need GDK_BACKEND set so
 # AppIndicator3's GTK widgets can connect to the compositor.  Setting it to
