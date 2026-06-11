@@ -31,7 +31,13 @@ function PeoplePickerModal({ title, fetchPeople, onAdd, onClose, setError }) {
       }
     })();
     return () => { active = false; };
-  }, [debounced, fetchPeople, setError]);
+    // fetchPeople/setError are intentionally NOT dependencies: callers pass
+    // inline closures (new identity on every parent render), which would
+    // re-fire this fetch on unrelated parent re-renders. The closures only
+    // capture stable values (api modules, ids), so the copy captured at
+    // search-change time is always equivalent.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [debounced]);
 
   const toggle = (id) => setSelected((s) => ({ ...s, [id]: !s[id] }));
   const selectedIds = Object.keys(selected).filter((id) => selected[id]);
@@ -69,8 +75,11 @@ function PeoplePickerModal({ title, fetchPeople, onAdd, onClose, setError }) {
           )}
         </div>
         <div className="flex gap-2 justify-end mt-4">
-          <button onClick={onClose} className="px-4 py-2 rounded border border-gray-300 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-800">Cancel</button>
+          {/* Explicit type — buttons default to submit and this shared modal
+              must stay safe if a caller ever renders it inside a form. */}
+          <button type="button" onClick={onClose} className="px-4 py-2 rounded border border-gray-300 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-800">Cancel</button>
           <button
+            type="button"
             disabled={selectedIds.length === 0}
             onClick={() => onAdd(selectedIds)}
             className="px-4 py-2 rounded bg-primary-600 text-white hover:bg-primary-700 disabled:opacity-50 disabled:cursor-not-allowed"
