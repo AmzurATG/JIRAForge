@@ -10,10 +10,12 @@ import { useAuth } from '../contexts/AuthContext';
 import { adminUsersApi } from '../api/adminUsers';
 import { lobsApi } from '../api/lobs';
 import { locationsApi } from '../api/locations';
+import { employeesApi } from '../api/employees';
 import DataTable from '../components/common/DataTable';
 import ConfirmDialog from '../components/common/ConfirmDialog';
 import LoadingSpinner from '../components/common/LoadingSpinner';
 import ErrorBanner from '../components/common/ErrorBanner';
+import PeoplePickerModal from '../components/common/PeoplePickerModal';
 
 function SettingsPage() {
   const { user } = useAuth();
@@ -458,6 +460,7 @@ function LocationsCard({ setError, setSuccess }) {
   const [editingId, setEditingId] = useState(null);
   const [editName, setEditName] = useState('');
   const [deleting, setDeleting] = useState(null);
+  const [assigning, setAssigning] = useState(null); // location whose members are being added
 
   const load = async () => {
     setLoading(true);
@@ -587,6 +590,15 @@ function LocationsCard({ setError, setSuccess }) {
                     {!loc.isActive && <span className="ml-2 text-[10px] uppercase text-gray-400 no-underline">inactive</span>}
                   </span>
                   <div className="flex items-center gap-1">
+                    {loc.isActive && (
+                      <button
+                        onClick={() => setAssigning(loc)}
+                        className="p-1 rounded hover:bg-gray-100 dark:hover:bg-gray-700"
+                        title="Add employees to this location"
+                      >
+                        <UserPlus className="w-4 h-4 text-gray-500" />
+                      </button>
+                    )}
                     <button
                       onClick={() => { setEditingId(loc.id); setEditName(loc.name); }}
                       className="p-1 rounded hover:bg-gray-100 dark:hover:bg-gray-700"
@@ -622,6 +634,28 @@ function LocationsCard({ setError, setSuccess }) {
         onConfirm={confirmDelete}
         onCancel={() => setDeleting(null)}
       />
+
+      {/* Bulk member assignment — same picker pattern as LOB members */}
+      {assigning && (
+        <PeoplePickerModal
+          title={`Add employees to ${assigning.name}`}
+          fetchPeople={async (search) => {
+            const res = await employeesApi.getSimpleList(search);
+            return (res.data || []).map((e) => ({ id: e.userId, name: e.name, email: e.email }));
+          }}
+          onAdd={async (ids) => {
+            try {
+              const res = await locationsApi.bulkAssign(ids, assigning.id);
+              setSuccess(`Assigned ${res.updatedCount} employee(s) to ${assigning.name}`);
+              setAssigning(null);
+            } catch (err) {
+              setError(err.response?.data?.error || 'Failed to assign employees');
+            }
+          }}
+          onClose={() => setAssigning(null)}
+          setError={setError}
+        />
+      )}
     </div>
   );
 }

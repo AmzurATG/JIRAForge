@@ -5,9 +5,10 @@
  */
 
 import { useState, useEffect } from 'react';
-import { Plus, Edit2, Trash2, Shield, Upload, Filter, X } from 'lucide-react';
+import { Plus, Edit2, Trash2, Shield, Upload, Filter, X, Sparkles } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { appClassificationsApi } from '../api/appClassifications';
+import { appCatalogApi } from '../api/appCatalog';
 import DataTable from '../components/common/DataTable';
 import ConfirmDialog from '../components/common/ConfirmDialog';
 import LoadingSpinner from '../components/common/LoadingSpinner';
@@ -47,6 +48,49 @@ function AppClassificationsPage() {
   // Bulk import modal
   const [showBulkModal, setShowBulkModal] = useState(false);
   const [bulkData, setBulkData] = useState('');
+
+  // AI lookup (assistive only — same endpoint as the LOB Add Application
+  // modal; manual entry always works when the flag is off/unavailable).
+  const [lookupName, setLookupName] = useState('');
+  const [aiAvailable, setAiAvailable] = useState(true);
+  const [aiLoading, setAiLoading] = useState(false);
+  const [aiTried, setAiTried] = useState(false);
+  const [suggestion, setSuggestion] = useState(null);
+
+  const runAiLookup = async () => {
+    const q = lookupName.trim();
+    if (!q) return;
+    setAiLoading(true);
+    setAiTried(true);
+    try {
+      const res = await appCatalogApi.aiSuggest(q);
+      if (!res || res.available === false) { setAiAvailable(false); setSuggestion(null); return; }
+      setSuggestion(res.suggestions || null);
+      if (res.suggestions) {
+        setFormData((f) => ({
+          ...f,
+          displayName: f.displayName || res.suggestions.displayName || q,
+          // This page's vocabulary has no 'neutral' — only apply a direct match.
+          classification: ['productive', 'non_productive'].includes(res.suggestions.suggestedClassification)
+            ? res.suggestions.suggestedClassification
+            : f.classification,
+        }));
+      }
+    } catch {
+      setSuggestion(null); // advisory — keep the modal usable
+    } finally {
+      setAiLoading(false);
+    }
+  };
+
+  const useAiIdentifier = (matchBy, identifier) => {
+    setFormData((f) => ({
+      ...f,
+      matchBy,
+      identifier,
+      displayName: f.displayName || suggestion?.displayName || '',
+    }));
+  };
   
   // Delete confirmation
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
@@ -92,6 +136,10 @@ function AppClassificationsPage() {
       projectKey: '',
       isDefault: false
     });
+    // Fresh AI lookup state per open (availability sticks once discovered off).
+    setLookupName('');
+    setSuggestion(null);
+    setAiTried(false);
     setShowModal(true);
   };
 
@@ -447,10 +495,67 @@ function AppClassificationsPage() {
       {/* Create/Edit Modal */}
       {showModal && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-          <div className="bg-white dark:bg-gray-800 rounded-lg p-6 max-w-md w-full mx-4">
+          <div className="bg-white dark:bg-gray-800 rounded-lg p-6 max-w-md w-full mx-4 max-h-[90vh] overflow-y-auto">
             <h3 className="text-lg font-semibold mb-4">
               {modalMode === 'create' ? 'Add Application Classification' : 'Edit Application Classification'}
             </h3>
+
+            {modalMode === 'create' && aiAvailable && (
+              <div className="mb-4 rounded-lg border border-dashed border-primary-300 dark:border-primary-800 bg-primary-50/40 dark:bg-primary-900/10 p-3">
+                <label className="block text-xs font-medium text-gray-600 dark:text-gray-300 mb-1">
+                  Not sure of the exact name? Let AI suggest the details
+                </label>
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    value={lookupName}
+                    onChange={(e) => setLookupName(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); runAiLookup(); } }}
+                    placeholder="App name, e.g. Notion"
+                    className="w-full px-3 py-1.5 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 text-sm"
+                  />
+                  <button
+                    type="button"
+                    onClick={runAiLookup}
+                    disabled={aiLoading || !lookupName.trim()}
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded bg-primary-600 text-white text-sm hover:bg-primary-700 disabled:opacity-50 whitespace-nowrap"
+                  >
+                    <Sparkles className="w-4 h-4" /> {aiLoading ? 'Looking…' : 'Look up with AI'}
+                  </button>
+                </div>
+
+                {aiTried && !aiLoading && !suggestion && (
+                  <p className="text-xs text-gray-500 mt-2">No AI suggestion — fill in the fields manually below.</p>
+                )}
+
+                {suggestion && (
+                  <div className="mt-3 text-sm">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="font-medium">{suggestion.displayName || lookupName}</span>
+                      <span className="text-xs text-gray-500">suggests: {suggestion.suggestedClassification}</span>
+                      <span className="text-xs text-gray-400">{Math.round((suggestion.confidence || 0) * 100)}% confidence</span>
+                    </div>
+                    {suggestion.rationale && <p className="text-xs text-gray-500 mt-1">{suggestion.rationale}</p>}
+                    <div className="mt-2 flex flex-wrap gap-2">
+                      {(suggestion.processNames || []).map((p) => (
+                        <button key={`p-${p}`} type="button" onClick={() => useAiIdentifier('process', p)}
+                          className="px-2 py-1 rounded border border-gray-300 dark:border-gray-600 text-xs hover:bg-white dark:hover:bg-gray-800">
+                          Use desktop: <span className="font-medium">{p}</span>
+                        </button>
+                      ))}
+                      {(suggestion.domains || []).map((d) => (
+                        <button key={`d-${d}`} type="button" onClick={() => useAiIdentifier('url', d)}
+                          className="px-2 py-1 rounded border border-gray-300 dark:border-gray-600 text-xs hover:bg-white dark:hover:bg-gray-800">
+                          Use website: <span className="font-medium">{d}</span>
+                        </button>
+                      ))}
+                    </div>
+                    <p className="text-[10px] text-gray-400 mt-1">AI is a suggestion — edit anything below before creating.</p>
+                  </div>
+                )}
+              </div>
+            )}
+
             <form onSubmit={handleSubmit} className="space-y-4">
               <div>
                 <label className="block text-sm font-medium mb-2">Identifier *</label>

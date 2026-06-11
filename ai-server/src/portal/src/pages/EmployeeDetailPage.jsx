@@ -243,9 +243,9 @@ function EmployeeDetailPage() {
         />
       </div>
 
-      {/* Daily Trend Chart */}
+      {/* Daily Trend Chart — stacked hours by category + productivity % line */}
       <div className="card">
-        <h3 className="section-title mb-4">Daily Productivity Trend</h3>
+        <h3 className="section-title mb-4">Daily Activity &amp; Productivity</h3>
         <DailyLineChart data={employeeDetail?.dailyTrend || []} />
       </div>
 

@@ -118,6 +118,49 @@ describe('applyLocationScope (Location filter on analytics)', () => {
   });
 });
 
+describe('setEmployeeLocations (bulk assignment)', () => {
+  test('validates location once, filters unknown users, bulk-upserts the rest', async () => {
+    db.getLocationById.mockResolvedValue({ id: 'loc1', name: 'Hyderabad', is_active: true });
+    lobDb.getUsersByIds.mockResolvedValue([{ id: 'u1' }, { id: 'u2' }]);
+    db.bulkUpsertProfiles.mockResolvedValue([{ user_id: 'u1' }, { user_id: 'u2' }]);
+
+    const result = await service.setEmployeeLocations(['u1', 'u2', 'ghost'], 'loc1', 'admin1');
+
+    expect(result).toEqual({ updatedCount: 2, invalidUserIds: ['ghost'] });
+    expect(db.bulkUpsertProfiles).toHaveBeenCalledWith(['u1', 'u2'], 'loc1', 'admin1');
+  });
+
+  test('clearing (null location) skips location validation', async () => {
+    lobDb.getUsersByIds.mockResolvedValue([{ id: 'u1' }]);
+    db.bulkUpsertProfiles.mockResolvedValue([{ user_id: 'u1' }]);
+
+    const result = await service.setEmployeeLocations(['u1'], null, 'admin1');
+
+    expect(result.updatedCount).toBe(1);
+    expect(db.getLocationById).not.toHaveBeenCalled();
+    expect(db.bulkUpsertProfiles).toHaveBeenCalledWith(['u1'], null, 'admin1');
+  });
+
+  test('inactive location → 400; empty userIds → 400; no upsert attempted', async () => {
+    db.getLocationById.mockResolvedValue({ id: 'loc1', name: 'Old', is_active: false });
+    await expect(service.setEmployeeLocations(['u1'], 'loc1', 'a')).rejects.toMatchObject({ status: 400 });
+    await expect(service.setEmployeeLocations([], 'loc1', 'a')).rejects.toMatchObject({ status: 400 });
+    expect(db.bulkUpsertProfiles).not.toHaveBeenCalled();
+  });
+
+  test('user existence checks are chunked (URL-length safety)', async () => {
+    db.getLocationById.mockResolvedValue({ id: 'loc1', name: 'Tampa', is_active: true });
+    const ids = Array.from({ length: 450 }, (_, i) => `u${i}`);
+    lobDb.getUsersByIds.mockImplementation(async (chunk) => chunk.map((id) => ({ id })));
+    db.bulkUpsertProfiles.mockResolvedValue([]);
+
+    const result = await service.setEmployeeLocations(ids, 'loc1', 'admin1');
+
+    expect(lobDb.getUsersByIds.mock.calls.map((c) => c[0].length)).toEqual([200, 200, 50]);
+    expect(result.updatedCount).toBe(450);
+  });
+});
+
 describe('getLocationMapForUsers', () => {
   test('maps user ids to their location; users without profile omitted', async () => {
     db.getProfilesByUserIds.mockResolvedValue([

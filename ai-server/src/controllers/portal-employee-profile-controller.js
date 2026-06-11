@@ -88,10 +88,35 @@ async function setEmployeeProfile(req, res) {
   }
 }
 
+const BULK_ASSIGN_MAX = 500;
+
+/** Bulk location assignment (action bar / location members picker). */
+async function bulkSetEmployeeProfiles(req, res) {
+  try {
+    if (!isSuperadmin(req)) return res.status(403).json({ success: false, error: 'Only superadmin can edit employee profiles' });
+    const { userIds, locationId } = req.body;
+    if (!Array.isArray(userIds) || userIds.length === 0) {
+      return res.status(400).json({ success: false, error: 'userIds array is required' });
+    }
+    if (userIds.length > BULK_ASSIGN_MAX) {
+      return res.status(400).json({ success: false, error: `Too many employees in one request (max ${BULK_ASSIGN_MAX})` });
+    }
+    const result = await profileService.setEmployeeLocations(
+      userIds,
+      locationId === undefined ? null : locationId,
+      req.portalUser.userId
+    );
+    return res.json({ success: true, ...result });
+  } catch (error) {
+    return fail(res, error, '[PortalProfile] bulkSetEmployeeProfiles');
+  }
+}
+
 module.exports = {
   getLocations,
   createLocation,
   updateLocation,
   deleteLocation,
   setEmployeeProfile,
+  bulkSetEmployeeProfiles,
 };

@@ -37,6 +37,12 @@ export const locationsApi = {
     const response = await apiClient.put(`/api/portal/employees/${userId}/profile`, { locationId });
     return response.data;
   },
+
+  /** Bulk-assign (or clear with null) a location for many employees (superadmin). */
+  async bulkAssign(userIds, locationId) {
+    const response = await apiClient.put('/api/portal/employees/profiles', { userIds, locationId });
+    return response.data;
+  },
 };
 
 export default locationsApi;

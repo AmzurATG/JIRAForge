@@ -158,6 +158,30 @@ async function getProfilesByUserIds(userIds) {
   return rows;
 }
 
+/**
+ * Bulk upsert: set the same location for many users (one row per user).
+ * Rows travel in the POST body, so no URL-length concern.
+ */
+async function bulkUpsertProfiles(userIds, locationId, updatedBy) {
+  const supabase = getClient();
+  if (!supabase) throw new Error('Supabase client not initialized');
+
+  const rows = userIds.map((userId) => ({
+    user_id: userId,
+    location_id: locationId,
+    updated_by: updatedBy || null,
+  }));
+  const { data, error } = await supabase
+    .from('portal_employee_profiles')
+    .upsert(rows, { onConflict: 'user_id' })
+    .select('user_id');
+  if (error) {
+    logger.error('[PortalProfileDB] bulkUpsertProfiles failed', { count: userIds.length, error });
+    throw error;
+  }
+  return data || [];
+}
+
 /** Upsert (one profile row per user). */
 async function upsertProfile(userId, locationId, updatedBy) {
   const supabase = getClient();
@@ -187,5 +211,6 @@ module.exports = {
   countProfilesForLocation,
   getUserIdsForLocation,
   getProfilesByUserIds,
+  bulkUpsertProfiles,
   upsertProfile,
 };

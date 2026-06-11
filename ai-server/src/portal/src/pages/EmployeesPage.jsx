@@ -37,6 +37,54 @@ function EmployeesPage() {
   const [editingEmployee, setEditingEmployee] = useState(null); // row being edited
   const [editLocationId, setEditLocationId] = useState('');
   const [savingLocation, setSavingLocation] = useState(false);
+  const [success, setSuccess] = useState(null);
+
+  // Bulk selection (superadmin): selection persists across pages/filters so
+  // the action-bar count reflects everything ticked, not just this page.
+  const [selected, setSelected] = useState({}); // userId -> true
+  const [bulkLocationId, setBulkLocationId] = useState('');
+  const [bulkApplying, setBulkApplying] = useState(false);
+  const selectedIds = Object.keys(selected);
+  const allOnPageSelected = employees.length > 0 && employees.every((e) => selected[e.userId]);
+
+  const toggleSelected = (userId) => {
+    setSelected((s) => {
+      const next = { ...s };
+      if (next[userId]) delete next[userId];
+      else next[userId] = true;
+      return next;
+    });
+  };
+
+  const togglePageSelection = (checked) => {
+    setSelected((s) => {
+      const next = { ...s };
+      employees.forEach((e) => {
+        if (checked) next[e.userId] = true;
+        else delete next[e.userId];
+      });
+      return next;
+    });
+  };
+
+  const applyBulkLocation = async () => {
+    setBulkApplying(true);
+    setError(null);
+    try {
+      const target = bulkLocationId === '__clear__' ? null : bulkLocationId;
+      const res = await locationsApi.bulkAssign(selectedIds, target);
+      const targetName = target ? (locations.find((l) => l.id === target)?.name || 'location') : 'no location';
+      setSuccess(`Updated ${res.updatedCount} employee(s) → ${targetName}`);
+      setSelected({});
+      setBulkLocationId('');
+      loadEmployees();
+    } catch (err) {
+      console.error('Bulk location assignment failed:', err);
+      setError(err.response?.data?.error || 'Failed to assign location');
+    } finally {
+      setBulkApplying(false);
+    }
+  };
 
   useEffect(() => {
     // Include inactive: employees can stay assigned to a retired location, so
@@ -135,6 +183,28 @@ function EmployeesPage() {
   };
 
   const columns = [
+    ...(isSuperadmin ? [{
+      key: '_select',
+      label: (
+        <input
+          type="checkbox"
+          checked={allOnPageSelected}
+          onChange={(e) => togglePageSelection(e.target.checked)}
+          title="Select all on this page"
+          className="w-3.5 h-3.5 rounded border-gray-300 dark:border-gray-600"
+        />
+      ),
+      sortable: false,
+      render: (_, row) => (
+        <input
+          type="checkbox"
+          checked={!!selected[row.userId]}
+          onClick={(e) => e.stopPropagation()}
+          onChange={() => toggleSelected(row.userId)}
+          className="w-3.5 h-3.5 rounded border-gray-300 dark:border-gray-600"
+        />
+      ),
+    }] : []),
     {
       key: 'name',
       label: 'Name',
@@ -224,6 +294,13 @@ function EmployeesPage() {
 
       {error && (
         <ErrorBanner message={error} onClose={() => setError(null)} />
+      )}
+
+      {success && (
+        <div className="p-3 bg-green-100 dark:bg-green-900 text-green-800 dark:text-green-200 rounded text-sm flex justify-between items-center">
+          {success}
+          <button onClick={() => setSuccess(null)} className="font-bold ml-3">×</button>
+        </div>
       )}
 
       {/* Filters */}
@@ -357,6 +434,37 @@ function EmployeesPage() {
           }}
         />
       </div>
+
+      {/* Bulk action bar — appears on selection, stable position (superadmin) */}
+      {isSuperadmin && selectedIds.length > 0 && (
+        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-40 flex items-center gap-3 bg-gray-900 text-white rounded-xl shadow-2xl px-4 py-3 border border-gray-700">
+          <span className="text-sm font-semibold whitespace-nowrap">{selectedIds.length} selected</span>
+          <select
+            value={bulkLocationId}
+            onChange={(e) => setBulkLocationId(e.target.value)}
+            className="text-sm rounded-lg bg-gray-800 border border-gray-700 text-white px-2 py-1.5"
+          >
+            <option value="">Assign location…</option>
+            {locations.filter((l) => l.isActive).map((loc) => (
+              <option key={loc.id} value={loc.id}>{loc.name}</option>
+            ))}
+            <option value="__clear__">Remove location</option>
+          </select>
+          <button
+            onClick={applyBulkLocation}
+            disabled={!bulkLocationId || bulkApplying}
+            className="px-3 py-1.5 rounded-lg bg-primary-600 text-sm font-medium hover:bg-primary-700 disabled:opacity-50 disabled:cursor-not-allowed whitespace-nowrap"
+          >
+            {bulkApplying ? 'Applying…' : 'Apply'}
+          </button>
+          <button
+            onClick={() => { setSelected({}); setBulkLocationId(''); }}
+            className="text-sm text-gray-300 hover:text-white whitespace-nowrap"
+          >
+            Clear
+          </button>
+        </div>
+      )}
 
       {/* Edit Employee Location Modal (superadmin) */}
       {editingEmployee && (
