@@ -13,6 +13,7 @@ const jwt = require('jsonwebtoken');
 const logger = require('../utils/logger');
 const { getClient } = require('../services/db/supabase-client');
 const { buildOcrConfig, buildPrivacyConfig } = require('../config/ocr-config-builder');
+const custody = require('../services/token-custody-service');
 
 // Atlassian OAuth configuration
 const ATLASSIAN_TOKEN_URL = 'https://auth.atlassian.com/oauth/token';
@@ -554,18 +555,30 @@ exports.refreshToken = async (req, res) => {
       oauthDesc
     });
 
-    // Classify by the OAuth error CODE in the response body, not by HTTP status.
-    // Atlassian wraps a permanently-dead refresh token in HTTP 400 OR 403 (not
-    // always 401), but the body always carries a terminal OAuth error code:
-    //   - invalid_grant       (RFC 6749: refresh token expired or revoked)
-    //   - unauthorized_client  (Atlassian: token rotated out of the active chain)
-    // Both are permanent — the only recovery is a fresh OAuth login. Classifying
-    // them as transient makes the desktop client retry indefinitely (log-flood)
-    // and never prompt the user to re-authenticate.
+    // Classify by the OAuth error TEXT in the response body, not by HTTP status
+    // or field position. Atlassian wraps a permanently-dead refresh token in HTTP
+    // 400 OR 403 (not always 401), and has been observed carrying the terminal
+    // wording in EITHER the `error` or `error_description` field — the 2026-06-12
+    // incident returned 403 + {error: 'refresh_token is invalid'} with no terminal
+    // OAuth code, which field-equality checks misclassified as transient; the
+    // desktop then retried a consumed token forever and never prompted re-auth.
+    // Patterns mirror the desktop's authoritative dead-token list (desktop_app.py)
+    // so both ends agree. Generic 403/400 bodies without dead-token text (policy
+    // blocks, malformed requests) stay transient/retryable.
+    const DEAD_TOKEN_TEXT = [
+      'invalid_grant',
+      'unauthorized_client',
+      'refresh_token is invalid',
+      'refresh token is invalid',
+      'unknown or invalid refresh token',
+      'token has been revoked',
+      'token was globally revoked',
+      'token has been expired'
+    ];
+    const bodyText = `${oauthError || ''} ${oauthDesc || ''}`.toLowerCase();
     const isPermanent =
       status === 401 ||
-      oauthError === 'invalid_grant' ||
-      oauthError === 'unauthorized_client';
+      DEAD_TOKEN_TEXT.some((pattern) => bodyText.includes(pattern));
 
     if (isPermanent) {
       return res.status(401).json({
@@ -584,6 +597,138 @@ exports.refreshToken = async (req, res) => {
       error: `Token refresh failed: ${formatAtlassianError(error)}`,
       errorCode: 'OAUTH_TEMPORARY_FAILURE'
     });
+  }
+};
+
+// ============================================================================
+// Phase 2 — server-side token custody endpoints
+// Plan: plan/2026-06-12_auth_server-side-token-custody.md
+//
+// The server is the single serialized owner of each user's rotating refresh
+// token (see token-custody-service.js). Devices hold only a revocable session
+// token and obtain short-lived access tokens from /api/auth/access-token.
+// The legacy /api/auth/refresh-token endpoint stays fully functional for
+// desktop versions <= 1.4.7 throughout the migration.
+// ============================================================================
+
+/**
+ * Exchange a device session token for a fresh Atlassian access token.
+ * Rotation (if needed) happens server-side: serialized per user, persisted
+ * before responding, same-token retry on network failure.
+ *
+ * POST /api/auth/access-token
+ * Body: { device_token: string }
+ */
+exports.getDeviceAccessToken = async (req, res) => {
+  try {
+    const { device_token } = req.body;
+    if (!validateRequiredField(req, res, 'device_token', 'Device token is required')) return;
+
+    const session = await custody.verifyDeviceSession(device_token);
+    if (!session) {
+      return res.status(401).json({
+        success: false,
+        error: 'Device session invalid, revoked, or expired. Please log in again.',
+        errorCode: 'DEVICE_SESSION_INVALID',
+        requiresReauth: true
+      });
+    }
+
+    const { accessToken, expiresAt } = await custody.getAccessTokenForUser(session.userId);
+    res.json({
+      success: true,
+      access_token: accessToken,
+      expires_at: expiresAt
+    });
+  } catch (error) {
+    if (error.code === 'OAUTH_REAUTH_REQUIRED') {
+      return res.status(401).json({
+        success: false,
+        error: 'Stored credential is no longer valid. Please log in again.',
+        errorCode: 'OAUTH_REAUTH_REQUIRED',
+        requiresReauth: true
+      });
+    }
+    if (error.code === 'OAUTH_TEMPORARY_FAILURE') {
+      return res.status(503).json({
+        success: false,
+        error: error.message,
+        errorCode: 'OAUTH_TEMPORARY_FAILURE'
+      });
+    }
+    logger.error('[Auth] access-token endpoint error: %s', error.message);
+    res.status(500).json({ success: false, error: 'Internal server error' });
+  }
+};
+
+/**
+ * Take custody of a desktop client's refresh token and issue a device session.
+ * Called by desktop vNext right after login (and once on first run after
+ * upgrade, migrating existing sessions without a re-login). Identity is
+ * proven by the Atlassian access token, mirroring exchange-token.
+ *
+ * POST /api/auth/migrate-custody
+ * Body: { atlassian_token, refresh_token, expires_in?, device_name?, app_version? }
+ */
+exports.migrateCustody = async (req, res) => {
+  try {
+    const { atlassian_token, refresh_token, expires_in, device_name, app_version } = req.body;
+    if (!validateRequiredField(req, res, 'atlassian_token', 'Atlassian token is required')) return;
+    if (!validateRequiredField(req, res, 'refresh_token', 'Refresh token is required')) return;
+
+    const atlassianUser = await verifyAtlassianTokenOrRespond(atlassian_token, res, 'migrate-custody');
+    if (!atlassianUser) return;
+
+    const dbUser = await lookupUserOrRespond(atlassianUser.account_id, res, 'migrate-custody', {
+      atlassianToken: atlassian_token,
+      email: atlassianUser.email,
+      displayName: atlassianUser.name || atlassianUser.display_name
+    });
+    if (!dbUser) return;
+
+    await custody.storeCredential(dbUser.id, {
+      refreshToken: refresh_token,
+      accessToken: atlassian_token,
+      expiresIn: expires_in || 3600
+    });
+
+    const { deviceToken, expiresAt } = await custody.issueDeviceSession(dbUser.id, {
+      organizationId: dbUser.organization_id || null,
+      deviceName: device_name || null,
+      appVersion: app_version || null
+    });
+
+    logger.info('[Auth] Custody migrated for user %s (device: %s)', dbUser.id, device_name || 'unknown');
+    res.json({
+      success: true,
+      device_token: deviceToken,
+      device_token_expires_at: expiresAt
+    });
+  } catch (error) {
+    logger.error('[Auth] migrate-custody error: %s', error.message);
+    res.status(500).json({ success: false, error: 'Failed to migrate token custody' });
+  }
+};
+
+/**
+ * Revoke a device session (logout / lost device).
+ *
+ * POST /api/auth/device/revoke
+ * Body: { device_token: string }
+ */
+exports.revokeDevice = async (req, res) => {
+  try {
+    const { device_token } = req.body;
+    if (!validateRequiredField(req, res, 'device_token', 'Device token is required')) return;
+
+    const revoked = await custody.revokeDeviceSession(device_token);
+    if (!revoked) {
+      return res.json({ success: false, error: 'Device session not found' });
+    }
+    res.json({ success: true });
+  } catch (error) {
+    logger.error('[Auth] device revoke error: %s', error.message);
+    res.status(500).json({ success: false, error: 'Failed to revoke device session' });
   }
 };
 

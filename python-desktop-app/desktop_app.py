@@ -1913,7 +1913,7 @@ KEYRING_SERVICE = "TimeTracker"
 # MUST match auth/secure_storage.py's SENSITIVE_TOKEN_KEYS — that module iterates
 # its own copy when LOADING from keyring/encrypted storage, so any key here that is
 # missing there would be saved but silently dropped on restart.
-SENSITIVE_TOKEN_KEYS = ['access_token', 'refresh_token', 'supabase_token', 'google_refresh_token']
+SENSITIVE_TOKEN_KEYS = ['access_token', 'refresh_token', 'supabase_token', 'google_refresh_token', 'device_token']
 
 # Windows Credential Manager has a 2560-byte limit per credential (CredWrite API).
 # OAuth/JWT tokens often exceed this, causing error 1783 "The stub received bad data".
@@ -2075,6 +2075,18 @@ class AtlassianAuthManager:
         self._refresh_invalid_set_at = 0  # timestamp when _refresh_token_invalid was set
         self._last_refresh_fail_time = 0
         self._last_refresh_error_code = ''
+        # Set ONLY when the server explicitly answers OAUTH_REAUTH_REQUIRED: the
+        # refresh token is confirmed dead at Atlassian, so the 30-min grace must
+        # NOT auto-clear the invalid flag — retrying a consumed token can never
+        # succeed and just re-notifies the user forever. Only a fresh login (or a
+        # successful refresh) clears this.
+        self._refresh_invalid_permanent = False
+
+        # Server-side token custody (Phase 3): upgraded installs hand their
+        # refresh token to the AI server at most once per process run; from
+        # then on the device-token path is used and this client never performs
+        # OAuth rotation itself.
+        self._custody_migration_attempted = False
 
         # B-15: token-refresh rate limiting. refresh_access_token() READS these on
         # THIS object (self), so they MUST be initialized here. They were previously
@@ -2458,12 +2470,21 @@ class AtlassianAuthManager:
         self.tokens['auth_provider'] = 'atlassian'
         self._save_tokens()
         self._refresh_token_invalid = False  # Clear any prior permanent-failure flag
+        self._refresh_invalid_permanent = False  # Fresh login: dead-token state is over
         self._refresh_fail_count = 0  # Reset consecutive failure counter
         self._refresh_invalid_set_at = 0  # Clear grace-period timestamp
         self._last_refresh_fail_time = 0  # Reset failure window
         self._last_refresh_error_code = ''
 
         print("[OK] OAuth tokens received via AI Server")
+
+        # Hand the rotating refresh token to the server immediately (custody).
+        # Best-effort: a failure leaves the legacy refresh flow fully working.
+        try:
+            self.migrate_to_custody()
+        except Exception as e:
+            print(f"[WARN] Post-login custody migration failed: {e} — legacy refresh remains available")
+
         return result
     
     def get_user_info(self):
@@ -2513,6 +2534,227 @@ class AtlassianAuthManager:
             print(f"[ERROR] Failed to get user info: {e}")
             return None
     
+    def _wait_for_network(self, timeout_seconds=45, poll_interval=3):
+        """Block until the AI server is reachable at the TCP level, or timeout.
+
+        Guards the refresh POST against firing right after system wake, when DNS
+        and Wi-Fi are typically still down for several seconds. Sending a rotation
+        request into a collapsing network is how a rotated refresh token gets
+        consumed at Atlassian while the response (carrying its replacement) is
+        lost in transit — permanently killing the session (2026-06-12 incident).
+
+        Returns True when a TCP connect to the AI server host succeeds, False if
+        the network did not come up within timeout_seconds. A False result must
+        NOT count toward refresh failure thresholds — the token was never sent.
+        """
+        try:
+            from urllib.parse import urlparse
+            host = urlparse(self.ai_server_url).hostname
+        except Exception:
+            host = None
+        probes = ([(host, 443)] if host else []) + [("8.8.8.8", 53)]
+        deadline = time.time() + timeout_seconds
+        first_attempt = True
+        while time.time() < deadline:
+            for probe_host, probe_port in probes:
+                sock = None
+                try:
+                    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                    sock.settimeout(3)  # per-socket; never touch the global default
+                    sock.connect((probe_host, probe_port))
+                    return True
+                except (socket.error, socket.timeout, OSError):
+                    pass
+                finally:
+                    if sock:
+                        try:
+                            sock.close()
+                        except Exception:
+                            pass
+            if first_attempt:
+                print(f"[WARN] Network not ready — delaying token refresh up to {timeout_seconds}s")
+                first_attempt = False
+            time.sleep(poll_interval)
+        return False
+
+    def migrate_to_custody(self, device_name=None, app_version=None):
+        """Hand this client's rotating refresh token to the AI server (custody).
+
+        Phase 3 of plan/2026-06-12_auth_server-side-token-custody.md: the server
+        becomes the single owner of the single-use refresh token; this device
+        receives a long-lived, revocable session token instead. The local
+        refresh token is kept as a rollback bridge until the first successful
+        device-token refresh proves custody works (by which point the server
+        has rotated, making the local copy worthless anyway).
+
+        Best-effort by design: any failure (older server without the endpoint,
+        network trouble, rejection) leaves the legacy refresh flow untouched.
+        """
+        access_token = self.tokens.get('access_token')
+        refresh_token = self.tokens.get('refresh_token')
+        if not access_token or not refresh_token:
+            return False
+
+        if device_name is None:
+            try:
+                device_name = socket.gethostname()
+            except Exception:
+                device_name = None
+
+        try:
+            response = requests.post(
+                f"{self.ai_server_url}/api/auth/migrate-custody",
+                json={
+                    'atlassian_token': access_token,
+                    'refresh_token': refresh_token,
+                    'device_name': device_name,
+                    'app_version': app_version or APP_VERSION
+                },
+                timeout=30
+            )
+        except Exception as e:
+            print(f"[WARN] Custody migration request failed: {e} — keeping legacy refresh flow")
+            return False
+
+        if response.status_code == 404:
+            print("[INFO] AI server does not support token custody yet — keeping legacy refresh flow")
+            return False
+        if response.status_code != 200:
+            print(f"[WARN] Custody migration rejected (HTTP {response.status_code}) — keeping legacy refresh flow")
+            return False
+
+        result = response.json()
+        if not result.get('success') or not result.get('device_token'):
+            return False
+
+        self.tokens['device_token'] = result['device_token']
+        if result.get('device_token_expires_at'):
+            self.tokens['device_token_expires_at'] = result['device_token_expires_at']
+        self._save_tokens()
+        print("[OK] Token custody migrated to AI server — device session established")
+        return True
+
+    def _refresh_via_device_token(self):
+        """Obtain a fresh access token using the device session token.
+
+        No OAuth rotation happens on this device: the server rotates centrally
+        (serialized, persisted-before-respond, retried inside Atlassian's reuse
+        window), so laptop sleep can no longer lose a rotated token.
+        """
+        with self._refresh_lock:
+            self._last_token_refresh_time = time.time()
+
+            # Another thread may have refreshed while we waited for the lock.
+            expires_at = self.tokens.get('expires_at', 0)
+            if self.tokens.get('access_token') and expires_at and (expires_at - time.time()) > 300:
+                return True
+
+            try:
+                response = requests.post(
+                    f"{self.ai_server_url}/api/auth/access-token",
+                    json={'device_token': self.tokens.get('device_token')},
+                    timeout=30
+                )
+            except Exception as e:
+                print(f"[ERROR] Device-token refresh failed: {e}")
+                log_auth_diagnostic(
+                    'token_refresh_exception',
+                    level='ERROR',
+                    error_code='OAUTH_TEMPORARY_FAILURE',
+                    exception_type=type(e).__name__,
+                    message=str(e),
+                    next_action='retry_refresh'
+                )
+                return False
+
+            if response.status_code == 200:
+                result = response.json()
+                if not result.get('success') or not result.get('access_token'):
+                    print(f"[ERROR] Device-token refresh failed: {result.get('error', 'Unknown error')}")
+                    return False
+                self.tokens['access_token'] = result['access_token']
+                expires_epoch = None
+                expires_iso = result.get('expires_at')
+                if expires_iso:
+                    try:
+                        expires_epoch = datetime.fromisoformat(str(expires_iso).replace('Z', '+00:00')).timestamp()
+                    except Exception:
+                        expires_epoch = None
+                self.tokens['expires_at'] = expires_epoch or (time.time() + 3300)
+                # Custody proven working: the server has rotated, so the local
+                # refresh-token copy is consumed/worthless — remove the bridge.
+                self.tokens.pop('refresh_token', None)
+                self._save_tokens()
+                self._refresh_token_invalid = False
+                self._refresh_invalid_permanent = False
+                self._refresh_fail_count = 0
+                self._refresh_invalid_set_at = 0
+                self._last_refresh_fail_time = 0
+                self._last_refresh_error_code = ''
+                log_auth_diagnostic(
+                    'token_refresh_succeeded',
+                    level='INFO',
+                    refresh_fail_count=0,
+                    invalid_flag=False,
+                    prior_error_code='',
+                    via='device_token'
+                )
+                print("[OK] Access token refreshed via device session")
+                return True
+
+            # Error responses
+            try:
+                error_data = response.json()
+            except Exception:
+                error_data = {}
+            error_code = str(error_data.get('errorCode', '')).upper()
+
+            if response.status_code == 404 and self.tokens.get('refresh_token'):
+                # Server rolled back to a build without custody endpoints while
+                # we still hold the rollback bridge: revert to the legacy flow.
+                print("[WARN] Custody endpoints unavailable — reverting to legacy refresh flow")
+                self.tokens.pop('device_token', None)
+                self._save_tokens()
+                return False
+
+            if error_data.get('requiresReauth') or error_code in ('DEVICE_SESSION_INVALID', 'OAUTH_REAUTH_REQUIRED'):
+                now = time.time()
+                print(f"[WARN] Server requires re-authentication ({error_code or response.status_code}) — login required")
+                self._refresh_token_invalid = True
+                self._refresh_invalid_permanent = True
+                self._refresh_invalid_set_at = now
+                self._last_refresh_fail_time = now
+                self._refresh_fail_count = 5
+                self._last_refresh_error_code = 'OAUTH_REAUTH_REQUIRED'
+                log_auth_diagnostic(
+                    'token_refresh_failed',
+                    level='WARNING',
+                    http_status=response.status_code,
+                    error_code='OAUTH_REAUTH_REQUIRED',
+                    requires_reauth=True,
+                    permanent_failure=True,
+                    refresh_fail_count=5,
+                    invalid_flag=True,
+                    next_action='show_auth_notification',
+                    server_error=error_data.get('error', '')
+                )
+                return False
+
+            print(f"[WARN] Device-token refresh failed (HTTP {response.status_code}): {error_data.get('error', 'Unknown error')}")
+            log_auth_diagnostic(
+                'token_refresh_failed',
+                level='WARNING',
+                http_status=response.status_code,
+                error_code=error_code or 'OAUTH_TEMPORARY_FAILURE',
+                requires_reauth=False,
+                permanent_failure=False,
+                refresh_fail_count=getattr(self, '_refresh_fail_count', 0),
+                invalid_flag=False,
+                next_action='retry_refresh',
+                server_error=error_data.get('error', '')
+            )
+            return False
+
     def refresh_access_token(self):
         """Refresh access token using refresh token via AI Server.
 
@@ -2524,7 +2766,7 @@ class AtlassianAuthManager:
         The double-check inside the lock compares the refresh_token value: if it changed
         while waiting for the lock, another thread already did the refresh successfully,
         so we skip the network call and return True.
-        
+
         B-15: Rate limiting added to prevent refresh storms (min 5 seconds between calls).
         """
         # B-15: Rate limiting - prevent refresh storms
@@ -2539,6 +2781,20 @@ class AtlassianAuthManager:
         if getattr(self, '_refresh_token_invalid', False):
             grace_period = 1800  # 30 minutes
             invalid_since = getattr(self, '_refresh_invalid_set_at', 0)
+            if getattr(self, '_refresh_invalid_permanent', False):
+                # Server explicitly confirmed the token is dead (OAUTH_REAUTH_REQUIRED).
+                # No grace, no auto-retry — only a fresh login can recover.
+                print("[WARN] Refresh token confirmed dead by server — re-authentication required")
+                log_auth_diagnostic(
+                    'token_refresh_blocked_invalid_flag',
+                    level='WARNING',
+                    reason_code='OAUTH_REAUTH_REQUIRED',
+                    refresh_fail_count=getattr(self, '_refresh_fail_count', 0),
+                    grace_remaining_sec=0,
+                    invalid_flag=True,
+                    next_action='manual_reauth_required'
+                )
+                return False
             if invalid_since and (time.time() - invalid_since) >= grace_period:
                 print("[INFO] Refresh invalid flag expired after grace period — allowing retry")
                 self._refresh_token_invalid = False
@@ -2559,7 +2815,7 @@ class AtlassianAuthManager:
                 return False
 
         refresh_token_before = self.tokens.get('refresh_token')
-        if not refresh_token_before:
+        if not refresh_token_before and not self.tokens.get('device_token'):
             print("[ERROR] No refresh token available")
             log_auth_diagnostic(
                 'token_refresh_failed',
@@ -2573,6 +2829,38 @@ class AtlassianAuthManager:
             )
             return False
 
+        # Never transmit credentials into a network that is still coming up
+        # after sleep — for the legacy rotating token a lost response means the
+        # rotated replacement is gone and the session is permanently dead. Wait
+        # for basic reachability first; a timeout here is NOT a token failure.
+        if not self._wait_for_network():
+            print("[WARN] Network unavailable — token refresh deferred (not counted as a failure)")
+            log_auth_diagnostic(
+                'token_refresh_deferred_no_network',
+                level='WARNING',
+                reason_code='NETWORK_UNAVAILABLE',
+                next_action='retry_when_network_returns'
+            )
+            return False
+
+        # --- Server-side token custody (Phase 3) ---
+        # Upgraded installs hand their refresh token to the server at most once
+        # per process run (no re-login needed); fresh logins migrate right after
+        # the code exchange. Once a device token exists, this client never
+        # performs OAuth rotation again — the entire class of lost-rotation
+        # failures (sleep, Wi-Fi drop, concurrent refresh) moves to the server.
+        if (not self.tokens.get('device_token')
+                and refresh_token_before
+                and not getattr(self, '_custody_migration_attempted', False)):
+            self._custody_migration_attempted = True
+            try:
+                self.migrate_to_custody()
+            except Exception as e:
+                print(f"[WARN] Custody migration attempt failed: {e} — continuing with legacy refresh")
+
+        if self.tokens.get('device_token'):
+            return self._refresh_via_device_token()
+
         with self._refresh_lock:
             # B-15: Update rate limit timestamp inside lock
             self._last_token_refresh_time = time.time()
@@ -2580,6 +2868,9 @@ class AtlassianAuthManager:
             # Re-check invalid flag inside the lock — another thread may have set it
             # while we were waiting to acquire the lock.
             if getattr(self, '_refresh_token_invalid', False):
+                if getattr(self, '_refresh_invalid_permanent', False):
+                    print("[INFO] Token confirmed dead by server while waiting for lock — re-auth required")
+                    return False
                 grace_period = 1800
                 invalid_since = getattr(self, '_refresh_invalid_set_at', 0)
                 if not (invalid_since and (time.time() - invalid_since) >= grace_period):
@@ -2692,6 +2983,7 @@ class AtlassianAuthManager:
                         if server_explicit_reauth:
                             print(f"[WARN] Server confirmed refresh token is permanently invalid (OAUTH_REAUTH_REQUIRED) - marking invalid immediately")
                             self._refresh_token_invalid = True
+                            self._refresh_invalid_permanent = True  # no grace auto-clear: only re-login recovers
                             self._refresh_invalid_set_at = now
                             self._last_refresh_fail_time = now
                             self._refresh_fail_count = 5  # Set to threshold to prevent further retries
@@ -2748,6 +3040,7 @@ class AtlassianAuthManager:
                 self._save_tokens()
 
                 self._refresh_token_invalid = False  # Clear permanent-failure flag
+                self._refresh_invalid_permanent = False  # Successful refresh: token chain is alive
                 self._refresh_fail_count = 0  # Reset consecutive failure counter
                 self._refresh_invalid_set_at = 0  # Clear grace-period timestamp
                 self._last_refresh_fail_time = 0  # Reset failure window
@@ -2789,8 +3082,12 @@ class AtlassianAuthManager:
                 return True
             return False
         # If refresh token is marked invalid, check if the 30-min grace period
-        # has elapsed. If so, auto-clear the flag and allow a retry.
+        # has elapsed. If so, auto-clear the flag and allow a retry — UNLESS the
+        # server explicitly confirmed the token is dead (permanent flag): then only
+        # a fresh login recovers, and auto-retrying just re-notifies forever.
         if getattr(self, '_refresh_token_invalid', False):
+            if getattr(self, '_refresh_invalid_permanent', False):
+                return False
             grace_period = 1800  # 30 minutes
             invalid_since = getattr(self, '_refresh_invalid_set_at', 0)
             if invalid_since and (time.time() - invalid_since) >= grace_period:
@@ -3178,10 +3475,24 @@ class AtlassianAuthManager:
 
     def logout(self):
         """Clear authentication tokens from all storage locations"""
+        # Revoke this device's server-side session first (best-effort): logout
+        # must kill the device token at the source, not just locally.
+        device_token = (self.tokens or {}).get('device_token')
+        if device_token:
+            try:
+                requests.post(
+                    f"{self.ai_server_url}/api/auth/device/revoke",
+                    json={'device_token': device_token},
+                    timeout=10
+                )
+                print("[OK] Device session revoked on server")
+            except Exception as e:
+                print(f"[WARN] Could not revoke device session on server: {e}")
         self.tokens = {}
         # Reset provider so a subsequent Atlassian login isn't treated as Google.
         self.auth_provider = 'atlassian'
         self._refresh_token_invalid = False
+        self._refresh_invalid_permanent = False
         self._refresh_fail_count = 0
         self._refresh_invalid_set_at = 0
         self._last_refresh_fail_time = 0
@@ -11655,10 +11966,14 @@ class TimeTracker:
                                     print("[WARN] Supabase JWT refresh failed — will retry on next cycle")
 
                     elif getattr(self.auth_manager, '_refresh_token_invalid', False):
-                        # Refresh token is marked invalid — check if grace period allows retry
+                        # Refresh token is marked invalid — check if grace period allows retry.
+                        # Permanent (server-confirmed dead) tokens never auto-recover: skip the
+                        # grace clear entirely; only a fresh login resets the flag.
                         grace_period = 1800  # 30 minutes
                         invalid_since = getattr(self.auth_manager, '_refresh_invalid_set_at', 0)
-                        if invalid_since and (time.time() - invalid_since) >= grace_period:
+                        if getattr(self.auth_manager, '_refresh_invalid_permanent', False):
+                            pass  # re-auth required; notification already shown by refresh path
+                        elif invalid_since and (time.time() - invalid_since) >= grace_period:
                             print("[INFO] Sync thread: invalid flag grace period expired — attempting recovery refresh")
                             self.auth_manager._refresh_token_invalid = False
                             self.auth_manager._refresh_fail_count = 0

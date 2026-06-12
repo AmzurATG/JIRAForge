@@ -95,6 +95,24 @@ Tests are written first and mapped one-to-one to the acceptance criteria below, 
 | Undocumented Atlassian behavior on repeated authorizations | Phase 1 gate resolves it empirically before any dependent code is written |
 | Migration defect strands a user | Legacy endpoint preserved; staged rollout; per-user migration is a single idempotent step |
 
+## Phase 1 findings (gate executed 2026-06-12, acceptance criterion 8)
+
+Empirical test against the production AI server with a disposable Atlassian
+account (two authorizations, four measurements — script:
+`scripts/phase1_rotation_grant_test.py`, raw results: `scripts/phase1_results.md`):
+
+1. **Old token chains survive re-authorization.** A chain created by an earlier
+   login keeps refreshing normally after the same user authorizes the app
+   again, including after the newer chain rotates. Multi-device users are
+   therefore unaffected during rollout — no forced re-logins in mixed-version
+   fleets, and the server simply holding the newest credential is sufficient.
+2. **The 10-minute reuse interval is confirmed** on our production path: a
+   refresh token that had just been consumed was accepted again moments later.
+   The custody service's prompt same-token retry on network failure rests on
+   observed behavior, not only on documentation.
+
+Gate outcome: PASS — no design or migration changes required.
+
 ## Estimated effort
 
 | Phase | Estimate |
