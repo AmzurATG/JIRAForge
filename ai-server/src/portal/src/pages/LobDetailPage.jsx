@@ -19,6 +19,7 @@ import { appCatalogApi } from '../api/appCatalog';
 import DataTable from '../components/common/DataTable';
 import ConfirmDialog from '../components/common/ConfirmDialog';
 import ErrorBanner from '../components/common/ErrorBanner';
+import SuccessBanner from '../components/common/SuccessBanner';
 import AppKindBadge from '../components/common/AppKindBadge';
 import PeoplePickerModal from '../components/common/PeoplePickerModal';
 import { useDebounce } from '../hooks/useDebounce';
@@ -91,7 +92,8 @@ function LobDetailPage() {
       <div className="flex items-center gap-4">
         <button
           onClick={() => navigate('/lobs')}
-          className="p-2.5 bg-white dark:bg-gray-800 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-xl border border-gray-200 dark:border-gray-700"
+          className="p-2.5 bg-white dark:bg-gray-800 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-xl border border-gray-200 dark:border-gray-700 transition-all duration-200 shadow-sm hover:shadow-md"
+          title="Back to LOBs"
         >
           <ArrowLeft className="w-5 h-5" />
         </button>
@@ -102,9 +104,7 @@ function LobDetailPage() {
       </div>
 
       {error && <ErrorBanner message={error} onClose={() => setError(null)} />}
-      {success && (
-        <div className="p-3 bg-green-100 dark:bg-green-900 text-green-800 dark:text-green-200 rounded text-sm">{success}</div>
-      )}
+      {success && <SuccessBanner message={success} onClose={() => setSuccess(null)} />}
 
       <div className="flex gap-1 p-1 bg-gray-100 dark:bg-gray-800 rounded-xl w-fit">
         {isSuperadmin && <TabButton id="members" tab={tab} setTab={setTab}>Members</TabButton>}
@@ -195,8 +195,8 @@ function MembersTab({ lobId, setError, flash }) {
     <div className="card">
       <div className="flex justify-between items-center mb-3">
         <h3 className="section-title">Members ({totalCount})</h3>
-        <button onClick={() => setShowAdd(true)} className="flex items-center gap-2 px-3 py-1.5 rounded bg-primary-600 text-white text-sm hover:bg-primary-700">
-          <Plus className="w-4 h-4" /> Add Employee
+        <button onClick={() => setShowAdd(true)} className="btn-primary flex items-center gap-1.5">
+          <Plus className="w-3.5 h-3.5" /> Add Employee
         </button>
       </div>
 
@@ -233,6 +233,7 @@ function MembersTab({ lobId, setError, flash }) {
       <ConfirmDialog
         isOpen={!!removing}
         title="Remove Member"
+        confirmLabel="Remove"
         message={`Remove ${removing?.name} from this LOB? (The employee and their activity are not deleted.)`}
         onConfirm={async () => {
           try {
@@ -290,8 +291,8 @@ function HeadsTab({ lobId, setError, flash }) {
     <div className="card">
       <div className="flex justify-between items-center mb-3">
         <h3 className="section-title">Heads ({heads.length})</h3>
-        <button onClick={() => setShowAdd(true)} className="flex items-center gap-2 px-3 py-1.5 rounded bg-primary-600 text-white text-sm hover:bg-primary-700">
-          <Plus className="w-4 h-4" /> Add Head
+        <button onClick={() => setShowAdd(true)} className="btn-primary flex items-center gap-1.5">
+          <Plus className="w-3.5 h-3.5" /> Add Head
         </button>
       </div>
 
@@ -322,6 +323,7 @@ function HeadsTab({ lobId, setError, flash }) {
       <ConfirmDialog
         isOpen={!!removing}
         title="Remove Head"
+        confirmLabel="Remove"
         message={`Remove ${removing?.displayName} as a head of this LOB?`}
         onConfirm={async () => {
           try {
@@ -481,9 +483,9 @@ function AppsTab({ lobId, setError, flash, unlisted, unlistedLoading, onScan, on
           </div>
           <button
             onClick={() => openAddFor(null)}
-            className="flex items-center gap-2 px-3 py-1.5 rounded bg-primary-600 text-white text-sm hover:bg-primary-700 whitespace-nowrap"
+            className="btn-primary flex items-center gap-1.5 whitespace-nowrap"
           >
-            <Plus className="w-4 h-4" /> Add Application
+            <Plus className="w-3.5 h-3.5" /> Add Application
           </button>
         </div>
       </div>
@@ -792,14 +794,14 @@ function AddAppModal({ lobId, prefill, onAdded, onClose, setError }) {
 
         <form onSubmit={submit} className="space-y-3">
           <div>
-            <label className="block text-sm font-medium mb-1">Type</label>
+            <label className="filter-label">Type</label>
             <select value={form.matchBy} onChange={(e) => setForm({ ...form, matchBy: e.target.value })} className="select-field">
               <option value="process">Desktop app (process)</option>
               <option value="url">Website (domain)</option>
             </select>
           </div>
           <div>
-            <label className="block text-sm font-medium mb-1">Identifier *</label>
+            <label className="filter-label">Identifier *</label>
             <input
               type="text"
               value={form.identifier}
@@ -813,7 +815,7 @@ function AddAppModal({ lobId, prefill, onAdded, onClose, setError }) {
             </p>
           </div>
           <div>
-            <label className="block text-sm font-medium mb-1">Display name *</label>
+            <label className="filter-label">Display name *</label>
             <input
               type="text"
               value={form.displayName}
@@ -824,14 +826,14 @@ function AddAppModal({ lobId, prefill, onAdded, onClose, setError }) {
             />
           </div>
           <div>
-            <label className="block text-sm font-medium mb-1">Classification for this LOB</label>
+            <label className="filter-label">Classification for this LOB</label>
             <select value={form.classification} onChange={(e) => setForm({ ...form, classification: e.target.value })} className="select-field">
               {CLASSIFICATION_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
             </select>
           </div>
           <div className="flex gap-2 justify-end pt-1">
-            <button type="button" onClick={onClose} className="px-4 py-2 rounded border border-gray-300 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-800">Cancel</button>
-            <button type="submit" disabled={saving} className="px-4 py-2 rounded bg-primary-600 text-white hover:bg-primary-700 disabled:opacity-50">
+            <button type="button" onClick={onClose} className="btn-secondary">Cancel</button>
+            <button type="submit" disabled={saving} className="btn-primary">
               {saving ? 'Adding…' : 'Add'}
             </button>
           </div>

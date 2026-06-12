@@ -77,12 +77,12 @@ function PeoplePickerModal({ title, fetchPeople, onAdd, onClose, setError }) {
         <div className="flex gap-2 justify-end mt-4">
           {/* Explicit type — buttons default to submit and this shared modal
               must stay safe if a caller ever renders it inside a form. */}
-          <button type="button" onClick={onClose} className="px-4 py-2 rounded border border-gray-300 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-800">Cancel</button>
+          <button type="button" onClick={onClose} className="btn-secondary">Cancel</button>
           <button
             type="button"
             disabled={selectedIds.length === 0}
             onClick={() => onAdd(selectedIds)}
-            className="px-4 py-2 rounded bg-primary-600 text-white hover:bg-primary-700 disabled:opacity-50 disabled:cursor-not-allowed"
+            className="btn-primary"
           >
             Add {selectedIds.length || ''}
           </button>

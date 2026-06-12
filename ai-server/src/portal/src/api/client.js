@@ -35,8 +35,9 @@ apiClient.interceptors.response.use(
   (response) => response,
   (error) => {
     if (error.response?.status === 401) {
-      // Don't redirect on login failures (let the login page handle it)
-      if (!error.config.url.includes('/auth/login')) {
+      // Don't redirect on auth-endpoint failures (login, Google callback,
+      // password reset) — those pages render the error themselves.
+      if (!error.config?.url?.includes('/portal/auth/')) {
         // Token expired or invalid
         localStorage.removeItem('portal_token');
         localStorage.removeItem('portal_user');
