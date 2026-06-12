@@ -13041,8 +13041,8 @@ class TimeTracker:
             print(f"[WARN] dq_nudge package unavailable: {e}")
             return
 
-        if not self.auth_manager or not self.auth_manager.get_supabase_token():
-            # Not yet logged in — poller will be started on next start_tracking call.
+        if not self.auth_manager:
+            # Auth manager not ready yet.
             return
 
         try:
@@ -13070,13 +13070,26 @@ class TimeTracker:
             return
 
         def _sync():
+            max_attempts = 6
+            retry_delay_seconds = 20
             try:
-                result = poller.sync_recent_unassigned_once()
-                nudges = list(result.get('nudges') or [])
-                if not nudges:
-                    nudges = poller.poll_once()
-                if nudges:
-                    self._handle_dq_nudges(nudges)
+                for attempt in range(max_attempts):
+                    result = poller.sync_recent_unassigned_once(timeout=30.0)
+                    reason = result.get('reason')
+
+                    nudges = list(result.get('nudges') or [])
+                    if not nudges:
+                        nudges = poller.poll_once(timeout=30.0)
+
+                    if nudges:
+                        self._handle_dq_nudges(nudges)
+                        return
+
+                    retryable_reason = reason in {'missing-token', 'request-exception'}
+                    if retryable_reason and attempt < (max_attempts - 1):
+                        time.sleep(retry_delay_seconds)
+                        continue
+                    return
             except Exception as e:
                 print(f"[WARN] DQ startup sync failed: {e}")
 

@@ -51,6 +51,7 @@ def test_poll_once_returns_nudges_on_200():
     # Verify Authorization header was sent.
     _, kwargs = get.call_args
     assert kwargs['headers']['Authorization'] == 'Bearer abc'
+    assert kwargs['timeout'] == 45.0
 
 
 def test_poll_once_returns_empty_on_non_2xx():

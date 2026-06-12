@@ -1071,7 +1071,7 @@ class TestTrayMenuClassificationItems:
 class _InlineThread:
     """Test helper: execute a thread target inline to keep tests deterministic."""
 
-    def __init__(self, target=None, args=(), kwargs=None, daemon=None):
+    def __init__(self, target=None, args=(), kwargs=None, daemon=None, **_thread_kwargs):
         self._target = target
         self._args = args
         self._kwargs = kwargs or {}
@@ -1102,6 +1102,63 @@ def test_manual_dq_trigger_polls_once_and_dispatches_nudges():
     tracker.dq_nudge_preferences.refresh.assert_called_once()
     tracker.dq_nudge_poller.poll_once.assert_called_once()
     tracker._handle_dq_nudges.assert_called_once_with([{"id": 1, "issueKey": "FEEDBACK-1"}])
+
+
+def test_run_dq_startup_sync_retries_missing_token_then_dispatches():
+    tracker = MagicMock()
+    tracker.dq_nudge_poller = MagicMock()
+    tracker.dq_nudge_poller.sync_recent_unassigned_once.side_effect = [
+        {"success": False, "generated": 0, "nudges": [], "reason": "missing-token"},
+        {
+            "success": True,
+            "generated": 1,
+            "nudges": [{"id": 9, "issueKey": "PROJ-9", "score": 20}],
+            "reason": None,
+        },
+    ]
+    tracker.dq_nudge_poller.poll_once.return_value = []
+    tracker._handle_dq_nudges = MagicMock()
+
+    tracker._run_dq_startup_sync = types.MethodType(
+        desktop_app.TimeTracker._run_dq_startup_sync,
+        tracker,
+    )
+
+    with patch.object(desktop_app.threading, 'Thread', _InlineThread), \
+         patch.object(desktop_app.time, 'sleep') as sleep_mock:
+        tracker._run_dq_startup_sync()
+
+    assert tracker.dq_nudge_poller.sync_recent_unassigned_once.call_count == 2
+    sleep_mock.assert_called_once_with(20)
+    tracker._handle_dq_nudges.assert_called_once_with([
+        {"id": 9, "issueKey": "PROJ-9", "score": 20}
+    ])
+
+
+def test_start_dq_nudge_poller_does_not_require_supabase_token():
+    tracker = MagicMock()
+    tracker.auth_manager = MagicMock()
+    tracker.auth_manager.get_supabase_token.return_value = None
+    tracker.dq_nudge_poller = None
+    tracker._handle_dq_nudges = MagicMock()
+
+    tracker._start_dq_nudge_poller = types.MethodType(
+        desktop_app.TimeTracker._start_dq_nudge_poller,
+        tracker,
+    )
+
+    with patch('dq_nudge.DqNudgePreferences') as prefs_cls, \
+         patch('dq_nudge.DqNudgePoller') as poller_cls:
+        prefs_inst = MagicMock()
+        poller_inst = MagicMock()
+        prefs_cls.return_value = prefs_inst
+        poller_cls.return_value = poller_inst
+
+        tracker._start_dq_nudge_poller()
+
+    prefs_cls.assert_called_once_with(tracker.auth_manager)
+    poller_cls.assert_called_once()
+    poller_inst.start.assert_called_once()
 
 
 # ===========================================================================

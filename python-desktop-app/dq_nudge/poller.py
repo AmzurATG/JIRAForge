@@ -87,7 +87,7 @@ class DqNudgePoller:
             return True
         return bool(self.preferences.popup_enabled)
 
-    def poll_once(self, timeout: float = 10.0) -> List[dict]:
+    def poll_once(self, timeout: float = 45.0) -> List[dict]:
         """
         Fetch pending nudges. Returns the list (possibly empty); logs and
         returns [] on transport errors. Safe to call from tests.

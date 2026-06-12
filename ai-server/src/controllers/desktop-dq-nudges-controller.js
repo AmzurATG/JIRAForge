@@ -19,6 +19,7 @@ const express = require('express');
 const logger = require('../utils/logger');
 const dqNotificationsRepo = require('../services/db/description-quality-notifications-repo');
 const descriptionService = require('../services/description-service');
+const { extractDescriptionText } = require('../utils/adfToText');
 const { getUserById, getOrganizationById, getUserCachedIssues } = require('../services/db/user-db-service');
 const { getClient } = require('../services/db/supabase-client');
 
@@ -27,9 +28,61 @@ const MAX_PENDING_SCAN = 50;
 const MAX_MANUAL_TRIGGER_LIMIT = 20;
 const MAX_TRIGGER_REFRESH_ISSUES = 20;
 const MIN_NUDGE_SCORE = 80;
+const MAX_ATTACHMENT_CONTEXT_ITEMS = 5;
 const VALID_ACTIONS = new Set(['viewed', 'opened-in-jira', 'dismissed', 'snoozed']);
 const LIVE_JQL = 'assignee = currentUser() AND resolution = EMPTY AND statusCategory = "In Progress" ORDER BY updated DESC';
-const LIVE_FIELDS = ['summary', 'description', 'issuetype', 'project', 'status', 'updated'];
+const LIVE_FIELDS = ['summary', 'description', 'attachment', 'issuetype', 'project', 'status', 'updated'];
+
+function formatBytes(bytes) {
+  const size = Number(bytes);
+  if (!Number.isFinite(size) || size <= 0) return 'size unknown';
+  if (size < 1024) return `${size} B`;
+  if (size < 1024 * 1024) return `${Math.round(size / 1024)} KB`;
+  return `${(size / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function buildAttachmentContext(rawAttachments) {
+  if (!Array.isArray(rawAttachments) || rawAttachments.length === 0) {
+    return '';
+  }
+
+  const lines = rawAttachments
+    .filter((att) => att && typeof att === 'object' && att.filename)
+    .slice(0, MAX_ATTACHMENT_CONTEXT_ITEMS)
+    .map((att) => {
+      const mimeType = att.mimeType || 'unknown';
+      return `- ${att.filename} (${mimeType}, ${formatBytes(att.size)})`;
+    });
+
+  if (lines.length === 0) return '';
+  return `Attached files:\n${lines.join('\n')}`;
+}
+
+function normalizeIssueDescription(rawDescription) {
+  if (rawDescription == null) return '';
+
+  if (typeof rawDescription === 'object') {
+    return extractDescriptionText(rawDescription) || '';
+  }
+
+  if (typeof rawDescription !== 'string') return '';
+
+  const trimmed = rawDescription.trim();
+  if (!trimmed) return '';
+
+  // Cached rows may persist ADF as JSON text; parse opportunistically.
+  if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
+    try {
+      const parsed = JSON.parse(trimmed);
+      const parsedText = extractDescriptionText(parsed);
+      if (parsedText) return parsedText;
+    } catch (_) {
+      // Fallback to raw string below.
+    }
+  }
+
+  return trimmed;
+}
 
 function normalizeScore(score) {
   const num = Number(score);
@@ -91,10 +144,14 @@ async function analyzeLiveIssues({ orgId, accountId, jiraBaseUrl, issues }) {
     if (!issueKey) continue;
 
     const fields = issue.fields || {};
+    const description = normalizeIssueDescription(fields.description);
+    const attachmentContext = buildAttachmentContext(fields.attachment);
+    const analysisDescription = [description, attachmentContext].filter(Boolean).join('\n\n');
+
     const result = await descriptionService.analyzeDescription({
       issueKey,
       title: String(fields.summary || issueKey).trim(),
-      description: typeof fields.description === 'string' ? fields.description : '',
+      description: analysisDescription,
       issueType: String(fields.issuetype?.name || 'Task').trim(),
       projectKey: String(fields.project?.key || issueKey.split('-')[0] || 'TASK').trim(),
       requestImprovement: false,
@@ -247,14 +304,16 @@ async function refreshScoresForManualTrigger({ orgId, accountId, cachedIssues })
 
     try {
       const title = String(row.issue_summary || row.summary || row.issue_key).trim();
-      const description = typeof row.description === 'string' ? row.description : '';
+      const description = normalizeIssueDescription(row.description);
+      const attachmentContext = buildAttachmentContext(row.attachments || row.attachment || []);
+      const analysisDescription = [description, attachmentContext].filter(Boolean).join('\n\n');
       const issueType = String(row.issue_type || 'Task').trim();
       const projectKey = String(row.project_key || row.issue_key.split('-')[0] || 'TASK').trim();
 
       const result = await descriptionService.analyzeDescription({
         issueKey: row.issue_key,
         title,
-        description,
+        description: analysisDescription,
         issueType,
         projectKey,
         requestImprovement: false,

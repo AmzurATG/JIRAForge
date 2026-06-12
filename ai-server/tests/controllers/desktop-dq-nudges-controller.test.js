@@ -282,6 +282,60 @@ describe('GET /api/desktop/description-quality-nudges', () => {
       channel: 'desktop'
     }));
   });
+
+  test('parses ADF description and appends attachment context for live Atlassian scoring', async () => {
+    axios.post.mockResolvedValue({
+      data: {
+        issues: [
+          {
+            key: 'PROJ-105',
+            fields: {
+              summary: 'Issue with adf body',
+              description: {
+                type: 'doc',
+                version: 1,
+                content: [
+                  {
+                    type: 'paragraph',
+                    content: [{ type: 'text', text: 'Parsed from ADF' }]
+                  }
+                ]
+              },
+              attachment: [
+                {
+                  id: '1',
+                  filename: 'spec.pdf',
+                  mimeType: 'application/pdf',
+                  size: 4096
+                }
+              ],
+              issuetype: { name: 'Task' },
+              project: { key: 'PROJ' }
+            }
+          }
+        ]
+      }
+    });
+    descriptionService.analyzeDescription.mockResolvedValue({ score: 11 });
+    repo.insertNotification.mockResolvedValue({
+      id: 105,
+      issue_key: 'PROJ-105',
+      score_at_notify: 11,
+      payload: { summary: 'Issue with adf body' },
+      notified_at: '2026-06-09T10:00:00Z'
+    });
+
+    const res = await request(buildAtlassianApp()).get('/api/desktop/description-quality-nudges');
+
+    expect(res.status).toBe(200);
+    expect(descriptionService.analyzeDescription).toHaveBeenCalledWith(expect.objectContaining({
+      issueKey: 'PROJ-105',
+      description: expect.stringContaining('Parsed from ADF')
+    }));
+    expect(descriptionService.analyzeDescription).toHaveBeenCalledWith(expect.objectContaining({
+      description: expect.stringContaining('Attached files:\n- spec.pdf (application/pdf, 4 KB)')
+    }));
+  });
 });
 
 describe('POST /api/desktop/description-quality-nudges/ack', () => {
@@ -529,6 +583,38 @@ describe('POST /api/desktop/description-quality-nudges/trigger', () => {
       projectKey: 'PROJ',
       orgId: 'cloud-xyz',
       accountId: 'acct-123'
+    }));
+  });
+
+  test('normalizes JSON-stringified ADF descriptions in cached issue refresh path', async () => {
+    userDb.getUserCachedIssues.mockResolvedValue([
+      {
+        issue_key: 'PROJ-201',
+        issue_summary: 'Issue one',
+        description: JSON.stringify({
+          type: 'doc',
+          version: 1,
+          content: [
+            {
+              type: 'paragraph',
+              content: [{ type: 'text', text: 'Cached ADF text' }]
+            }
+          ]
+        }),
+        project_key: 'PROJ'
+      }
+    ]);
+    descriptionService.analyzeDescription.mockResolvedValue({ score: 30 });
+    repo.insertNotification.mockResolvedValue({ id: 201 });
+
+    const res = await request(buildApp())
+      .post('/api/desktop/description-quality-nudges/trigger')
+      .send({ limit: 1, force: true });
+
+    expect(res.status).toBe(200);
+    expect(descriptionService.analyzeDescription).toHaveBeenCalledWith(expect.objectContaining({
+      issueKey: 'PROJ-201',
+      description: 'Cached ADF text'
     }));
   });
 });
