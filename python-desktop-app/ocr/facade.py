@@ -314,10 +314,10 @@ class OCRFacade:
         """
         import sys
         import platform
-        from datetime import datetime
+        from datetime import datetime, timezone
         
         diagnostics = {
-            'timestamp': datetime.utcnow().isoformat() + 'Z',
+            'timestamp': datetime.now(timezone.utc).isoformat(),
             'is_frozen_exe': getattr(sys, 'frozen', False),
             'bundled_path': getattr(sys, '_MEIPASS', None),
             'executable_path': sys.executable if getattr(sys, 'frozen', False) else None,

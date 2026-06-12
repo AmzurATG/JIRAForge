@@ -7,7 +7,7 @@ import os
 import sys
 import time
 import base64
-from datetime import datetime
+from datetime import datetime, timezone
 from io import BytesIO
 
 # Add parent directory to path
@@ -90,7 +90,7 @@ def main():
     data = {
         'user_id': os.getenv('TEST_USER_ID', '00000000-0000-0000-0000-000000000001'),
         'organization_id': os.getenv('TEST_ORG_ID', '00000000-0000-0000-0000-000000000001'),
-        'timestamp': datetime.utcnow().isoformat(),
+        'timestamp': datetime.now(timezone.utc).isoformat(),
         'window_title': 'Quick Test',
         'application_name': 'Test Script',
         'extracted_text': result.get('text', ''),

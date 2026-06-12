@@ -6,7 +6,7 @@ Tests that all engines (paddle, tesseract, demo, mock) work with ocr_test_result
 import os
 import sys
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from io import BytesIO
 import base64
 
@@ -82,7 +82,7 @@ def test_engine(engine_name, supabase, user_id, org_id):
     data = {
         'user_id': user_id,
         'organization_id': org_id,
-        'timestamp': datetime.utcnow().isoformat(),
+        'timestamp': datetime.now(timezone.utc).isoformat(),
         'window_title': f'Test {engine_name}',
         'application_name': 'OCR Facade Test',
         'extracted_text': text,

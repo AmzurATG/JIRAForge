@@ -388,8 +388,12 @@ dynamic_hiddenimports += collect_submodules('privacy')
 try:
     dynamic_hiddenimports += collect_submodules('presidio_analyzer')
     dynamic_hiddenimports += collect_submodules('presidio_anonymizer')
-except Exception:
-    print("[WARN] Could not collect presidio submodules")
+    # Spacy is required for Presidio's PII detection (NER, entity recognition)
+    dynamic_hiddenimports += collect_submodules('spacy')
+    dynamic_hiddenimports += ['en_core_web_sm']  # Spacy model for English
+    print("[INFO] Presidio and Spacy submodules collected for PII detection")
+except Exception as e:
+    print(f"[WARN] Could not collect presidio/spacy submodules: {e}")
 dynamic_hiddenimports += collect_submodules('supabase')
 dynamic_hiddenimports += collect_submodules('keyring')
 dynamic_hiddenimports += collect_submodules('pynput')
@@ -433,8 +437,18 @@ except Exception as e:
 try:
     runtime_datas += collect_data_files('presidio_analyzer')
     runtime_datas += collect_data_files('presidio_anonymizer')
-except Exception:
-    print("[WARN] Could not collect presidio data files")
+    # Bundle spacy model data for PII detection
+    try:
+        import en_core_web_sm
+        spacy_model_path = en_core_web_sm.__path__[0]
+        runtime_datas.append((spacy_model_path, 'en_core_web_sm'))
+        print(f"[INFO] Spacy model en_core_web_sm bundled from: {spacy_model_path}")
+    except ImportError:
+        print("[WARN] en_core_web_sm not installed - PII detection will be degraded")
+        print("[WARN] Install it with: python -m spacy download en_core_web_sm")
+    runtime_datas += collect_data_files('spacy')
+except Exception as e:
+    print(f"[WARN] Could not collect presidio/spacy data files: {e}")
 try:
     runtime_datas += collect_data_files('platformdirs')
 except Exception:
@@ -641,16 +655,17 @@ a = Analysis(
         'pandas.tests.plotting',
         'pandas.tests.io',
         'xmlrpc',
-        # Security: spacy/NLP not needed
+        # Security: exclude detect_secrets (alternative to presidio)
         'detect_secrets',
         'privacy.detectors.secrets_detector',
-        'spacy',
-        'spacy_legacy',
-        'spacy_loggers',
-        'thinc',
-        'en_core_web_sm',
-        'en_core_web_md',
-        'en_core_web_lg',
+        # Spacy and models are NOW INCLUDED for PII detection (removed from excludes)
+        # 'spacy',  # REMOVED - needed for presidio PII detection
+        # 'en_core_web_sm',  # REMOVED - needed for presidio NER
+        'spacy_legacy',  # Still exclude legacy version
+        'spacy_loggers',  # Still exclude loggers
+        'thinc',  # Still exclude thinc (spacy backend not needed in full)
+        'en_core_web_md',  # Exclude larger models
+        'en_core_web_lg',  # Exclude larger models
         # Mock/demo engines never needed in EXE
         'ocr.engines.mock_engine',
         'ocr.engines.demo_engine',

@@ -102,6 +102,21 @@ if [ ${#MISSING_DEPS[@]} -gt 0 ]; then
     $PYTHON_CMD -m pip install "${MISSING_DEPS[@]}"
 fi
 
+# Check for spacy model (required for Presidio PII detection)
+echo ""
+echo "[INFO] Checking spacy model for PII detection..."
+if ! $PYTHON_CMD -c "import en_core_web_sm" 2>/dev/null; then
+    echo "[INFO] Spacy model en_core_web_sm not found, downloading..."
+    $PYTHON_CMD -m spacy download en_core_web_sm
+    if [ $? -eq 0 ]; then
+        echo "[OK] Spacy model en_core_web_sm downloaded successfully"
+    else
+        echo "[WARN] Failed to download spacy model - PII detection will be degraded"
+    fi
+else
+    echo "[OK] Spacy model en_core_web_sm is already installed"
+fi
+
 echo ""
 echo "[0/5] Validating Linux tray runtime..."
 PYTHONPATH="${SYSTEM_DIST_PACKAGES}${PYTHONPATH:+:$PYTHONPATH}" $PYTHON_CMD - <<'PY'

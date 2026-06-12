@@ -36,7 +36,7 @@ import os
 import sys
 import time
 import argparse
-from datetime import datetime
+from datetime import datetime, timezone
 from io import BytesIO
 import base64
 from pathlib import Path
@@ -309,7 +309,7 @@ class OCRTester:
                 data = {
                     'user_id': self.user_id,
                     'organization_id': self.org_id,
-                    'timestamp': datetime.utcnow().isoformat(),
+                    'timestamp': datetime.now(timezone.utc).isoformat(),
                     'window_title': actual_window_title,
                     'application_name': actual_app_name,
                     'extracted_text': text,
