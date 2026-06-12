@@ -11746,28 +11746,64 @@ class TimeTracker:
                 _Atspi.init()
                 desktop = _Atspi.get_desktop(0)
                 ACTIVE = _Atspi.StateType.ACTIVE
+                FOCUSED = _Atspi.StateType.FOCUSED
                 app_count = desktop.get_child_count()
                 _log_debug(f"atspi: Desktop has {app_count} apps")
+                
+                # Expanded list of system apps to skip
+                SYSTEM_APPS = {
+                    'gnome-shell', 'gnome-software', 'ibus-daemon', 'gsd-color',
+                    'gsd-keyboard', 'gsd-wacom', 'gsd-power', 'gsd-media-keys',
+                    'gsd-xsettings', 'ibus-x11', 'ibus-extension-gtk3',
+                    'xdg-desktop-portal-gtk', 'xdg-desktop-portal-gnome',
+                    'update-notifier', 'gjs', 'evolution-alarm-notify'
+                }
+                
+                # Collect all candidate windows (both ACTIVE and FOCUSED)
+                candidates = []
                 for i in range(app_count):
                     app = desktop.get_child_at_index(i)
                     if not app:
                         continue
                     app_name = app.get_name() or ''
-                    # Skip shell and desktop components
-                    if app_name in ('gnome-shell', 'gnome-software', 'ibus-daemon', 'gsd-color'):
+                    
+                    # Skip system apps
+                    if app_name in SYSTEM_APPS:
                         continue
+                    
                     for j in range(app.get_child_count()):
                         win = app.get_child_at_index(j)
                         if not win:
                             continue
                         try:
                             state_set = win.get_state_set()
-                            if state_set and state_set.contains(ACTIVE):
-                                title = win.get_name() or ''
-                                if title:
-                                    return title, app_name or 'Unknown'
-                        except Exception:
+                            if not state_set:
+                                continue
+                            
+                            title = win.get_name() or ''
+                            if not title:  # Skip windows without titles
+                                continue
+                            
+                            is_active = state_set.contains(ACTIVE)
+                            is_focused = state_set.contains(FOCUSED)
+                            
+                            if is_active or is_focused:
+                                # Priority: FOCUSED > ACTIVE
+                                priority = 2 if is_focused else 1
+                                candidates.append((priority, title, app_name or 'Unknown'))
+                                _log_debug(f"atspi: Found window: {app_name} - {title[:50]} (focused={is_focused}, active={is_active})")
+                        except Exception as e:
+                            _log_debug(f"atspi: Error checking window: {e}")
                             continue
+                
+                # Return the highest priority candidate
+                if candidates:
+                    candidates.sort(key=lambda x: x[0], reverse=True)
+                    _, title, app_name = candidates[0]
+                    _log_debug(f"atspi: Selected best match from {len(candidates)} candidates")
+                    return title, app_name
+                
+                _log_debug("atspi: No active/focused windows found with titles")
                 return None
 
             # Attempt 1: in-process (development / system Python with python3-gi)
@@ -11793,20 +11829,28 @@ class TimeTracker:
                 "Atspi.init()\n"
                 "d = Atspi.get_desktop(0)\n"
                 "A = Atspi.StateType.ACTIVE\n"
+                "F = Atspi.StateType.FOCUSED\n"
+                "SKIP = {'gnome-shell','gnome-software','ibus-daemon','gsd-color','gsd-keyboard','gsd-wacom','gsd-power','gsd-media-keys','gsd-xsettings','ibus-x11','ibus-extension-gtk3','xdg-desktop-portal-gtk','xdg-desktop-portal-gnome','update-notifier','gjs','evolution-alarm-notify'}\n"
+                "candidates = []\n"
                 "for i in range(d.get_child_count()):\n"
                 " a = d.get_child_at_index(i)\n"
                 " if not a: continue\n"
                 " n = a.get_name() or ''\n"
-                " if n in ('gnome-shell','ibus-daemon','gsd-color'): continue\n"
+                " if n in SKIP: continue\n"
                 " for j in range(a.get_child_count()):\n"
                 "  w = a.get_child_at_index(j)\n"
                 "  if not w: continue\n"
                 "  try:\n"
                 "   ss = w.get_state_set()\n"
-                "   if ss and ss.contains(A) and w.get_name():\n"
-                "    print(w.get_name() + '|||' + (n or 'Unknown'))\n"
-                "    sys.exit(0)\n"
+                "   if not ss: continue\n"
+                "   t = w.get_name() or ''\n"
+                "   if not t: continue\n"
+                "   if ss.contains(F): candidates.append((2,t,n))\n"
+                "   elif ss.contains(A): candidates.append((1,t,n))\n"
                 "  except: pass\n"
+                "if candidates:\n"
+                " candidates.sort(key=lambda x:x[0],reverse=True)\n"
+                " print(candidates[0][1]+'|||'+(candidates[0][2]or'Unknown'))\n"
             )
             
             # Try 'python3' first, then '/usr/bin/python3' explicitly
@@ -11901,13 +11945,17 @@ class TimeTracker:
         # FIX-6 (BL-17): Circuit-breaker — skip methods that have failed 3+ times recently.
         # Prevents stalling the 2-second tracking loop for 9+ seconds on minimal Linux
         # where all methods time out on every call.
-        _CB_OPEN_AFTER  = 3    # failures before circuit opens
+        # AT-SPI2 gets higher threshold since it's reliable but may return None if no window has focus
+        def _get_cb_threshold(method_name):
+            return 10 if method_name == 'atspi' else 3
+        
         _CB_RESET_AFTER = 60   # seconds before retry
         if not hasattr(self, '_win_method_failures'):
             self._win_method_failures = {}
 
         for method_name, resolver in method_pairs:
             # Check circuit state
+            _CB_OPEN_AFTER = _get_cb_threshold(method_name)
             _cb = self._win_method_failures.get(method_name, {'count': 0, 'open_until': 0})
             if _cb['count'] >= _CB_OPEN_AFTER and time.time() < _cb.get('open_until', 0):
                 _log_debug(f"CIRCUIT-BREAKER: Skipping '{method_name}' (failed {_cb['count']} times, open until {int(_cb['open_until'] - time.time())}s)")
@@ -11935,12 +11983,15 @@ class TimeTracker:
                     _log_debug(f"FINAL RESULT: method='{method_name}', title='{title}', app='{app_name}'")
                     return title, app_name
                 else:
-                    _log_debug(f"Method '{method_name}' returned None - incrementing failure count")
+                    # For AT-SPI2, returning None is often legitimate (no window focused)
+                    # so only increment by 0.5 instead of 1
+                    increment = 0.5 if method_name == 'atspi' else 1.0
+                    _log_debug(f"Method '{method_name}' returned None - incrementing failure count by {increment}")
                     _cb3 = self._win_method_failures.setdefault(method_name, {'count': 0, 'open_until': 0})
-                    _cb3['count'] += 1
+                    _cb3['count'] += increment
                     if _cb3['count'] >= _CB_OPEN_AFTER:
                         _cb3['open_until'] = time.time() + _CB_RESET_AFTER
-                        _log_warning(f"CIRCUIT-BREAKER: Method '{method_name}' opened for {_CB_RESET_AFTER}s after {_CB_OPEN_AFTER} failures")
+                        _log_warning(f"CIRCUIT-BREAKER: Method '{method_name}' opened for {_CB_RESET_AFTER}s after {_cb3['count']} failures")
             except Exception as e:
                 _log_debug(f"Method '{method_name}' raised exception: {type(e).__name__}: {e}")
                 _cb4 = self._win_method_failures.setdefault(method_name, {'count': 0, 'open_until': 0})
