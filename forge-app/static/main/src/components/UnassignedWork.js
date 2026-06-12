@@ -32,6 +32,9 @@ function UnassignedWork() {
   const [savingNotificationSettings, setSavingNotificationSettings] = useState(false);
   const [syncingWithJira, setSyncingWithJira] = useState(false);
   const [syncBanner, setSyncBanner] = useState(null);
+  const syncPollTimerRef = useRef(null);
+  const syncJobIdRef = useRef(null);
+  const syncPollInFlightRef = useRef(false);
   const unassignedRequestIdRef = useRef(0);
 
   // Date range filter state
@@ -667,36 +670,140 @@ This will permanently dismiss these sessions from clustering. They won't appear 
     loadUnassignedWork();
   };
 
+  const clearSyncPolling = () => {
+    if (syncPollTimerRef.current) {
+      window.clearTimeout(syncPollTimerRef.current);
+      syncPollTimerRef.current = null;
+    }
+  };
+
+  const scheduleNextSyncPoll = (delayMs = 2500) => {
+    clearSyncPolling();
+    if (!syncJobIdRef.current) {
+      return;
+    }
+    syncPollTimerRef.current = window.setTimeout(() => {
+      pollSyncJobStatus();
+    }, delayMs);
+  };
+
+  const buildSyncCompletedMessage = (result) => {
+    const count = result?.matchedCount || 0;
+    if (count > 0) {
+      return `Sync complete. Automatically assigned ${count} session${count === 1 ? '' : 's'} to in-progress tickets.`;
+    }
+    if (result?.reason === 'no_previous_day_sessions') {
+      return 'Sync complete. No unassigned work sessions were found from the previous day.';
+    }
+    if (result?.reason === 'no_in_progress_issues') {
+      return 'Sync complete. No in-progress tickets were found for matching.';
+    }
+    if (result?.reason === 'no_llm_matches') {
+      return `Sync complete. Reviewed ${result?.sessionsScanned || 0} previous-day session(s) against ${result?.issuesScanned || 0} in-progress ticket(s) - no high-confidence matches.`;
+    }
+    return 'Sync complete. No matching unassigned work found for the previous day.';
+  };
+
+  const isSyncTimeoutError = (err) => {
+    const message = err?.message || '';
+    return /Task timed out after 25\.00 seconds|FUNCTION_TIME_OUT/i.test(message);
+  };
+
+  const pollSyncJobStatus = async () => {
+    const jobId = syncJobIdRef.current;
+    if (!jobId || syncPollInFlightRef.current) return;
+    syncPollInFlightRef.current = true;
+    try {
+      const status = await invoke('getUnassignedSyncWithJiraJobStatus', { jobId });
+      if (!status?.success) {
+        clearSyncPolling();
+        setSyncingWithJira(false);
+        setSyncBanner({ type: 'error', message: status?.error || 'Sync failed while polling job status' });
+        return;
+      }
+
+      if (status.status === 'completed') {
+        clearSyncPolling();
+        syncJobIdRef.current = null;
+        setSyncingWithJira(false);
+        setSyncBanner({ type: 'success', message: buildSyncCompletedMessage(status) });
+        await loadUnassignedWork();
+        return;
+      }
+
+      if (status.status === 'failed') {
+        clearSyncPolling();
+        syncJobIdRef.current = null;
+        setSyncingWithJira(false);
+        setSyncBanner({ type: 'error', message: status.error || 'Sync failed' });
+        return;
+      }
+
+      // In-progress: keep users informed with lightweight progress updates.
+      const processed = status.sessionsProcessed || 0;
+      const total = status.sessionsScanned || 0;
+      const issues = status.issuesScanned || 0;
+      const matches = status.matchedCount || 0;
+      setSyncBanner({
+        type: 'success',
+        message: `Sync in progress: ${processed}/${total} session(s) processed across ${issues} in-progress issue(s). Assigned so far: ${matches}.`
+      });
+      scheduleNextSyncPoll();
+    } catch (err) {
+      if (isSyncTimeoutError(err) && syncJobIdRef.current) {
+        setSyncBanner({
+          type: 'success',
+          message: 'Sync is still processing. The last Forge status call hit its 25s limit, but progress was saved and polling will continue.'
+        });
+        scheduleNextSyncPoll(1000);
+      } else {
+        clearSyncPolling();
+        setSyncingWithJira(false);
+        setSyncBanner({ type: 'error', message: err?.message || 'Sync polling failed' });
+      }
+    } finally {
+      syncPollInFlightRef.current = false;
+    }
+  };
+
   const handleSyncWithJira = async () => {
     setSyncingWithJira(true);
     setSyncBanner(null);
+    clearSyncPolling();
+    syncJobIdRef.current = null;
+
     try {
-      const result = await invoke('syncRecentUnassignedWorkWithAllUpdatedIssues');
-      if (!result?.success) {
-        setSyncBanner({ type: 'error', message: result?.error || 'Sync failed' });
+      const startResult = await invoke('startUnassignedSyncWithJiraJob');
+      if (!startResult?.success) {
+        setSyncBanner({ type: 'error', message: startResult?.error || 'Sync failed to start' });
+        setSyncingWithJira(false);
         return;
       }
-      const count = result.matchedCount || 0;
-      let message;
-      if (count > 0) {
-        message = `Sync complete. Automatically assigned ${count} session${count === 1 ? '' : 's'} to in-progress tickets.`;
-      } else if (result.reason === 'no_previous_day_sessions') {
-        message = 'Sync complete. No unassigned work sessions were found from the previous day.';
-      } else if (result.reason === 'no_in_progress_issues') {
-        message = 'Sync complete. No in-progress tickets were found for matching.';
-      } else if (result.reason === 'no_llm_matches') {
-        message = `Sync complete. Reviewed ${result.sessionsScanned || 0} previous-day session(s) against ${result.issuesScanned || 0} in-progress ticket(s) — no high-confidence matches.`;
-      } else {
-        message = 'Sync complete. No matching unassigned work found for the previous day.';
+
+      if (startResult.status === 'completed') {
+        setSyncingWithJira(false);
+        setSyncBanner({ type: 'success', message: buildSyncCompletedMessage(startResult) });
+        await loadUnassignedWork();
+        return;
       }
-      setSyncBanner({ type: 'success', message });
-      await loadUnassignedWork();
+
+      if (!startResult.jobId) {
+        setSyncingWithJira(false);
+        setSyncBanner({ type: 'error', message: 'Sync job did not return a valid job id' });
+        return;
+      }
+
+      syncJobIdRef.current = startResult.jobId;
+      await pollSyncJobStatus();
     } catch (err) {
       setSyncBanner({ type: 'error', message: err?.message || 'Sync failed' });
-    } finally {
       setSyncingWithJira(false);
     }
   };
+
+  useEffect(() => () => {
+    clearSyncPolling();
+  }, []);
 
   useEffect(() => {
     clearSelection();
