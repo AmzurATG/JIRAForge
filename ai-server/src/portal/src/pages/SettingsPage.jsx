@@ -15,6 +15,7 @@ import DataTable from '../components/common/DataTable';
 import ConfirmDialog from '../components/common/ConfirmDialog';
 import LoadingSpinner from '../components/common/LoadingSpinner';
 import ErrorBanner from '../components/common/ErrorBanner';
+import SuccessBanner from '../components/common/SuccessBanner';
 import PeoplePickerModal from '../components/common/PeoplePickerModal';
 
 function SettingsPage() {
@@ -276,14 +277,17 @@ function SettingsPage() {
   }
 
   return (
-    <div>
-      <div className="flex justify-between items-center mb-6">
-        <h1 className="text-2xl font-bold">Settings</h1>
+    <div className="space-y-3">
+      <div className="flex justify-between items-center">
+        <div>
+          <h1 className="page-title">Settings</h1>
+          <p className="text-gray-500 dark:text-gray-400 text-xs mt-0.5">Manage portal admin users and employee locations</p>
+        </div>
         <button
           onClick={handleCreate}
-          className="flex items-center gap-2 px-4 py-2 rounded bg-primary-600 text-white hover:bg-primary-700"
+          className="btn-primary flex items-center gap-1.5"
         >
-          <UserPlus className="w-4 h-4" />
+          <UserPlus className="w-3.5 h-3.5" />
           Add Admin User
         </button>
       </div>
@@ -291,21 +295,11 @@ function SettingsPage() {
       {error && (
         <ErrorBanner message={error} onClose={() => setError(null)} />
       )}
-      
-      {success && (
-        <div className="mb-6 p-4 bg-green-100 dark:bg-green-900 text-green-800 dark:text-green-200 rounded">
-          {success}
-          <button
-            onClick={() => setSuccess(null)}
-            className="float-right font-bold"
-          >
-            ×
-          </button>
-        </div>
-      )}
 
-      <div className="card mb-6">
-        <h3 className="text-lg font-semibold mb-4">Admin Users</h3>
+      {success && <SuccessBanner message={success} onClose={() => setSuccess(null)} />}
+
+      <div className="card">
+        <h3 className="section-title mb-4">Admin Users</h3>
         <DataTable
           columns={columns}
           data={admins}
@@ -332,13 +326,13 @@ function SettingsPage() {
             </h3>
             <form onSubmit={handleSubmit} className="space-y-4" autoComplete="off">
               <div>
-                <label className="block text-sm font-medium mb-2">Email</label>
+                <label className="filter-label">Email</label>
                 <input
                   type="email"
                   value={formData.email}
                   onChange={(e) => setFormData({ ...formData, email: e.target.value })}
                   disabled={modalMode === 'edit'}
-                  className="w-full px-3 py-2 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 disabled:bg-gray-100 dark:disabled:bg-gray-800"
+                  className="input-field disabled:bg-gray-100 dark:disabled:bg-gray-800"
                   autoComplete="off"
                   required
                 />
@@ -350,23 +344,23 @@ function SettingsPage() {
               </div>
               
               <div>
-                <label className="block text-sm font-medium mb-2">Display Name</label>
+                <label className="filter-label">Display Name</label>
                 <input
                   type="text"
                   value={formData.displayName}
                   onChange={(e) => setFormData({ ...formData, displayName: e.target.value })}
-                  className="w-full px-3 py-2 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900"
+                  className="input-field"
                   autoComplete="off"
                   required
                 />
               </div>
-              
+
               <div>
-                <label className="block text-sm font-medium mb-2">Role</label>
+                <label className="filter-label">Role</label>
                 <select
                   value={formData.role}
                   onChange={(e) => setFormData({ ...formData, role: e.target.value })}
-                  className="w-full px-3 py-2 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900"
+                  className="select-field"
                 >
                   <option value="superadmin">Superadmin</option>
                   <option value="admin">Admin</option>
@@ -377,7 +371,7 @@ function SettingsPage() {
               {/* LOB assignment — only for non-superadmins (superadmin sees all) */}
               {formData.role !== 'superadmin' && (
                 <div>
-                  <label className="block text-sm font-medium mb-2">
+                  <label className="filter-label">
                     Heads which LOB(s) <span className="text-red-500">*</span>
                   </label>
                   <div className="max-h-40 overflow-y-auto border border-gray-300 dark:border-gray-600 rounded p-2 space-y-1">
@@ -419,13 +413,13 @@ function SettingsPage() {
                 <button
                   type="button"
                   onClick={() => setShowModal(false)}
-                  className="px-4 py-2 rounded border border-gray-300 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-800"
+                  className="btn-secondary"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
-                  className="px-4 py-2 rounded bg-primary-600 text-white hover:bg-primary-700"
+                  className="btn-primary"
                 >
                   {modalMode === 'create' ? 'Create' : 'Update'}
                 </button>
@@ -442,6 +436,7 @@ function SettingsPage() {
         message={`Are you sure you want to delete ${deletingAdmin?.display_name}? This action cannot be undone.`}
         onConfirm={confirmDelete}
         onCancel={() => setShowDeleteDialog(false)}
+        confirmLabel="Delete"
       />
     </div>
   );
@@ -531,9 +526,9 @@ function LocationsCard({ setError, setSuccess }) {
   };
 
   return (
-    <div className="card mb-6">
-      <h3 className="text-lg font-semibold mb-1 flex items-center gap-2">
-        <MapPin className="w-4 h-4 text-primary-600 dark:text-primary-400" /> Employee Locations
+    <div className="card">
+      <h3 className="section-title mb-1">
+        <MapPin className="w-3.5 h-3.5 text-primary-600 dark:text-primary-400" /> Employee Locations
       </h3>
       <p className="text-xs text-gray-500 dark:text-gray-400 mb-4">
         Locations are assigned to employees on the Employees page and drive its Location filter.
@@ -551,9 +546,9 @@ function LocationsCard({ setError, setSuccess }) {
         <button
           type="submit"
           disabled={adding || !newName.trim()}
-          className="flex items-center gap-1.5 px-3 py-1.5 rounded bg-primary-600 text-white text-sm hover:bg-primary-700 disabled:opacity-50 whitespace-nowrap"
+          className="btn-primary flex items-center gap-1.5 whitespace-nowrap"
         >
-          <Plus className="w-4 h-4" /> {adding ? 'Adding…' : 'Add Location'}
+          <Plus className="w-3.5 h-3.5" /> {adding ? 'Adding…' : 'Add Location'}
         </button>
       </form>
 
@@ -633,6 +628,7 @@ function LocationsCard({ setError, setSuccess }) {
         message={`Delete "${deleting?.name}"? This fails if any employee is assigned to it — deactivate instead to retire it.`}
         onConfirm={confirmDelete}
         onCancel={() => setDeleting(null)}
+        confirmLabel="Delete"
       />
 
       {/* Bulk member assignment — same picker pattern as LOB members */}

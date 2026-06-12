@@ -119,7 +119,7 @@ function ResetPasswordPage() {
             Enter your new password below.
           </p>
           
-          <ErrorBanner message={error} onDismiss={() => setError('')} />
+          <ErrorBanner message={error} onClose={() => setError('')} />
           
           <form onSubmit={handleSubmit} className="space-y-4">
             <div>

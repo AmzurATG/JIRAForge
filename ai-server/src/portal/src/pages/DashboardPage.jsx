@@ -69,7 +69,7 @@ function DashboardPage() {
       <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
         <div>
           <h1 className="page-title">Dashboard</h1>
-          <p className="text-gray-500 dark:text-gray-400 mt-1">Overview of team productivity metrics</p>
+          <p className="text-gray-500 dark:text-gray-400 text-xs mt-0.5">Overview of team productivity metrics</p>
         </div>
       </div>
 
@@ -97,7 +97,7 @@ function DashboardPage() {
         <h3 className="section-title">Overview</h3>
         <CategoryLegend />
       </div>
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
         <KPICard
           title="Total Productive Hours"
           value={dashboardData?.summary?.totalProductiveHours?.toFixed(2) || '0.00'}
@@ -138,7 +138,7 @@ function DashboardPage() {
       </div>
 
       {/* Charts */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         <div className="card">
           <h3 className="section-title mb-4">Productivity Trend</h3>
           <ProductivityTrendChart data={dashboardData?.dailyTrend || []} />

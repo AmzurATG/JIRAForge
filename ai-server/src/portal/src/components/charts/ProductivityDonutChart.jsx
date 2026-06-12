@@ -33,30 +33,35 @@ function ProductivityDonutChart({ productivePercentage, nonProductivePercentage,
     ];
   }
 
+  if (data.every((d) => !d.value)) {
+    return (
+      <div className="h-64 flex items-center justify-center text-gray-500 dark:text-gray-400">
+        No data available for the selected period
+      </div>
+    );
+  }
+
   return (
-    <div className="card">
-      <h3 className="text-lg font-semibold mb-4">Productivity Split</h3>
-      <ResponsiveContainer width="100%" height={300}>
-        <PieChart>
-          <Pie
-            data={data}
-            cx="50%"
-            cy="50%"
-            innerRadius={60}
-            outerRadius={100}
-            fill="#8884d8"
-            dataKey="value"
-            label={({ name, value }) => `${name}: ${value.toFixed(1)}%`}
-          >
-            {data.map((entry) => (
-              <Cell key={entry.name} fill={COLORS[entry.name]} />
-            ))}
-          </Pie>
-          <Tooltip formatter={(value) => `${value.toFixed(1)}%`} />
-          <Legend />
-        </PieChart>
-      </ResponsiveContainer>
-    </div>
+    <ResponsiveContainer width="100%" height={300}>
+      <PieChart>
+        <Pie
+          data={data}
+          cx="50%"
+          cy="50%"
+          innerRadius={60}
+          outerRadius={100}
+          fill="#8884d8"
+          dataKey="value"
+          label={({ name, value }) => `${name}: ${value.toFixed(1)}%`}
+        >
+          {data.map((entry) => (
+            <Cell key={entry.name} fill={COLORS[entry.name]} />
+          ))}
+        </Pie>
+        <Tooltip formatter={(value) => `${value.toFixed(1)}%`} />
+        <Legend />
+      </PieChart>
+    </ResponsiveContainer>
   );
 }
 

@@ -150,12 +150,13 @@ function EmployeeDetailPage() {
         <button
           onClick={() => navigate('/employees')}
           className="p-2.5 bg-white dark:bg-gray-800 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-xl border border-gray-200 dark:border-gray-700 transition-all duration-200 shadow-sm hover:shadow-md"
+          title="Back to Employees"
         >
           <ArrowLeft className="w-5 h-5" />
         </button>
         <div>
           <h1 className="page-title">{employeeDetail?.user?.name || 'Employee Detail'}</h1>
-          <p className="text-gray-500 dark:text-gray-400 mt-0.5 flex items-center gap-2">
+          <p className="text-gray-500 dark:text-gray-400 text-xs mt-0.5 flex items-center gap-2">
             {employeeDetail?.user?.email}
             {employeeDetail?.user?.location?.name && (
               <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-gray-100 dark:bg-gray-800 text-xs text-gray-600 dark:text-gray-300">

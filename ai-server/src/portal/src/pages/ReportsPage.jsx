@@ -270,7 +270,7 @@ function ReportsPage() {
       <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
         <div>
           <h1 className="page-title">Reports</h1>
-          <p className="text-gray-500 dark:text-gray-400 mt-1">Generate and export productivity reports</p>
+          <p className="text-gray-500 dark:text-gray-400 text-xs mt-0.5">Generate and export productivity reports</p>
         </div>
         <div className="flex gap-3">
           <button
@@ -306,43 +306,39 @@ function ReportsPage() {
 
       {/* Report Configuration */}
       <div className="card-elevated">
-        <h3 className="section-title mb-6">
-          <div className="p-2 bg-primary-100 dark:bg-primary-900/30 rounded-lg">
-            <FileText className="w-5 h-5 text-primary-600 dark:text-primary-400" />
+        <h3 className="section-title mb-3">
+          <div className="p-1 bg-primary-100 dark:bg-primary-900/30 rounded">
+            <FileText className="w-3 h-3 text-primary-600 dark:text-primary-400" />
           </div>
           Report Configuration
         </h3>
-        
-        <div className="space-y-3">
-          {/* Report Configuration */}
-          <div className="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 p-4">
-            <h3 className="text-sm font-semibold text-gray-700 dark:text-gray-300 mb-3">Report Configuration</h3>
-            
-            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3">
-              {/* Report Type Filter */}
-              <div>
-                <label className="filter-label text-xs">Report Type</label>
-                <select
-                  value={reportType}
-                  onChange={(e) => {
-                    setReportType(e.target.value);
-                    setPreviewData([]);
-                    setPage(1);
-                  }}
-                  className="select-field"
-                >
-                  {Object.entries(REPORT_TYPES).map(([key, { label }]) => (
-                    <option key={key} value={key}>{label}</option>
-                  ))}
-                </select>
-              </div>
 
-              {/* Classification Filter */}
+        <div className="space-y-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3">
+            {/* Report Type Filter */}
+            <div>
+              <label className="filter-label text-xs">Report Type</label>
+              <select
+                value={reportType}
+                onChange={(e) => {
+                  setReportType(e.target.value);
+                  setPreviewData([]);
+                  setPage(1);
+                }}
+                className="select-field"
+              >
+                {Object.entries(REPORT_TYPES).map(([key, { label }]) => (
+                  <option key={key} value={key}>{label}</option>
+                ))}
+              </select>
+            </div>
+
+            {/* Classification Filter */}
             <div>
               <label className="filter-label text-xs">Classification</label>
               <select
                 value={classification}
-                onChange={(e) => setClassification(e.target.value)}
+                onChange={(e) => { setClassification(e.target.value); setPreviewData([]); setPage(1); }}
                 className="select-field"
               >
                 <option value="">All Classifications</option>
@@ -358,7 +354,7 @@ function ReportsPage() {
               <EmployeeSelect
                 employees={employees}
                 value={selectedEmployee}
-                onChange={setSelectedEmployee}
+                onChange={(v) => { setSelectedEmployee(v); setPreviewData([]); setPage(1); }}
               />
             </div>
 
@@ -368,7 +364,7 @@ function ReportsPage() {
               <DateRangePicker
                 from={dateRange.from}
                 to={dateRange.to}
-                onChange={setDateRange}
+                onChange={(r) => { setDateRange(r); setPreviewData([]); setPage(1); }}
               />
             </div>
 
@@ -377,7 +373,6 @@ function ReportsPage() {
 
             {/* Location Filter */}
             <LocationFilter value={locationId} onChange={(v) => { setLocationId(v); setSelectedEmployee(''); setPreviewData([]); setPage(1); }} />
-          </div>
           </div>
 
           {/* Generate Button — explicit page 1 (passing the raw click event

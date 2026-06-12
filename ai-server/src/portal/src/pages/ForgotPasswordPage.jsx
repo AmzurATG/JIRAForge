@@ -54,7 +54,7 @@ function ForgotPasswordPage() {
             Enter your email address and we'll send you a link to reset your password.
           </p>
           
-          <ErrorBanner message={error} onDismiss={() => setError('')} />
+          <ErrorBanner message={error} onClose={() => setError('')} />
           
           {success && (
             <div className="mb-6 p-4 bg-green-100 dark:bg-green-900 text-green-800 dark:text-green-200 rounded-lg flex items-start gap-3">

@@ -133,7 +133,11 @@ function LoginPage() {
               />
             </div>
 
-            <ErrorBanner message={error} onDismiss={() => setError('')} />
+            {error && (
+              <div className="mb-4">
+                <ErrorBanner message={error} onClose={() => setError('')} />
+              </div>
+            )}
 
             {/* Google Sign-In Button */}
             <button

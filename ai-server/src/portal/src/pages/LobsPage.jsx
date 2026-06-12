@@ -14,6 +14,7 @@ import DataTable from '../components/common/DataTable';
 import ConfirmDialog from '../components/common/ConfirmDialog';
 import LoadingSpinner from '../components/common/LoadingSpinner';
 import ErrorBanner from '../components/common/ErrorBanner';
+import SuccessBanner from '../components/common/SuccessBanner';
 
 function LobsPage() {
   const { user } = useAuth();
@@ -160,31 +161,26 @@ function LobsPage() {
   }
 
   return (
-    <div>
-      <div className="flex justify-between items-center mb-6">
+    <div className="space-y-3">
+      <div className="flex justify-between items-center">
         <div>
-          <h1 className="text-2xl font-bold">{isSuperadmin ? 'Line of Businesses' : 'My LOBs'}</h1>
-          <p className="text-sm text-gray-600 dark:text-gray-400 mt-1">
+          <h1 className="page-title">{isSuperadmin ? 'Line of Businesses' : 'My LOBs'}</h1>
+          <p className="text-gray-500 dark:text-gray-400 text-xs mt-0.5">
             {isSuperadmin ? 'Create LOBs, then assign employees and heads' : 'Open an LOB to manage its app classifications'}
           </p>
         </div>
         {isSuperadmin && (
-          <button onClick={handleCreate} className="flex items-center gap-2 px-4 py-2 rounded bg-primary-600 text-white hover:bg-primary-700">
-            <Plus className="w-4 h-4" />
+          <button onClick={handleCreate} className="btn-primary flex items-center gap-1.5">
+            <Plus className="w-3.5 h-3.5" />
             Add LOB
           </button>
         )}
       </div>
 
       {error && <ErrorBanner message={error} onClose={() => setError(null)} />}
-      {success && (
-        <div className="mb-6 p-4 bg-green-100 dark:bg-green-900 text-green-800 dark:text-green-200 rounded">
-          {success}
-          <button onClick={() => setSuccess(null)} className="float-right font-bold">×</button>
-        </div>
-      )}
+      {success && <SuccessBanner message={success} onClose={() => setSuccess(null)} />}
 
-      <div className="card mb-6">
+      <div className="card">
         <DataTable
           columns={columns}
           data={lobs}
@@ -200,28 +196,28 @@ function LobsPage() {
             <h3 className="text-lg font-semibold mb-4">{modalMode === 'create' ? 'Add LOB' : 'Edit LOB'}</h3>
             <form onSubmit={handleSubmit} className="space-y-4">
               <div>
-                <label className="block text-sm font-medium mb-2">Name *</label>
+                <label className="filter-label">Name *</label>
                 <input
                   type="text"
                   value={formData.name}
                   onChange={(e) => setFormData({ ...formData, name: e.target.value })}
-                  className="w-full px-3 py-2 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900"
+                  className="input-field"
                   placeholder="e.g., Cloud Practice"
                   required
                 />
               </div>
               <div>
-                <label className="block text-sm font-medium mb-2">Description</label>
+                <label className="filter-label">Description</label>
                 <textarea
                   value={formData.description}
                   onChange={(e) => setFormData({ ...formData, description: e.target.value })}
-                  className="w-full px-3 py-2 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900"
+                  className="input-field"
                   rows={3}
                 />
               </div>
               <div className="flex gap-2 justify-end">
-                <button type="button" onClick={() => setShowModal(false)} className="px-4 py-2 rounded border border-gray-300 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-800">Cancel</button>
-                <button type="submit" className="px-4 py-2 rounded bg-primary-600 text-white hover:bg-primary-700">{modalMode === 'create' ? 'Create' : 'Update'}</button>
+                <button type="button" onClick={() => setShowModal(false)} className="btn-secondary">Cancel</button>
+                <button type="submit" className="btn-primary">{modalMode === 'create' ? 'Create' : 'Update'}</button>
               </div>
             </form>
           </div>
@@ -234,6 +230,7 @@ function LobsPage() {
         message={`Delete "${deleting?.name}"? Its member, head and app-classification assignments are removed. Employees and their activity are not affected.`}
         onConfirm={confirmDelete}
         onCancel={() => setShowDeleteDialog(false)}
+        confirmLabel="Delete"
       />
     </div>
   );

@@ -13,7 +13,9 @@ import DataTable from '../components/common/DataTable';
 import ConfirmDialog from '../components/common/ConfirmDialog';
 import LoadingSpinner from '../components/common/LoadingSpinner';
 import ErrorBanner from '../components/common/ErrorBanner';
+import SuccessBanner from '../components/common/SuccessBanner';
 import AppKindBadge from '../components/common/AppKindBadge';
+import { useDebounce } from '../hooks/useDebounce';
 
 function AppClassificationsPage() {
   const { user } = useAuth();
@@ -24,12 +26,13 @@ function AppClassificationsPage() {
   const [totalCount, setTotalCount] = useState(0);
   const [page, setPage] = useState(1);
   
-  // Filters
+  // Filters — search is debounced so we don't fire a request per keystroke.
   const [filters, setFilters] = useState({
     classification: '',
     match_by: '',
     search: ''
   });
+  const debouncedSearch = useDebounce(filters.search, 500);
   const [showFilters, setShowFilters] = useState(false);
   
   // Create/Edit modal
@@ -102,17 +105,17 @@ function AppClassificationsPage() {
     } else {
       setLoading(false);
     }
-  }, [page, filters, user?.role]);
+  }, [page, filters.classification, filters.match_by, debouncedSearch, user?.role]);
 
   const loadClassifications = async () => {
     setLoading(true);
     setError(null);
-    
+
     try {
       const params = { page, limit: 50 };
       if (filters.classification) params.classification = filters.classification;
       if (filters.match_by) params.match_by = filters.match_by;
-      if (filters.search) params.search = filters.search;
+      if (debouncedSearch) params.search = debouncedSearch;
       
       const response = await appClassificationsApi.getList(params);
       setClassifications(response.data || []);
@@ -239,9 +242,10 @@ function AppClassificationsPage() {
     }
   };
 
-  const applyFilters = () => {
+  // Any filter change restarts from page 1 (the load effect picks it up).
+  const updateFilter = (key, value) => {
+    setFilters((f) => ({ ...f, [key]: value }));
     setPage(1);
-    loadClassifications();
   };
 
   const clearFilters = () => {
@@ -369,38 +373,34 @@ function AppClassificationsPage() {
   }
 
   return (
-    <div>
-      <div className="flex justify-between items-center mb-6">
+    <div className="space-y-3">
+      <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2">
         <div>
-          <h1 className="text-2xl font-bold">Application Classifications</h1>
-          <p className="text-sm text-gray-600 dark:text-gray-400 mt-1">
+          <h1 className="page-title">Application Classifications</h1>
+          <p className="text-gray-500 dark:text-gray-400 text-xs mt-0.5">
             Manage whitelist and blacklist of applications
           </p>
         </div>
         <div className="flex gap-2">
           <button
             onClick={() => setShowFilters(!showFilters)}
-            className={`flex items-center gap-2 px-4 py-2 rounded border ${
-              showFilters
-                ? 'bg-primary-600 text-white border-primary-600'
-                : 'border-gray-300 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-800'
-            }`}
+            className={`btn-secondary flex items-center gap-1.5 ${showFilters ? 'bg-primary-50 dark:bg-primary-900/20 border-primary-200 dark:border-primary-800' : ''}`}
           >
-            <Filter className="w-4 h-4" />
+            <Filter className="w-3.5 h-3.5" />
             Filters
           </button>
           <button
             onClick={() => setShowBulkModal(true)}
-            className="flex items-center gap-2 px-4 py-2 rounded border border-gray-300 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-800"
+            className="btn-secondary flex items-center gap-1.5"
           >
-            <Upload className="w-4 h-4" />
+            <Upload className="w-3.5 h-3.5" />
             Bulk Import
           </button>
           <button
             onClick={handleCreate}
-            className="flex items-center gap-2 px-4 py-2 rounded bg-primary-600 text-white hover:bg-primary-700"
+            className="btn-primary flex items-center gap-1.5"
           >
-            <Plus className="w-4 h-4" />
+            <Plus className="w-3.5 h-3.5" />
             Add Classification
           </button>
         </div>
@@ -408,24 +408,24 @@ function AppClassificationsPage() {
 
       {/* Filters Panel */}
       {showFilters && (
-        <div className="card mb-6">
-          <div className="flex items-end gap-4">
-            <div className="flex-1">
-              <label className="block text-sm font-medium mb-2">Search</label>
+        <div className="card-elevated">
+          <div className="flex items-end gap-4 flex-wrap">
+            <div className="flex-1 min-w-48">
+              <label className="filter-label">Search</label>
               <input
                 type="text"
                 value={filters.search}
-                onChange={(e) => setFilters({ ...filters, search: e.target.value })}
+                onChange={(e) => updateFilter('search', e.target.value)}
                 placeholder="Search identifier or display name..."
-                className="w-full px-3 py-2 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900"
+                className="input-field"
               />
             </div>
-            <div>
-              <label className="block text-sm font-medium mb-2">Classification</label>
+            <div className="w-44">
+              <label className="filter-label">Classification</label>
               <select
                 value={filters.classification}
-                onChange={(e) => setFilters({ ...filters, classification: e.target.value })}
-                className="px-3 py-2 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900"
+                onChange={(e) => updateFilter('classification', e.target.value)}
+                className="select-field"
               >
                 <option value="">All</option>
                 <option value="productive">Productive</option>
@@ -433,28 +433,19 @@ function AppClassificationsPage() {
                 <option value="private">Private</option>
               </select>
             </div>
-            <div>
-              <label className="block text-sm font-medium mb-2">Match By</label>
+            <div className="w-44">
+              <label className="filter-label">Match By</label>
               <select
                 value={filters.match_by}
-                onChange={(e) => setFilters({ ...filters, match_by: e.target.value })}
-                className="px-3 py-2 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900"
+                onChange={(e) => updateFilter('match_by', e.target.value)}
+                className="select-field"
               >
                 <option value="">All</option>
                 <option value="process">Desktop app (process)</option>
                 <option value="url">Website (URL)</option>
               </select>
             </div>
-            <button
-              onClick={applyFilters}
-              className="px-4 py-2 rounded bg-primary-600 text-white hover:bg-primary-700"
-            >
-              Apply
-            </button>
-            <button
-              onClick={clearFilters}
-              className="px-4 py-2 rounded border border-gray-300 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-800"
-            >
+            <button onClick={clearFilters} className="btn-secondary">
               Clear
             </button>
           </div>
@@ -464,20 +455,10 @@ function AppClassificationsPage() {
       {error && (
         <ErrorBanner message={error} onClose={() => setError(null)} />
       )}
-      
-      {success && (
-        <div className="mb-6 p-4 bg-green-100 dark:bg-green-900 text-green-800 dark:text-green-200 rounded">
-          {success}
-          <button
-            onClick={() => setSuccess(null)}
-            className="float-right font-bold"
-          >
-            ×
-          </button>
-        </div>
-      )}
 
-      <div className="card mb-6">
+      {success && <SuccessBanner message={success} onClose={() => setSuccess(null)} />}
+
+      <div className="card">
         <DataTable
           columns={columns}
           data={classifications}
@@ -558,68 +539,68 @@ function AppClassificationsPage() {
 
             <form onSubmit={handleSubmit} className="space-y-4">
               <div>
-                <label className="block text-sm font-medium mb-2">Identifier *</label>
+                <label className="filter-label">Identifier *</label>
                 <input
                   type="text"
                   value={formData.identifier}
                   onChange={(e) => setFormData({ ...formData, identifier: e.target.value })}
                   disabled={modalMode === 'edit'}
                   placeholder="e.g., chrome.exe or google.com"
-                  className="w-full px-3 py-2 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 disabled:bg-gray-100 dark:disabled:bg-gray-800"
+                  className="input-field disabled:bg-gray-100 dark:disabled:bg-gray-800"
                   required
                 />
                 <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
                   Process name or URL pattern to match
                 </p>
               </div>
-              
+
               <div>
-                <label className="block text-sm font-medium mb-2">Display Name *</label>
+                <label className="filter-label">Display Name *</label>
                 <input
                   type="text"
                   value={formData.displayName}
                   onChange={(e) => setFormData({ ...formData, displayName: e.target.value })}
                   placeholder="e.g., Google Chrome"
-                  className="w-full px-3 py-2 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900"
+                  className="input-field"
                   required
                 />
               </div>
-              
+
               <div>
-                <label className="block text-sm font-medium mb-2">Classification *</label>
+                <label className="filter-label">Classification *</label>
                 <select
                   value={formData.classification}
                   onChange={(e) => setFormData({ ...formData, classification: e.target.value })}
-                  className="w-full px-3 py-2 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900"
+                  className="select-field"
                 >
                   <option value="productive">Productive</option>
                   <option value="non_productive">Non-Productive</option>
                   <option value="private">Private</option>
                 </select>
               </div>
-              
+
               <div>
-                <label className="block text-sm font-medium mb-2">Match By *</label>
+                <label className="filter-label">Match By *</label>
                 <select
                   value={formData.matchBy}
                   onChange={(e) => setFormData({ ...formData, matchBy: e.target.value })}
                   disabled={modalMode === 'edit'}
-                  className="w-full px-3 py-2 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 disabled:bg-gray-100 dark:disabled:bg-gray-800"
+                  className="select-field disabled:bg-gray-100 dark:disabled:bg-gray-800"
                 >
                   <option value="process">Desktop app (process name)</option>
                   <option value="url">Website (URL pattern)</option>
                 </select>
               </div>
-              
+
               <div>
-                <label className="block text-sm font-medium mb-2">Project Key (Optional)</label>
+                <label className="filter-label">Project Key (Optional)</label>
                 <input
                   type="text"
                   value={formData.projectKey}
                   onChange={(e) => setFormData({ ...formData, projectKey: e.target.value })}
                   disabled={modalMode === 'edit'}
                   placeholder="e.g., PROJ-123"
-                  className="w-full px-3 py-2 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 disabled:bg-gray-100 dark:disabled:bg-gray-800"
+                  className="input-field disabled:bg-gray-100 dark:disabled:bg-gray-800"
                 />
                 <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
                   Leave empty for organization-wide or global classification
@@ -643,13 +624,13 @@ function AppClassificationsPage() {
                 <button
                   type="button"
                   onClick={() => setShowModal(false)}
-                  className="px-4 py-2 rounded border border-gray-300 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-800"
+                  className="btn-secondary"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
-                  className="px-4 py-2 rounded bg-primary-600 text-white hover:bg-primary-700"
+                  className="btn-primary"
                 >
                   {modalMode === 'create' ? 'Create' : 'Update'}
                 </button>
@@ -686,20 +667,20 @@ function AppClassificationsPage() {
               onChange={(e) => setBulkData(e.target.value)}
               placeholder="Paste your CSV data here..."
               rows={10}
-              className="w-full px-3 py-2 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 font-mono text-sm"
+              className="input-field font-mono"
             />
             
             <div className="flex gap-2 justify-end mt-4">
               <button
                 onClick={() => setShowBulkModal(false)}
-                className="px-4 py-2 rounded border border-gray-300 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-800"
+                className="btn-secondary"
               >
                 Cancel
               </button>
               <button
                 onClick={handleBulkImport}
                 disabled={!bulkData.trim()}
-                className="px-4 py-2 rounded bg-primary-600 text-white hover:bg-primary-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                className="btn-primary"
               >
                 Import
               </button>
@@ -715,6 +696,7 @@ function AppClassificationsPage() {
         message={`Are you sure you want to delete "${deletingItem?.display_name}"? This action cannot be undone.`}
         onConfirm={confirmDelete}
         onCancel={() => setShowDeleteDialog(false)}
+        confirmLabel="Delete"
       />
     </div>
   );
