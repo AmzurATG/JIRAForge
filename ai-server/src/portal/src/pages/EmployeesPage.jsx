@@ -14,6 +14,7 @@ import DataTable from '../components/common/DataTable';
 import DateRangePicker from '../components/common/DateRangePicker';
 import LobFilter from '../components/common/LobFilter';
 import ErrorBanner from '../components/common/ErrorBanner';
+import SuccessBanner from '../components/common/SuccessBanner';
 import { formatDate } from '../utils/formatters';
 import { useDebounce } from '../hooks/useDebounce';
 
@@ -284,19 +285,14 @@ function EmployeesPage() {
       {/* Page Header */}
       <div>
         <h1 className="page-title">Employees</h1>
-        <p className="text-gray-500 dark:text-gray-400 mt-1">View and manage employee productivity metrics</p>
+        <p className="text-gray-500 dark:text-gray-400 text-xs mt-0.5">View and manage employee productivity metrics</p>
       </div>
 
       {error && (
         <ErrorBanner message={error} onClose={() => setError(null)} />
       )}
 
-      {success && (
-        <div className="p-3 bg-green-100 dark:bg-green-900 text-green-800 dark:text-green-200 rounded text-sm flex justify-between items-center">
-          {success}
-          <button onClick={() => setSuccess(null)} className="font-bold ml-3">×</button>
-        </div>
-      )}
+      {success && <SuccessBanner message={success} onClose={() => setSuccess(null)} />}
 
       {/* Filters */}
       <div className="card">
@@ -469,7 +465,7 @@ function EmployeesPage() {
             <p className="text-sm text-gray-500 dark:text-gray-400 mb-4">
               {editingEmployee.name} · {editingEmployee.email}
             </p>
-            <label className="block text-sm font-medium mb-2">Location</label>
+            <label className="filter-label">Location</label>
             <select
               value={editLocationId}
               onChange={(e) => setEditLocationId(e.target.value)}
@@ -493,14 +489,14 @@ function EmployeesPage() {
             <div className="flex gap-2 justify-end mt-5">
               <button
                 onClick={() => setEditingEmployee(null)}
-                className="px-4 py-2 rounded border border-gray-300 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-800"
+                className="btn-secondary"
               >
                 Cancel
               </button>
               <button
                 onClick={saveLocation}
                 disabled={savingLocation}
-                className="px-4 py-2 rounded bg-primary-600 text-white hover:bg-primary-700 disabled:opacity-50"
+                className="btn-primary"
               >
                 {savingLocation ? 'Saving…' : 'Save'}
               </button>

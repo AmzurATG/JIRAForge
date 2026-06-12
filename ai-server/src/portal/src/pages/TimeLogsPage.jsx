@@ -134,6 +134,7 @@ function TimeLogsPage() {
     setSelectedEmployee('');
     setAppFilter('');
     setDurationMax('');
+    setLobId('');
     setLocationId('');
     setPage(1);
   };
