@@ -14,7 +14,9 @@ function SuccessBanner({ message, onClose }) {
         </div>
         {onClose && (
           <button
+            type="button"
             onClick={onClose}
+            aria-label="Dismiss message"
             className="p-0.5 rounded text-emerald-600 dark:text-emerald-400 hover:bg-emerald-100 dark:hover:bg-emerald-900/30 transition-colors"
           >
             <X className="w-3 h-3" />

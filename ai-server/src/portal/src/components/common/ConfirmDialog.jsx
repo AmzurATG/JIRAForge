@@ -15,10 +15,10 @@ function ConfirmDialog({ isOpen, title, message, onConfirm, onCancel, confirmLab
         </h3>
         <p className="text-sm text-gray-600 dark:text-gray-400 mb-6">{message}</p>
         <div className="flex gap-2 justify-end">
-          <button onClick={onCancel} className="btn-secondary">
+          <button type="button" onClick={onCancel} className="btn-secondary">
             Cancel
           </button>
-          <button onClick={onConfirm} className="btn-danger">
+          <button type="button" onClick={onConfirm} className="btn-danger">
             {confirmLabel}
           </button>
         </div>

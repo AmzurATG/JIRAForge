@@ -14,7 +14,9 @@ function ErrorBanner({ message, onClose }) {
         </div>
         {onClose && (
           <button
+            type="button"
             onClick={onClose}
+            aria-label="Dismiss message"
             className="p-0.5 rounded text-red-600 dark:text-red-400 hover:bg-red-100 dark:hover:bg-red-900/30 transition-colors"
           >
             <X className="w-3 h-3" />
