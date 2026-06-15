@@ -10967,13 +10967,20 @@ class TimeTracker:
         batch cycle so records never remain stuck with end_time = NULL.
         """
         try:
-            cursor = self.db_manager.execute(
+            # FIX: Use get_connection() instead of non-existent execute() method
+            conn = self.db_manager.get_connection()
+            cursor = conn.cursor()
+            
+            cursor.execute(
                 "SELECT id, screenshot_id, end_time, duration_seconds FROM pending_finalizes ORDER BY id LIMIT 10"
             )
             rows = cursor.fetchall()
+            
             if not rows:
                 return
+                
             print(f"[BATCH] FIX-9: Draining {len(rows)} pending finalize(s)...")
+            
             for row in rows:
                 row_id, screenshot_id, end_time_str, duration_seconds = row
                 try:
@@ -10982,13 +10989,15 @@ class TimeTracker:
                         'timestamp': end_time_str,
                         'duration_seconds': int(duration_seconds),
                     }).eq('id', screenshot_id).execute()
+                    
                     if result.data:
-                        self.db_manager.execute(
-                            "DELETE FROM pending_finalizes WHERE id = ?", (row_id,)
-                        )
+                        cursor.execute("DELETE FROM pending_finalizes WHERE id = ?", (row_id,))
+                        conn.commit()  # FIX: Add commit to persist DELETE
                         print(f"[BATCH] FIX-9: Pending finalize applied for {screenshot_id}")
+                        
                 except Exception as _pf_err:
                     print(f"[WARN] FIX-9: Pending finalize retry failed for {screenshot_id}: {_pf_err}")
+                    
         except Exception as _e:
             print(f"[WARN] FIX-9: _drain_pending_finalizes error: {_e}")
 
@@ -12476,12 +12485,17 @@ class TimeTracker:
                 _sid  = self.current_window_screenshot_id
                 _et   = datetime.fromtimestamp(self.last_activity_time, tz=timezone.utc)
                 _dur  = max(1, int((_et - (self.current_window_db_start_time or _et)).total_seconds()))
-                self.db_manager.execute(
+                
+                # FIX: Use get_connection() instead of non-existent execute() method
+                conn = self.db_manager.get_connection()
+                cursor = conn.cursor()
+                cursor.execute(
                     """INSERT OR IGNORE INTO pending_finalizes
                        (screenshot_id, end_time, duration_seconds)
                        VALUES (?, ?, ?)""",
                     (_sid, _et.isoformat(), _dur)
                 )
+                conn.commit()  # FIX: Add commit to persist INSERT
                 print(f"[OFFLINE] FIX-9: Pending finalize saved to SQLite for record {_sid}")
             except Exception as _sq_err:
                 print(f"[ERROR] FIX-9: Could not save pending finalize to SQLite: {_sq_err}")
