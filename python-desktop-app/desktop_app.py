@@ -386,7 +386,7 @@ load_dotenv()
 
 # Application version - IMPORTANT: Update this when releasing new versions
 # This is used for update checking and notifications
-APP_VERSION = "1.4.7"
+APP_VERSION = "1.4.10"
 
 # Hard-disable screenshot monitoring/storage in desktop app.
 # OCR text extraction for activity records still runs via event-based flow.
@@ -5256,6 +5256,11 @@ class ActiveSessionManager:
         self._current_key = None  # (window_title, application_name)
         self._pending_ocr_keys = set()  # Sessions that need OCR backfill
         self._pending_ocr_screenshots = {}  # (title, app) -> PIL.Image for throttled sessions
+        # Hard cap on a single continuous timer segment. Mirrors the screenshots
+        # path cap (max(interval*2, 600)). Backstop so that, even if idle/suspend
+        # detection is ever bypassed, one unchanged window can never bank more
+        # than this many seconds. TimeTracker keeps it in sync with the interval.
+        self.max_segment_seconds = 1800
 
     def get_pending_ocr_entries(self):
         """Return and clear the dict of (title, app_name) -> PIL.Image awaiting OCR backfill."""
@@ -5409,6 +5414,14 @@ class ActiveSessionManager:
                 started = datetime.fromisoformat(timer_started)
                 ended = datetime.fromisoformat(now)
                 elapsed = max(0, (ended - started).total_seconds())
+                # Cap a single continuous segment. If a segment ran longer than
+                # this, idle/suspend handling did not stop it in time — the extra
+                # wall-clock is idle/sleep, not work, so it must not be counted.
+                cap = getattr(self, 'max_segment_seconds', 1800)
+                if cap and elapsed > cap:
+                    print(f"[WARN] Session segment {int(elapsed)}s exceeds cap {cap}s "
+                          f"— clamping (idle/suspend time not counted)")
+                    elapsed = cap
                 new_total = (total_time or 0) + elapsed
                 cursor.execute(
                     'UPDATE active_sessions SET total_time_seconds = ?, timer_started_at = NULL, last_seen = ? WHERE id = ?',
@@ -5417,12 +5430,18 @@ class ActiveSessionManager:
             except Exception as e:
                 print(f"[WARN] Error stopping timer: {e}")
 
-    def stop_current_timer(self):
-        """Stop timer on the current session (public, acquires lock)."""
+    def stop_current_timer(self, end_time=None):
+        """Stop timer on the current session (public, acquires lock).
+
+        Args:
+            end_time: Optional ISO-8601 string to use as the segment end instead
+                of "now". Used on suspend/sleep so the active session is finalized
+                at the pre-suspend moment and the sleep gap is excluded.
+        """
         with self._lock:
             conn = self.db_manager.get_connection()
             try:
-                now = datetime.now(timezone.utc).isoformat()
+                now = end_time or datetime.now(timezone.utc).isoformat()
                 cursor = conn.cursor()
                 self._stop_timer_internal(cursor, now)
                 conn.commit()
@@ -5950,6 +5969,13 @@ class TrackingState(Enum):
 # MAIN APPLICATION
 # ============================================================================
 
+# Minimum pointer movement (pixels, squared-distance compared) for a mouse-move
+# to count as genuine activity. Filters trackpad/optical micro-jitter that an
+# open-lid laptop emits with no human present (which previously kept the clock
+# alive overnight). Clicks, scrolls and key presses always count regardless.
+MOUSE_MOVE_MIN_PX = 8
+
+
 class TimeTracker:
     """Main application class"""
 
@@ -6060,7 +6086,8 @@ class TimeTracker:
         self.next_popup_show_time = None  # When to show popup again (for periodic reappearance)
         self.popup_show_count = 0  # How many times popup has been shown (for calculating intervals)
         self.needs_idle_resume = False  # Flag set by pynput when activity detected during idle
-        self.last_activity_time = time.time()  # Last mouse/keyboard activity
+        self.last_activity_time = time.time()  # Last GENUINE mouse/keyboard activity
+        self._last_mouse_pos = None  # Last pointer position, for jitter filtering
         self.idle_timeout = 300  # 5 minutes idle timeout (in seconds)
         self.idle_start_time = None  # When the current idle period began (UTC datetime)
         self.idle_project_key = None  # Project key at idle entry — used for idle record's project_key
@@ -10909,8 +10936,12 @@ class TimeTracker:
             is_new_window = False
             if window_key != self.current_window_key:
                 is_new_window = True
-                # Window switch = user is active (reset idle timer even if pynput fails)
-                self.last_activity_time = time.time()
+                # NOTE: a window switch is used only to segment sessions/screenshots.
+                # It is intentionally NOT treated as user activity — apps (VS Code,
+                # browsers, Teams, …) change their own titles with no human input, and
+                # counting that as activity defeats idle detection (it kept the clock
+                # running for hours overnight). Idle is driven by genuine input only
+                # (pynput / GetLastInputInfo) via _compute_idle_duration().
                 # Save previous window info before updating (for final screenshot with full duration)
                 # ALWAYS save the previous window info so we can track time properly
                 # The screenshot_id may be None if no screenshot was taken (rapid switching)
@@ -11411,12 +11442,7 @@ class TimeTracker:
             
             # Store idle reason for logging
             self.idle_reason = reason
-            
-            # Store current window key for stuck-idle detection (safeguard)
-            current_window = self.get_active_window()
-            if current_window:
-                self._idle_entry_window_key = f"{current_window.get('app', '')}__{current_window.get('title', '')}"
-            
+
             # Transition state
             self.state = TrackingState.IDLE
             self.is_idle = True  # Keep boolean flag in sync for backward compatibility
@@ -11536,11 +11562,11 @@ class TimeTracker:
             self.idle_start_time = None
             return
 
-        # Only record idle within configured working hours
-        if not self._is_within_work_hours(self.idle_start_time):
-            print(f"[IDLE] Skipping idle record outside work hours: {self.idle_start_time.strftime('%H:%M:%S')} ({reason})")
-            self.idle_start_time = None
-            return
+        # Idle is recorded regardless of time-of-day or day-of-week. Work-hours
+        # gating was removed: a user may work whenever they want, and "outside
+        # work hours" must NOT cause idle to be silently dropped (which let the
+        # surrounding active session swallow the gap). _is_within_work_hours is
+        # no longer consulted here.
 
         project_key = getattr(self, 'idle_project_key', None) or self.current_project_key or self.get_user_project_key()
         record = {
@@ -11580,6 +11606,72 @@ class TimeTracker:
         print(f"[IDLE] Created idle record: {self.idle_start_time.strftime('%H:%M:%S')} → {idle_end.strftime('%H:%M:%S')} ({idle_duration}s, reason: {reason})")
         self.idle_start_time = None
 
+    def get_system_idle_seconds(self):
+        """Return seconds since the OS last saw real keyboard/mouse input, or None.
+
+        Uses the Windows GetLastInputInfo API — the authoritative, session-wide
+        idle clock. It is not fooled by window-title changes or by our own
+        background work, and does not depend on Python-level input hooks staying
+        alive. Returns None on non-Windows or if the call fails (caller falls
+        back to the pynput-derived last_activity_time).
+        """
+        try:
+            import ctypes
+
+            class _LASTINPUTINFO(ctypes.Structure):
+                _fields_ = [('cbSize', ctypes.c_uint), ('dwTime', ctypes.c_uint)]
+
+            lii = _LASTINPUTINFO()
+            lii.cbSize = ctypes.sizeof(_LASTINPUTINFO)
+            user32 = ctypes.windll.user32
+            kernel32 = ctypes.windll.kernel32
+            if not user32.GetLastInputInfo(ctypes.byref(lii)):
+                return None
+            # GetTickCount and dwTime share the same millisecond tick base.
+            millis_since_input = kernel32.GetTickCount() - lii.dwTime
+            if millis_since_input < 0:
+                return None  # tick wrap (~49.7 days uptime) — fall back this cycle
+            return millis_since_input / 1000.0
+        except Exception:
+            return None
+
+    def _compute_idle_duration(self):
+        """Seconds since genuine user input. Prefers the OS clock, falls back to
+        the last_activity_time maintained by our (jitter-filtered) pynput hooks."""
+        sys_idle = self.get_system_idle_seconds()
+        if sys_idle is not None:
+            return sys_idle
+        return time.time() - self.last_activity_time
+
+    def _register_activity(self):
+        """Record a genuine input event: refresh activity time and, if we were
+        idle, signal the tracking loop to resume."""
+        self.last_activity_time = time.time()
+        self._activity_monitor_heartbeat = time.time()  # B-2: Update heartbeat
+        if self.is_idle:
+            self.idle_resume_event.set()  # B-3: Use Event instead of boolean
+
+    def _mouse_moved_enough(self, x, y):
+        """True only if the pointer jumped at least MOUSE_MOVE_MIN_PX from the
+        previously seen position. Sub-threshold drift (jitter) returns False.
+        Always updates the stored position so only a single real move counts."""
+        last = self._last_mouse_pos
+        self._last_mouse_pos = (x, y)
+        if last is None:
+            return False  # first sample establishes a baseline; not yet activity
+        dx = x - last[0]
+        dy = y - last[1]
+        return (dx * dx + dy * dy) >= (MOUSE_MOVE_MIN_PX * MOUSE_MOVE_MIN_PX)
+
+    def _on_mouse_move(self, x, y):
+        """pynput on_move handler — only counts as activity past the jitter threshold."""
+        if self._mouse_moved_enough(x, y):
+            self._register_activity()
+
+    def _on_input_activity(self, *args, **kwargs):
+        """pynput handler for clicks / scrolls / key presses — always real input."""
+        self._register_activity()
+
     def monitor_user_activity(self):
         """Monitor mouse and keyboard activity for idle detection"""
         try:
@@ -11590,27 +11682,19 @@ class TimeTracker:
             self._activity_monitor_failed = True  # B-1: Mark failure for fallback
             return
 
-        def on_activity(*args, **kwargs):
-            """Called on any mouse or keyboard activity"""
-            self.last_activity_time = time.time()
-            self._activity_monitor_heartbeat = time.time()  # B-2: Update heartbeat
-
-            # Signal that we need to resume from idle (tracking loop will handle the state reset)
-            if self.is_idle:
-                self.idle_resume_event.set()  # B-3: Use Event instead of boolean
-
         try:
-            # Start mouse listener
+            # Start mouse listener. on_move is jitter-filtered (open-lid trackpad
+            # noise must not count as activity); clicks/scrolls always count.
             mouse_listener = mouse.Listener(
-                on_move=on_activity,
-                on_click=on_activity,
-                on_scroll=on_activity
+                on_move=self._on_mouse_move,
+                on_click=self._on_input_activity,
+                on_scroll=self._on_input_activity
             )
             mouse_listener.start()
 
             # Start keyboard listener
             keyboard_listener = keyboard.Listener(
-                on_press=on_activity
+                on_press=self._on_input_activity
             )
             keyboard_listener.start()
 
@@ -12047,7 +12131,14 @@ class TimeTracker:
                     print(f"[INFO] Large time gap detected: {int(time_since_last_loop)}s — system was likely suspended")
                     # Finalize current session using last known activity time
                     self._finalize_active_session("system suspension detected")
-                    self.session_manager.stop_current_timer()  # Stop SQLite activity timer so suspension time isn't counted in activity_records
+                    # Stop the SQLite activity timer at the PRE-suspend moment, not
+                    # at wake time. last_loop_time is the last loop iteration before
+                    # the gap; ending there excludes the entire sleep interval from
+                    # active time (otherwise the whole gap is counted as work).
+                    pre_suspend_iso = datetime.fromtimestamp(
+                        last_loop_time, tz=timezone.utc
+                    ).isoformat()
+                    self.session_manager.stop_current_timer(end_time=pre_suspend_iso)
 
                     # If we were idle when suspension happened, create the idle record NOW
                     # before resetting state — otherwise the idle period is silently lost.
@@ -12189,46 +12280,27 @@ class TimeTracker:
                     print("[INFO] Retrying failed update download (30-minute retry interval)...")
                     self.check_for_app_updates(show_notification=True, force=True)
                 
-                # Check for idle timeout (use configurable threshold)
-                idle_duration = time.time() - self.last_activity_time
+                # Check for idle timeout (use configurable threshold).
+                # idle_duration comes from genuine input only (OS GetLastInputInfo,
+                # else jitter-filtered pynput) — NOT from window-title changes.
+                idle_duration = self._compute_idle_duration()
                 current_idle_timeout = self.tracking_settings.get('idle_threshold_seconds', self.idle_timeout)
-                
-                # B-1: Fallback idle detection when pynput failed
-                # If pynput is not working, treat window switches as activity
-                if self._activity_monitor_failed:
-                    # Get current window to detect switches
-                    window_info_for_idle = self.get_active_window()
-                    if window_info_for_idle:
-                        window_key = f"{window_info_for_idle.get('app', '')}__{window_info_for_idle.get('title', '')}"
-                        # Check if window changed (indicates user activity)
-                        if hasattr(self, '_last_window_key_for_idle'):
-                            if window_key != self._last_window_key_for_idle:
-                                # Window switched - update activity time
-                                self.last_activity_time = time.time()
-                                self._last_window_switch_time = time.time()
-                                if self.is_idle:
-                                    print("[INFO] Window switch detected (fallback) - resuming from idle")
-                                    self.idle_resume_event.set()  # B-3: Use Event
-                        self._last_window_key_for_idle = window_key
-                
-                # Additional safeguard: If stuck in idle for extended period with window changes,
-                # force resume (prevents permanent idle lock if activity detection fails)
-                if self.is_idle and self.idle_start_time:
-                    time_in_idle = time.time() - self.idle_start_time.timestamp()
-                    # If idle for more than 30 minutes, check if window has changed
-                    if time_in_idle > 1800:  # 30 minutes
-                        current_window = self.get_active_window()
-                        if current_window:
-                            current_key = f"{current_window.get('app', '')}__{current_window.get('title', '')}"
-                            # Store window key when entering idle if not exists
-                            if not hasattr(self, '_idle_entry_window_key'):
-                                self._idle_entry_window_key = current_key
-                            # If window changed since entering idle, user is likely active
-                            elif current_key != self._idle_entry_window_key:
-                                print(f"[WARN] Stuck in idle for {int(time_in_idle)}s but window changed - forcing resume")
-                                self.idle_resume_event.set()
-                                self._idle_entry_window_key = None
-                
+
+                # Keep the session-timer segment cap in sync with the capture
+                # interval (mirrors the screenshots-path cap of max(interval*2, 600)).
+                _interval = self.tracking_settings.get('screenshot_interval_seconds', self.capture_interval)
+                self.session_manager.max_segment_seconds = max(_interval * 2, 600)
+
+
+                # Resume safeguard (no permanent idle lock): if we are idle but the
+                # OS reports recent genuine input (idle_duration back under the
+                # threshold), resume — even if the pynput hook missed the event or
+                # has died. This replaces the old "window changed → force resume"
+                # logic, which wrongly treated a self-changing window title as the
+                # user returning. Only real input resumes.
+                if self.is_idle and idle_duration <= current_idle_timeout:
+                    self.idle_resume_event.set()
+
                 if idle_duration > current_idle_timeout:
                     if self.state == TrackingState.ACTIVE:
                         idle_start_time = datetime.now(timezone.utc)
