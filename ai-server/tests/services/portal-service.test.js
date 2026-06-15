@@ -2,6 +2,7 @@
 
 jest.mock('../../src/services/db/supabase-client');
 jest.mock('../../src/services/portal-employee-profile-service');
+jest.mock('../../src/services/location-detection-service');
 
 jest.mock('../../src/utils/logger', () => ({
   info: jest.fn(),
@@ -12,12 +13,14 @@ jest.mock('../../src/utils/logger', () => ({
 
 const { getClient } = require('../../src/services/db/supabase-client');
 const profileService = require('../../src/services/portal-employee-profile-service');
+const workLocationService = require('../../src/services/location-detection-service');
 const portalService = require('../../src/services/portal-service');
 
 beforeEach(() => {
   jest.clearAllMocks();
-  // Default: no employee has a portal location assigned.
+  // Default: no employee has a portal location or detected working location.
   profileService.getLocationMapForUsers.mockResolvedValue({});
+  workLocationService.getWorkLocationMapForUsers.mockResolvedValue({});
 });
 
 describe('getDashboardData — RPC aggregation + LOB scoping', () => {
@@ -142,6 +145,27 @@ describe('getEmployees — RPC aggregation', () => {
     const bob = res.data.find((e) => e.userId === 'u2');
     expect(alice.location).toEqual({ id: 'loc1', name: 'Hyderabad' });
     expect(bob.location).toBeNull();
+  });
+
+  test('merges each employee\'s detected working location into the page', async () => {
+    const rpc = jest.fn().mockResolvedValue({
+      data: [
+        { user_id: 'u1', name: 'Alice', email: 'a@x.com', productive_seconds: 1, nonproductive_seconds: 0, last_activity: null },
+        { user_id: 'u2', name: 'Bob', email: 'b@x.com', productive_seconds: 1, nonproductive_seconds: 0, last_activity: null },
+      ],
+      error: null,
+    });
+    getClient.mockReturnValue({ rpc });
+    workLocationService.getWorkLocationMapForUsers.mockResolvedValue({
+      u1: { city: 'Hyderabad', region: 'TG', country: 'IN', detectedAt: '2026-06-13T00:00:00Z' },
+    });
+
+    const res = await portalService.getEmployees('org', { from: 'a', to: 'b' }, { page: 1, limit: 10 }, null);
+
+    const alice = res.data.find((e) => e.userId === 'u1');
+    const bob = res.data.find((e) => e.userId === 'u2');
+    expect(alice.workLocation).toEqual({ city: 'Hyderabad', region: 'TG', country: 'IN', detectedAt: '2026-06-13T00:00:00Z' });
+    expect(bob.workLocation).toBeNull();
   });
 
   test('locationId filter narrows to employees in that location, before pagination (AC-B3)', async () => {

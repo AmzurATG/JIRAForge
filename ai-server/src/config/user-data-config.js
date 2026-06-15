@@ -56,9 +56,14 @@ const deletionOrder = [
   'notification_preferences',
   'worklog_sync',
   
+  // Level 4.5: Portal-owned per-user rows (soft user_id reference, no FKs to users)
+  'portal_employee_work_locations',
+  'portal_employee_profiles',
+  'portal_lob_employees',
+
   // Level 5: Organization memberships
   'organization_members', // FK to users
-  
+
   // LAST: Users table (CASCADE will clean up any missed FKs)
   'users'
 ];
@@ -142,6 +147,18 @@ const excludedTables = [
 ];
 
 /**
+ * Tables that have a user_id column but NO organization_id column
+ * (portal-owned, company-wide tables — see the 20260610/20260613 migrations).
+ * Deletion must not add the org filter for these, or PostgREST errors out and
+ * the rows survive erasure.
+ */
+const noOrgScopeTables = [
+  'portal_employee_profiles',
+  'portal_lob_employees',
+  'portal_employee_work_locations'
+];
+
+/**
  * Special handling instructions for specific tables
  */
 const specialHandling = {
@@ -202,11 +219,20 @@ function getExportRowLimit(tableName) {
 
 /**
  * Check if table should be excluded from discovery
- * @param {string} tableName 
+ * @param {string} tableName
  * @returns {boolean}
  */
 function isExcluded(tableName) {
   return excludedTables.includes(tableName);
+}
+
+/**
+ * Check if a table has no organization_id column (deletion must skip the org filter)
+ * @param {string} tableName
+ * @returns {boolean}
+ */
+function hasNoOrgScope(tableName) {
+  return noOrgScopeTables.includes(tableName);
 }
 
 module.exports = {
@@ -215,9 +241,11 @@ module.exports = {
   storageAssociations,
   exportRowLimits,
   excludedTables,
+  noOrgScopeTables,
   specialHandling,
   getDeletionOrderIndex,
   shouldAnonymize,
   getExportRowLimit,
-  isExcluded
+  isExcluded,
+  hasNoOrgScope
 };

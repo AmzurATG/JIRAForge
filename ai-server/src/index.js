@@ -743,6 +743,8 @@ app.delete('/api/portal/locations/:id', portalAuthMiddleware.verifyPortalToken, 
 app.put('/api/portal/employees/:userId/profile', portalAuthMiddleware.verifyPortalToken, portalEmployeeProfileController.setEmployeeProfile);
 // Bulk location assignment (Employees action bar + Locations members picker) — superadmin only
 app.put('/api/portal/employees/profiles', portalAuthMiddleware.verifyPortalToken, portalEmployeeProfileController.bulkSetEmployeeProfiles);
+// NOTE: detected working-location is embedded in the employees-list response
+// (portal-controller.getEmployees) — a portal-only read, no dedicated route.
 
 // Portal reports endpoints (authenticated)
 app.get('/api/portal/reports/data', portalAuthMiddleware.verifyPortalToken, portalReportsController.getReportData);

@@ -13,6 +13,7 @@ const jwt = require('jsonwebtoken');
 const logger = require('../utils/logger');
 const { getClient } = require('../services/db/supabase-client');
 const { buildOcrConfig, buildPrivacyConfig } = require('../config/ocr-config-builder');
+const locationDetectionService = require('../services/location-detection-service');
 
 // Atlassian OAuth configuration
 const ATLASSIAN_TOKEN_URL = 'https://auth.atlassian.com/oauth/token';
@@ -656,6 +657,14 @@ exports.exchangeToken = async (req, res) => {
         logger.info('[Auth] Set supabase_user_id = %s for user %s', dbUser.id, atlassianAccountId);
       }
     }
+
+    // Working-location detection (portal-only feature): derive the employee's
+    // approximate working location from the client IP via offline GeoIP.
+    // Fire-and-forget — must never block or fail token minting (plan AC6).
+    // The full IP is not persisted, only a truncated prefix; throttled to ~3h.
+    locationDetectionService.recordWorkingLocation(dbUser.id, req.ip).catch((err) =>
+      logger.warn('[Auth] Working-location detection skipped: %s', err.message)
+    );
 
     // Extract Supabase reference from URL (e.g., jvijitdewbypqbatfboi from https://jvijitdewbypqbatfboi.supabase.co)
     const supabaseRefMatch = supabaseUrl ? /https:\/\/([^.]+)\.supabase\.co/.exec(supabaseUrl) : null;

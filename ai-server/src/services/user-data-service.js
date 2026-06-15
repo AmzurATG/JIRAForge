@@ -296,18 +296,18 @@ async function deleteFromTable(supabase, tableName, userId, organizationId = nul
           } : {})
         })
         .eq('user_id', userId);
-      
+
       // Filter by organization if specified and table has org column
-      if (organizationId && tableName !== 'users') {
+      if (organizationId && tableName !== 'users' && !userDataConfig.hasNoOrgScope(tableName)) {
         query = query.eq('organization_id', organizationId);
       }
-      
+
       const { count, error } = await query;
-      
+
       if (error) {
         throw error;
       }
-      
+
       logger.info(`[UserData] Anonymized ${tableName}:`, { rows: count });
       return { tableName, count: count || 0, action: 'anonymized' };
     }
@@ -317,9 +317,10 @@ async function deleteFromTable(supabase, tableName, userId, organizationId = nul
       .from(tableName)
       .delete({ count: 'exact' })
       .eq('user_id', userId);
-    
+
     // Filter by organization if specified and table has org column
-    if (organizationId && tableName !== 'users') {
+    // (portal-owned tables have user_id but no org column — see noOrgScopeTables)
+    if (organizationId && tableName !== 'users' && !userDataConfig.hasNoOrgScope(tableName)) {
       query = query.eq('organization_id', organizationId);
     }
     

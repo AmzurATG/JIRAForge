@@ -3988,7 +3988,12 @@ class OfflineManager:
 class ConsentManager:
     """Manages user consent for screenshot capture - GDPR/Privacy compliance"""
 
-    CONSENT_VERSION = "1.0"  # Increment when privacy policy changes significantly
+    # 1.1 (2026-06): added periodic approximate working-location detection
+    # (server-side, city/region/country derived from the network address of the
+    # app's connections roughly every few hours while tracking is active — no
+    # GPS, no continuous tracking). The version bump forces re-consent for all
+    # previously-consented users.
+    CONSENT_VERSION = "1.1"  # Increment when privacy policy changes significantly
 
     def __init__(self, store_path=None):
         self.store_path = store_path or os.path.join(
@@ -4043,7 +4048,8 @@ class ConsentManager:
                 'window_titles',
                 'application_names',
                 'timestamps',
-                'jira_issues'
+                'jira_issues',
+                'approximate_working_location (city/region/country, derived periodically from the network address of the app\'s connections)'
             ],
             'third_party_processing': [
                 'OpenAI (screenshot analysis)',
@@ -14218,6 +14224,13 @@ loadData();
                 <div class="data-text">
                     <strong>Jira Issue Data</strong>
                     <span>Your assigned issues for task matching</span>
+                </div>
+            </div>
+            <div class="data-item">
+                <span class="data-icon">📍</span>
+                <div class="data-text">
+                    <strong>Approximate Working Location</strong>
+                    <span>While tracking is active, your approximate working location (city / region / country) is derived on the server roughly every few hours from the network address of this app's connections, for workforce reporting. No GPS is used, your exact address is never collected, and only the approximate location is stored.</span>
                 </div>
             </div>
         </div>

@@ -10,6 +10,7 @@
 const logger = require('../utils/logger');
 const { getClient } = require('./db/supabase-client');
 const profileService = require('./portal-employee-profile-service');
+const workLocationService = require('./location-detection-service');
 
 function isNonProductiveClassification(classification) {
   return classification === 'non_productive' || classification === 'non-productive';
@@ -295,6 +296,15 @@ class PortalService {
     if (!locationId && paginatedEmployees.length) {
       const locMap = await profileService.getLocationMapForUsers(paginatedEmployees.map((e) => e.userId));
       paginatedEmployees.forEach((e) => { e.location = locMap[e.userId] || null; });
+    }
+
+    // Attach each employee's detected working location (where they're currently
+    // working from — approximate, GeoIP-derived, refreshed ~every 3h). Page only.
+    if (paginatedEmployees.length) {
+      const workMap = await workLocationService.getWorkLocationMapForUsers(
+        paginatedEmployees.map((e) => e.userId)
+      );
+      paginatedEmployees.forEach((e) => { e.workLocation = workMap[e.userId] || null; });
     }
 
     return {

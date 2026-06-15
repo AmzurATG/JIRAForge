@@ -6,7 +6,7 @@
 
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Search, MapPin, Edit2 } from 'lucide-react';
+import { Search, MapPin, Edit2, Globe } from 'lucide-react';
 import { employeesApi } from '../api/employees';
 import { locationsApi } from '../api/locations';
 import { useAuth } from '../contexts/AuthContext';
@@ -254,6 +254,27 @@ function EmployeesPage() {
         ) : (
           <span className="text-xs text-gray-400">—</span>
         ),
+    },
+    {
+      key: 'workLocation',
+      label: 'Working From',
+      sortable: false,
+      render: (value) => {
+        if (!value || (!value.city && !value.country)) {
+          return <span className="text-xs text-gray-400">—</span>;
+        }
+        const place = [value.city, value.country].filter(Boolean).join(', ');
+        const detected = value.detectedAt ? new Date(value.detectedAt) : null;
+        return (
+          <span
+            className="inline-flex items-center gap-1 text-xs text-gray-700 dark:text-gray-300"
+            title={detected ? `Detected ${detected.toLocaleString()} (approximate, from network address)` : 'Approximate, from network address'}
+          >
+            <Globe className="w-3 h-3 text-gray-400" />
+            {place || '—'}
+          </span>
+        );
+      },
     },
     {
       key: 'lastActivityAt',

@@ -25,6 +25,7 @@ const logger = require('../utils/logger');
 const { getClient } = require('../services/db/supabase-client');
 const userDbService = require('../services/db/user-db-service');
 const { buildOcrConfig, buildPrivacyConfig } = require('../config/ocr-config-builder');
+const locationDetectionService = require('../services/location-detection-service');
 
 const GOOGLE_TOKEN_URL = 'https://oauth2.googleapis.com/token';
 const GOOGLE_USERINFO_URL = 'https://www.googleapis.com/oauth2/v2/userinfo';
@@ -143,7 +144,7 @@ function mintSupabaseToken(dbUser, email, displayName) {
  * Shared finalize: validate the Google identity, resolve org from the email
  * domain, find-or-create the user, mint the Supabase JWT, and send the response.
  */
-async function buildGoogleSessionResponse(googleUser, refreshToken, res) {
+async function buildGoogleSessionResponse(googleUser, refreshToken, res, clientIp) {
   // Fail fast if the DB isn't configured: every step below (org lookup,
   // find-or-create, JWT minting) needs the Supabase client, so check it once
   // up front rather than after the DB writes have already happened.
@@ -180,6 +181,12 @@ async function buildGoogleSessionResponse(googleUser, refreshToken, res) {
   }
 
   const dbUser = await userDbService.findOrCreateGoogleUser({ googleSub, email, displayName, organizationId });
+
+  // Working-location detection (portal-only feature) — same fire-and-forget
+  // hook as the Atlassian exchange-token flow; must never block or fail login.
+  locationDetectionService.recordWorkingLocation(dbUser.id, clientIp).catch((err) =>
+    logger.warn('[GoogleAuth] Working-location detection skipped: %s', err.message)
+  );
 
   const { token, expiresIn } = mintSupabaseToken(dbUser, email, displayName);
 
@@ -235,7 +242,7 @@ exports.desktopGoogleLogin = async (req, res) => {
 
     const tokens = await exchangeGoogleCode({ code, redirectUri: redirect_uri, codeVerifier: code_verifier, clientId, clientSecret });
     const googleUser = await fetchGoogleUser(tokens.access_token);
-    return await buildGoogleSessionResponse(googleUser, tokens.refresh_token, res);
+    return await buildGoogleSessionResponse(googleUser, tokens.refresh_token, res, req.ip);
   } catch (error) {
     if (error.statusCode) {
       logger.warn('[GoogleAuth] login failed', { status: error.statusCode, error: error.message });
@@ -266,7 +273,7 @@ exports.desktopGoogleRefresh = async (req, res) => {
     const tokens = await refreshGoogleTokens({ refreshToken: google_refresh_token, clientId, clientSecret });
     const googleUser = await fetchGoogleUser(tokens.access_token);
     // Google refresh responses usually omit a new refresh_token; keep the caller's existing one.
-    return await buildGoogleSessionResponse(googleUser, tokens.refresh_token || google_refresh_token, res);
+    return await buildGoogleSessionResponse(googleUser, tokens.refresh_token || google_refresh_token, res, req.ip);
   } catch (error) {
     if (error.statusCode) {
       logger.warn('[GoogleAuth] refresh failed', { status: error.statusCode, error: error.message });
