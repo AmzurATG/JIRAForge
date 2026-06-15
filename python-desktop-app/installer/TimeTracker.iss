@@ -23,7 +23,15 @@
 ; ============================================================================
 
 #ifndef MyAppVersion
-  #define MyAppVersion "1.4.7"    ; fallback; build.bat overrides with /D
+  #define MyAppVersion "1.4.10"    ; fallback; build.bat overrides with /D
+#endif
+
+; Update server the SYSTEM updater (update_service.ps1) must query. Persisted to
+; HKLM at install time so the updater uses the SAME server the app was built for
+; instead of a baked-in default. build.bat overrides this with /DMyAppServerUrl
+; sourced from AI_SERVER_URL in .env.
+#ifndef MyAppServerUrl
+  #define MyAppServerUrl "https://forgesync.amzur.com"    ; fallback; build.bat overrides with /D
 #endif
 
 #define MyAppName        "TimeTracker"
@@ -86,6 +94,10 @@ Name: "{group}\Uninstall {#MyAppName}"; Filename: "{uninstallexe}"
 ; Record install dir machine-wide so other tooling (and the updater) can find it.
 Root: HKLM; Subkey: "Software\{#MyAppPublisher}\{#MyAppName}"; ValueType: string; ValueName: "InstallDir"; ValueData: "{app}"; Flags: uninsdeletekey
 Root: HKLM; Subkey: "Software\{#MyAppPublisher}\{#MyAppName}"; ValueType: string; ValueName: "Version"; ValueData: "{#MyAppVersion}"; Flags: uninsdeletekey
+; ServerUrl: the update server for the SYSTEM updater. Written here so update_service.ps1
+; reads it (registry-first) instead of falling back to a hard-coded default that may
+; not match the server the app actually uses. Sourced from AI_SERVER_URL at build time.
+Root: HKLM; Subkey: "Software\{#MyAppPublisher}\{#MyAppName}"; ValueType: string; ValueName: "ServerUrl"; ValueData: "{#MyAppServerUrl}"; Flags: uninsdeletekey
 
 [Run]
 ; --- Register the SYSTEM-context auto-update scheduled task. -----------------

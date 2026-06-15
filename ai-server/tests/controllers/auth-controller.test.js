@@ -13,6 +13,9 @@ jest.mock('axios');
 jest.mock('jsonwebtoken');
 jest.mock('../../src/utils/logger');
 jest.mock('../../src/services/db/supabase-client');
+jest.mock('../../src/services/token-custody-service');
+
+const custody = require('../../src/services/token-custody-service');
 
 describe('Auth Controller', () => {
   let req, res;
@@ -334,6 +337,76 @@ describe('Auth Controller', () => {
         response: {
           status: 403,
           data: { error: 'invalid_grant', error_description: 'Token was globally revoked' }
+        }
+      });
+
+      await authController.refreshToken(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(401);
+      expect(res.json).toHaveBeenCalledWith(
+        expect.objectContaining({
+          requiresReauth: true,
+          errorCode: 'OAUTH_REAUTH_REQUIRED'
+        })
+      );
+    });
+
+    it('should treat 403 with dead-token text in the error field itself as permanent', async () => {
+      // Exact production payload from the 2026-06-12 incident: Atlassian returned
+      // the dead-token wording in `error` (no error_description, no terminal OAuth
+      // code), which slipped past field-equality checks and was misclassified as
+      // OAUTH_TEMPORARY_FAILURE — the desktop then retried a consumed token forever.
+      req.body = { refresh_token: 'consumed-token' };
+
+      axios.post.mockRejectedValue({
+        response: {
+          status: 403,
+          data: { error: 'refresh_token is invalid' }
+        }
+      });
+
+      await authController.refreshToken(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(401);
+      expect(res.json).toHaveBeenCalledWith(
+        expect.objectContaining({
+          requiresReauth: true,
+          errorCode: 'OAUTH_REAUTH_REQUIRED'
+        })
+      );
+    });
+
+    it('should treat 403 + non-terminal code with dead-token description as permanent', async () => {
+      req.body = { refresh_token: 'consumed-token' };
+
+      axios.post.mockRejectedValue({
+        response: {
+          status: 403,
+          data: { error: 'access_denied', error_description: 'refresh_token is invalid' }
+        }
+      });
+
+      await authController.refreshToken(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(401);
+      expect(res.json).toHaveBeenCalledWith(
+        expect.objectContaining({
+          requiresReauth: true,
+          errorCode: 'OAUTH_REAUTH_REQUIRED'
+        })
+      );
+    });
+
+    it('should treat Atlassian documented "Unknown or invalid refresh token" wording as permanent', async () => {
+      // Wording published in Atlassian's refresh-token docs for reused/expired
+      // rotating tokens (403 + invalid_grant body in their docs, but the text is
+      // authoritative regardless of which code wraps it).
+      req.body = { refresh_token: 'reused-token' };
+
+      axios.post.mockRejectedValue({
+        response: {
+          status: 400,
+          data: { error: 'invalid_request', error_description: 'Unknown or invalid refresh token.' }
         }
       });
 
@@ -1197,6 +1270,171 @@ describe('Auth Controller', () => {
       await authController.verifyToken(req, res);
 
       expect(res.status).toHaveBeenCalledWith(500);
+    });
+  });
+
+  // ===========================================================================
+  // Phase 2 — server-side token custody endpoints
+  // Plan: plan/2026-06-12_auth_server-side-token-custody.md
+  // ===========================================================================
+
+  describe('getDeviceAccessToken (POST /api/auth/access-token)', () => {
+    it('returns a fresh access token for a valid device session', async () => {
+      req.body = { device_token: 'device-abc' };
+      custody.verifyDeviceSession.mockResolvedValue({ sessionId: 's1', userId: 'user-1', organizationId: 'org-1' });
+      custody.getAccessTokenForUser.mockResolvedValue({ accessToken: 'fresh-access', expiresAt: '2026-06-12T12:00:00Z' });
+
+      await authController.getDeviceAccessToken(req, res);
+
+      expect(custody.getAccessTokenForUser).toHaveBeenCalledWith('user-1');
+      expect(res.json).toHaveBeenCalledWith({
+        success: true,
+        access_token: 'fresh-access',
+        expires_at: '2026-06-12T12:00:00Z'
+      });
+    });
+
+    it('returns 400 when device_token is missing', async () => {
+      req.body = {};
+      await authController.getDeviceAccessToken(req, res);
+      expect(res.status).toHaveBeenCalledWith(400);
+      expect(res.json).toHaveBeenCalledWith(
+        expect.objectContaining({ success: false })
+      );
+    });
+
+    it('returns 401 DEVICE_SESSION_INVALID for unknown/revoked/expired device tokens', async () => {
+      req.body = { device_token: 'revoked-or-unknown' };
+      custody.verifyDeviceSession.mockResolvedValue(null);
+
+      await authController.getDeviceAccessToken(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(401);
+      expect(res.json).toHaveBeenCalledWith(
+        expect.objectContaining({ success: false, errorCode: 'DEVICE_SESSION_INVALID', requiresReauth: true })
+      );
+      expect(custody.getAccessTokenForUser).not.toHaveBeenCalled();
+    });
+
+    it('returns 401 OAUTH_REAUTH_REQUIRED when the stored credential is dead', async () => {
+      req.body = { device_token: 'device-abc' };
+      custody.verifyDeviceSession.mockResolvedValue({ sessionId: 's1', userId: 'user-1' });
+      const dead = new Error('Refresh token is no longer valid — login required');
+      dead.code = 'OAUTH_REAUTH_REQUIRED';
+      custody.getAccessTokenForUser.mockRejectedValue(dead);
+
+      await authController.getDeviceAccessToken(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(401);
+      expect(res.json).toHaveBeenCalledWith(
+        expect.objectContaining({ success: false, errorCode: 'OAUTH_REAUTH_REQUIRED', requiresReauth: true })
+      );
+    });
+
+    it('returns 503 OAUTH_TEMPORARY_FAILURE on transient rotation failures', async () => {
+      req.body = { device_token: 'device-abc' };
+      custody.verifyDeviceSession.mockResolvedValue({ sessionId: 's1', userId: 'user-1' });
+      const transient = new Error('Network failure during rotation');
+      transient.code = 'OAUTH_TEMPORARY_FAILURE';
+      custody.getAccessTokenForUser.mockRejectedValue(transient);
+
+      await authController.getDeviceAccessToken(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(503);
+      expect(res.json).toHaveBeenCalledWith(
+        expect.objectContaining({ success: false, errorCode: 'OAUTH_TEMPORARY_FAILURE' })
+      );
+    });
+  });
+
+  describe('migrateCustody (POST /api/auth/migrate-custody)', () => {
+    function mockIdentity() {
+      axios.get.mockResolvedValue({
+        data: { account_id: 'acc-123', email: 'test@example.com', name: 'Test User' }
+      });
+      const mockSupabase = {
+        from: jest.fn().mockReturnThis(),
+        select: jest.fn().mockReturnThis(),
+        update: jest.fn().mockReturnThis(),
+        eq: jest.fn().mockReturnThis(),
+        single: jest.fn().mockResolvedValue({
+          data: { id: 'user-uuid', organization_id: 'org-uuid' },
+          error: null
+        })
+      };
+      getClient.mockReturnValue(mockSupabase);
+    }
+
+    it('stores the refresh token server-side and issues a device token', async () => {
+      req.body = {
+        atlassian_token: 'access-123',
+        refresh_token: 'refresh-456',
+        device_name: 'LAP-001',
+        app_version: '1.4.8'
+      };
+      mockIdentity();
+      custody.storeCredential.mockResolvedValue();
+      custody.issueDeviceSession.mockResolvedValue({ deviceToken: 'new-device-token', expiresAt: '2026-12-09T00:00:00Z' });
+
+      await authController.migrateCustody(req, res);
+
+      expect(custody.storeCredential).toHaveBeenCalledWith('user-uuid', expect.objectContaining({
+        refreshToken: 'refresh-456',
+        accessToken: 'access-123'
+      }));
+      expect(custody.issueDeviceSession).toHaveBeenCalledWith('user-uuid', expect.objectContaining({
+        organizationId: 'org-uuid',
+        deviceName: 'LAP-001',
+        appVersion: '1.4.8'
+      }));
+      expect(res.json).toHaveBeenCalledWith({
+        success: true,
+        device_token: 'new-device-token',
+        device_token_expires_at: '2026-12-09T00:00:00Z'
+      });
+    });
+
+    it('returns 400 when refresh_token is missing', async () => {
+      req.body = { atlassian_token: 'access-123' };
+      await authController.migrateCustody(req, res);
+      expect(res.status).toHaveBeenCalledWith(400);
+    });
+
+    it('returns 401 when the Atlassian access token is invalid', async () => {
+      req.body = { atlassian_token: 'bad-token', refresh_token: 'refresh-456' };
+      axios.get.mockRejectedValue({ response: { status: 401 } });
+
+      await authController.migrateCustody(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(401);
+      expect(custody.storeCredential).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('revokeDeviceSession (POST /api/auth/device/revoke)', () => {
+    it('revokes the device session', async () => {
+      req.body = { device_token: 'device-abc' };
+      custody.revokeDeviceSession.mockResolvedValue(true);
+
+      await authController.revokeDevice(req, res);
+
+      expect(custody.revokeDeviceSession).toHaveBeenCalledWith('device-abc');
+      expect(res.json).toHaveBeenCalledWith({ success: true });
+    });
+
+    it('returns 400 when device_token is missing', async () => {
+      req.body = {};
+      await authController.revokeDevice(req, res);
+      expect(res.status).toHaveBeenCalledWith(400);
+    });
+
+    it('reports success false when nothing was revoked', async () => {
+      req.body = { device_token: 'unknown' };
+      custody.revokeDeviceSession.mockResolvedValue(false);
+
+      await authController.revokeDevice(req, res);
+
+      expect(res.json).toHaveBeenCalledWith({ success: false, error: 'Device session not found' });
     });
   });
 });

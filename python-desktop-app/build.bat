@@ -338,6 +338,28 @@ if "%APP_VER%"=="" (
 )
 echo [INFO] Installer version: %APP_VER%
 
+REM ----------------------------------------------------------------------------
+REM Determine the update server URL to persist into HKLM (for the SYSTEM updater).
+REM Source: AI_SERVER_URL from local .env > ai-server/.env > built-in default.
+REM This is the SAME server the app uses, so the updater and the app agree instead
+REM of the updater falling back to a hard-coded default.
+REM ----------------------------------------------------------------------------
+set "APP_SERVER="
+if exist ".env" (
+    for /f "usebackq eol=# tokens=1,* delims==" %%A in (".env") do (
+        if /I "%%A"=="AI_SERVER_URL" set "APP_SERVER=%%B"
+    )
+)
+if not defined APP_SERVER if exist "..\ai-server\.env" (
+    for /f "usebackq eol=# tokens=1,* delims==" %%A in ("..\ai-server\.env") do (
+        if /I "%%A"=="AI_SERVER_URL" set "APP_SERVER=%%B"
+    )
+)
+if not defined APP_SERVER set "APP_SERVER=https://forgesync.amzur.com"
+REM Strip any stray spaces that .env formatting may introduce.
+set "APP_SERVER=%APP_SERVER: =%"
+echo [INFO] Update server (persisted to HKLM for the updater): %APP_SERVER%
+
 REM Locate the Inno Setup command-line compiler (ISCC.exe)
 set "ISCC="
 if exist "%ProgramFiles(x86)%\Inno Setup 6\ISCC.exe" set "ISCC=%ProgramFiles(x86)%\Inno Setup 6\ISCC.exe"
@@ -354,7 +376,7 @@ if not defined ISCC (
     goto :done
 )
 
-"%ISCC%" /DMyAppVersion=%APP_VER% "installer\TimeTracker.iss"
+"%ISCC%" /DMyAppVersion=%APP_VER% /DMyAppServerUrl=%APP_SERVER% "installer\TimeTracker.iss"
 if errorlevel 1 (
     echo.
     echo [ERROR] Installer build failed. See Inno Setup output above.

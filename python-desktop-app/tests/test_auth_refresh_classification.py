@@ -8,6 +8,7 @@ plan/2026-05-20_multi-component_session-expiration-hardening.md
 import os
 import sys
 import threading
+import time
 from unittest.mock import MagicMock, patch
 
 # Add parent directory to path for desktop_app imports
@@ -47,6 +48,15 @@ def _make_manager():
     manager._last_token_refresh_time = 0
     manager._token_refresh_min_interval = 5
     manager._save_tokens = lambda: None
+    # Phase 0 fields (mirror __init__): permanent dead-token flag + network gate.
+    # The gate is stubbed True so classification tests never touch real sockets;
+    # the network-gate tests below override it / exercise the real method.
+    manager._refresh_invalid_permanent = False
+    manager._wait_for_network = lambda *a, **k: True
+    # These tests target the LEGACY rotation path: mark custody migration as
+    # already attempted so refresh_access_token doesn't add a migrate-custody
+    # POST (the custody flow has its own suite: test_token_custody_client.py).
+    manager._custody_migration_attempted = True
     return manager
 
 
@@ -353,3 +363,97 @@ def test_non_explicit_permanent_failure_uses_5_retry_threshold():
     # Token should NOT be marked invalid yet - need 5 failures for text-matched permanent errors
     assert manager._refresh_token_invalid is False
     assert manager._refresh_fail_count == 1
+
+
+# ---------------------------------------------------------------------------
+# Phase 0 (plan/2026-06-12_auth_server-side-token-custody.md): network gate.
+# A refresh must never transmit the single-use rotating token into a network
+# that is still coming up after sleep — that is how the rotated replacement
+# gets lost in transit and the session dies permanently (2026-06-12 incident).
+# ---------------------------------------------------------------------------
+def test_wait_for_network_true_when_reachable():
+    manager = AtlassianAuthManager.__new__(AtlassianAuthManager)
+    manager.ai_server_url = 'https://example.test'
+    mock_sock = MagicMock()  # connect() succeeds silently
+    with patch('desktop_app.socket.socket', return_value=mock_sock):
+        assert AtlassianAuthManager._wait_for_network(manager, timeout_seconds=2) is True
+    assert mock_sock.connect.called
+
+
+def test_wait_for_network_false_when_unreachable():
+    manager = AtlassianAuthManager.__new__(AtlassianAuthManager)
+    manager.ai_server_url = 'https://example.test'
+    mock_sock = MagicMock()
+    mock_sock.connect.side_effect = OSError('network is down')
+    with patch('desktop_app.socket.socket', return_value=mock_sock):
+        assert AtlassianAuthManager._wait_for_network(
+            manager, timeout_seconds=0.3, poll_interval=0.1
+        ) is False
+
+
+def test_refresh_deferred_when_network_down_is_not_a_failure():
+    """No network → the refresh token must NOT be transmitted, and the deferral
+    must NOT count toward the failure threshold or invalid flag."""
+    manager = _make_manager()
+    manager._wait_for_network = lambda *a, **k: False
+    post = MagicMock()
+    with patch('desktop_app.requests.post', post):
+        ok = manager.refresh_access_token()
+    assert ok is False
+    assert post.call_count == 0, "refresh token must never be sent while network is down"
+    assert manager._refresh_fail_count == 0
+    assert manager._refresh_token_invalid is False
+
+
+# ---------------------------------------------------------------------------
+# Phase 0: server-confirmed dead token (OAUTH_REAUTH_REQUIRED) must be
+# PERMANENT — the 30-min grace must not auto-clear it and re-notify forever.
+# Only a fresh login (or a successful refresh) recovers.
+# ---------------------------------------------------------------------------
+def test_explicit_reauth_sets_permanent_flag():
+    manager = _make_manager()
+    response = _MockResponse(401, {
+        'success': False,
+        'error': 'Refresh token expired, revoked, or rotated out. User must re-authenticate.',
+        'requiresReauth': True,
+        'errorCode': 'OAUTH_REAUTH_REQUIRED'
+    })
+    with patch('desktop_app.requests.post', return_value=response):
+        ok = manager.refresh_access_token()
+    assert ok is False
+    assert manager._refresh_token_invalid is True
+    assert manager._refresh_invalid_permanent is True
+
+
+def test_permanent_flag_blocks_retry_even_after_grace_expiry():
+    manager = _make_manager()
+    manager._refresh_token_invalid = True
+    manager._refresh_invalid_permanent = True
+    manager._refresh_invalid_set_at = time.time() - 3600  # far past the 30-min grace
+    post = MagicMock()
+    with patch('desktop_app.requests.post', post):
+        ok = manager.refresh_access_token()
+    assert ok is False
+    assert post.call_count == 0, "a server-confirmed dead token must never be retried"
+    assert manager._refresh_token_invalid is True
+
+
+def test_nonpermanent_flag_still_autoclears_after_grace():
+    """Regression guard: the grace auto-clear must keep working for
+    text-matched (non-explicit) failures — transient outages must self-heal."""
+    manager = _make_manager()
+    manager._refresh_token_invalid = True
+    manager._refresh_invalid_permanent = False
+    manager._refresh_invalid_set_at = time.time() - 3600
+    response = _MockResponse(200, {
+        'success': True,
+        'access_token': 'new-access',
+        'refresh_token': 'new-refresh',
+        'expires_in': 3600
+    })
+    with patch('desktop_app.requests.post', return_value=response) as post:
+        ok = manager.refresh_access_token()
+    assert ok is True
+    assert post.call_count == 1
+    assert manager._refresh_token_invalid is False
+    assert manager._refresh_invalid_permanent is False

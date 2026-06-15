@@ -198,7 +198,17 @@ try {
         if ($reg -and $reg.InstallDir) { $InstallDir = $reg.InstallDir }
     }
     if ([string]::IsNullOrWhiteSpace($ServerUrl)) {
-        if ($reg -and $reg.ServerUrl) { $ServerUrl = $reg.ServerUrl } else { $ServerUrl = $DefaultServer }
+        if ($reg -and $reg.ServerUrl) {
+            $ServerUrl = $reg.ServerUrl
+        } else {
+            # The installer persists ServerUrl to HKLM (from AI_SERVER_URL) so the
+            # updater queries the SAME server as the app. If it's missing we fall back
+            # to the built-in default, but warn loudly — a silent fallback here can make
+            # the updater check a different server than the app (e.g. the app sees an
+            # update on DEV while the updater asks PROD and never installs it).
+            $ServerUrl = $DefaultServer
+            Write-Log "HKLM ServerUrl not set; falling back to built-in default '$DefaultServer'. Installer should persist ServerUrl from AI_SERVER_URL." 'WARN'
+        }
     }
     $currentVersion = '0.0.0'
     if ($reg -and $reg.Version) { $currentVersion = $reg.Version }

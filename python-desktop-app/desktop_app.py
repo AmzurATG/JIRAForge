@@ -386,7 +386,7 @@ load_dotenv()
 
 # Application version - IMPORTANT: Update this when releasing new versions
 # This is used for update checking and notifications
-APP_VERSION = "1.4.7"
+APP_VERSION = "1.4.10"
 
 # Hard-disable screenshot monitoring/storage in desktop app.
 # OCR text extraction for activity records still runs via event-based flow.
@@ -1913,7 +1913,7 @@ KEYRING_SERVICE = "TimeTracker"
 # MUST match auth/secure_storage.py's SENSITIVE_TOKEN_KEYS — that module iterates
 # its own copy when LOADING from keyring/encrypted storage, so any key here that is
 # missing there would be saved but silently dropped on restart.
-SENSITIVE_TOKEN_KEYS = ['access_token', 'refresh_token', 'supabase_token', 'google_refresh_token']
+SENSITIVE_TOKEN_KEYS = ['access_token', 'refresh_token', 'supabase_token', 'google_refresh_token', 'device_token']
 
 # Windows Credential Manager has a 2560-byte limit per credential (CredWrite API).
 # OAuth/JWT tokens often exceed this, causing error 1783 "The stub received bad data".
@@ -2075,6 +2075,18 @@ class AtlassianAuthManager:
         self._refresh_invalid_set_at = 0  # timestamp when _refresh_token_invalid was set
         self._last_refresh_fail_time = 0
         self._last_refresh_error_code = ''
+        # Set ONLY when the server explicitly answers OAUTH_REAUTH_REQUIRED: the
+        # refresh token is confirmed dead at Atlassian, so the 30-min grace must
+        # NOT auto-clear the invalid flag — retrying a consumed token can never
+        # succeed and just re-notifies the user forever. Only a fresh login (or a
+        # successful refresh) clears this.
+        self._refresh_invalid_permanent = False
+
+        # Server-side token custody (Phase 3): upgraded installs hand their
+        # refresh token to the AI server at most once per process run; from
+        # then on the device-token path is used and this client never performs
+        # OAuth rotation itself.
+        self._custody_migration_attempted = False
 
         # B-15: token-refresh rate limiting. refresh_access_token() READS these on
         # THIS object (self), so they MUST be initialized here. They were previously
@@ -2458,12 +2470,21 @@ class AtlassianAuthManager:
         self.tokens['auth_provider'] = 'atlassian'
         self._save_tokens()
         self._refresh_token_invalid = False  # Clear any prior permanent-failure flag
+        self._refresh_invalid_permanent = False  # Fresh login: dead-token state is over
         self._refresh_fail_count = 0  # Reset consecutive failure counter
         self._refresh_invalid_set_at = 0  # Clear grace-period timestamp
         self._last_refresh_fail_time = 0  # Reset failure window
         self._last_refresh_error_code = ''
 
         print("[OK] OAuth tokens received via AI Server")
+
+        # Hand the rotating refresh token to the server immediately (custody).
+        # Best-effort: a failure leaves the legacy refresh flow fully working.
+        try:
+            self.migrate_to_custody()
+        except Exception as e:
+            print(f"[WARN] Post-login custody migration failed: {e} — legacy refresh remains available")
+
         return result
     
     def get_user_info(self):
@@ -2513,6 +2534,227 @@ class AtlassianAuthManager:
             print(f"[ERROR] Failed to get user info: {e}")
             return None
     
+    def _wait_for_network(self, timeout_seconds=45, poll_interval=3):
+        """Block until the AI server is reachable at the TCP level, or timeout.
+
+        Guards the refresh POST against firing right after system wake, when DNS
+        and Wi-Fi are typically still down for several seconds. Sending a rotation
+        request into a collapsing network is how a rotated refresh token gets
+        consumed at Atlassian while the response (carrying its replacement) is
+        lost in transit — permanently killing the session (2026-06-12 incident).
+
+        Returns True when a TCP connect to the AI server host succeeds, False if
+        the network did not come up within timeout_seconds. A False result must
+        NOT count toward refresh failure thresholds — the token was never sent.
+        """
+        try:
+            from urllib.parse import urlparse
+            host = urlparse(self.ai_server_url).hostname
+        except Exception:
+            host = None
+        probes = ([(host, 443)] if host else []) + [("8.8.8.8", 53)]
+        deadline = time.time() + timeout_seconds
+        first_attempt = True
+        while time.time() < deadline:
+            for probe_host, probe_port in probes:
+                sock = None
+                try:
+                    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                    sock.settimeout(3)  # per-socket; never touch the global default
+                    sock.connect((probe_host, probe_port))
+                    return True
+                except (socket.error, socket.timeout, OSError):
+                    pass
+                finally:
+                    if sock:
+                        try:
+                            sock.close()
+                        except Exception:
+                            pass
+            if first_attempt:
+                print(f"[WARN] Network not ready — delaying token refresh up to {timeout_seconds}s")
+                first_attempt = False
+            time.sleep(poll_interval)
+        return False
+
+    def migrate_to_custody(self, device_name=None, app_version=None):
+        """Hand this client's rotating refresh token to the AI server (custody).
+
+        Phase 3 of plan/2026-06-12_auth_server-side-token-custody.md: the server
+        becomes the single owner of the single-use refresh token; this device
+        receives a long-lived, revocable session token instead. The local
+        refresh token is kept as a rollback bridge until the first successful
+        device-token refresh proves custody works (by which point the server
+        has rotated, making the local copy worthless anyway).
+
+        Best-effort by design: any failure (older server without the endpoint,
+        network trouble, rejection) leaves the legacy refresh flow untouched.
+        """
+        access_token = self.tokens.get('access_token')
+        refresh_token = self.tokens.get('refresh_token')
+        if not access_token or not refresh_token:
+            return False
+
+        if device_name is None:
+            try:
+                device_name = socket.gethostname()
+            except Exception:
+                device_name = None
+
+        try:
+            response = requests.post(
+                f"{self.ai_server_url}/api/auth/migrate-custody",
+                json={
+                    'atlassian_token': access_token,
+                    'refresh_token': refresh_token,
+                    'device_name': device_name,
+                    'app_version': app_version or APP_VERSION
+                },
+                timeout=30
+            )
+        except Exception as e:
+            print(f"[WARN] Custody migration request failed: {e} — keeping legacy refresh flow")
+            return False
+
+        if response.status_code == 404:
+            print("[INFO] AI server does not support token custody yet — keeping legacy refresh flow")
+            return False
+        if response.status_code != 200:
+            print(f"[WARN] Custody migration rejected (HTTP {response.status_code}) — keeping legacy refresh flow")
+            return False
+
+        result = response.json()
+        if not result.get('success') or not result.get('device_token'):
+            return False
+
+        self.tokens['device_token'] = result['device_token']
+        if result.get('device_token_expires_at'):
+            self.tokens['device_token_expires_at'] = result['device_token_expires_at']
+        self._save_tokens()
+        print("[OK] Token custody migrated to AI server — device session established")
+        return True
+
+    def _refresh_via_device_token(self):
+        """Obtain a fresh access token using the device session token.
+
+        No OAuth rotation happens on this device: the server rotates centrally
+        (serialized, persisted-before-respond, retried inside Atlassian's reuse
+        window), so laptop sleep can no longer lose a rotated token.
+        """
+        with self._refresh_lock:
+            self._last_token_refresh_time = time.time()
+
+            # Another thread may have refreshed while we waited for the lock.
+            expires_at = self.tokens.get('expires_at', 0)
+            if self.tokens.get('access_token') and expires_at and (expires_at - time.time()) > 300:
+                return True
+
+            try:
+                response = requests.post(
+                    f"{self.ai_server_url}/api/auth/access-token",
+                    json={'device_token': self.tokens.get('device_token')},
+                    timeout=30
+                )
+            except Exception as e:
+                print(f"[ERROR] Device-token refresh failed: {e}")
+                log_auth_diagnostic(
+                    'token_refresh_exception',
+                    level='ERROR',
+                    error_code='OAUTH_TEMPORARY_FAILURE',
+                    exception_type=type(e).__name__,
+                    message=str(e),
+                    next_action='retry_refresh'
+                )
+                return False
+
+            if response.status_code == 200:
+                result = response.json()
+                if not result.get('success') or not result.get('access_token'):
+                    print(f"[ERROR] Device-token refresh failed: {result.get('error', 'Unknown error')}")
+                    return False
+                self.tokens['access_token'] = result['access_token']
+                expires_epoch = None
+                expires_iso = result.get('expires_at')
+                if expires_iso:
+                    try:
+                        expires_epoch = datetime.fromisoformat(str(expires_iso).replace('Z', '+00:00')).timestamp()
+                    except Exception:
+                        expires_epoch = None
+                self.tokens['expires_at'] = expires_epoch or (time.time() + 3300)
+                # Custody proven working: the server has rotated, so the local
+                # refresh-token copy is consumed/worthless — remove the bridge.
+                self.tokens.pop('refresh_token', None)
+                self._save_tokens()
+                self._refresh_token_invalid = False
+                self._refresh_invalid_permanent = False
+                self._refresh_fail_count = 0
+                self._refresh_invalid_set_at = 0
+                self._last_refresh_fail_time = 0
+                self._last_refresh_error_code = ''
+                log_auth_diagnostic(
+                    'token_refresh_succeeded',
+                    level='INFO',
+                    refresh_fail_count=0,
+                    invalid_flag=False,
+                    prior_error_code='',
+                    via='device_token'
+                )
+                print("[OK] Access token refreshed via device session")
+                return True
+
+            # Error responses
+            try:
+                error_data = response.json()
+            except Exception:
+                error_data = {}
+            error_code = str(error_data.get('errorCode', '')).upper()
+
+            if response.status_code == 404 and self.tokens.get('refresh_token'):
+                # Server rolled back to a build without custody endpoints while
+                # we still hold the rollback bridge: revert to the legacy flow.
+                print("[WARN] Custody endpoints unavailable — reverting to legacy refresh flow")
+                self.tokens.pop('device_token', None)
+                self._save_tokens()
+                return False
+
+            if error_data.get('requiresReauth') or error_code in ('DEVICE_SESSION_INVALID', 'OAUTH_REAUTH_REQUIRED'):
+                now = time.time()
+                print(f"[WARN] Server requires re-authentication ({error_code or response.status_code}) — login required")
+                self._refresh_token_invalid = True
+                self._refresh_invalid_permanent = True
+                self._refresh_invalid_set_at = now
+                self._last_refresh_fail_time = now
+                self._refresh_fail_count = 5
+                self._last_refresh_error_code = 'OAUTH_REAUTH_REQUIRED'
+                log_auth_diagnostic(
+                    'token_refresh_failed',
+                    level='WARNING',
+                    http_status=response.status_code,
+                    error_code='OAUTH_REAUTH_REQUIRED',
+                    requires_reauth=True,
+                    permanent_failure=True,
+                    refresh_fail_count=5,
+                    invalid_flag=True,
+                    next_action='show_auth_notification',
+                    server_error=error_data.get('error', '')
+                )
+                return False
+
+            print(f"[WARN] Device-token refresh failed (HTTP {response.status_code}): {error_data.get('error', 'Unknown error')}")
+            log_auth_diagnostic(
+                'token_refresh_failed',
+                level='WARNING',
+                http_status=response.status_code,
+                error_code=error_code or 'OAUTH_TEMPORARY_FAILURE',
+                requires_reauth=False,
+                permanent_failure=False,
+                refresh_fail_count=getattr(self, '_refresh_fail_count', 0),
+                invalid_flag=False,
+                next_action='retry_refresh',
+                server_error=error_data.get('error', '')
+            )
+            return False
+
     def refresh_access_token(self):
         """Refresh access token using refresh token via AI Server.
 
@@ -2524,7 +2766,7 @@ class AtlassianAuthManager:
         The double-check inside the lock compares the refresh_token value: if it changed
         while waiting for the lock, another thread already did the refresh successfully,
         so we skip the network call and return True.
-        
+
         B-15: Rate limiting added to prevent refresh storms (min 5 seconds between calls).
         """
         # B-15: Rate limiting - prevent refresh storms
@@ -2539,6 +2781,20 @@ class AtlassianAuthManager:
         if getattr(self, '_refresh_token_invalid', False):
             grace_period = 1800  # 30 minutes
             invalid_since = getattr(self, '_refresh_invalid_set_at', 0)
+            if getattr(self, '_refresh_invalid_permanent', False):
+                # Server explicitly confirmed the token is dead (OAUTH_REAUTH_REQUIRED).
+                # No grace, no auto-retry — only a fresh login can recover.
+                print("[WARN] Refresh token confirmed dead by server — re-authentication required")
+                log_auth_diagnostic(
+                    'token_refresh_blocked_invalid_flag',
+                    level='WARNING',
+                    reason_code='OAUTH_REAUTH_REQUIRED',
+                    refresh_fail_count=getattr(self, '_refresh_fail_count', 0),
+                    grace_remaining_sec=0,
+                    invalid_flag=True,
+                    next_action='manual_reauth_required'
+                )
+                return False
             if invalid_since and (time.time() - invalid_since) >= grace_period:
                 print("[INFO] Refresh invalid flag expired after grace period — allowing retry")
                 self._refresh_token_invalid = False
@@ -2559,7 +2815,7 @@ class AtlassianAuthManager:
                 return False
 
         refresh_token_before = self.tokens.get('refresh_token')
-        if not refresh_token_before:
+        if not refresh_token_before and not self.tokens.get('device_token'):
             print("[ERROR] No refresh token available")
             log_auth_diagnostic(
                 'token_refresh_failed',
@@ -2573,6 +2829,38 @@ class AtlassianAuthManager:
             )
             return False
 
+        # Never transmit credentials into a network that is still coming up
+        # after sleep — for the legacy rotating token a lost response means the
+        # rotated replacement is gone and the session is permanently dead. Wait
+        # for basic reachability first; a timeout here is NOT a token failure.
+        if not self._wait_for_network():
+            print("[WARN] Network unavailable — token refresh deferred (not counted as a failure)")
+            log_auth_diagnostic(
+                'token_refresh_deferred_no_network',
+                level='WARNING',
+                reason_code='NETWORK_UNAVAILABLE',
+                next_action='retry_when_network_returns'
+            )
+            return False
+
+        # --- Server-side token custody (Phase 3) ---
+        # Upgraded installs hand their refresh token to the server at most once
+        # per process run (no re-login needed); fresh logins migrate right after
+        # the code exchange. Once a device token exists, this client never
+        # performs OAuth rotation again — the entire class of lost-rotation
+        # failures (sleep, Wi-Fi drop, concurrent refresh) moves to the server.
+        if (not self.tokens.get('device_token')
+                and refresh_token_before
+                and not getattr(self, '_custody_migration_attempted', False)):
+            self._custody_migration_attempted = True
+            try:
+                self.migrate_to_custody()
+            except Exception as e:
+                print(f"[WARN] Custody migration attempt failed: {e} — continuing with legacy refresh")
+
+        if self.tokens.get('device_token'):
+            return self._refresh_via_device_token()
+
         with self._refresh_lock:
             # B-15: Update rate limit timestamp inside lock
             self._last_token_refresh_time = time.time()
@@ -2580,6 +2868,9 @@ class AtlassianAuthManager:
             # Re-check invalid flag inside the lock — another thread may have set it
             # while we were waiting to acquire the lock.
             if getattr(self, '_refresh_token_invalid', False):
+                if getattr(self, '_refresh_invalid_permanent', False):
+                    print("[INFO] Token confirmed dead by server while waiting for lock — re-auth required")
+                    return False
                 grace_period = 1800
                 invalid_since = getattr(self, '_refresh_invalid_set_at', 0)
                 if not (invalid_since and (time.time() - invalid_since) >= grace_period):
@@ -2692,6 +2983,7 @@ class AtlassianAuthManager:
                         if server_explicit_reauth:
                             print(f"[WARN] Server confirmed refresh token is permanently invalid (OAUTH_REAUTH_REQUIRED) - marking invalid immediately")
                             self._refresh_token_invalid = True
+                            self._refresh_invalid_permanent = True  # no grace auto-clear: only re-login recovers
                             self._refresh_invalid_set_at = now
                             self._last_refresh_fail_time = now
                             self._refresh_fail_count = 5  # Set to threshold to prevent further retries
@@ -2748,6 +3040,7 @@ class AtlassianAuthManager:
                 self._save_tokens()
 
                 self._refresh_token_invalid = False  # Clear permanent-failure flag
+                self._refresh_invalid_permanent = False  # Successful refresh: token chain is alive
                 self._refresh_fail_count = 0  # Reset consecutive failure counter
                 self._refresh_invalid_set_at = 0  # Clear grace-period timestamp
                 self._last_refresh_fail_time = 0  # Reset failure window
@@ -2789,8 +3082,12 @@ class AtlassianAuthManager:
                 return True
             return False
         # If refresh token is marked invalid, check if the 30-min grace period
-        # has elapsed. If so, auto-clear the flag and allow a retry.
+        # has elapsed. If so, auto-clear the flag and allow a retry — UNLESS the
+        # server explicitly confirmed the token is dead (permanent flag): then only
+        # a fresh login recovers, and auto-retrying just re-notifies forever.
         if getattr(self, '_refresh_token_invalid', False):
+            if getattr(self, '_refresh_invalid_permanent', False):
+                return False
             grace_period = 1800  # 30 minutes
             invalid_since = getattr(self, '_refresh_invalid_set_at', 0)
             if invalid_since and (time.time() - invalid_since) >= grace_period:
@@ -3178,10 +3475,24 @@ class AtlassianAuthManager:
 
     def logout(self):
         """Clear authentication tokens from all storage locations"""
+        # Revoke this device's server-side session first (best-effort): logout
+        # must kill the device token at the source, not just locally.
+        device_token = (self.tokens or {}).get('device_token')
+        if device_token:
+            try:
+                requests.post(
+                    f"{self.ai_server_url}/api/auth/device/revoke",
+                    json={'device_token': device_token},
+                    timeout=10
+                )
+                print("[OK] Device session revoked on server")
+            except Exception as e:
+                print(f"[WARN] Could not revoke device session on server: {e}")
         self.tokens = {}
         # Reset provider so a subsequent Atlassian login isn't treated as Google.
         self.auth_provider = 'atlassian'
         self._refresh_token_invalid = False
+        self._refresh_invalid_permanent = False
         self._refresh_fail_count = 0
         self._refresh_invalid_set_at = 0
         self._last_refresh_fail_time = 0
@@ -4945,6 +5256,11 @@ class ActiveSessionManager:
         self._current_key = None  # (window_title, application_name)
         self._pending_ocr_keys = set()  # Sessions that need OCR backfill
         self._pending_ocr_screenshots = {}  # (title, app) -> PIL.Image for throttled sessions
+        # Hard cap on a single continuous timer segment. Mirrors the screenshots
+        # path cap (max(interval*2, 600)). Backstop so that, even if idle/suspend
+        # detection is ever bypassed, one unchanged window can never bank more
+        # than this many seconds. TimeTracker keeps it in sync with the interval.
+        self.max_segment_seconds = 1800
 
     def get_pending_ocr_entries(self):
         """Return and clear the dict of (title, app_name) -> PIL.Image awaiting OCR backfill."""
@@ -5098,6 +5414,14 @@ class ActiveSessionManager:
                 started = datetime.fromisoformat(timer_started)
                 ended = datetime.fromisoformat(now)
                 elapsed = max(0, (ended - started).total_seconds())
+                # Cap a single continuous segment. If a segment ran longer than
+                # this, idle/suspend handling did not stop it in time — the extra
+                # wall-clock is idle/sleep, not work, so it must not be counted.
+                cap = getattr(self, 'max_segment_seconds', 1800)
+                if cap and elapsed > cap:
+                    print(f"[WARN] Session segment {int(elapsed)}s exceeds cap {cap}s "
+                          f"— clamping (idle/suspend time not counted)")
+                    elapsed = cap
                 new_total = (total_time or 0) + elapsed
                 cursor.execute(
                     'UPDATE active_sessions SET total_time_seconds = ?, timer_started_at = NULL, last_seen = ? WHERE id = ?',
@@ -5106,12 +5430,18 @@ class ActiveSessionManager:
             except Exception as e:
                 print(f"[WARN] Error stopping timer: {e}")
 
-    def stop_current_timer(self):
-        """Stop timer on the current session (public, acquires lock)."""
+    def stop_current_timer(self, end_time=None):
+        """Stop timer on the current session (public, acquires lock).
+
+        Args:
+            end_time: Optional ISO-8601 string to use as the segment end instead
+                of "now". Used on suspend/sleep so the active session is finalized
+                at the pre-suspend moment and the sleep gap is excluded.
+        """
         with self._lock:
             conn = self.db_manager.get_connection()
             try:
-                now = datetime.now(timezone.utc).isoformat()
+                now = end_time or datetime.now(timezone.utc).isoformat()
                 cursor = conn.cursor()
                 self._stop_timer_internal(cursor, now)
                 conn.commit()
@@ -5639,6 +5969,13 @@ class TrackingState(Enum):
 # MAIN APPLICATION
 # ============================================================================
 
+# Minimum pointer movement (pixels, squared-distance compared) for a mouse-move
+# to count as genuine activity. Filters trackpad/optical micro-jitter that an
+# open-lid laptop emits with no human present (which previously kept the clock
+# alive overnight). Clicks, scrolls and key presses always count regardless.
+MOUSE_MOVE_MIN_PX = 8
+
+
 class TimeTracker:
     """Main application class"""
 
@@ -5749,7 +6086,8 @@ class TimeTracker:
         self.next_popup_show_time = None  # When to show popup again (for periodic reappearance)
         self.popup_show_count = 0  # How many times popup has been shown (for calculating intervals)
         self.needs_idle_resume = False  # Flag set by pynput when activity detected during idle
-        self.last_activity_time = time.time()  # Last mouse/keyboard activity
+        self.last_activity_time = time.time()  # Last GENUINE mouse/keyboard activity
+        self._last_mouse_pos = None  # Last pointer position, for jitter filtering
         self.idle_timeout = 300  # 5 minutes idle timeout (in seconds)
         self.idle_start_time = None  # When the current idle period began (UTC datetime)
         self.idle_project_key = None  # Project key at idle entry — used for idle record's project_key
@@ -10598,8 +10936,12 @@ class TimeTracker:
             is_new_window = False
             if window_key != self.current_window_key:
                 is_new_window = True
-                # Window switch = user is active (reset idle timer even if pynput fails)
-                self.last_activity_time = time.time()
+                # NOTE: a window switch is used only to segment sessions/screenshots.
+                # It is intentionally NOT treated as user activity — apps (VS Code,
+                # browsers, Teams, …) change their own titles with no human input, and
+                # counting that as activity defeats idle detection (it kept the clock
+                # running for hours overnight). Idle is driven by genuine input only
+                # (pynput / GetLastInputInfo) via _compute_idle_duration().
                 # Save previous window info before updating (for final screenshot with full duration)
                 # ALWAYS save the previous window info so we can track time properly
                 # The screenshot_id may be None if no screenshot was taken (rapid switching)
@@ -11100,12 +11442,7 @@ class TimeTracker:
             
             # Store idle reason for logging
             self.idle_reason = reason
-            
-            # Store current window key for stuck-idle detection (safeguard)
-            current_window = self.get_active_window()
-            if current_window:
-                self._idle_entry_window_key = f"{current_window.get('app', '')}__{current_window.get('title', '')}"
-            
+
             # Transition state
             self.state = TrackingState.IDLE
             self.is_idle = True  # Keep boolean flag in sync for backward compatibility
@@ -11225,11 +11562,11 @@ class TimeTracker:
             self.idle_start_time = None
             return
 
-        # Only record idle within configured working hours
-        if not self._is_within_work_hours(self.idle_start_time):
-            print(f"[IDLE] Skipping idle record outside work hours: {self.idle_start_time.strftime('%H:%M:%S')} ({reason})")
-            self.idle_start_time = None
-            return
+        # Idle is recorded regardless of time-of-day or day-of-week. Work-hours
+        # gating was removed: a user may work whenever they want, and "outside
+        # work hours" must NOT cause idle to be silently dropped (which let the
+        # surrounding active session swallow the gap). _is_within_work_hours is
+        # no longer consulted here.
 
         project_key = getattr(self, 'idle_project_key', None) or self.current_project_key or self.get_user_project_key()
         record = {
@@ -11269,6 +11606,72 @@ class TimeTracker:
         print(f"[IDLE] Created idle record: {self.idle_start_time.strftime('%H:%M:%S')} → {idle_end.strftime('%H:%M:%S')} ({idle_duration}s, reason: {reason})")
         self.idle_start_time = None
 
+    def get_system_idle_seconds(self):
+        """Return seconds since the OS last saw real keyboard/mouse input, or None.
+
+        Uses the Windows GetLastInputInfo API — the authoritative, session-wide
+        idle clock. It is not fooled by window-title changes or by our own
+        background work, and does not depend on Python-level input hooks staying
+        alive. Returns None on non-Windows or if the call fails (caller falls
+        back to the pynput-derived last_activity_time).
+        """
+        try:
+            import ctypes
+
+            class _LASTINPUTINFO(ctypes.Structure):
+                _fields_ = [('cbSize', ctypes.c_uint), ('dwTime', ctypes.c_uint)]
+
+            lii = _LASTINPUTINFO()
+            lii.cbSize = ctypes.sizeof(_LASTINPUTINFO)
+            user32 = ctypes.windll.user32
+            kernel32 = ctypes.windll.kernel32
+            if not user32.GetLastInputInfo(ctypes.byref(lii)):
+                return None
+            # GetTickCount and dwTime share the same millisecond tick base.
+            millis_since_input = kernel32.GetTickCount() - lii.dwTime
+            if millis_since_input < 0:
+                return None  # tick wrap (~49.7 days uptime) — fall back this cycle
+            return millis_since_input / 1000.0
+        except Exception:
+            return None
+
+    def _compute_idle_duration(self):
+        """Seconds since genuine user input. Prefers the OS clock, falls back to
+        the last_activity_time maintained by our (jitter-filtered) pynput hooks."""
+        sys_idle = self.get_system_idle_seconds()
+        if sys_idle is not None:
+            return sys_idle
+        return time.time() - self.last_activity_time
+
+    def _register_activity(self):
+        """Record a genuine input event: refresh activity time and, if we were
+        idle, signal the tracking loop to resume."""
+        self.last_activity_time = time.time()
+        self._activity_monitor_heartbeat = time.time()  # B-2: Update heartbeat
+        if self.is_idle:
+            self.idle_resume_event.set()  # B-3: Use Event instead of boolean
+
+    def _mouse_moved_enough(self, x, y):
+        """True only if the pointer jumped at least MOUSE_MOVE_MIN_PX from the
+        previously seen position. Sub-threshold drift (jitter) returns False.
+        Always updates the stored position so only a single real move counts."""
+        last = self._last_mouse_pos
+        self._last_mouse_pos = (x, y)
+        if last is None:
+            return False  # first sample establishes a baseline; not yet activity
+        dx = x - last[0]
+        dy = y - last[1]
+        return (dx * dx + dy * dy) >= (MOUSE_MOVE_MIN_PX * MOUSE_MOVE_MIN_PX)
+
+    def _on_mouse_move(self, x, y):
+        """pynput on_move handler — only counts as activity past the jitter threshold."""
+        if self._mouse_moved_enough(x, y):
+            self._register_activity()
+
+    def _on_input_activity(self, *args, **kwargs):
+        """pynput handler for clicks / scrolls / key presses — always real input."""
+        self._register_activity()
+
     def monitor_user_activity(self):
         """Monitor mouse and keyboard activity for idle detection"""
         try:
@@ -11279,27 +11682,19 @@ class TimeTracker:
             self._activity_monitor_failed = True  # B-1: Mark failure for fallback
             return
 
-        def on_activity(*args, **kwargs):
-            """Called on any mouse or keyboard activity"""
-            self.last_activity_time = time.time()
-            self._activity_monitor_heartbeat = time.time()  # B-2: Update heartbeat
-
-            # Signal that we need to resume from idle (tracking loop will handle the state reset)
-            if self.is_idle:
-                self.idle_resume_event.set()  # B-3: Use Event instead of boolean
-
         try:
-            # Start mouse listener
+            # Start mouse listener. on_move is jitter-filtered (open-lid trackpad
+            # noise must not count as activity); clicks/scrolls always count.
             mouse_listener = mouse.Listener(
-                on_move=on_activity,
-                on_click=on_activity,
-                on_scroll=on_activity
+                on_move=self._on_mouse_move,
+                on_click=self._on_input_activity,
+                on_scroll=self._on_input_activity
             )
             mouse_listener.start()
 
             # Start keyboard listener
             keyboard_listener = keyboard.Listener(
-                on_press=on_activity
+                on_press=self._on_input_activity
             )
             keyboard_listener.start()
 
@@ -11655,10 +12050,14 @@ class TimeTracker:
                                     print("[WARN] Supabase JWT refresh failed — will retry on next cycle")
 
                     elif getattr(self.auth_manager, '_refresh_token_invalid', False):
-                        # Refresh token is marked invalid — check if grace period allows retry
+                        # Refresh token is marked invalid — check if grace period allows retry.
+                        # Permanent (server-confirmed dead) tokens never auto-recover: skip the
+                        # grace clear entirely; only a fresh login resets the flag.
                         grace_period = 1800  # 30 minutes
                         invalid_since = getattr(self.auth_manager, '_refresh_invalid_set_at', 0)
-                        if invalid_since and (time.time() - invalid_since) >= grace_period:
+                        if getattr(self.auth_manager, '_refresh_invalid_permanent', False):
+                            pass  # re-auth required; notification already shown by refresh path
+                        elif invalid_since and (time.time() - invalid_since) >= grace_period:
                             print("[INFO] Sync thread: invalid flag grace period expired — attempting recovery refresh")
                             self.auth_manager._refresh_token_invalid = False
                             self.auth_manager._refresh_fail_count = 0
@@ -11732,7 +12131,14 @@ class TimeTracker:
                     print(f"[INFO] Large time gap detected: {int(time_since_last_loop)}s — system was likely suspended")
                     # Finalize current session using last known activity time
                     self._finalize_active_session("system suspension detected")
-                    self.session_manager.stop_current_timer()  # Stop SQLite activity timer so suspension time isn't counted in activity_records
+                    # Stop the SQLite activity timer at the PRE-suspend moment, not
+                    # at wake time. last_loop_time is the last loop iteration before
+                    # the gap; ending there excludes the entire sleep interval from
+                    # active time (otherwise the whole gap is counted as work).
+                    pre_suspend_iso = datetime.fromtimestamp(
+                        last_loop_time, tz=timezone.utc
+                    ).isoformat()
+                    self.session_manager.stop_current_timer(end_time=pre_suspend_iso)
 
                     # If we were idle when suspension happened, create the idle record NOW
                     # before resetting state — otherwise the idle period is silently lost.
@@ -11874,46 +12280,27 @@ class TimeTracker:
                     print("[INFO] Retrying failed update download (30-minute retry interval)...")
                     self.check_for_app_updates(show_notification=True, force=True)
                 
-                # Check for idle timeout (use configurable threshold)
-                idle_duration = time.time() - self.last_activity_time
+                # Check for idle timeout (use configurable threshold).
+                # idle_duration comes from genuine input only (OS GetLastInputInfo,
+                # else jitter-filtered pynput) — NOT from window-title changes.
+                idle_duration = self._compute_idle_duration()
                 current_idle_timeout = self.tracking_settings.get('idle_threshold_seconds', self.idle_timeout)
-                
-                # B-1: Fallback idle detection when pynput failed
-                # If pynput is not working, treat window switches as activity
-                if self._activity_monitor_failed:
-                    # Get current window to detect switches
-                    window_info_for_idle = self.get_active_window()
-                    if window_info_for_idle:
-                        window_key = f"{window_info_for_idle.get('app', '')}__{window_info_for_idle.get('title', '')}"
-                        # Check if window changed (indicates user activity)
-                        if hasattr(self, '_last_window_key_for_idle'):
-                            if window_key != self._last_window_key_for_idle:
-                                # Window switched - update activity time
-                                self.last_activity_time = time.time()
-                                self._last_window_switch_time = time.time()
-                                if self.is_idle:
-                                    print("[INFO] Window switch detected (fallback) - resuming from idle")
-                                    self.idle_resume_event.set()  # B-3: Use Event
-                        self._last_window_key_for_idle = window_key
-                
-                # Additional safeguard: If stuck in idle for extended period with window changes,
-                # force resume (prevents permanent idle lock if activity detection fails)
-                if self.is_idle and self.idle_start_time:
-                    time_in_idle = time.time() - self.idle_start_time.timestamp()
-                    # If idle for more than 30 minutes, check if window has changed
-                    if time_in_idle > 1800:  # 30 minutes
-                        current_window = self.get_active_window()
-                        if current_window:
-                            current_key = f"{current_window.get('app', '')}__{current_window.get('title', '')}"
-                            # Store window key when entering idle if not exists
-                            if not hasattr(self, '_idle_entry_window_key'):
-                                self._idle_entry_window_key = current_key
-                            # If window changed since entering idle, user is likely active
-                            elif current_key != self._idle_entry_window_key:
-                                print(f"[WARN] Stuck in idle for {int(time_in_idle)}s but window changed - forcing resume")
-                                self.idle_resume_event.set()
-                                self._idle_entry_window_key = None
-                
+
+                # Keep the session-timer segment cap in sync with the capture
+                # interval (mirrors the screenshots-path cap of max(interval*2, 600)).
+                _interval = self.tracking_settings.get('screenshot_interval_seconds', self.capture_interval)
+                self.session_manager.max_segment_seconds = max(_interval * 2, 600)
+
+
+                # Resume safeguard (no permanent idle lock): if we are idle but the
+                # OS reports recent genuine input (idle_duration back under the
+                # threshold), resume — even if the pynput hook missed the event or
+                # has died. This replaces the old "window changed → force resume"
+                # logic, which wrongly treated a self-changing window title as the
+                # user returning. Only real input resumes.
+                if self.is_idle and idle_duration <= current_idle_timeout:
+                    self.idle_resume_event.set()
+
                 if idle_duration > current_idle_timeout:
                     if self.state == TrackingState.ACTIVE:
                         idle_start_time = datetime.now(timezone.utc)
