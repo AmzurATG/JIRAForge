@@ -352,8 +352,16 @@ app.post('/api/auth/atlassian/callback', loginLimiter, authController.atlassianC
 // token refreshes from many concurrent logged-in users don't exhaust the budget
 // for new login attempts.
 
-// Refresh Atlassian access token (runs continuously while app is open)
+// Refresh Atlassian access token (runs continuously while app is open).
+// LEGACY from desktop <= 1.4.7; kept fully functional during the custody
+// migration (plan/2026-06-12_auth_server-side-token-custody.md).
 app.post('/api/auth/refresh-token', backgroundAuthLimiter, authController.refreshToken);
+
+// Server-side token custody (Phase 2): devices hold a revocable session token
+// and fetch short-lived access tokens; rotation happens only on this server.
+app.post('/api/auth/access-token', backgroundAuthLimiter, authController.getDeviceAccessToken);
+app.post('/api/auth/migrate-custody', loginLimiter, authController.migrateCustody);
+app.post('/api/auth/device/revoke', backgroundAuthLimiter, authController.revokeDevice);
 
 // Exchange Atlassian token for Supabase JWT
 app.post('/api/auth/exchange-token', backgroundAuthLimiter, authController.exchangeToken);

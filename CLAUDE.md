@@ -18,7 +18,7 @@ The Jira-embedded UI and backend logic. Uses Atlassian Forge platform (not a sta
 - **Forge Remote (critical)**: The Forge app **cannot make arbitrary HTTP calls**. All forge-app → ai-server traffic goes through the remote keyed `ai-server` (baseUrl `https://forgesync.amzur.com`), routed via `src/utils/remote.js`. Never use `fetch()` or `axios` directly in forge-app backend code to call the AI server.
 
 ### ai-server/ — AI Analysis Server (Node.js >=20, Express)
-Receives screenshots and activity data, runs AI analysis via OpenAI, manages clustering, notifications, and an admin dashboard. Production URL: `forgesync.amzur.com`.
+Receives screenshots and activity data, runs AI analysis via OpenAI, manages clustering, notifications, and an admin dashboard. **Two deployments exist** (verified 2026-06-12): the desktop fleet's PRODUCTION server is `timetracker-forge.amzur.com` (AWS, prod Supabase `bzdoztgfozxkhkvctvdk`); `forgesync.amzur.com` (E2E Networks box) is the DEV/staging pair (dev Supabase `jvijitdewbypqbatfboi`). The Forge remote baseUrl above still says forgesync — verify which server the deployed Forge manifest actually targets before relying on it.
 - `src/controllers/` — Express route handlers (activity, auth, feedback, notifications, admin dashboard, forge-proxy, user data, app versioning)
 - `src/services/ai/` — OpenAI integration; prompt definitions in `prompts.js`, classification in `activity-service.js`
 - `src/services/db/` — Supabase operations (activity, clustering, feedback, notifications, user, storage)
