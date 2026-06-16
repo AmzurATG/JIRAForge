@@ -63,8 +63,13 @@ KEYRING_CHUNK_SIZE = 1000  # characters; ~2000 bytes UTF-16, safely under the 25
 # MUST stay in sync with desktop_app.py's SENSITIVE_TOKEN_KEYS: save_tokens() stores
 # whatever dict it's given, but _load_from_keyring()/_load_encrypted()/delete_tokens()
 # iterate THIS list — so a key missing here is saved but never loaded back on restart.
-# (test_google_auth.py::test_secure_storage_persists_google_refresh_token guards this.)
-SENSITIVE_TOKEN_KEYS = ['access_token', 'refresh_token', 'supabase_token', 'google_refresh_token']
+# (tests/test_secure_storage_key_sync.py guards both this AND the two-list parity.)
+#
+# device_token was added 2026-06-16: it was present in desktop_app.py's list (so it
+# SAVED) but missing here (so it never LOADED) → custody silently reverted to the
+# legacy refresh path on every restart/auto-update, re-introducing the forced
+# re-login it was meant to eliminate.
+SENSITIVE_TOKEN_KEYS = ['access_token', 'refresh_token', 'supabase_token', 'google_refresh_token', 'device_token']
 
 
 # =============================================================================

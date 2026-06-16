@@ -386,7 +386,7 @@ load_dotenv()
 
 # Application version - IMPORTANT: Update this when releasing new versions
 # This is used for update checking and notifications
-APP_VERSION = "1.4.10"
+APP_VERSION = "1.4.8"
 
 # Hard-disable screenshot monitoring/storage in desktop app.
 # OCR text extraction for activity records still runs via event-based flow.
@@ -395,14 +395,14 @@ SCREENSHOT_MONITORING_HARD_DISABLED = True
 # Embedded credentials (for production builds - no .env file needed)
 # SECURITY: All sensitive keys moved to AI Server - fetched at runtime after authentication
 EMBEDDED_CONFIG = {
-    'ATLASSIAN_CLIENT_ID': 'Q8HT4Jn205AuTiAarj088oWNDrOqwvM5',
+    'ATLASSIAN_CLIENT_ID': 'k2Xwzy8c1g3Wk6Xpbeev0x70CXEp9lJH',
     # Google OAuth (non-Jira users). PUBLIC client ID only — the client SECRET
     # stays on the AI Server, never in the desktop build. Same handling as
     # ATLASSIAN_CLIENT_ID above. Must match GOOGLE_DESKTOP_CLIENT_ID on the AI server.
-    'GOOGLE_DESKTOP_CLIENT_ID': '508843846019-glrru7r3m622vt75e215lmf5ih1bcgju.apps.googleusercontent.com',
+    'GOOGLE_DESKTOP_CLIENT_ID': '454896740459-l085l5otq4a5evc8g3nffqe9d13f4942.apps.googleusercontent.com',
     # REMOVED: ATLASSIAN_CLIENT_SECRET - now on AI Server only (security fix)
     # REMOVED: SUPABASE_URL, SUPABASE_ANON_KEY, SUPABASE_SERVICE_ROLE_KEY - fetched from AI Server
-    'AI_SERVER_URL': 'https://forgesync.amzur.com',  # AI Server for secure token exchange & config
+    'AI_SERVER_URL': 'https://timetracker-forge.amzur.com',  # AI Server for secure token exchange & config
     'CAPTURE_INTERVAL': '300',
     'WEB_PORT': '51777',
 }
@@ -2058,7 +2058,7 @@ class AtlassianAuthManager:
         self.google_authorization_url = 'https://accounts.google.com/o/oauth2/v2/auth'
         self.google_redirect_uri = f'http://127.0.0.1:{web_port}/auth/google/callback'
         # Token exchange now goes through AI Server
-        self.ai_server_url = get_env_var('AI_SERVER_URL', 'https://forgesync.amzur.com')
+        self.ai_server_url = get_env_var('AI_SERVER_URL', 'https://timetracker-forge.amzur.com')
         self.store_path = store_path or os.path.join(get_app_data_dir(), 'time_tracker_auth.json')
         self.metadata_path = os.path.join(get_app_data_dir(), 'auth_metadata.json')  # For non-sensitive data
 
@@ -2844,22 +2844,20 @@ class AtlassianAuthManager:
             return False
 
         # --- Server-side token custody (Phase 3) ---
-        # Upgraded installs hand their refresh token to the server at most once
-        # per process run (no re-login needed); fresh logins migrate right after
-        # the code exchange. Once a device token exists, this client never
-        # performs OAuth rotation again — the entire class of lost-rotation
-        # failures (sleep, Wi-Fi drop, concurrent refresh) moves to the server.
-        if (not self.tokens.get('device_token')
-                and refresh_token_before
-                and not getattr(self, '_custody_migration_attempted', False)):
-            self._custody_migration_attempted = True
-            try:
-                self.migrate_to_custody()
-            except Exception as e:
-                print(f"[WARN] Custody migration attempt failed: {e} — continuing with legacy refresh")
-
+        # Once a device token exists, this client never performs OAuth rotation
+        # itself — the whole class of lost-rotation failures (sleep, Wi-Fi drop,
+        # concurrent refresh) moves to the server.
         if self.tokens.get('device_token'):
             return self._refresh_via_device_token()
+
+        # Upgraded installs (refresh token, no device token) migrate to custody
+        # AFTER the successful legacy refresh below — at that point we hold a
+        # guaranteed-fresh access token, which migrate-custody requires to prove
+        # the user's identity to the server. Attempting it HERE failed for
+        # upgraded users: a refresh only runs once the access token has expired,
+        # so migrate-custody was always handed a dead token and rejected, leaving
+        # them stuck on the legacy path. (Fresh logins migrate separately, right
+        # after the OAuth code exchange, with their fresh login token.)
 
         with self._refresh_lock:
             # B-15: Update rate limit timestamp inside lock
@@ -3053,6 +3051,20 @@ class AtlassianAuthManager:
                     prior_error_code=getattr(self, '_last_refresh_error_code', '')
                 )
                 print("[OK] Access token refreshed successfully via AI Server")
+
+                # We now hold a guaranteed-fresh access token. Hand custody to the
+                # server (once per run) so every subsequent refresh uses the
+                # device-token path and this device never rotates the OAuth token
+                # again. Best-effort: if migrate-custody is unavailable (old server)
+                # or fails, the legacy refresh above already succeeded, so the user
+                # stays signed in on the legacy path — no re-login.
+                if (not self.tokens.get('device_token')
+                        and not getattr(self, '_custody_migration_attempted', False)):
+                    self._custody_migration_attempted = True
+                    try:
+                        self.migrate_to_custody()
+                    except Exception as e:
+                        print(f"[WARN] Post-refresh custody migration failed: {e} — staying on legacy for now")
                 return True
             except Exception as e:
                 print(f"[ERROR] Failed to refresh access token: {e}")
@@ -3428,7 +3440,7 @@ class AtlassianAuthManager:
             print("[ERROR] No valid Atlassian token - cannot fetch OCR config")
             return False
 
-        ai_server_url = get_env_var('AI_SERVER_URL', 'https://forgesync.amzur.com')
+        ai_server_url = get_env_var('AI_SERVER_URL', 'https://timetracker-forge.amzur.com')
         
         try:
             print("[INFO] Fetching OCR config from AI Server...")
