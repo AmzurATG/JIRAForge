@@ -710,7 +710,7 @@ load_dotenv()
 
 # Application version - IMPORTANT: Update this when releasing new versions
 # This is used for update checking and notifications
-APP_VERSION = "1.0.1"
+APP_VERSION = "1.0.2"
 
 # True when the process is running inside an AppImage bundle.
 # In FUSE mode, the AppImage runtime sets $APPIMAGE to the .AppImage file path.
@@ -6696,15 +6696,27 @@ class TimeTracker:
         # This helps users understand why screenshot capture might fail
         self.screenshot_dependencies_ok = True
         self.missing_dependencies = []
+        self._dep_checker = None          # live SystemDependencyChecker instance
+        self._dep_notify_sent = False     # send at most one desktop notification
         if SYSTEM_CHECK_AVAILABLE:
-            deps_ok, missing_deps = check_dependencies_startup()
+            deps_ok, missing_deps, dep_checker = check_dependencies_startup()
             self.screenshot_dependencies_ok = deps_ok
             self.missing_dependencies = missing_deps
+            self._dep_checker = dep_checker
             if not deps_ok:
                 if self.logger:
                     self.logger.warning(f"Missing screenshot dependencies: {', '.join(missing_deps)}")
                     self.logger.warning("Screenshot capture will not work - running in metadata-only mode")
-                    self.logger.warning("Run ./scripts/fix-screenshot-capture.sh to install dependencies")
+                    self.logger.warning("Open the tray menu and click 'Fix Screen Capture' for guided repair")
+                # Fire a one-shot desktop notification so the user sees it
+                # even when launched from a desktop launcher (no terminal).
+                if sys.platform.startswith('linux') and not self._dep_notify_sent:
+                    _linux_notify(
+                        "Screen Capture Unavailable",
+                        "Missing system packages. Open tray \u2192 'Fix Screen Capture' for instructions.",
+                        urgency="critical"
+                    )
+                    self._dep_notify_sent = True
         else:
             if self.logger:
                 self.logger.debug("System dependency check module not available")
@@ -8031,6 +8043,181 @@ class TimeTracker:
             if not self.current_user:
                 return redirect('/login')
             return self.render_classifications_page()
+
+        # ============================================================================
+        # SCREENCAST DEPENDENCY REPAIR PAGE
+        # ============================================================================
+
+        @self.app.route('/system/screencast-fix')
+        def screencast_fix_page():
+            """Guided repair page for missing Wayland/PipeWire screenshot dependencies."""
+            if SYSTEM_CHECK_AVAILABLE:
+                from system_check import SystemDependencyChecker
+                chk = SystemDependencyChecker()
+                results = chk.check_all()
+                data = chk.get_installation_instructions_dict()
+            else:
+                results = {
+                    'wayland': False, 'pipewire': True,
+                    'gstreamer_pipewiresrc': True, 'screencast_portal': True,
+                    'all_checks_passed': True,
+                }
+                data = {
+                    'distro': 'unknown', 'pkg_manager': 'apt',
+                    'install_command': '(system-check module unavailable)',
+                    'restart_command': 'systemctl --user restart pipewire pipewire-pulse wireplumber',
+                    'missing': {}, 'packages': [],
+                }
+
+            def _status(ok):
+                return ('<span style="color:#22c55e;font-weight:bold">\u2714 OK</span>'
+                        if ok else
+                        '<span style="color:#ef4444;font-weight:bold">\u2718 Missing</span>')
+
+            rows = ''
+            if results.get('wayland'):
+                rows += f'<tr><td>PipeWire daemon</td><td>Yes</td><td>{_status(results.get("pipewire",False))}</td></tr>'
+                rows += f'<tr><td>GStreamer pipewiresrc plugin</td><td>Yes</td><td>{_status(results.get("gstreamer_pipewiresrc",False))}</td></tr>'
+                rows += f'<tr><td>XDG ScreenCast Portal</td><td>Yes</td><td>{_status(results.get("screencast_portal",False))}</td></tr>'
+            else:
+                rows = '<tr><td colspan="3" style="color:#6b7280">Running on X11 \u2014 Wayland capture components not required.</td></tr>'
+
+            all_ok = results.get('all_checks_passed', False)
+            banner_color = '#22c55e' if all_ok else '#f59e0b'
+            banner_msg = ('All dependencies satisfied \u2014 restart TimeTracker to enable screen capture.'
+                          if all_ok else
+                          'Some dependencies are missing. Follow the steps below to fix.')
+
+            install_cmd = data.get('install_command', '')
+            restart_cmd = data.get('restart_command', '')
+            distro_label = data.get('distro', 'linux').title()
+            pm_label = data.get('pkg_manager', 'apt')
+
+            html = f'''<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Fix Screen Capture \u2014 TimeTracker</title>
+<style>
+  body{{font-family:system-ui,sans-serif;max-width:760px;margin:40px auto;padding:0 20px;background:#f9fafb;color:#111827}}
+  h1{{font-size:1.6rem;margin-bottom:4px}}
+  .banner{{padding:12px 16px;border-radius:8px;background:{banner_color};color:#fff;margin-bottom:24px;font-weight:500}}
+  table{{width:100%;border-collapse:collapse;margin-bottom:24px;background:#fff;border-radius:8px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,.1)}}
+  th{{background:#f3f4f6;padding:10px 14px;text-align:left;font-size:.85rem;text-transform:uppercase;letter-spacing:.05em;color:#6b7280}}
+  td{{padding:10px 14px;border-top:1px solid #e5e7eb;font-size:.95rem}}
+  .cmd{{background:#1e293b;color:#e2e8f0;padding:14px 18px;border-radius:8px;font-family:monospace;font-size:.9rem;position:relative;margin:8px 0 20px}}
+  .copy-btn{{position:absolute;right:10px;top:10px;background:#334155;color:#cbd5e1;border:none;border-radius:6px;padding:4px 10px;cursor:pointer;font-size:.8rem}}
+  .copy-btn:hover{{background:#475569}}
+  ol{{padding-left:1.4em;line-height:2}}
+  .note{{background:#fef9c3;border:1px solid #fde047;padding:10px 14px;border-radius:6px;font-size:.9rem;margin-top:12px}}
+  .recheck-btn{{display:inline-block;margin-top:8px;padding:10px 22px;background:#2563eb;color:#fff;border:none;border-radius:8px;font-size:1rem;cursor:pointer;text-decoration:none}}
+  .recheck-btn:hover{{background:#1d4ed8}}
+  #recheck-result{{margin-top:12px;font-size:.9rem}}
+</style>
+</head>
+<body>
+<h1>\u26a0\ufe0f Fix Screen Capture</h1>
+<p style="color:#6b7280;margin-top:0">TimeTracker \u2014 System Dependency Repair</p>
+<div class="banner">{banner_msg}</div>
+
+<h2 style="font-size:1.1rem">Component Status</h2>
+<table>
+  <thead><tr><th>Component</th><th>Required</th><th>Status</th></tr></thead>
+  <tbody>{rows}</tbody>
+</table>
+
+<h2 style="font-size:1.1rem">How to Fix</h2>
+<ol>
+  <li><strong>Install missing packages</strong> (detected distro: <em>{distro_label}</em>, package manager: <code>{pm_label}</code>):<br>
+    <div class="cmd" id="install-cmd">{install_cmd}
+      <button class="copy-btn" onclick="navigator.clipboard.writeText(document.getElementById('install-cmd').firstChild.textContent.trim());this.textContent='Copied!'">Copy</button>
+    </div>
+  </li>
+  <li><strong>Restart PipeWire</strong>:<br>
+    <div class="cmd" id="restart-cmd">{restart_cmd}
+      <button class="copy-btn" onclick="navigator.clipboard.writeText(document.getElementById('restart-cmd').firstChild.textContent.trim());this.textContent='Copied!'">Copy</button>
+    </div>
+  </li>
+  <li><strong>Click Re-check now</strong> below \u2014 if all items turn green, restart TimeTracker to activate capture.</li>
+  <li>When TimeTracker restarts, <strong>grant the screenshot permission</strong> when the system dialog appears.</li>
+</ol>
+
+<div class="note">
+  \u2139\ufe0f A full TimeTracker restart is required after installing packages to reinitialise the GStreamer capture pipeline.
+</div>
+
+<br>
+<button class="recheck-btn" onclick="doRecheck()">&#8635; Re-check now</button>
+<div id="recheck-result"></div>
+
+<script>
+function doRecheck() {{
+  var btn = document.querySelector('.recheck-btn');
+  btn.textContent = 'Checking\u2026';
+  btn.disabled = true;
+  fetch('/api/system/screencast-check')
+    .then(function(r){{ return r.json(); }})
+    .then(function(d){{
+      var el = document.getElementById('recheck-result');
+      if (d.all_ok) {{
+        el.innerHTML = '<span style="color:#22c55e;font-weight:bold">\u2714 All dependencies satisfied. Please restart TimeTracker to enable screen capture.</span>';
+      }} else {{
+        var missing = Object.entries(d.missing||{{}}).filter(function(e){{return e[1];}}).map(function(e){{return e[0];}});
+        el.innerHTML = '<span style="color:#ef4444">\u2718 Still missing: ' + missing.join(', ') + '. Install packages and click re-check again.</span>';
+      }}
+      btn.textContent = '&#8635; Re-check now';
+      btn.disabled = false;
+    }})
+    .catch(function(err){{
+      document.getElementById('recheck-result').textContent = 'Re-check failed: ' + err;
+      btn.textContent = '&#8635; Re-check now';
+      btn.disabled = false;
+    }});
+}}
+</script>
+</body>
+</html>'''
+            return html
+
+        @self.app.route('/api/system/screencast-check')
+        def api_screencast_check():
+            """
+            Live dependency re-check endpoint (called by the repair page JS).
+            Returns JSON with per-component status and the distro-correct install command.
+            Also updates the in-memory dep state so the tray badge can be removed
+            without an app restart.
+            """
+            if not SYSTEM_CHECK_AVAILABLE:
+                return jsonify({'all_ok': True, 'error': 'system-check module not available'})
+
+            all_ok, missing_names = self._dep_checker.recheck() if self._dep_checker else (True, [])
+            data = self._dep_checker.get_installation_instructions_dict() if self._dep_checker else {}
+            results = self._dep_checker.check_all() if self._dep_checker else {}
+
+            # Update live state so tray badge reflects reality
+            self.screenshot_dependencies_ok = all_ok
+            self.missing_dependencies = missing_names
+            if all_ok:
+                # Rebuild tray menu to remove the warning badge
+                try:
+                    self.update_tray_menu()
+                except Exception:
+                    pass
+
+            return jsonify({
+                'all_ok': all_ok,
+                'wayland': results.get('wayland', False),
+                'pipewire': results.get('pipewire', True),
+                'gstreamer_pipewiresrc': results.get('gstreamer_pipewiresrc', True),
+                'screencast_portal': results.get('screencast_portal', True),
+                'missing': data.get('missing', {}),
+                'install_command': data.get('install_command', ''),
+                'restart_command': data.get('restart_command', ''),
+                'distro': data.get('distro', 'linux'),
+                'pkg_manager': data.get('pkg_manager', 'apt'),
+                'remaining_missing': missing_names,
+            })
 
         # ============================================================================
         # CONSENT ROUTES (GDPR/Privacy Compliance)
@@ -14448,6 +14635,10 @@ class TimeTracker:
             target = '/'
         webbrowser.open(f'http://localhost:{self.web_port}{target}')
 
+    def _open_screencast_fix_page(self, icon=None, menu_item=None):
+        """Open the in-app guided repair page for missing screencast dependencies."""
+        webbrowser.open(f'http://localhost:{self.web_port}/system/screencast-fix')
+
     def _get_tray_fallback_label(self):
         """Label for menu-less tray backends where only default click is supported."""
         if not self.current_user:
@@ -14487,7 +14678,18 @@ class TimeTracker:
 
         # Build menu items list dynamically based on current state
         menu_items = []
-        
+
+        # ── Missing-dependency warning (pinned at top) ────────────────────────
+        if not getattr(self, 'screenshot_dependencies_ok', True):
+            try:
+                menu_items.append(item(
+                    '\u26a0 Screen capture unavailable \u2014 click to fix',
+                    self._open_screencast_fix_page
+                ))
+                menu_items.append(pystray.Menu.SEPARATOR)
+            except Exception as _badge_err:
+                print(f"[WARN] Could not add dep-warning tray item: {_badge_err}")
+
         try:
             menu_items.append(
                 item(

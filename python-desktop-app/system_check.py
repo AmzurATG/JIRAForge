@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 System Dependency Checker for TimeTracker
-Detects missing dependencies and provides installation guidance.
+Detects missing dependencies and provides distro-aware installation guidance.
 """
 
 import os
@@ -11,6 +11,133 @@ import logging
 from typing import Dict, List, Tuple
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Distro detection
+# ---------------------------------------------------------------------------
+
+def detect_distro() -> dict:
+    """
+    Parse /etc/os-release to identify the distro family and package manager.
+
+    Returns a dict with keys:
+        'id'          – lowercase distro ID (e.g. 'ubuntu', 'fedora', 'arch')
+        'id_like'     – space-separated parent families (may be empty)
+        'pkg_manager' – one of 'apt' | 'dnf' | 'zypper' | 'pacman'
+        'install_cmd' – the sudo install prefix (e.g. 'sudo apt install -y')
+    """
+    info = {'id': '', 'id_like': '', 'pkg_manager': 'apt',
+            'install_cmd': 'sudo apt install -y'}
+
+    try:
+        with open('/etc/os-release', 'r') as fh:
+            for line in fh:
+                line = line.strip()
+                if line.startswith('ID='):
+                    info['id'] = line.split('=', 1)[1].strip('"').lower()
+                elif line.startswith('ID_LIKE='):
+                    info['id_like'] = line.split('=', 1)[1].strip('"').lower()
+    except OSError:
+        logger.debug("Could not read /etc/os-release — defaulting to apt")
+        return info
+
+    combined = f"{info['id']} {info['id_like']}"
+
+    if any(x in combined for x in ('ubuntu', 'debian', 'linuxmint', 'pop',
+                                    'elementary', 'zorin', 'neon')):
+        info['pkg_manager'] = 'apt'
+        info['install_cmd'] = 'sudo apt install -y'
+    elif any(x in combined for x in ('fedora', 'rhel', 'centos', 'rocky',
+                                      'alma', 'ol', 'scientific')):
+        info['pkg_manager'] = 'dnf'
+        info['install_cmd'] = 'sudo dnf install -y'
+    elif any(x in combined for x in ('opensuse', 'sles', 'sle')):
+        info['pkg_manager'] = 'zypper'
+        info['install_cmd'] = 'sudo zypper install -y'
+    elif any(x in combined for x in ('arch', 'manjaro', 'endeavouros',
+                                      'garuda', 'artix')):
+        info['pkg_manager'] = 'pacman'
+        info['install_cmd'] = 'sudo pacman -S --noconfirm'
+
+    return info
+
+
+# Package name mapping per logical component per package manager
+_PACKAGE_MAP: Dict[str, Dict[str, List[str]]] = {
+    'pipewire': {
+        'apt':    ['pipewire', 'wireplumber'],
+        'dnf':    ['pipewire', 'wireplumber'],
+        'zypper': ['pipewire', 'wireplumber'],
+        'pacman': ['pipewire', 'wireplumber'],
+    },
+    'gstreamer_base': {
+        'apt':    ['gstreamer1.0-plugins-base', 'gstreamer1.0-plugins-good',
+                   'gstreamer1.0-tools'],
+        'dnf':    ['gstreamer1-plugins-base', 'gstreamer1-plugins-good',
+                   'gstreamer1-devel'],
+        'zypper': ['gstreamer-plugins-base', 'gstreamer-plugins-good'],
+        'pacman': ['gst-plugins-base', 'gst-plugins-good'],
+    },
+    'gstreamer_pipewire': {
+        'apt':    ['gstreamer1.0-pipewire'],
+        'dnf':    ['gstreamer1-plugin-pipewire'],
+        'zypper': ['gstreamer-plugin-pipewire'],
+        'pacman': ['gst-plugin-pipewire'],
+    },
+    'xdg_portal': {
+        'apt':    ['xdg-desktop-portal'],
+        'dnf':    ['xdg-desktop-portal'],
+        'zypper': ['xdg-desktop-portal'],
+        'pacman': ['xdg-desktop-portal'],
+    },
+    'xdg_portal_backend': {
+        'apt':    ['xdg-desktop-portal-gnome'],
+        'dnf':    ['xdg-desktop-portal-gnome'],
+        'zypper': ['xdg-desktop-portal-gnome'],
+        'pacman': ['xdg-desktop-portal-gnome'],
+    },
+}
+
+# Restart command after installation
+_RESTART_CMD = 'systemctl --user restart pipewire pipewire-pulse wireplumber'
+
+
+def get_distro_packages(missing_checks: Dict[str, bool],
+                         pkg_manager: str) -> List[str]:
+    """
+    Return the list of packages to install for the given failing checks.
+
+    Args:
+        missing_checks: dict of check_name → False for each failing check.
+        pkg_manager: one of 'apt' | 'dnf' | 'zypper' | 'pacman'.
+
+    Returns:
+        Ordered, de-duplicated list of package names.
+    """
+    needed_components: List[str] = []
+
+    if not missing_checks.get('pipewire', True):
+        needed_components.append('pipewire')
+
+    if not missing_checks.get('gstreamer_pipewiresrc', True):
+        needed_components.append('gstreamer_base')
+        needed_components.append('gstreamer_pipewire')
+
+    if not missing_checks.get('screencast_portal', True):
+        needed_components.append('xdg_portal')
+        needed_components.append('xdg_portal_backend')
+
+    packages: List[str] = []
+    seen = set()
+    pm = pkg_manager if pkg_manager in ('apt', 'dnf', 'zypper', 'pacman') else 'apt'
+    for component in needed_components:
+        for pkg in _PACKAGE_MAP.get(component, {}).get(pm, []):
+            if pkg not in seen:
+                seen.add(pkg)
+                packages.append(pkg)
+
+    return packages
 
 
 class SystemDependencyChecker:
@@ -109,46 +236,100 @@ class SystemDependencyChecker:
     
     def get_installation_instructions(self) -> str:
         """
-        Get installation instructions for missing dependencies.
-        
+        Get distro-aware installation instructions for missing dependencies.
+
         Returns:
-            Formatted string with installation commands
+            Formatted string with installation commands (for logs / STDERR).
         """
-        instructions = []
-        
-        instructions.append("=" * 60)
-        instructions.append("SCREENSHOT CAPTURE DEPENDENCIES MISSING")
-        instructions.append("=" * 60)
-        instructions.append("")
-        instructions.append("TimeTracker requires system packages for screenshot capture.")
-        instructions.append("")
-        instructions.append("QUICK FIX:")
-        instructions.append("  Run our automated fix script:")
-        instructions.append("  ./scripts/fix-screenshot-capture.sh")
-        instructions.append("")
-        instructions.append("MANUAL INSTALLATION:")
-        instructions.append("  sudo apt install -y \\")
-        instructions.append("    pipewire \\")
-        instructions.append("    wireplumber \\")
-        instructions.append("    gstreamer1.0-plugins-base \\")
-        instructions.append("    gstreamer1.0-plugins-good \\")
-        instructions.append("    gstreamer1.0-pipewire \\")
-        instructions.append("    xdg-desktop-portal \\")
-        instructions.append("    xdg-desktop-portal-gnome")
-        instructions.append("")
-        instructions.append("AFTER INSTALLATION:")
-        instructions.append("  1. Restart PipeWire: systemctl --user restart pipewire")
-        instructions.append("  2. Restart TimeTracker")
-        instructions.append("  3. Grant screenshot permission when prompted")
-        instructions.append("")
-        instructions.append("CURRENT STATUS: Running in METADATA-ONLY mode")
-        instructions.append("  - Window titles tracked: YES")
-        instructions.append("  - Screen content (OCR): NO")
-        instructions.append("")
-        instructions.append("See docs/USER_FIX_GUIDE_OCR_ISSUE.md for details")
-        instructions.append("=" * 60)
-        
-        return "\n".join(instructions)
+        data = self.get_installation_instructions_dict()
+        lines = []
+        lines.append("=" * 60)
+        lines.append("SCREENSHOT CAPTURE DEPENDENCIES MISSING")
+        lines.append("=" * 60)
+        lines.append("")
+        lines.append("TimeTracker requires system packages for screenshot capture.")
+        lines.append(f"Detected distro family: {data['distro']}  "
+                     f"(package manager: {data['pkg_manager']})")
+        lines.append("")
+        lines.append("INSTALL COMMAND:")
+        lines.append(f"  {data['install_command']}")
+        lines.append("")
+        lines.append("AFTER INSTALLATION:")
+        lines.append(f"  1. Restart PipeWire: {data['restart_command']}")
+        lines.append("  2. Restart TimeTracker")
+        lines.append("  3. Grant screenshot permission when prompted")
+        lines.append("")
+        lines.append("CURRENT STATUS: Running in METADATA-ONLY mode")
+        lines.append("  - Window titles tracked: YES")
+        lines.append("  - Screen content (OCR): NO")
+        lines.append("=" * 60)
+        return "\n".join(lines)
+
+    def get_installation_instructions_dict(self) -> dict:
+        """
+        Return installation data as a structured dict (used by the web UI).
+
+        Returns:
+            {
+              'distro': str,
+              'pkg_manager': str,
+              'install_command': str,  # single runnable command
+              'restart_command': str,
+              'missing': {
+                  'pipewire': bool,
+                  'gstreamer_pipewiresrc': bool,
+                  'screencast_portal': bool,
+              },
+              'packages': [str, ...]   # only the packages actually needed
+            }
+        """
+        distro_info = detect_distro()
+        pm = distro_info['pkg_manager']
+
+        # Re-run check to know which items are missing
+        results = self.check_all()
+        missing = {
+            'pipewire': not results.get('pipewire', True),
+            'gstreamer_pipewiresrc': not results.get('gstreamer_pipewiresrc', True),
+            'screencast_portal': not results.get('screencast_portal', True),
+        }
+
+        packages = get_distro_packages(results, pm)
+        if packages:
+            install_command = f"{distro_info['install_cmd']} {' '.join(packages)}"
+        else:
+            install_command = "(no packages needed)"
+
+        return {
+            'distro': distro_info['id'] or 'linux',
+            'pkg_manager': pm,
+            'install_command': install_command,
+            'restart_command': _RESTART_CMD,
+            'missing': missing,
+            'packages': packages,
+        }
+
+    def recheck(self) -> Tuple[bool, List[str]]:
+        """
+        Re-run all dependency checks at runtime (e.g. after the user installs
+        packages mid-session).  Does NOT reinitialise GStreamer — a full app
+        restart is still required to activate capture; this only refreshes
+        the UI state.
+
+        Returns:
+            Tuple[bool, List[str]] — (all_ok, remaining_missing_dep_names)
+        """
+        self.missing_deps = []
+        results = self.check_all()
+
+        if not results.get('pipewire', True):
+            self.missing_deps.append("PipeWire")
+        if not results.get('gstreamer_pipewiresrc', True):
+            self.missing_deps.append("GStreamer plugins")
+        if not results.get('screencast_portal', True):
+            self.missing_deps.append("XDG Desktop Portal")
+
+        return results['all_checks_passed'], self.missing_deps
     
     def check_and_warn(self) -> bool:
         """
@@ -190,14 +371,17 @@ def check_dependencies_startup():
     """
     Entry point for startup dependency check.
     Call this during application initialization.
-    
+
     Returns:
-        Tuple[bool, List[str]] - (all_ok, missing_deps)
+        Tuple[bool, List[str], SystemDependencyChecker]
+            - all_ok: True when all checks pass
+            - missing_deps: human-readable list of what is missing
+            - checker: the live SystemDependencyChecker instance (kept for
+              later recheck() calls without creating a new subprocess chain)
     """
     checker = SystemDependencyChecker()
     all_ok = checker.check_and_warn()
-    
-    return all_ok, checker.missing_deps
+    return all_ok, checker.missing_deps, checker
 
 
 if __name__ == '__main__':

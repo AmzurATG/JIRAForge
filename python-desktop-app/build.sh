@@ -545,7 +545,7 @@ Package: timetracker
 Version: ${APP_VERSION}
 Architecture: ${DEB_ARCH}
 Maintainer: Amzur Technologies <support@amzur.com>
-Depends: gdebi, python3-gi, gir1.2-ayatanaappindicator3-0.1 | gir1.2-appindicator3-0.1
+Depends: python3-gi, gir1.2-ayatanaappindicator3-0.1 | gir1.2-appindicator3-0.1, pipewire, wireplumber, gstreamer1.0-plugins-base, gstreamer1.0-plugins-good, gstreamer1.0-tools, gstreamer1.0-pipewire, xdg-desktop-portal, xdg-desktop-portal-gnome | xdg-desktop-portal-gtk
 Recommends: gnome-shell-extension-appindicator, libnotify-bin
 Description: Automatic time tracking for JIRA issues
  TimeTracker tracks time spent on JIRA issues automatically
