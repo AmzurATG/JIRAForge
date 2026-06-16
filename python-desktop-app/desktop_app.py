@@ -3037,6 +3037,10 @@ class AtlassianAuthManager:
                 })
                 self._save_tokens()
 
+                # Capture the prior error code BEFORE the resets below clear it, so
+                # the success diagnostic actually records what we recovered from
+                # (e.g. a previous OAUTH_TEMPORARY_FAILURE) instead of always ''.
+                prior_error_code = getattr(self, '_last_refresh_error_code', '')
                 self._refresh_token_invalid = False  # Clear permanent-failure flag
                 self._refresh_invalid_permanent = False  # Successful refresh: token chain is alive
                 self._refresh_fail_count = 0  # Reset consecutive failure counter
@@ -3048,7 +3052,7 @@ class AtlassianAuthManager:
                     level='INFO',
                     refresh_fail_count=0,
                     invalid_flag=False,
-                    prior_error_code=getattr(self, '_last_refresh_error_code', '')
+                    prior_error_code=prior_error_code
                 )
                 print("[OK] Access token refreshed successfully via AI Server")
 
