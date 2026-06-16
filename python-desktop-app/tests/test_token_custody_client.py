@@ -203,23 +203,24 @@ def test_migrate_to_custody_404_keeps_legacy_flow():
 
 
 def test_refresh_attempts_migration_once_for_upgraded_installs():
-    """An upgraded install (refresh token, no device token) must hand over
-    custody on its next refresh — without a re-login — then refresh via the
-    device token."""
+    """An upgraded install (refresh token, no device token) migrates to custody
+    on its next refresh — without a re-login. Migration happens AFTER the legacy
+    refresh, so it runs with the freshly-minted access token."""
     mgr = _make_manager()  # refresh-123 present, no device_token
 
     def fake_post(url, *args, **kwargs):
+        if url.endswith('/api/auth/refresh-token'):
+            return _MockResponse(200, {
+                'success': True,
+                'access_token': 'fresh-legacy-access',
+                'refresh_token': 'rotated-refresh',
+                'expires_in': 3600,
+            })
         if url.endswith('/api/auth/migrate-custody'):
             return _MockResponse(200, {
                 'success': True,
                 'device_token': 'migrated-device-token',
                 'device_token_expires_at': '2026-12-09T00:00:00+00:00',
-            })
-        if url.endswith('/api/auth/access-token'):
-            return _MockResponse(200, {
-                'success': True,
-                'access_token': 'fresh-access',
-                'expires_at': '2099-01-01T00:00:00+00:00',
             })
         raise AssertionError(f'unexpected POST {url}')
 
@@ -227,9 +228,53 @@ def test_refresh_attempts_migration_once_for_upgraded_installs():
         ok = mgr.refresh_access_token()
 
     assert ok is True
-    assert mgr.tokens['device_token'] == 'migrated-device-token'
-    assert mgr.tokens['access_token'] == 'fresh-access'
+    assert mgr.tokens['access_token'] == 'fresh-legacy-access'   # from the legacy refresh
+    assert mgr.tokens['device_token'] == 'migrated-device-token'  # migrated post-refresh
     assert mgr._custody_migration_attempted is True
+
+
+def test_upgrade_migration_uses_fresh_token_not_the_expired_one():
+    """Regression for the #2 timing bug: migrate-custody must be handed the access
+    token MINTED BY the legacy refresh — never the expired one the refresh was
+    triggered to replace. Previously migration ran BEFORE the refresh with the
+    dead token, the server rejected it (401), and upgraded users never gained
+    custody. The server here mimics that: it 401s any token that isn't fresh."""
+    mgr = _make_manager({
+        'access_token': 'EXPIRED-stale-access',
+        'refresh_token': 'refresh-123',
+        'expires_at': 0,  # already expired — this is when a refresh actually runs
+    })
+    seen = {}
+
+    def fake_post(url, *args, **kwargs):
+        payload = kwargs.get('json') or {}
+        if url.endswith('/api/auth/refresh-token'):
+            return _MockResponse(200, {
+                'success': True,
+                'access_token': 'FRESH-access',
+                'refresh_token': 'rotated-refresh',
+                'expires_in': 3600,
+            })
+        if url.endswith('/api/auth/migrate-custody'):
+            seen['atlassian_token'] = payload.get('atlassian_token')
+            if payload.get('atlassian_token') != 'FRESH-access':
+                # the server cannot verify a stale/expired Atlassian token
+                return _MockResponse(401, {'error': 'Invalid or expired Atlassian token'})
+            return _MockResponse(200, {
+                'success': True,
+                'device_token': 'dev-tok',
+                'device_token_expires_at': '2026-12-09T00:00:00+00:00',
+            })
+        raise AssertionError(f'unexpected POST {url}')
+
+    with patch('desktop_app.requests.post', side_effect=fake_post):
+        ok = mgr.refresh_access_token()
+
+    assert ok is True
+    assert seen.get('atlassian_token') == 'FRESH-access', (
+        "migrate-custody must receive the freshly-refreshed token, not the expired one"
+    )
+    assert mgr.tokens['device_token'] == 'dev-tok', "upgraded user must end up on custody"
 
 
 def test_failed_migration_falls_back_to_legacy_refresh():
