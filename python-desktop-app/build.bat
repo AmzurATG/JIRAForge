@@ -340,25 +340,23 @@ echo [INFO] Installer version: %APP_VER%
 
 REM ----------------------------------------------------------------------------
 REM Determine the update server URL to persist into HKLM (for the SYSTEM updater).
-REM Source: AI_SERVER_URL from local .env > ai-server/.env > built-in default.
-REM This is the SAME server the app uses, so the updater and the app agree instead
-REM of the updater falling back to a hard-coded default.
+REM SINGLE SOURCE OF TRUTH: read EMBEDDED_CONFIG['AI_SERVER_URL'] straight from
+REM desktop_app.py -- the EXACT value the frozen app uses at runtime. Reading it
+REM from here (NOT .env) guarantees the updater and the app can never point at
+REM different servers. The old .env-based read caused app->prod / updater->dev
+REM splits that silently auto-reverted prod installs to dev builds. .env is left
+REM for local development runs only; it no longer controls the shipped updater.
 REM ----------------------------------------------------------------------------
 set "APP_SERVER="
-if exist ".env" (
-    for /f "usebackq eol=# tokens=1,* delims==" %%A in (".env") do (
-        if /I "%%A"=="AI_SERVER_URL" set "APP_SERVER=%%B"
-    )
+"%VENV_PYTHON%" -c "import io;print(next(s.split(chr(58),1)[1].split(chr(35))[0].strip().rstrip(chr(44)).strip().strip(chr(39)).strip(chr(34)) for s in (x.strip() for x in io.open('desktop_app.py',encoding='utf-8')) if s.startswith(chr(39)+'AI_SERVER_URL'+chr(39)+chr(58))))" > "%TEMP%\tt_srv.txt" 2>nul
+if exist "%TEMP%\tt_srv.txt" (
+    set /p APP_SERVER=<"%TEMP%\tt_srv.txt"
+    del /f /q "%TEMP%\tt_srv.txt" >nul 2>&1
 )
-if not defined APP_SERVER if exist "..\ai-server\.env" (
-    for /f "usebackq eol=# tokens=1,* delims==" %%A in ("..\ai-server\.env") do (
-        if /I "%%A"=="AI_SERVER_URL" set "APP_SERVER=%%B"
-    )
-)
-if not defined APP_SERVER set "APP_SERVER=https://forgesync.amzur.com"
-REM Strip any stray spaces that .env formatting may introduce.
+REM Fail safe to PRODUCTION (never dev) if extraction somehow fails.
+if not defined APP_SERVER set "APP_SERVER=https://timetracker-forge.amzur.com"
 set "APP_SERVER=%APP_SERVER: =%"
-echo [INFO] Update server (persisted to HKLM for the updater): %APP_SERVER%
+echo [INFO] Update server (from desktop_app.py EMBEDDED_CONFIG, persisted to HKLM): %APP_SERVER%
 
 REM Locate the Inno Setup command-line compiler (ISCC.exe)
 set "ISCC="
