@@ -545,8 +545,8 @@ Package: timetracker
 Version: ${APP_VERSION}
 Architecture: ${DEB_ARCH}
 Maintainer: Amzur Technologies <support@amzur.com>
-Depends: python3-gi, gir1.2-ayatanaappindicator3-0.1 | gir1.2-appindicator3-0.1, pipewire, wireplumber, gstreamer1.0-plugins-base, gstreamer1.0-plugins-good, gstreamer1.0-tools, gstreamer1.0-pipewire, xdg-desktop-portal, xdg-desktop-portal-gnome | xdg-desktop-portal-gtk
-Recommends: gnome-shell-extension-appindicator, libnotify-bin
+Depends: python3-gi, gir1.2-ayatanaappindicator3-0.1 | gir1.2-appindicator3-0.1
+Recommends: gnome-shell-extension-appindicator, libnotify-bin, pipewire, wireplumber | pipewire-media-session, gstreamer1.0-plugins-base, gstreamer1.0-plugins-good, gstreamer1.0-tools, gstreamer1.0-pipewire, xdg-desktop-portal, xdg-desktop-portal-gnome | xdg-desktop-portal-gtk
 Description: Automatic time tracking for JIRA issues
  TimeTracker tracks time spent on JIRA issues automatically
  using active window detection and screenshot analysis.
@@ -556,6 +556,93 @@ CONTROL
     cat > "${DEB_BUILD_DIR}/DEBIAN/postinst" << 'POSTINST'
 #!/bin/bash
 set -e
+
+# ── Auto-install missing critical runtime dependencies ────────────────────────
+# When users double-click the .deb in the app center, the graphical installer
+# may not install Recommends. This function detects and installs critical
+# missing packages that the app needs for screenshot capture to work.
+_ensure_capture_dependencies() {
+    # List of packages needed for screenshot capture (order: preferred → alternatives)
+    local REQUIRED_PACKAGES=(
+        "pipewire:pipewire"
+        "wireplumber:pipewire-media-session"
+        "gstreamer1.0-plugins-base:gstreamer1.0-plugins-base"
+        "gstreamer1.0-plugins-good:gstreamer1.0-plugins-good"
+        "gstreamer1.0-pipewire:gstreamer1.0-pipewire"
+        "xdg-desktop-portal:xdg-desktop-portal"
+        "xdg-desktop-portal-gnome:xdg-desktop-portal-gtk"
+    )
+
+    local MISSING_PACKAGES=()
+    
+    echo ""
+    echo "  Checking for required screenshot capture dependencies..."
+    
+    for PKG_SPEC in "${REQUIRED_PACKAGES[@]}"; do
+        IFS=':' read -r PRIMARY FALLBACK <<< "$PKG_SPEC"
+        
+        # Check if primary package is installed
+        if dpkg -l "$PRIMARY" 2>/dev/null | grep -q "^ii"; then
+            echo "    ✓ $PRIMARY installed"
+            continue
+        fi
+        
+        # Check if fallback package exists
+        if [ -n "$FALLBACK" ] && dpkg -l "$FALLBACK" 2>/dev/null | grep -q "^ii"; then
+            echo "    ✓ $FALLBACK installed (alternative)"
+            continue
+        fi
+        
+        # Neither primary nor fallback is installed
+        echo "    ✗ $PRIMARY (or $FALLBACK) NOT installed"
+        MISSING_PACKAGES+=("$PRIMARY")
+    done
+    
+    # If nothing is missing, we're done
+    if [ ${#MISSING_PACKAGES[@]} -eq 0 ]; then
+        echo "  ✓ All capture dependencies are installed!"
+        return 0
+    fi
+    
+    # Attempt to install missing packages
+    echo ""
+    echo "  Installing missing dependencies (${#MISSING_PACKAGES[@]} packages)..."
+    echo "  This may prompt for your password."
+    echo ""
+    
+    # Try to use pkexec (graphical sudo prompt, preferred for app-center installs)
+    if command -v pkexec &>/dev/null; then
+        if pkexec apt-get update && pkexec apt-get install -y "${MISSING_PACKAGES[@]}" 2>&1 | tee -a /tmp/timetracker-deps-install.log; then
+            echo "  ✓ Dependencies installed successfully!"
+            return 0
+        else
+            echo "  [WARN] pkexec install failed or was cancelled by user" >&2
+            echo "  [INFO] Continuing anyway — app may need manual dependency install" >&2
+            return 1
+        fi
+    fi
+    
+    # Fallback: try sudo (for terminal-based installs, though rare in app center)
+    if command -v sudo &>/dev/null; then
+        echo "  [INFO] pkexec not available, trying sudo..." >&2
+        if sudo apt-get update && sudo apt-get install -y "${MISSING_PACKAGES[@]}" 2>&1 | tee -a /tmp/timetracker-deps-install.log; then
+            echo "  ✓ Dependencies installed successfully!"
+            return 0
+        else
+            echo "  [WARN] sudo install failed" >&2
+            return 1
+        fi
+    fi
+    
+    # No privilege escalation tool available
+    echo "  [WARN] Neither pkexec nor sudo available to install dependencies" >&2
+    echo "  [INFO] Users may need to install manually: sudo apt install ${MISSING_PACKAGES[*]}" >&2
+    return 1
+}
+
+# Run dependency check (non-blocking — app will still install even if this fails)
+_ensure_capture_dependencies || true
+
 chmod +x /opt/timetracker/TimeTracker.AppImage 2>/dev/null || true
 chmod +x /usr/local/bin/timetracker 2>/dev/null || true
 update-desktop-database /usr/share/applications 2>/dev/null || true
@@ -714,9 +801,23 @@ if [ -d "/usr/share/gnome-shell/extensions/disable-screenshot-flash@timetracker"
     echo "  → Will auto-enable on next GNOME login (no manual steps needed!)"
     echo ""
 fi
+echo "Screenshot capture requires:"
+echo "  • PipeWire + WirePlumber (or pipewire-media-session)"
+echo "  • GStreamer plugins (base, good, pipewire)"
+echo "  • XDG Desktop Portal"
+echo ""
+if [ -f /tmp/timetracker-deps-install.log ]; then
+    echo "✓ Capture dependencies installed automatically"
+    echo "  (See /tmp/timetracker-deps-install.log for details)"
+else
+    echo "ℹ Capture dependencies were already installed or auto-installed"
+fi
+echo ""
 echo "Launch TimeTracker from:"
 echo "  • Applications menu → TimeTracker"
 echo "  • Terminal: timetracker"
+echo ""
+echo "Need help? See: https://github.com/amzurtechnologies/timetracker/docs/LINUX_INSTALL.md"
 echo ""
 POSTINST
     chmod 755 "${DEB_BUILD_DIR}/DEBIAN/postinst"
