@@ -6485,6 +6485,19 @@ class LocalOCRProcessor:
         screenshot = capture_focused_monitor()
         if screenshot is None:
             print("[OCR] Screenshot capture skipped (no valid monitor target)")
+            # Phase 5: Check health and emit desktop notification after repeated failures
+            try:
+                from monitor_capture import get_capture_health
+                health = get_capture_health()
+                if health['consecutive_black_images'] >= 3:
+                    _linux_notify(
+                        "TimeTracker: Screenshot not working",
+                        "Screen capture has failed multiple times. "
+                        "Open tray \u2192 'Fix Screen Capture' to diagnose.",
+                        urgency="critical"
+                    )
+            except Exception:
+                pass
         return {'screenshot': screenshot, 'throttled': False}
 
     def shutdown(self):
@@ -6773,6 +6786,10 @@ class TimeTracker:
         self.missing_dependencies = []
         self._dep_checker = None          # live SystemDependencyChecker instance
         self._dep_notify_sent = False     # send at most one desktop notification
+        # Phase 1 (OCR fix): flags for first-run guided install flow
+        self._first_run_repair_shown = False
+        self._should_open_repair_page = False
+        self._capture_failure_notified = False  # Phase 5: alert after 3+ black images
         if SYSTEM_CHECK_AVAILABLE:
             deps_ok, missing_deps, dep_checker = check_dependencies_startup()
             self.screenshot_dependencies_ok = deps_ok
@@ -6786,12 +6803,38 @@ class TimeTracker:
                 # Fire a one-shot desktop notification so the user sees it
                 # even when launched from a desktop launcher (no terminal).
                 if sys.platform.startswith('linux') and not self._dep_notify_sent:
-                    _linux_notify(
-                        "Screen Capture Unavailable",
-                        "Missing system packages. Open tray \u2192 'Fix Screen Capture' for instructions.",
-                        urgency="critical"
-                    )
+                    # Phase 1 (OCR fix): Use detailed diagnostic to craft actionable message
+                    action_hint = "install"  # default
+                    if SYSTEM_CHECK_AVAILABLE:
+                        try:
+                            from system_check import SystemDependencyChecker
+                            _diag_checker = SystemDependencyChecker()
+                            _gst_info = _diag_checker.check_gstreamer_pipewire_installable()
+                            action_hint = _gst_info.get('action', 'install')
+                            if self.logger:
+                                self.logger.info(
+                                    f"[Phase1] GStreamer pipewire diagnostic: {_gst_info}"
+                                )
+                        except Exception as _e:
+                            if self.logger:
+                                self.logger.debug(f"[Phase1] Diagnostic check error: {_e}")
+
+                    if action_hint == 'restart':
+                        _linux_notify(
+                            "Screen Capture: Restart Required",
+                            "PipeWire needs a restart. Run: systemctl --user restart pipewire wireplumber",
+                            urgency="critical"
+                        )
+                    else:
+                        _linux_notify(
+                            "Screen Capture Unavailable",
+                            "Missing system packages. Open tray \u2192 'Fix Screen Capture' for instructions.",
+                            urgency="critical"
+                        )
                     self._dep_notify_sent = True
+                    # Phase 1: Flag to open the repair page when the web server is ready
+                    self._should_open_repair_page = True
+                    self._first_run_repair_shown = True
         else:
             if self.logger:
                 self.logger.debug("System dependency check module not available")
@@ -8188,7 +8231,15 @@ class TimeTracker:
   .note{{background:#fef9c3;border:1px solid #fde047;padding:10px 14px;border-radius:6px;font-size:.9rem;margin-top:12px}}
   .recheck-btn{{display:inline-block;margin-top:8px;padding:10px 22px;background:#2563eb;color:#fff;border:none;border-radius:8px;font-size:1rem;cursor:pointer;text-decoration:none}}
   .recheck-btn:hover{{background:#1d4ed8}}
+  .grant-btn{{display:inline-block;margin-top:8px;padding:10px 22px;background:#16a34a;color:#fff;border:none;border-radius:8px;font-size:1rem;cursor:pointer;text-decoration:none}}
+  .grant-btn:hover{{background:#15803d}}
+  .grant-btn:disabled{{background:#6b7280;cursor:not-allowed}}
   #recheck-result{{margin-top:12px;font-size:.9rem}}
+  #grant-result{{margin-top:12px;font-size:.9rem}}
+  .status-card{{background:#fff;border-radius:8px;padding:14px 18px;box-shadow:0 1px 3px rgba(0,0,0,.1);margin-bottom:16px}}
+  .status-ok{{color:#16a34a;font-weight:600}}
+  .status-warn{{color:#d97706;font-weight:600}}
+  .status-err{{color:#dc2626;font-weight:600}}
 </style>
 </head>
 <body>
@@ -8202,6 +8253,23 @@ class TimeTracker:
   <tbody>{rows}</tbody>
 </table>
 
+<h2 style="font-size:1.1rem">ScreenCast Permission</h2>
+<div class="status-card" id="permission-card">
+  <div id="permission-status">Loading permission status&hellip;</div>
+</div>
+<button class="grant-btn" id="grant-btn" onclick="grantPermission()">&#128250; Grant Screen Permission</button>
+<div id="grant-result"></div>
+<div class="note" style="margin-top:12px">
+  \u2139\ufe0f A screen sharing dialog will appear. Click <strong>Allow</strong> to enable OCR.
+  This is a one-time permission — it persists across app restarts.
+</div>
+
+<br><br>
+<h2 style="font-size:1.1rem">OCR Status</h2>
+<div class="status-card">
+  <div id="ocr-status">Loading&hellip;</div>
+</div>
+
 <h2 style="font-size:1.1rem">How to Fix</h2>
 <ol>
   <li><strong>Install missing packages</strong> (detected distro: <em>{distro_label}</em>, package manager: <code>{pm_label}</code>):<br>
@@ -8214,12 +8282,12 @@ class TimeTracker:
       <button class="copy-btn" onclick="navigator.clipboard.writeText(document.getElementById('restart-cmd').firstChild.textContent.trim());this.textContent='Copied!'">Copy</button>
     </div>
   </li>
-  <li><strong>Click Re-check now</strong> below \u2014 if all items turn green, restart TimeTracker to activate capture.</li>
-  <li>When TimeTracker restarts, <strong>grant the screenshot permission</strong> when the system dialog appears.</li>
+  <li><strong>Click Re-check now</strong> below \u2014 if all items turn green, click <em>Grant Screen Permission</em> above.</li>
+  <li>If the permission dialog appears, click <strong>Allow</strong> \u2014 OCR activates immediately.</li>
 </ol>
 
 <div class="note">
-  \u2139\ufe0f A full TimeTracker restart is required after installing packages to reinitialise the GStreamer capture pipeline.
+  \u2139\ufe0f After installing packages a PipeWire restart is required. After granting permission no app restart is needed.
 </div>
 
 <br>
@@ -8227,6 +8295,78 @@ class TimeTracker:
 <div id="recheck-result"></div>
 
 <script>
+// Load permission and OCR status on page load
+window.onload = function() {{
+  loadPermissionStatus();
+  loadOCRStatus();
+}};
+
+function loadPermissionStatus() {{
+  fetch('/api/system/screencast-permission-status')
+    .then(function(r) {{ return r.json(); }})
+    .then(function(d) {{
+      var el = document.getElementById('permission-status');
+      var btn = document.getElementById('grant-btn');
+      var statusMap = {{
+        'ready': '<span class="status-ok">&#10004; Permission granted — restore token valid</span>',
+        'needs_permission': '<span class="status-warn">&#9888; No valid permission found — click Grant Screen Permission</span>',
+        'missing_plugin': '<span class="status-err">&#10006; gstreamer1.0-pipewire not installed — install packages first</span>',
+        'no_portal': '<span class="status-err">&#10006; XDG portal not available</span>'
+      }};
+      el.innerHTML = statusMap[d.status] || d.status;
+      if (d.token_age_days !== null) {{
+        el.innerHTML += '<br><small style="color:#6b7280">Token age: ' + d.token_age_days.toFixed(1) + ' days</small>';
+      }}
+      if (d.status === 'missing_plugin') {{ btn.disabled = true; }}
+      else {{ btn.disabled = false; }}
+    }})
+    .catch(function() {{ document.getElementById('permission-status').textContent = 'Could not load permission status'; }});
+}}
+
+function loadOCRStatus() {{
+  fetch('/api/system/capture-health')
+    .then(function(r) {{ return r.json(); }})
+    .then(function(d) {{
+      var el = document.getElementById('ocr-status');
+      if (d.consecutive_black_images === 0) {{
+        el.innerHTML = '<span class="status-ok">&#10004; OCR active — no consecutive failures</span>';
+      }} else {{
+        el.innerHTML = '<span class="status-err">&#10006; ' + d.consecutive_black_images + ' consecutive capture failure(s) — ' +
+          d.black_image_duration_minutes.toFixed(1) + ' minutes</span>' +
+          '<br><small>ScreenCast available: ' + d.screencast_available + ' | Token exists: ' + d.restore_token_exists + '</small>';
+      }}
+    }})
+    .catch(function() {{ document.getElementById('ocr-status').textContent = 'Could not load OCR status'; }});
+}}
+
+function grantPermission() {{
+  var btn = document.getElementById('grant-btn');
+  var result = document.getElementById('grant-result');
+  btn.textContent = 'Waiting for dialog\u2026 (up to 60s)';
+  btn.disabled = true;
+  result.innerHTML = '<em style="color:#6b7280">A screen sharing dialog should appear on your desktop. Click Allow.</em>';
+  fetch('/api/system/grant-screencast-permission', {{method:'POST'}})
+    .then(function(r) {{ return r.json(); }})
+    .then(function(d) {{
+      if (d.granted) {{
+        result.innerHTML = d.already_had_permission
+          ? '<span class="status-ok">&#10004; Already had permission (token valid)</span>'
+          : '<span class="status-ok">&#10004; Permission granted! OCR is now active.</span>';
+      }} else {{
+        result.innerHTML = '<span class="status-err">&#10006; Not granted: ' + (d.error || 'unknown') + '</span>';
+      }}
+      btn.textContent = '&#128250; Grant Screen Permission';
+      btn.disabled = false;
+      loadPermissionStatus();
+      loadOCRStatus();
+    }})
+    .catch(function(err) {{
+      result.textContent = 'Request failed: ' + err;
+      btn.textContent = '&#128250; Grant Screen Permission';
+      btn.disabled = false;
+    }});
+}}
+
 function doRecheck() {{
   var btn = document.querySelector('.recheck-btn');
   btn.textContent = 'Checking\u2026';
@@ -8236,13 +8376,14 @@ function doRecheck() {{
     .then(function(d){{
       var el = document.getElementById('recheck-result');
       if (d.all_ok) {{
-        el.innerHTML = '<span style="color:#22c55e;font-weight:bold">\u2714 All dependencies satisfied. Please restart TimeTracker to enable screen capture.</span>';
+        el.innerHTML = '<span style="color:#22c55e;font-weight:bold">\u2714 All dependencies satisfied. Click Grant Screen Permission above to enable OCR.</span>';
       }} else {{
         var missing = Object.entries(d.missing||{{}}).filter(function(e){{return e[1];}}).map(function(e){{return e[0];}});
         el.innerHTML = '<span style="color:#ef4444">\u2718 Still missing: ' + missing.join(', ') + '. Install packages and click re-check again.</span>';
       }}
       btn.textContent = '&#8635; Re-check now';
       btn.disabled = false;
+      loadPermissionStatus();
     }})
     .catch(function(err){{
       document.getElementById('recheck-result').textContent = 'Re-check failed: ' + err;
@@ -8293,6 +8434,34 @@ function doRecheck() {{
                 'pkg_manager': data.get('pkg_manager', 'apt'),
                 'remaining_missing': missing_names,
             })
+
+        @self.app.route('/api/system/screencast-permission-status')
+        def api_screencast_permission_status():
+            """Phase 4 (OCR fix): Return current ScreenCast permission status."""
+            try:
+                from monitor_capture import get_screencast_permission_status
+                return jsonify(get_screencast_permission_status())
+            except Exception as e:
+                return jsonify({'status': 'error', 'error': str(e)}), 500
+
+        @self.app.route('/api/system/grant-screencast-permission', methods=['POST'])
+        def api_grant_screencast_permission():
+            """Phase 4 (OCR fix): Trigger the ScreenCast consent dialog on demand."""
+            try:
+                from monitor_capture import request_screencast_permission
+                result = request_screencast_permission(timeout_seconds=60)
+                return jsonify(result)
+            except Exception as e:
+                return jsonify({'granted': False, 'error': str(e)}), 500
+
+        @self.app.route('/api/system/capture-health')
+        def api_capture_health():
+            """Phase 5 (OCR fix): Return capture health metrics."""
+            try:
+                from monitor_capture import get_capture_health
+                return jsonify(get_capture_health())
+            except Exception as e:
+                return jsonify({'consecutive_black_images': 0, 'error': str(e)}), 500
 
         # ============================================================================
         # CONSENT ROUTES (GDPR/Privacy Compliance)
@@ -13620,6 +13789,139 @@ if best:
         print("[INFO]   • Install pynput and ensure XWayland is running")
         self.add_admin_log('ERROR', 'No idle detection backend available — idle detection disabled')
 
+    def _onboard_screencast_permission(self):
+        """Phase 2 (OCR fix): Proactively ensure ScreenCast permission is granted.
+
+        Called once from run() after startup when deps are OK. Runs the
+        consent dialog in a daemon thread so the app stays responsive.
+        Only acts on Linux/Wayland when the plugin is installed but no
+        valid restore token exists.
+        """
+        if not sys.platform.startswith('linux'):
+            return
+        if not os.environ.get('WAYLAND_DISPLAY'):
+            return  # X11 session — scrot/Pillow work fine
+
+        try:
+            from monitor_capture import (
+                get_screencast_permission_status,
+                request_screencast_permission,
+                _load_restore_token,
+                _validate_restore_token,
+                _clear_restore_token,
+            )
+        except ImportError as e:
+            if self.logger:
+                self.logger.warning(f"[ScreenCast] Could not import monitor_capture helpers: {e}")
+            return
+
+        # Phase 3: Validate existing token on every startup
+        token_data = _load_restore_token()
+        if token_data:
+            valid, reason = _validate_restore_token(token_data)
+            if not valid:
+                if self.logger:
+                    self.logger.warning(
+                        f"[ScreenCast] Restore token invalid ({reason}) — "
+                        "clearing and will re-request permission"
+                    )
+                _clear_restore_token()
+
+        # Phase 2: Check current status
+        status = get_screencast_permission_status()
+        if self.logger:
+            self.logger.info(
+                f"[ScreenCast] Permission status: {status['status']} | "
+                f"plugin={status['plugin_installed']} | token={status['has_token']} "
+                f"valid={status['token_valid']}"
+            )
+
+        if status['status'] == 'ready':
+            if self.logger:
+                self.logger.info("[ScreenCast] Valid restore token found — permission already granted")
+            return
+
+        if status['status'] == 'missing_plugin':
+            if self.logger:
+                self.logger.warning(
+                    "[ScreenCast] Cannot onboard — gstreamer1.0-pipewire not installed. "
+                    "User should follow 'Fix Screen Capture' instructions."
+                )
+            return
+
+        # status == 'needs_permission': trigger the consent dialog
+        if self.logger:
+            self.logger.info("[ScreenCast] No valid token — triggering ScreenCast consent dialog")
+
+        _linux_notify(
+            "TimeTracker: Screen capture setup",
+            "A screen sharing dialog will appear. Please click 'Allow' to enable OCR.",
+            urgency="normal"
+        )
+
+        import threading
+
+        def _request():
+            try:
+                result = request_screencast_permission(timeout_seconds=60)
+                if result['granted']:
+                    if self.logger:
+                        self.logger.info(
+                            f"[ScreenCast] Permission granted "
+                            f"(already_had={result['already_had_permission']})"
+                        )
+                    if not result['already_had_permission']:
+                        _linux_notify(
+                            "TimeTracker: Screen capture enabled",
+                            "Permission granted — OCR is now active.",
+                            urgency="normal"
+                        )
+                else:
+                    if self.logger:
+                        self.logger.warning(
+                            f"[ScreenCast] Permission not granted: {result.get('error')}"
+                        )
+                    _linux_notify(
+                        "TimeTracker: Screen capture not enabled",
+                        "Permission was denied. Open tray \u2192 'Fix Screen Capture' to retry.",
+                        urgency="critical"
+                    )
+            except Exception as e:
+                if self.logger:
+                    self.logger.warning(f"[ScreenCast] Onboarding error: {e}")
+
+        t = threading.Thread(target=_request, daemon=True, name="screencast-onboard")
+        t.start()
+
+    def _check_capture_health_and_alert(self):
+        """Phase 5 (OCR fix): Alert user after 3+ consecutive black-image failures."""
+        if not sys.platform.startswith('linux'):
+            return
+        if getattr(self, '_capture_failure_notified', False):
+            return
+        try:
+            from monitor_capture import get_capture_health
+            health = get_capture_health()
+            if health['consecutive_black_images'] >= 3:
+                self._capture_failure_notified = True
+                if self.logger:
+                    self.logger.error(
+                        f"[ScreenCapture] {health['consecutive_black_images']} consecutive "
+                        f"capture failures over "
+                        f"{health['black_image_duration_minutes']:.1f} minutes. "
+                        f"ScreenCast available: {health['screencast_available']}. "
+                        f"Restore token: {health['restore_token_exists']}"
+                    )
+                _linux_notify(
+                    "TimeTracker: Screenshot not working",
+                    "Screen capture has failed multiple times. "
+                    "Open tray \u2192 'Fix Screen Capture' to diagnose.",
+                    urgency="critical"
+                )
+        except Exception as e:
+            if self.logger:
+                self.logger.debug(f"[Phase5] Capture health check error: {e}")
+
     def get_activity_monitoring_status(self):
         """Return diagnostic info about activity monitoring health (for troubleshooting idle detection)"""
         import glob as _glob
@@ -15672,6 +15974,21 @@ if best:
             print("[DEBUG] Tracking started")
         elif should_track and not has_consent:
             print("[INFO] Waiting for user consent before starting screenshot capture")
+
+        # Phase 1 (OCR fix): Open repair page if deps were missing at startup
+        if getattr(self, '_should_open_repair_page', False):
+            try:
+                webbrowser.open(f'http://localhost:{self.web_port}/fix-screen-capture')
+                self._should_open_repair_page = False
+                if self.logger:
+                    self.logger.info("[Phase1] Opened fix-screen-capture page in browser")
+            except Exception as _e:
+                if self.logger:
+                    self.logger.debug(f"[Phase1] Could not open repair page: {_e}")
+
+        # Phase 2 (OCR fix): ScreenCast permission onboarding on Wayland
+        if sys.platform.startswith('linux') and self.screenshot_dependencies_ok:
+            self._onboard_screencast_permission()
         
         print("[DEBUG] Preparing final status messages...")
         print(f"[OK] Application running at http://localhost:{self.web_port}")

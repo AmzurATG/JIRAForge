@@ -1585,6 +1585,7 @@ def _capture_linux():
             img = _capture_screencast()
             if img is not None:
                 methods_tried.append("screencast: SUCCESS")
+                _reset_black_image_counter()  # Phase 5: good capture
                 return img
             methods_tried.append("screencast: failed (capture returned None)")
         else:
@@ -1607,6 +1608,7 @@ def _capture_linux():
         img = _capture_xdg_portal()
         if img is not None:
             methods_tried.append("xdg_portal: SUCCESS (with flash)")
+            _reset_black_image_counter()  # Phase 5: good capture
             return img
         methods_tried.append("xdg_portal: failed")
         
@@ -1614,6 +1616,7 @@ def _capture_linux():
         img = _capture_gnome_dbus_silent()
         if img is not None:
             methods_tried.append("gnome_dbus_silent: SUCCESS")
+            _reset_black_image_counter()  # Phase 5: good capture
             return img
         methods_tried.append("gnome_dbus_silent: failed")
         
@@ -1622,6 +1625,7 @@ def _capture_linux():
         if img is not None:
             methods_tried.append("gnome_screenshot_muted: SUCCESS (flash may occur)")
             logger.debug("Linux capture: gnome-screenshot (muted) — flash may occur")
+            _reset_black_image_counter()  # Phase 5: good capture
             return img
         methods_tried.append("gnome_screenshot_muted: failed")
 
@@ -1645,6 +1649,7 @@ def _capture_linux():
                 if any(max(_array.array('B', b.tobytes())) > 0 for b in bands):
                     methods_tried.append("scrot: SUCCESS")
                     logger.debug("Linux capture: scrot")
+                    _reset_black_image_counter()  # Phase 5: good capture
                     return im.copy()
                 methods_tried.append("scrot: all-black image (Wayland XWayland root)")
                 logger.warning("scrot produced an all-black image (Wayland XWayland root) — skipping")
@@ -1668,6 +1673,7 @@ def _capture_linux():
             img = ImageGrab.grab()
             methods_tried.append("pillow_xcb: SUCCESS")
             logger.debug("Linux capture: Pillow XCB")
+            _reset_black_image_counter()  # Phase 5: good capture
             return img
         else:
             methods_tried.append("pillow_xcb: not available (HAVE_XCB=False)")
@@ -1675,10 +1681,12 @@ def _capture_linux():
         methods_tried.append(f"pillow_xcb: failed ({type(e).__name__})")
         logger.warning(f"ImageGrab.grab() (XCB) failed: {e}")
 
-    # Phase 4: Log all methods tried when capture fails
+    # Phase 4+5: Log all methods tried when capture fails; record black-image event
+    _record_black_image()  # Phase 5: all methods failed counts as black/missing image
     logger.error("[ScreenCapture] ALL METHODS FAILED - returning None")
     logger.error(f"[ScreenCapture] Session: {'Wayland' if is_wayland else 'X11'}")
     logger.error(f"[ScreenCapture] Methods tried: {', '.join(methods_tried)}")
+    logger.error(f"[ScreenCapture] Consecutive failures: {_CONSECUTIVE_BLACK_IMAGES}")
     
     if is_wayland:
         logger.error("[ScreenCapture] WAYLAND CAPTURE TROUBLESHOOTING:")
@@ -1687,6 +1695,194 @@ def _capture_linux():
         logger.error("[ScreenCapture]   3. Grant ScreenCast permission when prompted")
     
     return None
+
+
+
+
+# ============================================================================
+# PHASE 2 & 3: SCREENCAST PERMISSION ONBOARDING + TOKEN HEALTH
+# ============================================================================
+
+def _validate_restore_token(data: dict):
+    """Phase 3: Validate restore token structure and freshness.
+
+    Returns:
+        (is_valid: bool, reason: str)
+    """
+    if not data:
+        return False, "empty"
+    if not data.get('restore_token'):
+        return False, "missing restore_token field"
+    if not isinstance(data['restore_token'], str) or len(data['restore_token']) < 4:
+        return False, "invalid token format"
+    if 'saved_at' not in data:
+        return False, "missing saved_at timestamp"
+    age_days = (time.time() - data['saved_at']) / 86400
+    if age_days > 30:
+        return False, f"token expired ({age_days:.1f} days old)"
+    return True, "ok"
+
+
+def get_screencast_permission_status() -> dict:
+    """Phase 2: Return current ScreenCast permission status without triggering any dialog.
+
+    Returns:
+        {
+            'has_token': bool,
+            'token_age_days': float or None,
+            'token_valid': bool,
+            'plugin_installed': bool,
+            'portal_available': bool,
+            'status': 'ready' | 'needs_permission' | 'missing_plugin' | 'no_portal'
+        }
+    """
+    # Re-query availability (clears any stale cached value for the plugin check)
+    global _SCREENCAST_AVAILABLE
+    _SCREENCAST_AVAILABLE = None  # force re-evaluation
+    plugin_ok = _check_screencast_available()
+
+    token_data = _load_restore_token()
+    has_token = bool(token_data and token_data.get('restore_token'))
+    token_age = None
+    token_valid = False
+
+    if token_data and 'saved_at' in token_data:
+        token_age = (time.time() - token_data['saved_at']) / 86400
+        valid, _ = _validate_restore_token(token_data)
+        token_valid = valid
+
+    if not plugin_ok:
+        status = 'missing_plugin'
+    elif not has_token or not token_valid:
+        status = 'needs_permission'
+    else:
+        status = 'ready'
+
+    return {
+        'has_token': has_token,
+        'token_age_days': token_age,
+        'token_valid': token_valid,
+        'plugin_installed': plugin_ok,
+        'portal_available': plugin_ok,
+        'status': status,
+    }
+
+
+def request_screencast_permission(timeout_seconds: int = 60) -> dict:
+    """Phase 2: Proactively request ScreenCast permission from the user.
+
+    Triggers the GNOME portal consent dialog immediately so the user
+    can grant permission before the first capture attempt.
+
+    Returns:
+        {
+            'granted': bool,
+            'restore_token': str or None,
+            'node_id': int or None,
+            'error': str or None,
+            'already_had_permission': bool
+        }
+    """
+    # Phase 3: Validate existing token first
+    existing = _load_restore_token()
+    if existing and existing.get('restore_token'):
+        valid, reason = _validate_restore_token(existing)
+        if valid:
+            # Validate by attempting a quick capture
+            img = _capture_screencast()
+            if img is not None:
+                return {
+                    'granted': True,
+                    'restore_token': existing['restore_token'],
+                    'node_id': existing.get('node_id'),
+                    'error': None,
+                    'already_had_permission': True,
+                }
+            # Capture failed — token is stale despite passing validation
+            logger.warning("[ScreenCast] Token passed validation but capture failed — clearing")
+            _clear_restore_token()
+        else:
+            logger.warning(f"[ScreenCast] Restore token invalid ({reason}) — clearing")
+            _clear_restore_token()
+
+    # Prerequisites check
+    if not _check_screencast_available():
+        return {
+            'granted': False,
+            'restore_token': None,
+            'node_id': None,
+            'error': 'gstreamer1.0-pipewire not installed. Run scripts/fix-screenshot-capture.sh first.',
+            'already_had_permission': False,
+        }
+
+    # Trigger the consent flow — reuses the full _capture_screencast() logic
+    # which calls CreateSession → SelectSources → Start (shows the dialog)
+    logger.info("[ScreenCast] Requesting user permission via portal consent dialog...")
+    img = _capture_screencast()
+
+    token_data = _load_restore_token()
+    if img is not None and token_data and token_data.get('restore_token'):
+        return {
+            'granted': True,
+            'restore_token': token_data.get('restore_token'),
+            'node_id': token_data.get('node_id'),
+            'error': None,
+            'already_had_permission': False,
+        }
+
+    return {
+        'granted': False,
+        'restore_token': None,
+        'node_id': None,
+        'error': 'User denied permission or consent dialog timed out',
+        'already_had_permission': False,
+    }
+
+
+# ============================================================================
+# PHASE 5: BLACK IMAGE COUNTER & CAPTURE HEALTH
+# ============================================================================
+
+_CONSECUTIVE_BLACK_IMAGES: int = 0
+_BLACK_IMAGE_FIRST_SEEN: float = 0.0
+
+
+def _record_black_image():
+    """Increment the consecutive black-image counter."""
+    global _CONSECUTIVE_BLACK_IMAGES, _BLACK_IMAGE_FIRST_SEEN
+    _CONSECUTIVE_BLACK_IMAGES += 1
+    if _BLACK_IMAGE_FIRST_SEEN == 0.0:
+        _BLACK_IMAGE_FIRST_SEEN = time.time()
+
+
+def _reset_black_image_counter():
+    """Reset counter after a successful capture."""
+    global _CONSECUTIVE_BLACK_IMAGES, _BLACK_IMAGE_FIRST_SEEN
+    _CONSECUTIVE_BLACK_IMAGES = 0
+    _BLACK_IMAGE_FIRST_SEEN = 0.0
+
+
+def get_capture_health() -> dict:
+    """Phase 5: Return capture health metrics for monitoring / alerting.
+
+    Returns:
+        {
+            'consecutive_black_images': int,
+            'black_image_duration_minutes': float,
+            'screencast_available': bool,
+            'restore_token_exists': bool,
+        }
+    """
+    duration = (
+        (time.time() - _BLACK_IMAGE_FIRST_SEEN) / 60
+        if _BLACK_IMAGE_FIRST_SEEN > 0 else 0.0
+    )
+    return {
+        'consecutive_black_images': _CONSECUTIVE_BLACK_IMAGES,
+        'black_image_duration_minutes': duration,
+        'screencast_available': _check_screencast_available(),
+        'restore_token_exists': bool(_load_restore_token()),
+    }
 
 
 def capture_focused_monitor():

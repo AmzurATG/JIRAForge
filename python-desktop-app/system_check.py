@@ -166,6 +166,60 @@ class SystemDependencyChecker:
             logger.debug(f"PipeWire check failed: {e}")
             return False
     
+    def check_gstreamer_pipewire_installable(self) -> dict:
+        """
+        Phase 1 (OCR fix): Distinguish between missing plugin vs daemon not running.
+
+        Returns a diagnostic dict:
+            {
+                'plugin_installed': bool,   # gstreamer1.0-pipewire pkg detected
+                'plugin_loadable': bool,    # gst-inspect-1.0 pipewiresrc succeeds
+                'pipewire_running': bool,   # pipewire process in ps output
+                'action': str               # 'install' | 'restart' | 'ok' | 'unknown'
+            }
+        """
+        plugin_loadable = self.check_gstreamer_plugin('pipewiresrc')
+        pipewire_running = self.check_pipewire()
+
+        # Try to determine if the package is installed but plugin not loadable
+        plugin_installed = plugin_loadable  # conservative default
+        try:
+            result = subprocess.run(
+                ['dpkg', '-l', 'gstreamer1.0-pipewire'],
+                capture_output=True, text=True, timeout=3
+            )
+            # dpkg output line starts with 'ii' when installed
+            plugin_installed = any(
+                line.startswith('ii') and 'gstreamer1.0-pipewire' in line
+                for line in result.stdout.splitlines()
+            )
+        except (FileNotFoundError, Exception):
+            # dpkg not available (non-Debian distro) — fall back to plugin loadable
+            plugin_installed = plugin_loadable
+
+        if plugin_loadable and pipewire_running:
+            action = 'ok'
+        elif not plugin_installed:
+            action = 'install'
+        elif not pipewire_running:
+            action = 'restart'
+        elif plugin_installed and not plugin_loadable:
+            action = 'restart'  # installed but not loadable → PipeWire restart may help
+        else:
+            action = 'unknown'
+
+        logger.debug(
+            f"[GStreamerPipeWire] plugin_installed={plugin_installed} "
+            f"plugin_loadable={plugin_loadable} pipewire_running={pipewire_running} "
+            f"action={action}"
+        )
+        return {
+            'plugin_installed': plugin_installed,
+            'plugin_loadable': plugin_loadable,
+            'pipewire_running': pipewire_running,
+            'action': action,
+        }
+
     def check_gstreamer_plugin(self, plugin_name: str) -> bool:
         """Check if a GStreamer plugin is available."""
         try:
