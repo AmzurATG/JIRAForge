@@ -17,13 +17,24 @@
 ;
 ; BUILD
 ;   Compiled by build.bat via the Inno Setup command-line compiler (ISCC.exe):
-;       ISCC.exe /DMyAppVersion=1.4.7 installer\TimeTracker.iss
+;       ISCC.exe /DMyAppVersion=1.4.8 installer\TimeTracker.iss
 ;   Requires the one-folder PyInstaller output to exist at dist\TimeTracker\.
 ;   Output: installer\Output\TimeTrackerSetup.exe
 ; ============================================================================
 
 #ifndef MyAppVersion
-  #define MyAppVersion "1.4.7"    ; fallback; build.bat overrides with /D
+  #define MyAppVersion "1.4.8"    ; fallback; build.bat overrides with /D
+#endif
+
+; Update server the SYSTEM updater (update_service.ps1) must query. Persisted to
+; HKLM at install time so the updater uses the SAME server the app was built for.
+; build.bat overrides this with /DMyAppServerUrl, sourced from desktop_app.py's
+; EMBEDDED_CONFIG['AI_SERVER_URL'] (the exact value the frozen app uses) — a single
+; source of truth so the updater and the app can never point at different servers.
+#ifndef MyAppServerUrl
+  ; Fail-safe default = PRODUCTION. This must NEVER be a dev server: a missing
+  ; override previously sent prod installs to the dev update channel.
+  #define MyAppServerUrl "https://timetracker-forge.amzur.com"
 #endif
 
 #define MyAppName        "TimeTracker"
@@ -86,6 +97,10 @@ Name: "{group}\Uninstall {#MyAppName}"; Filename: "{uninstallexe}"
 ; Record install dir machine-wide so other tooling (and the updater) can find it.
 Root: HKLM; Subkey: "Software\{#MyAppPublisher}\{#MyAppName}"; ValueType: string; ValueName: "InstallDir"; ValueData: "{app}"; Flags: uninsdeletekey
 Root: HKLM; Subkey: "Software\{#MyAppPublisher}\{#MyAppName}"; ValueType: string; ValueName: "Version"; ValueData: "{#MyAppVersion}"; Flags: uninsdeletekey
+; ServerUrl: the update server for the SYSTEM updater. Written here so update_service.ps1
+; reads it (registry-first) instead of falling back to a hard-coded default that may
+; not match the server the app actually uses. Sourced from AI_SERVER_URL at build time.
+Root: HKLM; Subkey: "Software\{#MyAppPublisher}\{#MyAppName}"; ValueType: string; ValueName: "ServerUrl"; ValueData: "{#MyAppServerUrl}"; Flags: uninsdeletekey
 
 [Run]
 ; --- Register the SYSTEM-context auto-update scheduled task. -----------------

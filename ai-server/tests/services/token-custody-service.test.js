@@ -38,7 +38,8 @@ function makeSupabaseMock() {
     const chain = {
       _table: null,
       _op: null,
-      _payload: null
+      _payload: null,
+      _filters: []   // [op, column, value] tuples (eq/is/gt/neq) for scope assertions
     };
     const record = (op, payload) => {
       chain._op = chain._op || op;
@@ -49,15 +50,17 @@ function makeSupabaseMock() {
       }
       return proxy;
     };
+    const filter = (op, col, val) => { chain._filters.push([op, col, val]); return proxy; };
     const result = () => Promise.resolve(queue.length ? queue.shift() : { data: null, error: null });
     const proxy = {
       select: (...a) => record('select', a[0]),
       upsert: (p) => record('upsert', p),
       insert: (p) => record('insert', p),
       update: (p) => record('update', p),
-      eq: () => proxy,
-      is: () => proxy,
-      gt: () => proxy,
+      eq: (c, v) => filter('eq', c, v),
+      is: (c, v) => filter('is', c, v),
+      gt: (c, v) => filter('gt', c, v),
+      neq: (c, v) => filter('neq', c, v),
       single: () => { calls.push(chain); return result(); },
       maybeSingle: () => { calls.push(chain); return result(); },
       then: (resolve, reject) => { calls.push(chain); return result().then(resolve, reject); }
@@ -137,6 +140,37 @@ describe('Token Custody Service', () => {
       expect(inserted).toBeTruthy();
       expect(inserted._payload.token_hash).toBe(custody.hashDeviceToken(deviceToken));
       expect(JSON.stringify(inserted._payload)).not.toContain(deviceToken);
+    });
+
+    it('revokes the user\'s PRIOR active sessions on the SAME device (no token accumulation)', async () => {
+      supa.queue.push({ data: { id: 'new-session-id' }, error: null }); // the insert
+      supa.queue.push({ data: [{ id: 'old-1' }], error: null });        // the revoke update
+
+      await custody.issueDeviceSession('user-1', { deviceName: 'LAP-001', appVersion: '1.4.8' });
+
+      const revoke = supa.calls.find((c) => c._table === 'device_sessions' && c._op === 'update');
+      expect(revoke).toBeTruthy();
+      expect(revoke._payload.revoked_at).toBeTruthy();
+      // Correctly scoped: this user, this device, only still-active rows, EXCLUDING
+      // the session just created.
+      expect(revoke._filters).toContainEqual(['eq', 'user_id', 'user-1']);
+      expect(revoke._filters).toContainEqual(['eq', 'device_name', 'LAP-001']);
+      expect(revoke._filters).toContainEqual(['is', 'revoked_at', null]);
+      expect(revoke._filters).toContainEqual(['neq', 'id', 'new-session-id']);
+    });
+
+    it('does NOT revoke anything when device_name is unknown (cannot scope safely)', async () => {
+      supa.queue.push({ data: { id: 'new-id' }, error: null });
+      await custody.issueDeviceSession('user-1', { deviceName: null });
+      const revoke = supa.calls.find((c) => c._table === 'device_sessions' && c._op === 'update');
+      expect(revoke).toBeFalsy();
+    });
+
+    it('still returns the new token if prior-session cleanup fails (best-effort)', async () => {
+      supa.queue.push({ data: { id: 'new-id' }, error: null });        // insert ok
+      supa.queue.push({ data: null, error: { message: 'cleanup blew up' } }); // revoke errors
+      const { deviceToken } = await custody.issueDeviceSession('user-1', { deviceName: 'LAP-001' });
+      expect(deviceToken).toBeTruthy(); // issuance must not fail over cleanup
     });
 
     it('verifies a valid session and returns the user identity', async () => {

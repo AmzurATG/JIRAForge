@@ -338,6 +338,26 @@ if "%APP_VER%"=="" (
 )
 echo [INFO] Installer version: %APP_VER%
 
+REM ----------------------------------------------------------------------------
+REM Determine the update server URL to persist into HKLM (for the SYSTEM updater).
+REM SINGLE SOURCE OF TRUTH: read EMBEDDED_CONFIG['AI_SERVER_URL'] straight from
+REM desktop_app.py -- the EXACT value the frozen app uses at runtime. Reading it
+REM from here (NOT .env) guarantees the updater and the app can never point at
+REM different servers. The old .env-based read caused app->prod / updater->dev
+REM splits that silently auto-reverted prod installs to dev builds. .env is left
+REM for local development runs only; it no longer controls the shipped updater.
+REM ----------------------------------------------------------------------------
+set "APP_SERVER="
+"%VENV_PYTHON%" -c "import io;print(next(s.split(chr(58),1)[1].split(chr(35))[0].strip().rstrip(chr(44)).strip().strip(chr(39)).strip(chr(34)) for s in (x.strip() for x in io.open('desktop_app.py',encoding='utf-8')) if s.startswith(chr(39)+'AI_SERVER_URL'+chr(39)+chr(58))))" > "%TEMP%\tt_srv.txt" 2>nul
+if exist "%TEMP%\tt_srv.txt" (
+    set /p APP_SERVER=<"%TEMP%\tt_srv.txt"
+    del /f /q "%TEMP%\tt_srv.txt" >nul 2>&1
+)
+REM Fail safe to PRODUCTION (never dev) if extraction somehow fails.
+if not defined APP_SERVER set "APP_SERVER=https://timetracker-forge.amzur.com"
+set "APP_SERVER=%APP_SERVER: =%"
+echo [INFO] Update server (from desktop_app.py EMBEDDED_CONFIG, persisted to HKLM): %APP_SERVER%
+
 REM Locate the Inno Setup command-line compiler (ISCC.exe)
 set "ISCC="
 if exist "%ProgramFiles(x86)%\Inno Setup 6\ISCC.exe" set "ISCC=%ProgramFiles(x86)%\Inno Setup 6\ISCC.exe"
@@ -354,7 +374,7 @@ if not defined ISCC (
     goto :done
 )
 
-"%ISCC%" /DMyAppVersion=%APP_VER% "installer\TimeTracker.iss"
+"%ISCC%" /DMyAppVersion=%APP_VER% /DMyAppServerUrl=%APP_SERVER% "installer\TimeTracker.iss"
 if errorlevel 1 (
     echo.
     echo [ERROR] Installer build failed. See Inno Setup output above.

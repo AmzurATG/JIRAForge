@@ -116,7 +116,7 @@ async function issueDeviceSession(userId, { organizationId = null, deviceName = 
   const deviceToken = generateDeviceToken();
   const expiresAt = new Date(Date.now() + DEVICE_SESSION_TTL_MS).toISOString();
 
-  const { error } = await client
+  const { data: inserted, error } = await client
     .from('device_sessions')
     .insert({
       user_id: userId,
@@ -133,6 +133,32 @@ async function issueDeviceSession(userId, { organizationId = null, deviceName = 
     logger.error('[Custody] Failed to issue device session: %s', error.message);
     throw custodyError('DB_ERROR', 'Failed to issue device session');
   }
+
+  // Retire this user's PRIOR active sessions on the SAME device so re-logins /
+  // reinstalls don't accumulate live device tokens (one device token per device).
+  // Scoped to device_name on purpose: other machines keep their own sessions, so
+  // genuine multi-device use is preserved. Done AFTER the insert (the new session
+  // already exists, so the user is never momentarily left with zero sessions) and
+  // best-effort (cleanup must never fail issuance). Note: distinct machines that
+  // happen to share a hostname would retire each other — an accepted trade-off.
+  const newId = inserted && inserted.id;
+  if (deviceName && newId) {
+    try {
+      const { error: revokeError } = await client
+        .from('device_sessions')
+        .update({ revoked_at: new Date().toISOString() })
+        .eq('user_id', userId)
+        .eq('device_name', deviceName)
+        .is('revoked_at', null)
+        .neq('id', newId);
+      if (revokeError) {
+        logger.warn('[Custody] Prior-session cleanup failed for user %s: %s', userId, revokeError.message);
+      }
+    } catch (e) {
+      logger.warn('[Custody] Prior-session cleanup threw for user %s: %s', userId, e.message);
+    }
+  }
+
   logger.info('[Custody] Device session issued for user %s', userId);
   return { deviceToken, expiresAt };
 }
