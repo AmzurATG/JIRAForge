@@ -142,7 +142,7 @@ async function isWithinCooldown(orgId, accountId, issueKey, opts = {}) {
   // Active snooze on the latest row takes precedence.
   if (last.snooze_until) {
     const snoozeEnd = new Date(last.snooze_until);
-    if (snoozeEnd > now) return true;
+    return snoozeEnd > now;
   }
 
   if (last.notified_at) {

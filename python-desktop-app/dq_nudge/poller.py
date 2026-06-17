@@ -25,7 +25,7 @@ TRIGGER_ENDPOINT = '/api/desktop/description-quality-nudges/trigger'
 SYNC_RECENT_UNASSIGNED_ENDPOINT = '/api/desktop/description-quality-nudges/sync-recent-unassigned'
 
 FOREGROUND_POLL_INTERVAL = 30 * 60    # 30 minutes
-IDLE_POLL_INTERVAL = 60 * 60          # 60 minutes
+IDLE_POLL_INTERVAL = 30 * 60          # 30 minutes
 DEFAULT_IDLE_THRESHOLD = 5 * 60       # 5 minutes
 
 
@@ -209,23 +209,41 @@ class DqNudgePoller:
             return {'success': False, 'generated': 0, 'reason': 'non-json'}
 
     def _run(self) -> None:
-        # Stagger first poll by a few seconds so we don't compete with app boot.
-        if self._stop_event.wait(timeout=5):
+        # Sleep for the first interval so we don't compete with app boot/startup sync.
+        interval = self._current_interval()
+        print(f"[INFO] DqNudgePoller background thread entered. Sleeping for first interval: {interval}s...")
+        if self._stop_event.wait(timeout=interval):
             return
 
         while not self._stop_event.is_set():
             try:
+                print("[INFO] DqNudgePoller: Starting periodic description quality check...")
+                
+                # Proactively trigger nudge generation and unassigned sync on the server before polling
+                trig_res = self.trigger_generation(force=True)
+                print(f"[INFO] DqNudgePoller: trigger_generation(force=True) response = {trig_res}")
+                
+                sync_res = self.sync_recent_unassigned_once(force=True)
+                print(f"[INFO] DqNudgePoller: sync_recent_unassigned_once(force=True) response = {sync_res}")
+
                 nudges = self.poll_once()
+                print(f"[INFO] DqNudgePoller: poll_once returned {len(nudges)} nudges")
+                
                 if nudges:
                     try:
+                        print(f"[INFO] DqNudgePoller: Dispatching {len(nudges)} nudges to callback...")
                         self.on_nudges(nudges)
                     except Exception as exc:  # noqa: BLE001 — callback is host code
                         logger.error('[DqNudge.poller] on_nudges raised: %s', exc, exc_info=True)
+                        print(f"[ERROR] DqNudgePoller on_nudges callback raised: {exc}")
             except Exception as exc:  # noqa: BLE001 — never let the thread die
                 logger.error('[DqNudge.poller] Poll cycle failed: %s', exc, exc_info=True)
+                print(f"[ERROR] DqNudgePoller poll cycle failed: {exc}")
 
             interval = self._current_interval()
+            print(f"[INFO] DqNudgePoller: Cycle complete. Sleeping for {interval}s...")
             if self._stop_event.wait(timeout=interval):
                 break
 
         logger.info('[DqNudge.poller] Stopped')
+        print("[INFO] DqNudgePoller background thread stopped.")

@@ -64,7 +64,7 @@ KEYRING_CHUNK_SIZE = 1000  # characters; ~2000 bytes UTF-16, safely under the 25
 # whatever dict it's given, but _load_from_keyring()/_load_encrypted()/delete_tokens()
 # iterate THIS list — so a key missing here is saved but never loaded back on restart.
 # (test_google_auth.py::test_secure_storage_persists_google_refresh_token guards this.)
-SENSITIVE_TOKEN_KEYS = ['access_token', 'refresh_token', 'supabase_token', 'google_refresh_token']
+SENSITIVE_TOKEN_KEYS = ['access_token', 'refresh_token', 'supabase_token', 'google_refresh_token', 'device_token']
 
 
 # =============================================================================

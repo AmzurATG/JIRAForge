@@ -1037,18 +1037,6 @@ class TestTrayMenuClassificationItems:
                 return
         # If we get here the item wasn't found — test_view_all_app_rules_appears will catch it
 
-    def test_manual_dq_test_action_appears_when_logged_in_and_tracking(self):
-        """Manual DQ tray action must appear for testing when tracking is active."""
-        db = _TestDB(schema="new")
-        db.seed_active_session("code.exe", "productive")
-        menu = self._build_menu(
-            current_user={"email": "dev@example.com"},
-            tracking_active=True,
-            db=db
-        )
-        labels = [i.text for i in menu.items if isinstance(i, FakeMenuItem)]
-        assert any("Description Quality" in lbl for lbl in labels), \
-            f"Expected manual DQ action in tray, got: {labels}"
 
     def test_current_window_label_is_disabled_display_only(self):
         """The current-window status label must be disabled (non-clickable display label)."""
@@ -1080,28 +1068,6 @@ class _InlineThread:
         if self._target:
             self._target(*self._args, **self._kwargs)
 
-
-def test_manual_dq_trigger_polls_once_and_dispatches_nudges():
-    tracker = MagicMock()
-    tracker.current_user = {"email": "dev@example.com"}
-    tracker.auth_manager = MagicMock()
-    tracker.dq_nudge_preferences = MagicMock()
-    tracker.dq_nudge_poller = MagicMock()
-    tracker.dq_nudge_poller.poll_once.return_value = [{"id": 1, "issueKey": "FEEDBACK-1"}]
-    tracker._start_dq_nudge_poller = MagicMock()
-    tracker._handle_dq_nudges = MagicMock()
-
-    tracker._manual_dq_nudge_trigger = types.MethodType(
-        desktop_app.TimeTracker._manual_dq_nudge_trigger,
-        tracker,
-    )
-
-    with patch.object(desktop_app.threading, 'Thread', _InlineThread):
-        tracker._manual_dq_nudge_trigger()
-
-    tracker.dq_nudge_preferences.refresh.assert_called_once()
-    tracker.dq_nudge_poller.poll_once.assert_called_once()
-    tracker._handle_dq_nudges.assert_called_once_with([{"id": 1, "issueKey": "FEEDBACK-1"}])
 
 
 def test_run_dq_startup_sync_retries_missing_token_then_dispatches():

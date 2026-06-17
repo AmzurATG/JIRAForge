@@ -17,13 +17,13 @@
 ;
 ; BUILD
 ;   Compiled by build.bat via the Inno Setup command-line compiler (ISCC.exe):
-;       ISCC.exe /DMyAppVersion=1.4.7 installer\TimeTracker.iss
+;       ISCC.exe /DMyAppVersion=9.0.0 installer\TimeTracker.iss
 ;   Requires the one-folder PyInstaller output to exist at dist\TimeTracker\.
 ;   Output: installer\Output\TimeTrackerSetup.exe
 ; ============================================================================
 
 #ifndef MyAppVersion
-  #define MyAppVersion "1.4.7"    ; fallback; build.bat overrides with /D
+  #define MyAppVersion "9.0.0"    ; fallback; build.bat overrides with /D
 #endif
 
 #define MyAppName        "TimeTracker"

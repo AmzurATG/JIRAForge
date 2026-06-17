@@ -162,6 +162,20 @@ describe('isWithinCooldown', () => {
     const result = await repo.isWithinCooldown('c1', 'a1', 'X-1', { now });
     expect(result).toBe(true);
   });
+
+  test('returns false when snooze has expired even if within 24h of notification', async () => {
+    const now = new Date('2026-06-05T12:00:00Z');
+    const twoHoursAgo = new Date('2026-06-05T10:00:00Z').toISOString();
+    const snoozeUntil = new Date('2026-06-05T11:00:00Z').toISOString();
+    setSupabaseFromMock({
+      selectReturn: {
+        data: { id: 1, channel: 'desktop', notified_at: twoHoursAgo, snooze_until: snoozeUntil },
+        error: null
+      }
+    });
+    const result = await repo.isWithinCooldown('c1', 'a1', 'X-1', { now });
+    expect(result).toBe(false);
+  });
 });
 
 // ---------------------------------------------------------------------------

@@ -136,6 +136,17 @@ class DqNudgePopupWindow:
         )
         self._count_label.pack(fill='x')
 
+        last_hdr_width = None
+        def _update_count_wrap(event):
+            nonlocal last_hdr_width
+            if event.widget != hdr:
+                return
+            if event.width == last_hdr_width:
+                return
+            last_hdr_width = event.width
+            self._count_label.configure(wraplength=max(200, event.width - 36))
+        hdr.bind('<Configure>', _update_count_wrap)
+
         tk.Frame(win, bg=BORDER, height=1).pack(fill='x')
 
         wrapper = tk.Frame(win, bg=BG)
@@ -327,15 +338,6 @@ class DqNudgePopupWindow:
         right_actions = tk.Frame(top_row, bg=SURFACE_ALT)
         right_actions.pack(side='right')
 
-        snooze_btn = self._make_button(
-            right_actions,
-            f'Snooze {SNOOZE_HOURS}h',
-            lambda n=nudge: self._on_snooze(n),
-            variant='ghost',
-            padx=10,
-            pady=4,
-        )
-
         dismiss_btn = tk.Button(
             right_actions,
             text='x',
@@ -383,7 +385,14 @@ class DqNudgePopupWindow:
                 lambda e, lbl=summary_label: lbl.config(fg=LINK, font=('Segoe UI', 10)),
             )
 
+            last_card_width = None
             def _update_wrap(event):
+                nonlocal last_card_width
+                if event.widget != card:
+                    return
+                if event.width == last_card_width:
+                    return
+                last_card_width = event.width
                 summary_label.configure(wraplength=max(280, event.width - 24))
 
             card.bind('<Configure>', _update_wrap)
@@ -394,8 +403,6 @@ class DqNudgePopupWindow:
                 for widget in hover_bg_widgets:
                     widget.config(bg=SURFACE_HOVER)
                 dismiss_btn.config(bg=SURFACE_HOVER, activebackground=SURFACE_HOVER)
-                if not snooze_btn.winfo_ismapped():
-                    snooze_btn.pack(side='right', padx=(0, 8))
             except Exception:
                 pass
 
@@ -403,7 +410,6 @@ class DqNudgePopupWindow:
             if self._pointer_inside(card):
                 return
             try:
-                snooze_btn.pack_forget()
                 card.config(bg=SURFACE_ALT, highlightbackground=BORDER, highlightcolor=BORDER)
                 for widget in hover_bg_widgets:
                     widget.config(bg=SURFACE_ALT)
@@ -436,14 +442,6 @@ class DqNudgePopupWindow:
         threading.Thread(
             target=self._ack_safe,
             args=([nudge['id']], 'opened-in-jira', None),
-            daemon=True,
-        ).start()
-
-    def _on_snooze(self, nudge: dict) -> None:
-        until = (datetime.now(timezone.utc) + timedelta(hours=SNOOZE_HOURS)).isoformat().replace('+00:00', 'Z')
-        threading.Thread(
-            target=self._ack_safe,
-            args=([nudge['id']], 'snoozed', until),
             daemon=True,
         ).start()
 

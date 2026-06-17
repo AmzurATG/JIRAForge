@@ -2,7 +2,7 @@
 
 We avoid actually rendering a Tk window in CI by mocking tk.Toplevel and
 related primitives. Behavioural assertions focus on which ack actions are
-emitted in response to each user gesture.
+committed in response to each user gesture.
 """
 
 import os
@@ -14,6 +14,7 @@ import pytest
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from dq_nudge.popup import DqNudgePopupWindow  # noqa: E402
+import tkinter as tk
 
 
 @pytest.fixture
@@ -131,20 +132,6 @@ def test_on_open_opens_url_and_acks_opened(sample_nudges):
             wb.assert_called_once_with('https://j/X-1')
             kwargs = thread_cls.call_args.kwargs
             assert kwargs['args'] == ([1], 'opened-in-jira', None)
-
-
-# ---------------------------------------------------------------------------
-# _on_snooze
-# ---------------------------------------------------------------------------
-def test_on_snooze_sends_future_timestamp(sample_nudges):
-    ack = MagicMock(return_value=True)
-    popup = DqNudgePopupWindow(sample_nudges, ack)
-    with patch('dq_nudge.popup.threading.Thread') as thread_cls:
-        popup._on_snooze(sample_nudges[0])
-        ids, action, until = thread_cls.call_args.kwargs['args']
-        assert ids == [1]
-        assert action == 'snoozed'
-        assert until and until.endswith('Z')
 
 
 # ---------------------------------------------------------------------------

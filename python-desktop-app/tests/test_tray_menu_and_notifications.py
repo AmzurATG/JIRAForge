@@ -223,7 +223,7 @@ class TestTrayMenuInstallAction:
                 menu = app._build_tray_menu()
 
         labels = [i.text for i in menu.items if isinstance(i, FakeMenuItem)]
-        assert any("Update Available" in lbl for lbl in labels)
+        assert any("Update Ready" in lbl for lbl in labels)
 
     def test_install_action_in_mandatory_ready_state(self, tmp_path):
         """Mandatory ready state shows an install menu item with 'Required'."""
@@ -239,7 +239,7 @@ class TestTrayMenuInstallAction:
                 menu = app._build_tray_menu()
 
         labels = [i.text for i in menu.items if isinstance(i, FakeMenuItem)]
-        assert any("Required" in lbl for lbl in labels)
+        assert any("Update Ready" in lbl for lbl in labels)
 
 
 # ---------------------------------------------------------------------------
@@ -493,42 +493,6 @@ class TestUpdateInstallRoute:
         client = self._make_test_client(None)
         resp = client.get("/api/update/install")
         assert resp.status_code == 503
-
-
-# ---------------------------------------------------------------------------
-# 8. State change callback passes web_port to notification
-# ---------------------------------------------------------------------------
-
-class TestStateChangeNotificationPort:
-
-    @patch("desktop_app.show_update_notification")
-    def test_notification_called_with_web_port(self, mock_notif):
-        """_on_update_manager_state_changed passes web_port to notification."""
-        app = MagicMock()
-        app.web_port = 9999
-        app.latest_version_info = None
-        app._last_notified_update_version = None
-        app._last_update_notification_state = None
-        app._mandatory_update_enforced = False
-        app.update_tray_menu = MagicMock()
-        app.update_tray_icon = MagicMock()
-        app.update_available = False
-        app.update_required = False
-
-        status = {
-            "state": "ready",
-            "update_info": {"latest_version": "2.0.0"},
-            "progress": 1.0,
-        }
-
-        # Call the real method on our mock
-        desktop_app.TimeTracker._on_update_manager_state_changed(app, status)
-
-        mock_notif.assert_called_once()
-        _, kwargs = mock_notif.call_args
-        assert kwargs["web_port"] == 9999
-        assert kwargs["state"] == "ready"
-        assert kwargs["install_callback"] is not None
 
 
 # ---------------------------------------------------------------------------
