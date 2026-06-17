@@ -367,6 +367,20 @@ except ImportError:
     SYSTEM_CHECK_AVAILABLE = False
     print("[WARN] system_check module not found - dependency checks disabled")
 
+# OS Diagnostics module (comprehensive OS/DE compatibility detection)
+try:
+    from os_diagnostics import (
+        collect_os_diagnostics,
+        log_os_diagnostics,
+        get_diagnostics_summary,
+        print_diagnostics_summary,
+        CompatibilityLevel
+    )
+    OS_DIAGNOSTICS_AVAILABLE = True
+except ImportError:
+    OS_DIAGNOSTICS_AVAILABLE = False
+    print("[WARN] os_diagnostics module not found - OS compatibility checks disabled")
+
 # OCR dependency check is deferred until after AI server config is fetched
 # (so it uses the correct engines from the server, not local defaults)
 
@@ -6692,6 +6706,67 @@ class TimeTracker:
         else:
             self.logger = None
 
+        # ============================================================================
+        # OS DIAGNOSTICS (Phase 1: Comprehensive OS compatibility detection)
+        # ============================================================================
+        # Collect and log OS diagnostics early to help diagnose compatibility issues
+        self.os_diagnostics = None
+        self._os_diagnostics_summary = None
+        self._compat_notify_sent = False  # Phase 6: Send at most one compatibility notification
+        if OS_DIAGNOSTICS_AVAILABLE and sys.platform.startswith('linux'):
+            try:
+                self.os_diagnostics = collect_os_diagnostics()
+                if self.logger:
+                    log_os_diagnostics(self.os_diagnostics, self.logger)
+                self._os_diagnostics_summary = get_diagnostics_summary(self.os_diagnostics)
+                
+                # Phase 6: Runtime Compatibility Checks with desktop notifications
+                if self.os_diagnostics.overall_level == CompatibilityLevel.LIMITED:
+                    if self.logger:
+                        self.logger.error("[COMPAT] System has LIMITED compatibility - some features WILL NOT work")
+                    print("[ERROR] TimeTracker has limited compatibility with this system. Check logs for details.")
+                    # Show specific blockers
+                    for blocker in self.os_diagnostics.blockers:
+                        print(f"  BLOCKER: {blocker}")
+                    for rec in self.os_diagnostics.recommendations:
+                        print(f"  FIX: {rec}")
+                    
+                    # Phase 6: Desktop notification for limited compatibility
+                    if not self._compat_notify_sent:
+                        blockers_text = "; ".join(self.os_diagnostics.blockers[:2]) if self.os_diagnostics.blockers else "Check logs for details"
+                        _linux_notify(
+                            "TimeTracker: Limited Compatibility",
+                            f"Some features won't work. {blockers_text}",
+                            urgency="critical"
+                        )
+                        self._compat_notify_sent = True
+                        
+                elif self.os_diagnostics.overall_level == CompatibilityLevel.PARTIAL:
+                    if self.logger:
+                        self.logger.warning("[COMPAT] System has PARTIAL compatibility - some features may not work reliably")
+                    print("[WARN] TimeTracker has partial compatibility with this system. Check logs for details.")
+                    
+                    # Phase 6: Desktop notification for partial compatibility (only if warnings exist)
+                    if self.os_diagnostics.warnings and not self._compat_notify_sent:
+                        # Only notify if there are actionable warnings
+                        warn_count = len(self.os_diagnostics.warnings)
+                        _linux_notify(
+                            "TimeTracker: Partial Compatibility",
+                            f"{warn_count} potential issue(s) detected. Check logs for details.",
+                            urgency="normal"
+                        )
+                        self._compat_notify_sent = True
+                else:
+                    if self.logger:
+                        self.logger.info("[COMPAT] System has FULL compatibility - all features should work")
+            except Exception as e:
+                if self.logger:
+                    self.logger.warning(f"OS diagnostics collection failed: {e}")
+                print(f"[WARN] OS diagnostics failed: {e}")
+        elif not OS_DIAGNOSTICS_AVAILABLE:
+            if self.logger:
+                self.logger.debug("OS diagnostics module not available")
+
         # Check system dependencies (PipeWire, GStreamer, XDG Portal)
         # This helps users understand why screenshot capture might fail
         self.screenshot_dependencies_ok = True
@@ -12080,6 +12155,243 @@ function doRecheck() {{
             _log_debug("atspi: All attempts failed")
             return None
 
+        # ============================================================================
+        # GNOME 49+ ENHANCED METHODS (Phase 2: OS Compatibility Improvements)
+        # ============================================================================
+        
+        def _from_gnome_introspect_v2():
+            """Enhanced GNOME Shell Introspect API for GNOME 45+.
+            
+            Optimizations over v1:
+            - Increased timeout (5s → 10s) for slower D-Bus on GNOME 49
+            - Better error handling for permission denied scenarios
+            - Handles changed output format in GNOME 49
+            - Falls back to simpler parsing if regex fails
+            """
+            try:
+                _log_debug("gnome_introspect_v2: Starting (GNOME 45+ optimized)...")
+                
+                # Step 1: Verify interface with explicit timeout
+                check_result = subprocess.run(
+                    ['gdbus', 'introspect', '--session',
+                     '--dest', 'org.gnome.Shell',
+                     '--object-path', '/org/gnome/Shell/Introspect'],
+                    capture_output=True, text=True, timeout=5
+                )
+                
+                if check_result.returncode != 0:
+                    stderr = check_result.stderr.strip()[:200]
+                    # Check for permission errors (GNOME 49 security)
+                    if 'permission' in stderr.lower() or 'access' in stderr.lower():
+                        _log_warning("gnome_introspect_v2: Permission denied - may need GNOME Development Tools enabled")
+                    _log_debug(f"gnome_introspect_v2: Interface check failed: {stderr}")
+                    return None
+                
+                if 'GetWindows' not in check_result.stdout:
+                    _log_debug("gnome_introspect_v2: GetWindows method not found")
+                    return None
+                
+                # Step 2: Call GetWindows with increased timeout
+                _log_debug("gnome_introspect_v2: Calling GetWindows (10s timeout)...")
+                result = subprocess.run(
+                    [
+                        'gdbus', 'call', '--session',
+                        '--dest', 'org.gnome.Shell',
+                        '--object-path', '/org/gnome/Shell/Introspect',
+                        '--method', 'org.gnome.Shell.Introspect.GetWindows',
+                    ],
+                    capture_output=True, text=True, timeout=10  # Increased from 5s
+                )
+                
+                if result.returncode != 0:
+                    stderr = result.stderr.strip()[:200]
+                    _log_debug(f"gnome_introspect_v2: GetWindows failed: {stderr}")
+                    
+                    # Special handling for GNOME 49 specific errors
+                    if 'timeout' in stderr.lower():
+                        _log_warning("gnome_introspect_v2: D-Bus timeout - GNOME Shell may be busy")
+                    elif 'not allowed' in stderr.lower():
+                        _log_warning("gnome_introspect_v2: Not allowed - Shell Introspect may be disabled")
+                    return None
+                
+                stdout = result.stdout
+                if not stdout:
+                    _log_debug("gnome_introspect_v2: Empty response")
+                    return None
+                
+                _log_debug(f"gnome_introspect_v2: Got {len(stdout)} bytes response")
+                
+                # Step 3: Parse response (with GNOME 49 compatibility)
+                import re as _re
+                
+                # Strategy 1: Standard regex (works for most versions)
+                for title_m in _re.finditer(r"'title':\s*<\s*'([^']*)'\s*>", stdout):
+                    title = title_m.group(1)
+                    ahead_start = title_m.end()
+                    lookahead = stdout[ahead_start:ahead_start + 800]  # Increased lookahead
+                    
+                    hf_m = _re.search(r"'has-focus':\s*<\s*(true|false)\s*>", lookahead)
+                    if hf_m and hf_m.group(1) == 'true':
+                        block = stdout[title_m.start():ahead_start + 800]
+                        
+                        # Try app-id
+                        app_m = _re.search(r"'app-id':\s*<\s*'([^']*)'\s*>", block)
+                        app_id = (app_m.group(1) if app_m else '') or ''
+                        
+                        # Try wm-class
+                        if not app_id:
+                            wm_m = _re.search(r"'wm-class':\s*<\s*'([^']*)'\s*>", block)
+                            app_id = (wm_m.group(1) if wm_m else '') or 'Unknown'
+                        
+                        # Try sandbox-app-id for Flatpak
+                        if not app_id or app_id == 'Unknown':
+                            sandbox_m = _re.search(r"'sandbox-app-id':\s*<\s*'([^']*)'\s*>", block)
+                            if sandbox_m and sandbox_m.group(1):
+                                app_id = sandbox_m.group(1)
+                        
+                        if title:
+                            _log_debug(f"gnome_introspect_v2: SUCCESS - title='{title}', app='{app_id}'")
+                            return title, app_id or 'Unknown'
+                
+                # Strategy 2: Alternative format (GNOME 49 may use different quoting)
+                for title_m in _re.finditer(r'"title":\s*<\s*"([^"]*)"\s*>', stdout):
+                    title = title_m.group(1)
+                    ahead_start = title_m.end()
+                    lookahead = stdout[ahead_start:ahead_start + 800]
+                    
+                    hf_m = _re.search(r'"has-focus":\s*<\s*(true|false)\s*>', lookahead)
+                    if hf_m and hf_m.group(1) == 'true':
+                        _log_debug(f"gnome_introspect_v2: Found via alt format: '{title}'")
+                        return title, 'Unknown'
+                
+                _log_debug("gnome_introspect_v2: No focused window found in response")
+                return None
+                
+            except subprocess.TimeoutExpired:
+                _log_warning("gnome_introspect_v2: Timeout (10s) - GNOME Shell unresponsive")
+                return None
+            except FileNotFoundError:
+                _log_debug("gnome_introspect_v2: gdbus not installed")
+                return None
+            except Exception as e:
+                _log_debug(f"gnome_introspect_v2: {type(e).__name__}: {e}")
+                return None
+
+        def _from_atspi_v2():
+            """Enhanced AT-SPI2 for GNOME 49 compatibility.
+            
+            Optimizations over v1:
+            - Handles GNOME 49 accessibility changes
+            - Better focused window detection with SHOWING state
+            - Improved error messages
+            - Extended system app skip list
+            """
+            _log_debug("atspi_v2: Starting enhanced AT-SPI2 query...")
+            
+            # Pre-check: Verify AT-SPI2 registry is accessible
+            try:
+                atspi_check = subprocess.run(
+                    ['gdbus', 'call', '--session',
+                     '--dest', 'org.a11y.Bus',
+                     '--object-path', '/org/a11y/bus',
+                     '--method', 'org.a11y.Bus.GetAddress'],
+                    capture_output=True, text=True, timeout=3
+                )
+                if atspi_check.returncode != 0:
+                    _log_debug("atspi_v2: AT-SPI2 bus not accessible")
+                    return None
+            except Exception as e:
+                _log_debug(f"atspi_v2: Bus check failed: {e}")
+                return None
+            
+            # Use external Python to avoid AppImage bundling issues
+            # Enhanced for GNOME 49 with SHOWING state support
+            code = '''
+import gi
+import sys
+gi.require_version('Atspi', '2.0')
+from gi.repository import Atspi
+
+Atspi.init()
+desktop = Atspi.get_desktop(0)
+ACTIVE = Atspi.StateType.ACTIVE
+FOCUSED = Atspi.StateType.FOCUSED
+SHOWING = Atspi.StateType.SHOWING
+
+# Extended skip list for GNOME 49 system processes
+SKIP = {
+    'gnome-shell', 'gnome-software', 'ibus-daemon', 'ibus-x11',
+    'gsd-color', 'gsd-keyboard', 'gsd-wacom', 'gsd-power',
+    'gsd-media-keys', 'gsd-xsettings', 'ibus-extension-gtk3',
+    'xdg-desktop-portal-gtk', 'xdg-desktop-portal-gnome',
+    'update-notifier', 'gjs', 'evolution-alarm-notify',
+    'gnome-panel', 'goa-daemon', 'tracker-miner-fs-3',
+    'gvfsd', 'gvfsd-fuse', 'gnome-keyring-daemon',
+    'at-spi2-registryd', 'at-spi-bus-launcher'
+}
+
+best = None
+for i in range(desktop.get_child_count()):
+    app = desktop.get_child_at_index(i)
+    if not app:
+        continue
+    app_name = app.get_name() or ''
+    if app_name in SKIP:
+        continue
+    
+    for j in range(app.get_child_count()):
+        win = app.get_child_at_index(j)
+        if not win:
+            continue
+        try:
+            ss = win.get_state_set()
+            if not ss:
+                continue
+            title = win.get_name() or ''
+            if not title:
+                continue
+            
+            # GNOME 49: Check SHOWING state as well (some apps use it)
+            is_focused = ss.contains(FOCUSED)
+            is_active = ss.contains(ACTIVE)
+            is_showing = ss.contains(SHOWING)
+            
+            # Priority: FOCUSED > ACTIVE+SHOWING > ACTIVE
+            if is_focused:
+                print(f"{title}|||{app_name or 'Unknown'}")
+                sys.exit(0)
+            elif is_active and is_showing and not best:
+                best = (title, app_name)
+            elif is_active and not best:
+                best = (title, app_name)
+        except:
+            pass
+
+if best:
+    print(f"{best[0]}|||{best[1] or 'Unknown'}")
+'''
+            
+            try:
+                result = subprocess.run(
+                    ['/usr/bin/python3', '-c', code],
+                    capture_output=True, text=True, timeout=5
+                )
+                if result.returncode == 0 and '|||' in result.stdout:
+                    parts = result.stdout.strip().split('|||', 1)
+                    title = parts[0].strip()
+                    app = parts[1].strip() if len(parts) > 1 else 'Unknown'
+                    if title:
+                        _log_debug(f"atspi_v2: SUCCESS - title='{title}', app='{app}'")
+                        return title, app
+                elif result.stderr:
+                    _log_debug(f"atspi_v2: Python script error: {result.stderr[:200]}")
+            except subprocess.TimeoutExpired:
+                _log_debug("atspi_v2: Timeout (5s)")
+            except Exception as e:
+                _log_debug(f"atspi_v2: Error: {e}")
+            
+            return None
+
         is_wayland = bool(
             os.environ.get('WAYLAND_DISPLAY') or
             os.environ.get('XDG_SESSION_TYPE', '').lower() == 'wayland'
@@ -12120,8 +12432,9 @@ function doRecheck() {{
             self._win_detect_logged_session = True
 
         # WAYLAND METHOD ORDER (optimized for GNOME 45+):
-        #   1. gnome_introspect - GetWindows API (GNOME 40+, no unsafe mode needed) ← PRIMARY
-        #   2. atspi - AT-SPI2 accessibility (for native Wayland apps)
+        #   For GNOME 49+: Use v2 methods with increased timeouts and better parsing
+        #   1. gnome_introspect(_v2) - GetWindows API (GNOME 40+, no unsafe mode needed) ← PRIMARY
+        #   2. atspi(_v2) - AT-SPI2 accessibility (for native Wayland apps)
         #   3. gdbus - Shell.Eval (only works if user enabled development-tools)
         #   4. xdotool - XWayland fallback (only sees XWayland apps)
         #
@@ -12130,20 +12443,54 @@ function doRecheck() {{
         #   2. gdbus - Shell.Eval works on X11 GNOME
         #   3. gnome_introspect - fallback
         #   4. atspi - last resort
-        method_pairs = (
-            [('gnome_introspect', _from_gnome_introspect), ('atspi', _from_atspi),
-             ('gdbus', _from_gdbus), ('xdotool', _from_xdotool)]
-            if is_wayland
-            else [('xdotool', _from_xdotool), ('gdbus', _from_gdbus),
-                  ('gnome_introspect', _from_gnome_introspect), ('atspi', _from_atspi)]
-        )
+        
+        # Phase 2: Version-specific method selection for GNOME 49+ compatibility
+        if is_wayland:
+            if gnome_version and gnome_version[0] >= 49:
+                # GNOME 49+: Use v2 methods with optimized timeouts and parsing
+                _log_debug("Using GNOME 49+ optimized method order (v2 methods)")
+                method_pairs = [
+                    ('atspi_v2', _from_atspi_v2),                    # Often most reliable on GNOME 49
+                    ('gnome_introspect_v2', _from_gnome_introspect_v2),
+                    ('xdotool', _from_xdotool),                      # XWayland fallback
+                ]
+            elif gnome_version and gnome_version[0] >= 45:
+                # GNOME 45-48: Shell.Eval disabled, but original methods work
+                _log_debug("Using GNOME 45-48 method order")
+                method_pairs = [
+                    ('gnome_introspect', _from_gnome_introspect),
+                    ('atspi', _from_atspi),
+                    ('xdotool', _from_xdotool),
+                ]
+            else:
+                # GNOME < 45 or unknown: Shell.Eval may work
+                _log_debug("Using standard Wayland method order")
+                method_pairs = [
+                    ('gnome_introspect', _from_gnome_introspect),
+                    ('atspi', _from_atspi),
+                    ('gdbus', _from_gdbus),
+                    ('xdotool', _from_xdotool),
+                ]
+        else:
+            # X11: Standard order
+            method_pairs = [
+                ('xdotool', _from_xdotool),
+                ('gdbus', _from_gdbus),
+                ('gnome_introspect', _from_gnome_introspect),
+                ('atspi', _from_atspi),
+            ]
 
         # FIX-6 (BL-17): Circuit-breaker — skip methods that have failed 3+ times recently.
         # Prevents stalling the 2-second tracking loop for 9+ seconds on minimal Linux
         # where all methods time out on every call.
         # AT-SPI2 gets higher threshold since it's reliable but may return None if no window has focus
         def _get_cb_threshold(method_name):
-            return 10 if method_name == 'atspi' else 3
+            # v2 methods get higher threshold as they have longer timeouts
+            if method_name in ('atspi', 'atspi_v2'):
+                return 10
+            elif method_name.endswith('_v2'):
+                return 5
+            return 3
         
         _CB_RESET_AFTER = 60   # seconds before retry
         if not hasattr(self, '_win_method_failures'):
@@ -12909,6 +13256,8 @@ function doRecheck() {{
 
     def _detect_idle_backend(self) -> str:
         """Probe available idle-detection backends and return the best one.
+        
+        Phase 3: Enhanced with comprehensive diagnostics logging.
 
         Priority (highest → lowest):
             'dbus_screensaver' — org.freedesktop.ScreenSaver (GNOME/KDE, Wayland-native)
@@ -12917,16 +13266,32 @@ function doRecheck() {{
             'pynput'           — X11 hooks (works on X11/XWayland; may silently fail on Wayland)
             'none'             — no backend available; idle detection disabled
         """
-        # Tier 1 — D-Bus ScreenSaver
+        _log = self.logger if hasattr(self, 'logger') and self.logger else None
+        diagnostics = []
+        is_wayland = bool(os.environ.get('WAYLAND_DISPLAY'))
+        
+        def _log_diag(msg):
+            diagnostics.append(msg)
+            if _log:
+                _log.debug(f"[IdleBackend] {msg}")
+        
+        _log_diag(f"Starting idle backend detection (Wayland: {is_wayland})")
+        
+        # Tier 1 — D-Bus ScreenSaver (best for GNOME/KDE)
         try:
             import dbus  # noqa: F401
             bus = dbus.SessionBus()
             ss = bus.get_object('org.freedesktop.ScreenSaver', '/org/freedesktop/ScreenSaver')
             iface = dbus.Interface(ss, 'org.freedesktop.ScreenSaver')
-            iface.GetSessionIdleTime()   # probe call — will raise on failure
+            idle_time = iface.GetSessionIdleTime()   # probe call — will raise on failure
+            _log_diag(f"dbus_screensaver: AVAILABLE (current idle: {idle_time}ms)")
+            if _log:
+                _log.info(f"[IdleBackend] Selected: dbus_screensaver (FreeDesktop ScreenSaver)")
             return 'dbus_screensaver'
-        except Exception:
-            pass
+        except ImportError:
+            _log_diag("dbus_screensaver: UNAVAILABLE (python-dbus not installed)")
+        except Exception as e:
+            _log_diag(f"dbus_screensaver: UNAVAILABLE ({type(e).__name__}: {str(e)[:50]})")
 
         # Tier 2 — GNOME Mutter IdleMonitor
         try:
@@ -12935,24 +13300,55 @@ function doRecheck() {{
             obj = bus.get_object('org.gnome.Mutter.IdleMonitor',
                                  '/org/gnome/Mutter/IdleMonitor/Core')
             iface = dbus.Interface(obj, 'org.gnome.Mutter.IdleMonitor')
-            iface.GetIdletime()          # probe call
+            idle_time = iface.GetIdletime()          # probe call
+            _log_diag(f"gnome_mutter: AVAILABLE (current idle: {idle_time}ms)")
+            if _log:
+                _log.info(f"[IdleBackend] Selected: gnome_mutter (GNOME Mutter IdleMonitor)")
             return 'gnome_mutter'
-        except Exception:
-            pass
+        except ImportError:
+            _log_diag("gnome_mutter: UNAVAILABLE (python-dbus not installed)")
+        except Exception as e:
+            _log_diag(f"gnome_mutter: UNAVAILABLE ({type(e).__name__}: {str(e)[:50]})")
 
-        # Tier 3 — evdev raw input
+        # Tier 3 — evdev raw input (display-server agnostic)
         import glob as _glob
         evdev_devices = _glob.glob('/dev/input/event*')
-        if any(os.access(d, os.R_OK) for d in evdev_devices):
+        readable_devices = [d for d in evdev_devices if os.access(d, os.R_OK)]
+        if readable_devices:
+            _log_diag(f"evdev: AVAILABLE ({len(readable_devices)}/{len(evdev_devices)} devices readable)")
+            if _log:
+                _log.info(f"[IdleBackend] Selected: evdev ({len(readable_devices)} devices)")
             return 'evdev'
+        else:
+            _log_diag(f"evdev: UNAVAILABLE (0/{len(evdev_devices)} devices readable - need 'input' group)")
 
         # Tier 4 — pynput (X11/XWayland)
         try:
             import pynput  # noqa: F401
+            if is_wayland:
+                _log_diag("pynput: AVAILABLE (WARNING: may not work reliably on Wayland)")
+                if _log:
+                    _log.warning("[IdleBackend] Selected: pynput (WARNING: unreliable on Wayland)")
+            else:
+                _log_diag("pynput: AVAILABLE")
+                if _log:
+                    _log.info("[IdleBackend] Selected: pynput (X11)")
             return 'pynput'
         except ImportError:
-            pass
+            _log_diag("pynput: UNAVAILABLE (not installed)")
 
+        # No backend available
+        _log_diag("RESULT: No idle detection backend available")
+        if _log:
+            _log.error("[IdleBackend] No idle detection backend available!")
+            _log.error("[IdleBackend] Diagnostics:\n  " + "\n  ".join(diagnostics))
+        
+        # Print warnings for the user
+        if is_wayland:
+            print("[WARN] Idle detection unavailable on Wayland. Consider:")
+            print("  - Install python3-dbus for D-Bus idle monitoring")
+            print("  - Add user to 'input' group for evdev: sudo usermod -aG input $USER")
+        
         return 'none'
 
     # ------------------------------------------------------------------
@@ -13259,6 +13655,100 @@ function doRecheck() {{
         evdev_devices = _glob.glob('/dev/input/event*')
         status['evdev_devices_accessible'] = sum(1 for d in evdev_devices if os.access(d, os.R_OK))
         return status
+
+    def get_compatibility_status(self) -> dict:
+        """Get current OS compatibility status (Phase 6: Runtime compatibility checks)"""
+        result = {
+            'level': 'unknown',
+            'level_description': 'Compatibility not checked',
+            'blockers': [],
+            'warnings': [],
+            'recommendations': [],
+            'os_info': None,
+            'desktop_environment': None,
+        }
+        
+        if self.os_diagnostics:
+            result['level'] = self.os_diagnostics.overall_level.value
+            level_descriptions = {
+                'full': 'All features should work correctly',
+                'partial': 'Some features may not work reliably',
+                'limited': 'Many features will not work - action required',
+                'unknown': 'Compatibility not determined'
+            }
+            result['level_description'] = level_descriptions.get(
+                self.os_diagnostics.overall_level.value, 'Unknown'
+            )
+            result['blockers'] = self.os_diagnostics.blockers
+            result['warnings'] = self.os_diagnostics.warnings
+            result['recommendations'] = self.os_diagnostics.recommendations
+            
+            if self.os_diagnostics.os_info:
+                result['os_info'] = {
+                    'distro': self.os_diagnostics.os_info.distro_name,
+                    'version': self.os_diagnostics.os_info.distro_version,
+                    'kernel': self.os_diagnostics.os_info.kernel_version,
+                    'display_server': self.os_diagnostics.os_info.display_server,
+                }
+            
+            if self.os_diagnostics.desktop_env:
+                result['desktop_environment'] = {
+                    'name': self.os_diagnostics.desktop_env.name,
+                    'version': self.os_diagnostics.desktop_env.version,
+                }
+        
+        return result
+    
+    def show_compatibility_info(self):
+        """Display OS compatibility information (Phase 6: Runtime compatibility checks)"""
+        status = self.get_compatibility_status()
+        
+        lines = [
+            "=== OS Compatibility Status ===",
+            f"Level: {status['level'].upper()} - {status['level_description']}",
+        ]
+        
+        if status['os_info']:
+            lines.extend([
+                "",
+                "=== System Info ===",
+                f"OS: {status['os_info']['distro']} {status['os_info']['version']}",
+                f"Kernel: {status['os_info']['kernel']}",
+                f"Display: {status['os_info']['display_server']}",
+            ])
+        
+        if status['desktop_environment']:
+            lines.extend([
+                f"Desktop: {status['desktop_environment']['name']} {status['desktop_environment']['version'] or ''}",
+            ])
+        
+        if status['blockers']:
+            lines.extend(["", "=== BLOCKERS (Action Required) ==="])
+            for b in status['blockers']:
+                lines.append(f"  ✗ {b}")
+        
+        if status['warnings']:
+            lines.extend(["", "=== Warnings ==="])
+            for w in status['warnings']:
+                lines.append(f"  ⚠ {w}")
+        
+        if status['recommendations']:
+            lines.extend(["", "=== Recommendations ==="])
+            for r in status['recommendations']:
+                lines.append(f"  → {r}")
+        
+        for line in lines:
+            print(line)
+        
+        # Show notification with summary
+        if status['level'] == 'limited':
+            summary = f"LIMITED compatibility. {len(status['blockers'])} blockers found."
+            _linux_notify("TimeTracker Compatibility", summary, urgency="critical")
+        elif status['level'] == 'partial':
+            summary = f"PARTIAL compatibility. {len(status['warnings'])} warnings."
+            _linux_notify("TimeTracker Compatibility", summary, urgency="normal")
+        else:
+            _linux_notify("TimeTracker Compatibility", status['level_description'])
 
     def show_diagnostic_info(self):
         """Print and notify activity monitoring diagnostics (can be exposed via tray menu)"""
