@@ -124,11 +124,19 @@ function buildMessages({ title, description, issueType, stricterJson = false, pa
 
 Evaluate the following Jira ${issueType} ticket and provide improvement suggestions.
 
-Score the description (0-100) based on:
-- Clarity: Is the intent unambiguous?
-- Completeness: Are all necessary details present?
-- Reproducibility: Can someone act on this without asking questions?
-- Actionability: Are next steps clear?
+CRITICAL SCORING RUBRIC & PENALTIES:
+You are prone to grading too leniently based on formatting. You MUST follow these strict grading rules to evaluate substance, not just structure:
+1. Base Score & Flattery Bias: Do NOT default to an 80-85 score. Start at 50 for an average ticket. Add points for exceptional, concrete detail; deduct points for vagueness.
+2. Structure vs Substance (The Formatting Illusion): Do NOT award points simply because an "As a... I want..." format or "Acceptance Criteria" list exists. If the text inside is fluff (e.g., "make it better", "fix the issue", "smooth UI"), DEDUCT 20-30 points.
+3. Semantic Depth: High-level commands ("Fix the login flow", "Add nice charts") are goals, NOT actionable details. Actionability requires technical parameters and specific conditions. If these are missing, DEDUCT 20 points.
+4. Environment vs Core Context: Deducting for missing OS/browser is fine, but failing to describe the actual core problem (e.g., missing specific error messages, undefined expected behavior) is a CRITICAL FAILURE. DEDUCT 30-40 points for missing core context.
+5. Vague Acceptance Criteria: If criteria lack quantitative metrics or strict, testable conditions (using vague words like "perfectly", "better", "easy"), DEDUCT 15 points.
+
+Score the description (0-100) strictly based on actual substance:
+- Clarity: Are the technical/business requirements unambiguous, avoiding vague adjectives?
+- Completeness: Are all necessary implementation details, error states, and edge cases present?
+- Reproducibility: Can a developer build or fix this without asking ANY follow-up questions?
+- Actionability: Are the specific requirements clear, not just high-level goals?
 
 ${typeCriteria}${parentInstruction}${attachmentInstruction}${documentInstruction}${linkedIssuesInstruction}
 
