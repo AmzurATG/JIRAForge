@@ -324,39 +324,7 @@ class DqNudgePopupWindow:
                 pady=2,
             ).pack(side='left', padx=(10, 0))
 
-        right_actions = tk.Frame(top_row, bg=SURFACE_ALT)
-        right_actions.pack(side='right')
-
-        snooze_btn = self._make_button(
-            right_actions,
-            f'Snooze {SNOOZE_HOURS}h',
-            lambda n=nudge: self._on_snooze(n),
-            variant='ghost',
-            padx=10,
-            pady=4,
-        )
-
-        dismiss_btn = tk.Button(
-            right_actions,
-            text='x',
-            font=('Segoe UI', 10, 'bold'),
-            bg=SURFACE_ALT,
-            fg=TXT_MUTED,
-            bd=0,
-            relief='flat',
-            activebackground=SURFACE_ALT,
-            activeforeground=DANGER_HOVER,
-            cursor='hand2',
-            highlightthickness=0,
-            padx=8,
-            pady=0,
-            command=lambda n=nudge, g=group: self._on_dismiss_one(n, g),
-        )
-        dismiss_btn.pack(side='right')
-        dismiss_btn.bind('<Enter>', lambda e: dismiss_btn.config(fg=DANGER_HOVER))
-        dismiss_btn.bind('<Leave>', lambda e: dismiss_btn.config(fg=TXT_MUTED))
-
-        hover_bg_widgets = [top_row, meta_row, right_actions, issue_label]
+        hover_bg_widgets = [top_row, meta_row, issue_label]
 
         summary = nudge.get('summary') or ''
         if summary:
@@ -393,9 +361,6 @@ class DqNudgePopupWindow:
                 card.config(bg=SURFACE_HOVER, highlightbackground=PRIMARY, highlightcolor=PRIMARY)
                 for widget in hover_bg_widgets:
                     widget.config(bg=SURFACE_HOVER)
-                dismiss_btn.config(bg=SURFACE_HOVER, activebackground=SURFACE_HOVER)
-                if not snooze_btn.winfo_ismapped():
-                    snooze_btn.pack(side='right', padx=(0, 8))
             except Exception:
                 pass
 
@@ -403,11 +368,9 @@ class DqNudgePopupWindow:
             if self._pointer_inside(card):
                 return
             try:
-                snooze_btn.pack_forget()
                 card.config(bg=SURFACE_ALT, highlightbackground=BORDER, highlightcolor=BORDER)
                 for widget in hover_bg_widgets:
                     widget.config(bg=SURFACE_ALT)
-                dismiss_btn.config(bg=SURFACE_ALT, activebackground=SURFACE_ALT)
             except Exception:
                 pass
 

@@ -346,7 +346,7 @@ function recentUnassignedCutoffIso(windowMinutes = RECENT_UNASSIGNED_WINDOW_MINU
   return new Date(Date.now() - windowMinutes * 60 * 1000).toISOString();
 }
 
-function previousUtcDayBoundsIso() {
+function getTimeframeBoundsIso(timeframe = 'yesterday') {
   const now = new Date();
   const todayStartUtc = new Date(Date.UTC(
     now.getUTCFullYear(),
@@ -357,11 +357,18 @@ function previousUtcDayBoundsIso() {
     0,
     0
   ));
-  const yesterdayStartUtc = new Date(todayStartUtc.getTime() - (24 * 60 * 60 * 1000));
-  return {
-    startIso: yesterdayStartUtc.toISOString(),
-    endIso: todayStartUtc.toISOString()
-  };
+  
+  if (timeframe === 'last_3_days') {
+    const startUtc = new Date(todayStartUtc.getTime() - (3 * 24 * 60 * 60 * 1000));
+    return { startIso: startUtc.toISOString(), endIso: todayStartUtc.toISOString() };
+  } else if (timeframe === 'last_one_week') {
+    const startUtc = new Date(todayStartUtc.getTime() - (7 * 24 * 60 * 60 * 1000));
+    return { startIso: startUtc.toISOString(), endIso: todayStartUtc.toISOString() };
+  } else {
+    // yesterday
+    const yesterdayStartUtc = new Date(todayStartUtc.getTime() - (24 * 60 * 60 * 1000));
+    return { startIso: yesterdayStartUtc.toISOString(), endIso: todayStartUtc.toISOString() };
+  }
 }
 
 function chunkArray(items, chunkSize) {
@@ -408,7 +415,8 @@ function parseJobProgress(raw) {
     processedChunks: Number(raw.processedChunks) || 0,
     matchedCount: Number(raw.matchedCount) || 0,
     issuesScanned: Number(raw.issuesScanned) || 0,
-    reason: raw.reason || null
+    reason: raw.reason || null,
+    assignments: Array.isArray(raw.assignments) ? raw.assignments : []
   };
 }
 
@@ -439,6 +447,17 @@ function toJobResponse(jobRow) {
   const progress = parseJobProgress(jobRow?.progress);
   const sessions = Array.isArray(payload.sessions) ? payload.sessions : [];
   const issues = Array.isArray(payload.issues) ? payload.issues : [];
+  const matchedSessions = (progress.assignments || jobRow?.result?.assignments || []).map(a => {
+    const session = sessions.find(s => s.sessionId === a.sessionId) || {};
+    return {
+      sessionId: a.sessionId,
+      issueKey: a.issueKey,
+      windowTitle: session.windowTitle || '',
+      applicationName: session.applicationName || '',
+      durationSeconds: session.durationSeconds || 0
+    };
+  });
+
   return {
     success: true,
     jobId: jobRow?.id,
@@ -449,7 +468,8 @@ function toJobResponse(jobRow) {
     issuesScanned: issues.length,
     processedChunks: progress.processedChunks,
     reason: progress.reason || jobRow?.result?.reason || null,
-    error: jobRow?.error || null
+    error: jobRow?.error || null,
+    matchedSessions
   };
 }
 
@@ -623,6 +643,8 @@ async function processSyncJobWithinBudget({
         });
       }
 
+      const allAssignments = [...(progress.assignments || []), ...assignments];
+
       cursor += sessionChunk.length;
       processedSessions += sessionChunk.length;
       processedChunks += 1;
@@ -641,6 +663,7 @@ async function processSyncJobWithinBudget({
             processedChunks,
             matchedCount,
             issuesScanned: issues.length,
+            assignments: allAssignments,
             reason: cursor >= sessions.length
               ? (matchedCount > 0 ? 'assigned' : 'no_llm_matches')
               : 'processing'
@@ -650,7 +673,8 @@ async function processSyncJobWithinBudget({
                 matchedCount,
                 sessionsScanned: sessions.length,
                 issuesScanned: issues.length,
-                reason: matchedCount > 0 ? 'assigned' : 'no_llm_matches'
+                reason: matchedCount > 0 ? 'assigned' : 'no_llm_matches',
+                assignments: allAssignments
               }
             : null
         }
@@ -739,7 +763,7 @@ async function fetchRecentUnassignedSessions(supabaseConfig, userId, organizatio
 }
 
 async function fetchPreviousDayUnassignedSessions(supabaseConfig, userId, organizationId, options = {}) {
-  const { startIso, endIso } = previousUtcDayBoundsIso();
+  const { startIso, endIso } = getTimeframeBoundsIso(options.timeframe);
   const maxSessions = Number.isFinite(options.maxSessions) && options.maxSessions > 0
     ? Math.floor(options.maxSessions)
     : Number.POSITIVE_INFINITY;
@@ -779,6 +803,14 @@ async function fetchPreviousDayUnassignedSessions(supabaseConfig, userId, organi
   const limitedMembers = Number.isFinite(maxSessions)
     ? members.slice(0, maxSessions)
     : members;
+
+  const idToGroupId = new Map();
+  for (const m of limitedMembers) {
+    if (m.group_id) {
+      if (m.activity_record_id) idToGroupId.set(m.activity_record_id, m.group_id);
+      if (m.unassigned_activity_id) idToGroupId.set(m.unassigned_activity_id, m.group_id);
+    }
+  }
 
   const activityIds = sanitizeUUIDArray(
     limitedMembers.map((m) => m.activity_record_id).filter(Boolean)
@@ -835,6 +867,7 @@ async function fetchPreviousDayUnassignedSessions(supabaseConfig, userId, organi
     seenIds.add(record.id);
     sessions.push({
       sessionId: record.id,
+      groupId: idToGroupId.get(record.id) || null,
       applicationName: record.application_name || '',
       windowTitle: record.window_title || '',
       screenText: (record.ocr_text || '').slice(0, 500),
@@ -848,6 +881,7 @@ async function fetchPreviousDayUnassignedSessions(supabaseConfig, userId, organi
     seenIds.add(record.id);
     sessions.push({
       sessionId: record.id,
+      groupId: idToGroupId.get(record.id) || null,
       applicationName: record.application_name || '',
       windowTitle: record.window_title || '',
       screenText: (record.extracted_text || '').slice(0, 500),
@@ -1413,9 +1447,11 @@ export function registerDescriptionResolvers(resolver) {
       if (!ctx.success) return ctx;
 
       const { config: supabaseConfig, organization, userId, accountId, cloudId } = ctx;
+      const { timeframe = 'yesterday' } = req.payload || {};
       const [sessions, issueKeys] = await Promise.all([
         fetchPreviousDayUnassignedSessions(supabaseConfig, userId, organization.id, {
-          maxSessions: 100
+          maxSessions: 100,
+          timeframe
         }),
         fetchInProgressIssueKeysFromJira()
       ]);
@@ -1531,6 +1567,31 @@ export function registerDescriptionResolvers(resolver) {
     } catch (err) {
       console.error('[descriptionResolvers] getUnassignedSyncWithJiraJobStatus failed:', err.message);
       return handleResolverError(err, 'getting async unassigned sync job status');
+    }
+  });
+
+  resolver.define('getUnassignedSyncCounts', async (req) => {
+    try {
+      const ctx = await initializeRequestContext(req);
+      if (!ctx.success) return ctx;
+
+      const { config: supabaseConfig, organization, userId } = ctx;
+      const { timeframe = 'yesterday' } = req.payload || {};
+
+      const sessions = await fetchPreviousDayUnassignedSessions(supabaseConfig, userId, organization.id, {
+        timeframe,
+        maxSessions: Number.POSITIVE_INFINITY
+      });
+
+      const activeGroupIds = new Set();
+      for (const s of sessions) {
+        if (s.groupId) activeGroupIds.add(s.groupId);
+      }
+
+      return { success: true, groupCount: activeGroupIds.size, memberCount: sessions.length };
+    } catch (err) {
+      console.error('[descriptionResolvers] getUnassignedSyncCounts failed:', err.message);
+      return handleResolverError(err, 'getting unassigned sync counts');
     }
   });
 }

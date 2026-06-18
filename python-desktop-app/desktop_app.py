@@ -390,7 +390,7 @@ if not getattr(sys, 'frozen', False):
 
 # Application version - IMPORTANT: Update this when releasing new versions
 # This is used for update checking and notifications
-APP_VERSION = "1.4.8"
+APP_VERSION = "18.0.1"
 
 # Hard-disable screenshot monitoring/storage in desktop app.
 # OCR text extraction for activity records still runs via event-based flow.
@@ -399,14 +399,14 @@ SCREENSHOT_MONITORING_HARD_DISABLED = True
 # Embedded credentials (for production builds - no .env file needed)
 # SECURITY: All sensitive keys moved to AI Server - fetched at runtime after authentication
 EMBEDDED_CONFIG = {
-    'ATLASSIAN_CLIENT_ID': 'k2Xwzy8c1g3Wk6Xpbeev0x70CXEp9lJH',
+    'ATLASSIAN_CLIENT_ID': 'Q8HT4Jn205AuTiAarj088oWNDrOqwvM5',
     # Google OAuth (non-Jira users). PUBLIC client ID only — the client SECRET
     # stays on the AI Server, never in the desktop build. Same handling as
     # ATLASSIAN_CLIENT_ID above. Must match GOOGLE_DESKTOP_CLIENT_ID on the AI server.
-    'GOOGLE_DESKTOP_CLIENT_ID': '454896740459-l085l5otq4a5evc8g3nffqe9d13f4942.apps.googleusercontent.com',
+    'GOOGLE_DESKTOP_CLIENT_ID': '508843846019-glrru7r3m622vt75e215lmf5ih1bcgju.apps.googleusercontent.com',
     # REMOVED: ATLASSIAN_CLIENT_SECRET - now on AI Server only (security fix)
     # REMOVED: SUPABASE_URL, SUPABASE_ANON_KEY, SUPABASE_SERVICE_ROLE_KEY - fetched from AI Server
-    'AI_SERVER_URL': 'https://timetracker-forge.amzur.com',  # AI Server for secure token exchange & config
+    'AI_SERVER_URL': 'https://forgesync.amzur.com',  # AI Server for secure token exchange & config
     'CAPTURE_INTERVAL': '300',
     'WEB_PORT': '51777',
 }
@@ -2085,7 +2085,7 @@ class AtlassianAuthManager:
         self.google_authorization_url = 'https://accounts.google.com/o/oauth2/v2/auth'
         self.google_redirect_uri = f'http://127.0.0.1:{web_port}/auth/google/callback'
         # Token exchange now goes through AI Server
-        self.ai_server_url = get_env_var('AI_SERVER_URL', 'https://timetracker-forge.amzur.com')
+        self.ai_server_url = get_env_var('AI_SERVER_URL', 'https://forgesync.amzur.com')
         self.store_path = store_path or os.path.join(get_app_data_dir(), 'time_tracker_auth.json')
         self.metadata_path = os.path.join(get_app_data_dir(), 'auth_metadata.json')  # For non-sensitive data
 
@@ -3480,7 +3480,7 @@ class AtlassianAuthManager:
             print("[ERROR] No valid Atlassian token - cannot fetch OCR config")
             return False
 
-        ai_server_url = get_env_var('AI_SERVER_URL', 'https://timetracker-forge.amzur.com')
+        ai_server_url = get_env_var('AI_SERVER_URL', 'https://forgesync.amzur.com')
         
         try:
             print("[INFO] Fetching OCR config from AI Server...")
@@ -13474,18 +13474,33 @@ class TimeTracker:
             retry_delay_seconds = 20
             try:
                 for attempt in range(max_attempts):
-                    result = poller.sync_recent_unassigned_once(timeout=30.0)
-                    reason = result.get('reason')
+                    # Trigger DQ nudges for all in-progress Jira tickets
+                    trigger_result = poller.trigger_generation(timeout=30.0, force=True)
+                    trigger_reason = trigger_result.get('reason') if isinstance(trigger_result, dict) else None
 
-                    nudges = list(result.get('nudges') or [])
-                    if not nudges:
-                        nudges = poller.poll_once(timeout=30.0)
+                    # Sync recent unassigned work
+                    result = poller.sync_recent_unassigned_once(timeout=30.0)
+                    reason = result.get('reason') if isinstance(result, dict) else None
+
+                    sync_nudges = list(result.get('nudges') or []) if isinstance(result, dict) else []
+                    polled_nudges = poller.poll_once(timeout=30.0)
+                    if not isinstance(polled_nudges, list):
+                        polled_nudges = []
+
+                    # Combine avoiding duplicates
+                    seen = set()
+                    nudges = []
+                    for n in sync_nudges + polled_nudges:
+                        if isinstance(n, dict) and 'id' in n:
+                            if n['id'] not in seen:
+                                seen.add(n['id'])
+                                nudges.append(n)
 
                     if nudges:
                         self._handle_dq_nudges(nudges)
                         return
 
-                    retryable_reason = reason in {'missing-token', 'request-exception'}
+                    retryable_reason = reason in {'missing-token', 'request-exception'} or trigger_reason in {'missing-token', 'request-exception'}
                     if retryable_reason and attempt < (max_attempts - 1):
                         time.sleep(retry_delay_seconds)
                         continue

@@ -22,17 +22,17 @@ describe('Auth Controller', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
-    
+
     req = {
       body: {},
       query: {}
     };
-    
+
     res = {
       status: jest.fn().mockReturnThis(),
       json: jest.fn().mockReturnThis()
     };
-    
+
     // Set default environment variables
     process.env.ATLASSIAN_CLIENT_ID = 'test-client-id';
     process.env.ATLASSIAN_CLIENT_SECRET = 'test-client-secret';
@@ -935,7 +935,7 @@ describe('Auth Controller', () => {
     it('should use default values for missing env vars', async () => {
       delete process.env.OCR_PRIMARY_ENGINE;
       delete process.env.OCR_FALLBACK_ENGINES;
-      
+
       req.body = {
         atlassian_token: 'atlassian-123'
       };
@@ -960,7 +960,7 @@ describe('Auth Controller', () => {
 
     it('should parse OCR engine priorities from env', async () => {
       process.env.PADDLE_PRIORITY = '1';
-      
+
       req.body = {
         atlassian_token: 'atlassian-123'
       };
@@ -982,7 +982,7 @@ describe('Auth Controller', () => {
       // Set up custom parameter that is NOT a standard key
       process.env.OCR_PADDLE_CUSTOM_PARAM = 'custom_value';
       process.env.OCR_PADDLE_MODEL_PATH = '/path/to/model';
-      
+
       req.body = {
         atlassian_token: 'atlassian-123'
       };
@@ -1016,7 +1016,7 @@ describe('Auth Controller', () => {
 
     it('should use Number.parseInt for preprocessing_target_dpi', async () => {
       process.env.OCR_PREPROCESSING_TARGET_DPI = '600';
-      
+
       req.body = {
         atlassian_token: 'atlassian-123'
       };
@@ -1042,7 +1042,7 @@ describe('Auth Controller', () => {
 
     it('should use Number.parseFloat for min_confidence', async () => {
       process.env.OCR_PADDLE_MIN_CONFIDENCE = '0.85';
-      
+
       req.body = {
         atlassian_token: 'atlassian-123'
       };
@@ -1370,7 +1370,7 @@ describe('Auth Controller', () => {
         atlassian_token: 'access-123',
         refresh_token: 'refresh-456',
         device_name: 'LAP-001',
-        app_version: '1.4.8'
+        app_version: '18.0.1'
       };
       mockIdentity();
       custody.storeCredential.mockResolvedValue();
@@ -1385,7 +1385,7 @@ describe('Auth Controller', () => {
       expect(custody.issueDeviceSession).toHaveBeenCalledWith('user-uuid', expect.objectContaining({
         organizationId: 'org-uuid',
         deviceName: 'LAP-001',
-        appVersion: '1.4.8'
+        appVersion: '18.0.1'
       }));
       expect(res.json).toHaveBeenCalledWith({
         success: true,

@@ -209,12 +209,18 @@ class DqNudgePoller:
             return {'success': False, 'generated': 0, 'reason': 'non-json'}
 
     def _run(self) -> None:
-        # Stagger first poll by a few seconds so we don't compete with app boot.
-        if self._stop_event.wait(timeout=5):
+        # Stagger first poll since startup sync already handled the immediate run.
+        interval = self._current_interval()
+        if self._stop_event.wait(timeout=interval):
             return
 
         while not self._stop_event.is_set():
             try:
+                # Trigger generation for in-progress tickets before polling
+                trigger_resp = self.trigger_generation(timeout=30.0, force=True)
+                if trigger_resp and trigger_resp.get('success'):
+                    logger.debug('[DqNudge.poller] Triggered generation successfully')
+
                 nudges = self.poll_once()
                 if nudges:
                     try:
