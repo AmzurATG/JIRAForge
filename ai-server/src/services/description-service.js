@@ -22,10 +22,10 @@ const { extractAllDocuments } = require('./document-extractor');
 // Constants
 // ---------------------------------------------------------------------------
 
-const LLM_GATE_THRESHOLD = 80;          // Score >= threshold skips LLM
+const LLM_GATE_THRESHOLD = 101;         // Score >= threshold skips LLM (Set to 101 to disable deterministic gating and always use LLM)
 const LLM_TIMEOUT_MS = 8000;            // 8 second LLM timeout per attempt
 const MATCH_LLM_TIMEOUT_MS = 30000;     // 30 second timeout for match LLM calls (larger payload)
-const LLM_MAX_TOKENS = 2000;
+const LLM_MAX_TOKENS = 20000;
 const LLM_TEMPERATURE = 0.3;
 const TITLE_MIN = 10;
 const TITLE_MAX = 80;
@@ -157,7 +157,7 @@ function evaluateCriterion(id, title, description) {
       return STEPS_PATTERNS.some(re => re.test(description || ''));
     case 'expected_actual':
       return EXPECTED_ACTUAL_PATTERNS.expected.test(description || '') &&
-             EXPECTED_ACTUAL_PATTERNS.actual.test(description || '');
+        EXPECTED_ACTUAL_PATTERNS.actual.test(description || '');
     case 'acceptance_criteria':
       return ACCEPTANCE_PATTERNS.some(re => re.test(description || ''));
     case 'no_placeholder':
@@ -580,10 +580,10 @@ async function analyzeDescription(params) {
     // Sanitize linked issues context
     const sanitizedLinkedIssues = Array.isArray(linkedIssues) && linkedIssues.length > 0
       ? linkedIssues.map(li => ({
-          ...li,
-          title: sanitizePII(li.title || ''),
-          description: sanitizePII(li.description || '')
-        }))
+        ...li,
+        title: sanitizePII(li.title || ''),
+        description: sanitizePII(li.description || '')
+      }))
       : null;
 
     const llm = await runLLM({
@@ -634,7 +634,7 @@ async function analyzeDescription(params) {
 // ---------------------------------------------------------------------------
 
 const MATCH_MIN_CONFIDENCE = 0.7;
-const MATCH_LLM_MAX_TOKENS = 8192;
+const MATCH_LLM_MAX_TOKENS = 81920;
 
 const SYNC_ISSUE_UNASSIGNED_SYSTEM_PROMPT = `You are an expert assistant matching time tracking activity records to a specific Jira issue.
 You will be given the Jira issue's key, title, description, optional attachment context, and a list of unassigned work sessions from the previous day.
@@ -723,7 +723,7 @@ async function invokeMatchLLM({ systemPrompt, userPayload, deps = {} }) {
       if (repaired) {
         logger.info('[DescQuality] Truncated JSON repaired successfully. Recovered %d assignment(s).',
           Array.isArray(repaired.assignments) ? repaired.assignments.length :
-          Array.isArray(repaired.matches) ? repaired.matches.length : 0);
+            Array.isArray(repaired.matches) ? repaired.matches.length : 0);
         return repaired;
       }
       logger.warn('[DescQuality] Truncated JSON repair failed. Returning empty assignments.');
