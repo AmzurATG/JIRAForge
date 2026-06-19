@@ -768,60 +768,29 @@ async function fetchPreviousDayUnassignedSessions(supabaseConfig, userId, organi
     ? Math.floor(options.maxSessions)
     : Number.POSITIVE_INFINITY;
 
-  const groups = ensureArray(await supabaseRequest(
+  // 1. Fetch activities in the timeframe
+  const activityRows = ensureArray(await supabaseRequest(
     supabaseConfig,
-    `unassigned_work_groups?user_id=eq.${userId}&organization_id=eq.${organizationId}` +
-    `&is_assigned=eq.false&is_dismissed=eq.false&select=id`
+    `activity_records?user_id=eq.${userId}&organization_id=eq.${organizationId}` +
+    `&user_assigned_issue_key=is.null&status=in.(pending,processing,analyzed)` +
+    `&classification=in.(productive,unknown)&clustering_dismissed=eq.false` +
+    `&start_time=gte.${startIso}&start_time=lt.${endIso}` +
+    `&select=id,window_title,application_name,ocr_text,duration_seconds,total_time_seconds`
   ));
 
-  const groupIds = sanitizeUUIDArray(groups.map((g) => g.id).filter(Boolean));
-  if (groupIds.length === 0) return [];
+  const legacyRows = ensureArray(await supabaseRequest(
+    supabaseConfig,
+    `unassigned_activity?user_id=eq.${userId}&organization_id=eq.${organizationId}` +
+    `&manually_assigned=eq.false&clustering_dismissed=eq.false` +
+    `&timestamp=gte.${startIso}&timestamp=lt.${endIso}` +
+    `&select=id,window_title,application_name,extracted_text,time_spent_seconds`
+  ));
 
-  // Large IN-lists can exceed PostgREST URL/query limits and return 400.
-  // Query members in chunks and merge the results.
-  // Larger chunks reduce total remote calls and help stay within Forge invocation timeout.
-  const GROUP_QUERY_CHUNK_SIZE = 300;
-  const memberChunks = [];
-  for (let i = 0; i < groupIds.length; i += GROUP_QUERY_CHUNK_SIZE) {
-    memberChunks.push(groupIds.slice(i, i + GROUP_QUERY_CHUNK_SIZE));
-  }
-
-  const members = [];
-  for (const chunkIds of memberChunks) {
-    const params = new URLSearchParams();
-    params.append('group_id', `in.(${chunkIds.join(',')})`);
-    params.append('created_at', `gte.${startIso}`);
-    params.append('created_at', `lt.${endIso}`);
-    params.append('select', 'group_id,activity_record_id,unassigned_activity_id,created_at');
-    const rows = await supabaseRequest(supabaseConfig, `unassigned_group_members?${params.toString()}`);
-    members.push(...ensureArray(rows));
-    if (members.length >= maxSessions) {
-      break;
-    }
-  }
-
-  const limitedMembers = Number.isFinite(maxSessions)
-    ? members.slice(0, maxSessions)
-    : members;
-
-  const idToGroupId = new Map();
-  for (const m of limitedMembers) {
-    if (m.group_id) {
-      if (m.activity_record_id) idToGroupId.set(m.activity_record_id, m.group_id);
-      if (m.unassigned_activity_id) idToGroupId.set(m.unassigned_activity_id, m.group_id);
-    }
-  }
-
-  const activityIds = sanitizeUUIDArray(
-    limitedMembers.map((m) => m.activity_record_id).filter(Boolean)
-  );
-  const legacyIds = sanitizeUUIDArray(
-    limitedMembers.map((m) => m.unassigned_activity_id).filter(Boolean)
-  );
+  const activityIds = sanitizeUUIDArray(activityRows.map(r => r.id));
+  const legacyIds = sanitizeUUIDArray(legacyRows.map(r => r.id));
 
   if (activityIds.length === 0 && legacyIds.length === 0) return [];
 
-  // Keep this aligned with member chunking to minimize request count.
   const ID_QUERY_CHUNK_SIZE = 300;
   const chunkIds = (ids) => {
     const chunks = [];
@@ -831,63 +800,77 @@ async function fetchPreviousDayUnassignedSessions(supabaseConfig, userId, organi
     return chunks;
   };
 
-  const activityResults = [];
-  if (activityIds.length > 0) {
-    for (const chunk of chunkIds(activityIds)) {
-      const rows = await supabaseRequest(
-        supabaseConfig,
-        `activity_records?id=in.(${chunk.join(',')})&user_id=eq.${userId}` +
-        `&organization_id=eq.${organizationId}` +
-        `&user_assigned_issue_key=is.null&status=in.(pending,processing,analyzed)` +
-        `&classification=in.(productive,unknown)&clustering_dismissed=eq.false` +
-        `&select=id,window_title,application_name,ocr_text,duration_seconds,total_time_seconds`
-      );
-      activityResults.push(...ensureArray(rows));
+  // 2. Map IDs to group members
+  const members = [];
+  for (const chunk of chunkIds(activityIds)) {
+    const rows = await supabaseRequest(
+      supabaseConfig,
+      `unassigned_group_members?activity_record_id=in.(${chunk.join(',')})&select=group_id,activity_record_id`
+    );
+    members.push(...ensureArray(rows));
+  }
+  for (const chunk of chunkIds(legacyIds)) {
+    const rows = await supabaseRequest(
+      supabaseConfig,
+      `unassigned_group_members?unassigned_activity_id=in.(${chunk.join(',')})&select=group_id,unassigned_activity_id`
+    );
+    members.push(...ensureArray(rows));
+  }
+
+  const groupIdsToVerify = sanitizeUUIDArray([...new Set(members.map(m => m.group_id).filter(Boolean))]);
+  if (groupIdsToVerify.length === 0) return [];
+
+  // 3. Verify which groups are still unassigned and undismissed
+  const validGroups = [];
+  for (const chunk of chunkIds(groupIdsToVerify)) {
+    const rows = await supabaseRequest(
+      supabaseConfig,
+      `unassigned_work_groups?id=in.(${chunk.join(',')})&user_id=eq.${userId}&organization_id=eq.${organizationId}` +
+      `&is_assigned=eq.false&is_dismissed=eq.false&select=id`
+    );
+    validGroups.push(...ensureArray(rows));
+  }
+
+  const validGroupIds = new Set(validGroups.map(g => g.id));
+
+  // 4. Build ID to Group ID map (only for valid groups)
+  const idToGroupId = new Map();
+  for (const m of members) {
+    if (m.group_id && validGroupIds.has(m.group_id)) {
+      if (m.activity_record_id) idToGroupId.set(m.activity_record_id, m.group_id);
+      if (m.unassigned_activity_id) idToGroupId.set(m.unassigned_activity_id, m.group_id);
     }
   }
 
-  const legacyResults = [];
-  if (legacyIds.length > 0) {
-    for (const chunk of chunkIds(legacyIds)) {
-      const rows = await supabaseRequest(
-        supabaseConfig,
-        `unassigned_activity?id=in.(${chunk.join(',')})&user_id=eq.${userId}` +
-        `&organization_id=eq.${organizationId}` +
-        `&manually_assigned=eq.false&clustering_dismissed=eq.false` +
-        `&select=id,window_title,application_name,extracted_text,time_spent_seconds`
-      );
-      legacyResults.push(...ensureArray(rows));
-    }
-  }
-
+  // 5. Construct final sessions, limiting to maxSessions
   const sessions = [];
-  const seenIds = new Set();
-  for (const record of ensureArray(activityResults)) {
-    if (!record?.id || seenIds.has(record.id)) continue;
-    seenIds.add(record.id);
+
+  for (const record of activityRows) {
+    if (!record?.id || !idToGroupId.has(record.id)) continue;
     sessions.push({
       sessionId: record.id,
-      groupId: idToGroupId.get(record.id) || null,
+      groupId: idToGroupId.get(record.id),
       applicationName: record.application_name || '',
       windowTitle: record.window_title || '',
       screenText: (record.ocr_text || '').slice(0, 500),
       durationSeconds: record.duration_seconds || record.total_time_seconds || 0,
       source: 'activity_records'
     });
+    if (sessions.length >= maxSessions) return sessions;
   }
 
-  for (const record of ensureArray(legacyResults)) {
-    if (!record?.id || seenIds.has(record.id)) continue;
-    seenIds.add(record.id);
+  for (const record of legacyRows) {
+    if (!record?.id || !idToGroupId.has(record.id)) continue;
     sessions.push({
       sessionId: record.id,
-      groupId: idToGroupId.get(record.id) || null,
+      groupId: idToGroupId.get(record.id),
       applicationName: record.application_name || '',
       windowTitle: record.window_title || '',
       screenText: (record.extracted_text || '').slice(0, 500),
       durationSeconds: record.time_spent_seconds || 0,
       source: 'unassigned_activity'
     });
+    if (sessions.length >= maxSessions) return sessions;
   }
 
   return sessions;
