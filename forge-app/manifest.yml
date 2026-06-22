@@ -35,6 +35,8 @@ modules:
     - key: descriptionQualityNudge
       handler: index.descriptionQualityNudgeHandler
       timeoutSeconds: 900
+    - key: issueCreatedHandler
+      handler: index.issueCreatedHandler
 
   jira:projectPage:
     - key: brd-time-tracker-project-page
@@ -86,6 +88,10 @@ modules:
       function: lifecycleHandler
       events:
         - avi:forge:uninstalled:app
+    - key: issue-created-trigger
+      function: issueCreatedHandler
+      events:
+        - avi:jira:created:issue
 
 resources:
   - key: main

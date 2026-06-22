@@ -21,6 +21,7 @@ import { registerDescriptionResolvers } from './resolvers/descriptionResolvers.j
 import { registerDqNudgePreferenceResolvers } from './resolvers/dqNudgePreferenceResolvers.js';
 import { runScheduledWorklogSync } from './services/scheduledWorklogSync.js';
 import { runDescriptionQualityNudge, analyzeIssue } from './services/descriptionQualityNudge.js';
+export { handler as issueCreatedHandler } from './handlers/issueCreatedHandler.js';
 import { handleIssueUpdateEvent, scheduledIssueCacheRefresh } from './services/issueCacheService.js';
 import { handleAppInstalled, handleAppUninstalled } from './services/lifecycleService.js';
 import { handlePersonalDataRequest } from './services/personalDataService.js';

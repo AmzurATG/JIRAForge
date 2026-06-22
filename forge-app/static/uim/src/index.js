@@ -5,7 +5,7 @@ import { invoke } from '@forge/bridge';
 function adfToPlainText(adf) {
   if (!adf || typeof adf === 'string') return adf || '';
   if (typeof adf !== 'object') return '';
-  
+
   let text = '';
   if (adf.type === 'text') {
     text += adf.text || '';
@@ -43,40 +43,45 @@ let lastDescription = '';
 
 uiModificationsApi.onChange(async ({ api }) => {
   const { getFieldById } = api;
-  
+
   const descField = getFieldById('description');
   const summaryField = getFieldById('summary');
   const typeField = getFieldById('issuetype');
   const projectField = getFieldById('project');
-  
+
   if (!descField) return;
-  
+
   const rawValue = descField.getValue();
   const description = adfToPlainText(rawValue);
-  
+
   // Ignore event if description hasn't changed
   if (description === lastDescription) {
     return;
   }
   lastDescription = description;
-  
-  if (!description || description.trim().length < 5) {
-    descField.setDescription('');
+
+  if (!description || description.trim().length === 0) {
+    descField.setDescription('🔴 Poor quality\n• Description is completely empty. Please provide details before creating the ticket.');
     return;
   }
-  
+
+  if (description.trim().length < 10) {
+    descField.setDescription('🔴 Poor quality\n• Description is too short. Please provide more details.');
+    return;
+  }
+
   // Advance the pending counter for debounce
   pendingCount++;
   const currentCount = pendingCount;
-  
+
   // Debounce delay
   await new Promise(resolve => setTimeout(resolve, 1500));
-  
+
   // If user typed more during our delay, abort this specific execution
   if (currentCount !== pendingCount) {
     return;
   }
-  
+
   try {
     // We are the latest keystroke!
     const title = summaryField?.getValue() || '';
@@ -88,7 +93,7 @@ uiModificationsApi.onChange(async ({ api }) => {
     // (Jira applies changes when the Promise returned by onChange resolves, 
     // but in this trick we await invoke, so the loading state might not flash immediately.
     // That's acceptable for standard LLM queries)
-    
+
     console.log('UIM: Debounce finished, calling invoke...');
     const response = await invoke('analyzeDraftDescription', {
       title,
