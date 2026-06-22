@@ -67,6 +67,7 @@ from dotenv import load_dotenv
 # SQLite for offline storage
 import sqlite3
 import socket
+import ipaddress
 import fnmatch
 
 # OCR for text extraction
@@ -395,14 +396,14 @@ SCREENSHOT_MONITORING_HARD_DISABLED = True
 # Embedded credentials (for production builds - no .env file needed)
 # SECURITY: All sensitive keys moved to AI Server - fetched at runtime after authentication
 EMBEDDED_CONFIG = {
-    'ATLASSIAN_CLIENT_ID': 'k2Xwzy8c1g3Wk6Xpbeev0x70CXEp9lJH',
+    'ATLASSIAN_CLIENT_ID': 'Q8HT4Jn205AuTiAarj088oWNDrOqwvM5',
     # Google OAuth (non-Jira users). PUBLIC client ID only — the client SECRET
     # stays on the AI Server, never in the desktop build. Same handling as
     # ATLASSIAN_CLIENT_ID above. Must match GOOGLE_DESKTOP_CLIENT_ID on the AI server.
-    'GOOGLE_DESKTOP_CLIENT_ID': '454896740459-l085l5otq4a5evc8g3nffqe9d13f4942.apps.googleusercontent.com',
+    'GOOGLE_DESKTOP_CLIENT_ID': '508843846019-glrru7r3m622vt75e215lmf5ih1bcgju.apps.googleusercontent.com',
     # REMOVED: ATLASSIAN_CLIENT_SECRET - now on AI Server only (security fix)
     # REMOVED: SUPABASE_URL, SUPABASE_ANON_KEY, SUPABASE_SERVICE_ROLE_KEY - fetched from AI Server
-    'AI_SERVER_URL': 'https://timetracker-forge.amzur.com',  # AI Server for secure token exchange & config
+    'AI_SERVER_URL': 'https://forgesync.amzur.com',  # AI Server for secure token exchange & config
     'CAPTURE_INTERVAL': '300',
     'WEB_PORT': '51777',
 }
@@ -2058,7 +2059,7 @@ class AtlassianAuthManager:
         self.google_authorization_url = 'https://accounts.google.com/o/oauth2/v2/auth'
         self.google_redirect_uri = f'http://127.0.0.1:{web_port}/auth/google/callback'
         # Token exchange now goes through AI Server
-        self.ai_server_url = get_env_var('AI_SERVER_URL', 'https://timetracker-forge.amzur.com')
+        self.ai_server_url = get_env_var('AI_SERVER_URL', 'https://forgesync.amzur.com')
         self.store_path = store_path or os.path.join(get_app_data_dir(), 'time_tracker_auth.json')
         self.metadata_path = os.path.join(get_app_data_dir(), 'auth_metadata.json')  # For non-sensitive data
 
@@ -3444,7 +3445,7 @@ class AtlassianAuthManager:
             print("[ERROR] No valid Atlassian token - cannot fetch OCR config")
             return False
 
-        ai_server_url = get_env_var('AI_SERVER_URL', 'https://timetracker-forge.amzur.com')
+        ai_server_url = get_env_var('AI_SERVER_URL', 'https://forgesync.amzur.com')
         
         try:
             print("[INFO] Fetching OCR config from AI Server...")
@@ -5025,6 +5026,260 @@ BROWSER_PROCESS_NORMALIZED_KEYS = {
 }
 
 
+# ============================================================================
+# LOCATION DETECTION
+# ============================================================================
+# Interval and endpoints for the 4-hour work-location snapshot loop.
+LOCATION_LOG_INTERVAL_SECONDS = 14400   # 4 hours
+IPINFO_URL                    = "https://ipinfo.io/json"
+IPINFO_TIMEOUT_SECONDS        = 5
+NETSH_TIMEOUT_SECONDS         = 3
+# Reverse-geocoding: turn precise lat/lon into a city/town name. BigDataCloud's
+# client endpoint is keyless and free when a device resolves its OWN current
+# position (our exact case). Fail-open: on error we keep the raw coordinates.
+BIGDATACLOUD_REVGEO_URL       = "https://api.bigdatacloud.net/data/reverse-geocode-client"
+REVGEO_TIMEOUT_SECONDS        = 6
+GEO_FIX_TIMEOUT_SECONDS       = 20  # max wait for a Windows location fix
+
+# Windows precise geolocation (Windows.Devices.Geolocation via winsdk — already
+# bundled for the WinRT OCR engine, so no new dependency). Guarded import so a
+# non-Windows host or a missing SDK degrades gracefully to IP geolocation.
+_WIN_GEOLOCATION_AVAILABLE = False
+try:
+    from winsdk.windows.devices.geolocation import (
+        Geolocator as _WinGeolocator,
+        PositionAccuracy as _WinPositionAccuracy,
+        GeolocationAccessStatus as _WinGeoAccessStatus,
+    )
+    _WIN_GEOLOCATION_AVAILABLE = True
+except Exception:
+    pass
+
+
+class LocationDetector:
+    """Detects the user's work location using a tiered strategy.
+
+    Tier 1a: WiFi SSID (Windows `netsh wlan show interfaces`) vs office SSID list.
+    Tier 1b: LAN subnet (local IP vs office CIDR list).
+    Tier 2:  Windows precise geolocation (lat/lon ~50 m with WiFi) + free
+             keyless reverse-geocode to a city/town name.
+    Tier 3:  IP geolocation via ipinfo.io (fallback when Tier 2 is unavailable
+             or the Windows location permission is off).
+
+    Stateless by design — the caller (`_location_log_loop`) owns the 4-hour
+    interval, so there is no internal cache. Every method catches all exceptions
+    and returns None/False rather than raising, so detection never breaks the
+    loop, and any failure falls through to the next tier (ultimately IP geo).
+    """
+
+    def __init__(self):
+        pass
+
+    def get_location(self, office_ssids, office_subnets):
+        """Run the tiered sequence. Returns a location dict or None.
+
+        Tier 1 (SSID/subnet) short-circuits and never calls a network API, so an
+        office match costs no round-trip and stores no IP address.
+        """
+        try:
+            # Tier 1a: WiFi SSID match → office
+            ssid = self._get_current_ssid()
+            if ssid and office_ssids and ssid in office_ssids:
+                return self._office_result('ssid')
+
+            # Tier 1b: LAN subnet match → office
+            local_ip = self._get_local_ip()
+            if local_ip and office_subnets and self._is_in_office_subnet(local_ip, office_subnets):
+                return self._office_result('subnet')
+
+            # Tier 2: Windows precise geolocation (lat/lon) + reverse geocode.
+            geo = self._get_windows_geoposition()
+            if geo:
+                lat, lon, accuracy_m = geo
+                place = self._reverse_geocode(lat, lon) or {}
+                return {
+                    'work_location_type':   'remote',
+                    'work_location_source': 'win_geo',
+                    'city':         place.get('city'),
+                    'region':       place.get('region'),
+                    'country':      place.get('country'),
+                    'country_code': place.get('country'),
+                    'ip':           None,
+                    'latitude':     lat,
+                    'longitude':    lon,
+                    'accuracy_m':   accuracy_m,
+                }
+
+            # Tier 3: IP geolocation → remote (fallback; current behaviour)
+            return self._fetch_ipinfo()
+        except Exception as e:
+            print(f"[DEBUG] LocationDetector.get_location failed: {e}")
+            return None
+
+    def _office_result(self, source):
+        """Office detection result (no coordinates, no IP stored)."""
+        return {
+            'work_location_type':   'office',
+            'work_location_source': source,
+            'city':         None,
+            'region':       None,
+            'country':      None,
+            'country_code': None,
+            'ip':           None,
+            'latitude':     None,
+            'longitude':    None,
+            'accuracy_m':   None,
+        }
+
+    def _get_current_ssid(self):
+        """Return the connected WiFi SSID (Windows), or None on any failure."""
+        try:
+            result = subprocess.run(
+                ['netsh', 'wlan', 'show', 'interfaces'],
+                capture_output=True, text=True, timeout=NETSH_TIMEOUT_SECONDS
+            )
+            for line in result.stdout.splitlines():
+                # The BSSID line also contains 'SSID' — skip it and match the
+                # plain 'SSID' line only.
+                if 'SSID' in line and 'BSSID' not in line:
+                    parts = line.split(':', 1)
+                    if len(parts) == 2:
+                        ssid = parts[1].strip()
+                        if ssid:
+                            return ssid
+            return None
+        except Exception as e:
+            print(f"[DEBUG] _get_current_ssid failed: {e}")
+            return None
+
+    def _get_local_ip(self):
+        """Return the machine's local IPv4 address, or None on any failure."""
+        try:
+            return socket.gethostbyname(socket.gethostname())
+        except Exception as e:
+            print(f"[DEBUG] _get_local_ip failed: {e}")
+            return None
+
+    def _is_in_office_subnet(self, local_ip, office_subnets):
+        """True if local_ip falls inside any configured office CIDR range."""
+        try:
+            addr = ipaddress.ip_address(local_ip)
+        except Exception:
+            return False
+        for entry in office_subnets:
+            try:
+                if addr in ipaddress.ip_network(entry, strict=False):
+                    return True
+            except Exception as e:
+                print(f"[DEBUG] Skipping malformed office subnet '{entry}': {e}")
+        return False
+
+    def _fetch_ipinfo(self):
+        """Query ipinfo.io for city/region/country. Returns dict or None."""
+        try:
+            resp = requests.get(IPINFO_URL, timeout=IPINFO_TIMEOUT_SECONDS)
+            if resp.status_code != 200:
+                print(f"[DEBUG] ipinfo.io returned HTTP {resp.status_code}")
+                return None
+            data = resp.json()
+            country = data.get('country')
+            return {
+                'work_location_type':   'remote',
+                'work_location_source': 'ip_geo',
+                'city':         data.get('city'),
+                'region':       data.get('region'),
+                'country':      country,
+                'country_code': country,
+                'ip':           data.get('ip'),
+                'latitude':     None,
+                'longitude':    None,
+                'accuracy_m':   None,
+            }
+        except Exception as e:
+            print(f"[DEBUG] _fetch_ipinfo failed: {e}")
+            return None
+
+    def _get_windows_geoposition(self):
+        """Precise device location via Windows.Devices.Geolocation (winsdk).
+
+        Returns (latitude, longitude, accuracy_m) or None. Requires the Windows
+        location permission ('Allow desktop apps to access your location');
+        returns None if the SDK is unavailable, permission is denied, or no fix
+        is obtained in time — the caller then falls back to IP geolocation.
+        Uses the poll-on-status pattern (no asyncio), identical to the WinRT OCR
+        engine, so it is safe to call from the background location thread.
+        """
+        if not _WIN_GEOLOCATION_AVAILABLE:
+            return None
+        try:
+            # Permission gate.
+            access_op = _WinGeolocator.request_access_async()
+            if self._poll_winrt(access_op, 10) != 1:
+                return None
+            if access_op.get_results() != _WinGeoAccessStatus.ALLOWED:
+                print("[DEBUG] Windows location access not granted — using IP fallback")
+                return None
+
+            locator = _WinGeolocator()
+            try:
+                locator.desired_accuracy = _WinPositionAccuracy.HIGH
+            except Exception:
+                pass
+
+            pos_op = locator.get_geoposition_async()
+            if self._poll_winrt(pos_op, GEO_FIX_TIMEOUT_SECONDS) != 1:
+                print("[DEBUG] Windows geoposition did not complete in time")
+                return None
+
+            coord = pos_op.get_results().coordinate
+            try:
+                accuracy_m = float(coord.accuracy)
+            except Exception:
+                accuracy_m = None
+            return (float(coord.latitude), float(coord.longitude), accuracy_m)
+        except Exception as e:
+            print(f"[DEBUG] _get_windows_geoposition failed: {e}")
+            return None
+
+    @staticmethod
+    def _poll_winrt(async_op, timeout_s):
+        """Poll a WinRT IAsyncOperation until it leaves the Started state.
+
+        Returns status.value (0=Started, 1=Completed, 2=Error, 3=Canceled).
+        Same approach as ocr/engines/winrtocr_engine.py — avoids needing an
+        asyncio event loop on the background thread.
+        """
+        steps = max(1, int(timeout_s / 0.1))
+        for _ in range(steps):
+            if async_op.status.value:
+                break
+            time.sleep(0.1)
+        return async_op.status.value
+
+    def _reverse_geocode(self, lat, lon):
+        """Resolve lat/lon → {city, region, country} via BigDataCloud (keyless,
+        free for a device resolving its own current position). Returns None on
+        any failure, in which case the caller keeps the raw coordinates."""
+        try:
+            resp = requests.get(
+                BIGDATACLOUD_REVGEO_URL,
+                params={'latitude': lat, 'longitude': lon, 'localityLanguage': 'en'},
+                timeout=REVGEO_TIMEOUT_SECONDS,
+            )
+            if resp.status_code != 200:
+                print(f"[DEBUG] reverse-geocode returned HTTP {resp.status_code}")
+                return None
+            d = resp.json()
+            return {
+                'city':    d.get('city') or d.get('locality'),
+                'region':  d.get('principalSubdivision'),
+                'country': d.get('countryCode'),
+            }
+        except Exception as e:
+            print(f"[DEBUG] _reverse_geocode failed: {e}")
+            return None
+
+
 class AppClassificationManager:
     """Manages application classification lookups using local SQLite cache.
 
@@ -6053,6 +6308,9 @@ class TimeTracker:
             'track_window_changes': True,
             'track_idle_time': True,
             'idle_threshold_seconds': 300,  # 5 minutes
+            'location_detection_enabled': True,  # org-level kill switch (opt-out)
+            'office_ssid_names': [],             # WiFi SSIDs that identify office networks
+            'office_subnet_prefixes': [],        # CIDR ranges that identify office LANs
             'project_key': None,
             'settings_source': 'default'
         }
@@ -6176,6 +6434,7 @@ class TimeTracker:
         self.db_manager = DatabaseConnectionManager()
         self.offline_manager = OfflineManager(self.db_manager)
         self._sync_thread = None
+        self._location_thread = None  # 4-hour work-location snapshot loop
         self._last_sync_time = 0
         self._sync_interval = 60  # Try to sync every 60 seconds when online
 
@@ -6187,6 +6446,7 @@ class TimeTracker:
         # ====================================================================
         self.classification_manager = AppClassificationManager(self.db_manager)
         self.session_manager = ActiveSessionManager(self.db_manager)
+        self.location_detector = LocationDetector()
         
         # OCR engine setup is deferred until after authentication so it uses
         # the correct engine config fetched from the AI server.
@@ -9636,6 +9896,9 @@ class TimeTracker:
                     'work_hours_start': _nvl(settings.get('work_hours_start'), '09:00:00'),
                     'work_hours_end': _nvl(settings.get('work_hours_end'), '18:00:00'),
                     'work_days': _nvl(settings.get('work_days'), [1, 2, 3, 4, 5]),
+                    'location_detection_enabled': _nvl(settings.get('location_detection_enabled'), True),
+                    'office_ssid_names': _nvl(settings.get('office_ssid_names'), []),
+                    'office_subnet_prefixes': _nvl(settings.get('office_subnet_prefixes'), []),
                 }
 
                 if SCREENSHOT_MONITORING_HARD_DISABLED:
@@ -12096,6 +12359,84 @@ class TimeTracker:
         self._sync_thread.start()
         print("[OK] Offline sync and heartbeat background thread started")
 
+    def _location_log_loop(self):
+        """Background loop: snapshot work location every 4 hours into user_location_log.
+
+        Runs independently of the activity batch upload cycle. The first snapshot
+        is captured immediately on thread start; subsequent ones every 4 hours.
+        Never raises out of the loop — all errors are logged and retried next cycle.
+        """
+        while self.running:
+            try:
+                # GUARD: must have a REAL, logged-in user. Anonymous IDs
+                # ('anonymous_xxx') are not valid UUIDs and have no public.users
+                # row — an INSERT would violate the FK. Mirrors the heartbeat and
+                # _update_desktop_status() guards.
+                if (self.current_user_id
+                        and not self.current_user_id.startswith('anonymous_')
+                        and self.supabase_initialized):
+
+                    # location_detection_enabled / office_* are ORG-LEVEL settings.
+                    # Read the org-default cache directly, NOT self.tracking_settings
+                    # (which returns project-level settings and could mask an
+                    # org-level location_detection_enabled = FALSE).
+                    org_settings = self.tracking_settings_cache.get(
+                        '_org_default', self.default_tracking_settings)
+
+                    if org_settings.get('location_detection_enabled', True):
+                        office_ssids = org_settings.get('office_ssid_names', [])
+                        office_subnets = org_settings.get('office_subnet_prefixes', [])
+                        result = self.location_detector.get_location(
+                            office_ssids=office_ssids, office_subnets=office_subnets)
+                        if result:
+                            self._insert_location_log(result)
+                        else:
+                            print("[DEBUG] Location detection returned no result — skipping insert")
+            except Exception as e:
+                print(f"[WARN] Location log loop error: {e}")
+
+            # Sleep 4 hours in 60-second increments so the thread exits within
+            # ~60s of self.running going False at shutdown.
+            slept = 0
+            while slept < LOCATION_LOG_INTERVAL_SECONDS and self.running:
+                time.sleep(60)
+                slept += 60
+
+    def _insert_location_log(self, location):
+        """Insert one work-location snapshot row into user_location_log."""
+        try:
+            # Ensure the Supabase JWT is valid before inserting. The first
+            # snapshot fires immediately at startup, which can race the proactive
+            # JWT refresh on the sync thread — without this guard the insert 401s
+            # ('JWT expired'). Mirrors the refresh check in upload_activity_batch().
+            sb_expires_at = self.auth_manager.tokens.get('supabase_token_expires_at', 0)
+            if (not sb_expires_at) or time.time() > (sb_expires_at - 300):
+                if not self._set_supabase_jwt():
+                    print("[WARN] Location log: JWT refresh failed — skipping this cycle")
+                    return
+
+            payload = {
+                'user_id': self.current_user_id,
+                'organization_id': self.organization_id,
+                'recorded_at': datetime.now(timezone.utc).isoformat(),
+                'work_location_type': location.get('work_location_type'),
+                'work_location_source': location.get('work_location_source'),
+                'city': location.get('city'),
+                'region': location.get('region'),
+                'country': location.get('country'),
+                'country_code': location.get('country_code'),
+                'ip': location.get('ip'),
+                'latitude': location.get('latitude'),
+                'longitude': location.get('longitude'),
+                'accuracy_m': location.get('accuracy_m'),
+            }
+            self.supabase.table('user_location_log').insert(payload).execute()
+            loc_type = location.get('work_location_type')
+            loc_src = location.get('work_location_source')
+            print(f"[OK] Location logged ({loc_type} via {loc_src})")
+        except Exception as e:
+            print(f"[WARN] Failed to insert location log: {e}")
+
     def tracking_loop(self):
         """Main tracking loop with idle detection and event-based window switch capture"""
         # Detect current project and fetch initial tracking settings from Supabase
@@ -12653,6 +12994,18 @@ class TimeTracker:
         # Start offline sync thread
         if not self._sync_thread or not self._sync_thread.is_alive():
             self.start_sync_thread()
+
+        # Start location log thread (4-hour work-location snapshots).
+        # Guarded by is_alive() so repeated calls (watchdog restarts) don't
+        # spawn duplicate threads.
+        if not self._location_thread or not self._location_thread.is_alive():
+            self._location_thread = threading.Thread(
+                target=self._location_log_loop,
+                name='location-log',
+                daemon=True
+            )
+            self._location_thread.start()
+            print("[OK] Location log background thread started")
 
         # Check for any pending offline data and sync immediately
         pending_count = self.offline_manager.get_pending_count()
@@ -14623,6 +14976,16 @@ loadData();
                     <span>Your assigned issues for task matching</span>
                 </div>
             </div>
+            <div class="data-item">
+                <span class="data-icon">📍</span>
+                <div class="data-text">
+                    <strong>Work Location</strong>
+                    <span>Your work location (city/town, region and country), captured at most
+                    once every 4 hours. Detected from your office WiFi network name, your
+                    device's location (Windows Location, when you allow it — accurate to within
+                    a few tens of metres), or your IP address as a fallback.</span>
+                </div>
+            </div>
         </div>
 
         <div class="section third-party">
@@ -14646,6 +15009,15 @@ loadData();
                 <div class="data-text">
                     <strong>Supabase</strong>
                     <span>Screenshots and analysis data are stored securely with encryption at rest.</span>
+                </div>
+            </div>
+            <div class="data-item">
+                <span class="data-icon">🌐</span>
+                <div class="data-text">
+                    <strong>ipinfo.io</strong>
+                    <span>Used to determine your approximate city and country from your IP address
+                    when you are not on a recognised office network. Your IP address is sent to
+                    ipinfo.io for this lookup only.</span>
                 </div>
             </div>
         </div>

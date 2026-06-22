@@ -297,12 +297,62 @@ class PortalService {
       paginatedEmployees.forEach((e) => { e.location = locMap[e.userId] || null; });
     }
 
+    // Attach each employee's auto-detected work location (user_location_log),
+    // latest snapshot per user, for the visible page only. Display-only — there
+    // is no detected-location filter. Separate from `location` (the admin-
+    // assigned branch) which is attached above.
+    if (paginatedEmployees.length) {
+      const detMap = await this.getDetectedLocationMapForUsers(paginatedEmployees.map((e) => e.userId));
+      paginatedEmployees.forEach((e) => { e.detectedLocation = detMap[e.userId] || null; });
+    }
+
     return {
       data: paginatedEmployees,
       pagination: { page, limit, totalCount }
     };
   }
-  
+
+  /**
+   * Latest auto-detected work location per user, from user_location_log.
+   * Returns { [userId]: { city, region, country, recordedAt } }.
+   *
+   * Read-only; the portal service-role client bypasses RLS. Bounded query —
+   * we only need the most recent row per user for the current page (≤ page
+   * size). Rows come back newest-first; the first occurrence per user is the
+   * latest. (No DISTINCT ON: PostgREST can't express it, and de-duping a
+   * bounded result set in Node is simpler and sufficient here.)
+   */
+  async getDetectedLocationMapForUsers(userIds) {
+    if (!Array.isArray(userIds) || userIds.length === 0) return {};
+    const supabase = getClient();
+    if (!supabase) return {};
+
+    const { data, error } = await supabase
+      .from('user_location_log')
+      .select('user_id, city, region, country, recorded_at')
+      .in('user_id', userIds)
+      .order('recorded_at', { ascending: false })
+      .limit(1000);
+
+    if (error) {
+      logger.warn('[PortalService] detected-location query failed', { error });
+      return {};
+    }
+
+    const map = {};
+    for (const row of data || []) {
+      if (!map[row.user_id]) {
+        map[row.user_id] = {
+          city: row.city,
+          region: row.region,
+          country: row.country,
+          recordedAt: row.recorded_at,
+        };
+      }
+    }
+    return map;
+  }
+
   /**
    * Get employee detail with daily trend.
    * 

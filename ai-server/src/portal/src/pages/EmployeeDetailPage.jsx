@@ -6,7 +6,7 @@
 
 import { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { ArrowLeft, Clock, TrendingUp, Activity, BarChart3, MapPin, Briefcase, Moon, CircleDashed } from 'lucide-react';
+import { ArrowLeft, Clock, TrendingUp, Activity, BarChart3, Building2, Briefcase, Moon, CircleDashed } from 'lucide-react';
 import { employeesApi } from '../api/employees';
 import KPICard from '../components/common/KPICard';
 import CategoryBadge from '../components/common/CategoryBadge';
@@ -160,7 +160,7 @@ function EmployeeDetailPage() {
             {employeeDetail?.user?.email}
             {employeeDetail?.user?.location?.name && (
               <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-gray-100 dark:bg-gray-800 text-xs text-gray-600 dark:text-gray-300">
-                <MapPin className="w-3 h-3" /> {employeeDetail.user.location.name}
+                <Building2 className="w-3 h-3" /> {employeeDetail.user.location.name}
               </span>
             )}
           </p>

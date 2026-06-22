@@ -233,7 +233,7 @@ function ReportsPage() {
           { key: 'nonProductiveHours', label: 'Non-Productive Hours', sortable: true, render: (v) => v?.toFixed(2) || '0.00' },
           { key: 'totalHours', label: 'Total Hours', sortable: true, render: (v) => v?.toFixed(2) || '0.00' },
           { key: 'productivityPercentage', label: 'Productivity %', sortable: true, render: (v) => `${v?.toFixed(1) || 0}%` },
-          { key: 'location', label: 'Location', sortable: true, render: (v) => v || '—' },
+          { key: 'location', label: 'Branch', sortable: true, render: (v) => v || '—' },
           { key: 'neutralHours', label: 'Neutral Hours', sortable: true, render: (v) => v?.toFixed(2) || '0.00' },
           { key: 'idleHours', label: 'Idle Hours', sortable: true, render: (v) => v?.toFixed(2) || '0.00' },
         ];
