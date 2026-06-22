@@ -5,7 +5,7 @@
  */
 
 import { useState, useEffect } from 'react';
-import { UserPlus, Edit2, Trash2, Shield, MapPin, Plus, Check, X } from 'lucide-react';
+import { UserPlus, Edit2, Trash2, Shield, Building2, Plus, Check, X } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { adminUsersApi } from '../api/adminUsers';
 import { lobsApi } from '../api/lobs';
@@ -281,7 +281,7 @@ function SettingsPage() {
       <div className="flex justify-between items-center">
         <div>
           <h1 className="page-title">Settings</h1>
-          <p className="text-gray-500 dark:text-gray-400 text-xs mt-0.5">Manage portal admin users and employee locations</p>
+          <p className="text-gray-500 dark:text-gray-400 text-xs mt-0.5">Manage portal admin users and employee branches</p>
         </div>
         <button
           onClick={handleCreate}
@@ -480,10 +480,10 @@ function LocationsCard({ setError, setSuccess }) {
     try {
       await locationsApi.create(newName.trim());
       setNewName('');
-      setSuccess('Location created');
+      setSuccess('Branch created');
       load();
     } catch (err) {
-      setError(err.response?.data?.error || 'Failed to create location');
+      setError(err.response?.data?.error || 'Failed to create branch');
     } finally {
       setAdding(false);
     }
@@ -495,10 +495,10 @@ function LocationsCard({ setError, setSuccess }) {
     try {
       await locationsApi.update(loc.id, { name: editName.trim() });
       setEditingId(null);
-      setSuccess('Location renamed');
+      setSuccess('Branch renamed');
       load();
     } catch (err) {
-      setError(err.response?.data?.error || 'Failed to rename location');
+      setError(err.response?.data?.error || 'Failed to rename branch');
     }
   };
 
@@ -508,7 +508,7 @@ function LocationsCard({ setError, setSuccess }) {
       await locationsApi.update(loc.id, { isActive: !loc.isActive });
       load();
     } catch (err) {
-      setError(err.response?.data?.error || 'Failed to update location');
+      setError(err.response?.data?.error || 'Failed to update branch');
     }
   };
 
@@ -517,21 +517,21 @@ function LocationsCard({ setError, setSuccess }) {
     try {
       await locationsApi.remove(deleting.id);
       setDeleting(null);
-      setSuccess('Location deleted');
+      setSuccess('Branch deleted');
       load();
     } catch (err) {
       setDeleting(null);
-      setError(err.response?.data?.error || 'Failed to delete location');
+      setError(err.response?.data?.error || 'Failed to delete branch');
     }
   };
 
   return (
     <div className="card">
       <h3 className="section-title mb-1">
-        <MapPin className="w-3.5 h-3.5 text-primary-600 dark:text-primary-400" /> Employee Locations
+        <Building2 className="w-3.5 h-3.5 text-primary-600 dark:text-primary-400" /> Employee Branches
       </h3>
       <p className="text-xs text-gray-500 dark:text-gray-400 mb-4">
-        Locations are assigned to employees on the Employees page and drive its Location filter.
+        Branches are assigned to employees on the Employees page and drive its Branch filter.
       </p>
 
       <form onSubmit={addLocation} className="flex gap-2 mb-4">
@@ -539,7 +539,7 @@ function LocationsCard({ setError, setSuccess }) {
           type="text"
           value={newName}
           onChange={(e) => setNewName(e.target.value)}
-          placeholder="New location, e.g. Hyderabad"
+          placeholder="New branch, e.g. Hyderabad"
           maxLength={120}
           className="input-field flex-1"
         />
@@ -548,14 +548,14 @@ function LocationsCard({ setError, setSuccess }) {
           disabled={adding || !newName.trim()}
           className="btn-primary flex items-center gap-1.5 whitespace-nowrap"
         >
-          <Plus className="w-3.5 h-3.5" /> {adding ? 'Adding…' : 'Add Location'}
+          <Plus className="w-3.5 h-3.5" /> {adding ? 'Adding…' : 'Add Branch'}
         </button>
       </form>
 
       {loading ? (
         <p className="text-sm text-gray-500">Loading…</p>
       ) : locations.length === 0 ? (
-        <p className="text-sm text-gray-500">No locations yet — add the first one above.</p>
+        <p className="text-sm text-gray-500">No branches yet — add the first one above.</p>
       ) : (
         <div className="divide-y divide-gray-100 dark:divide-gray-700/50 border border-gray-200 dark:border-gray-700 rounded">
           {locations.map((loc) => (
@@ -589,7 +589,7 @@ function LocationsCard({ setError, setSuccess }) {
                       <button
                         onClick={() => setAssigning(loc)}
                         className="p-1 rounded hover:bg-gray-100 dark:hover:bg-gray-700"
-                        title="Add employees to this location"
+                        title="Add employees to this branch"
                       >
                         <UserPlus className="w-4 h-4 text-gray-500" />
                       </button>
@@ -624,7 +624,7 @@ function LocationsCard({ setError, setSuccess }) {
 
       <ConfirmDialog
         isOpen={!!deleting}
-        title="Delete Location"
+        title="Delete Branch"
         message={`Delete "${deleting?.name}"? This fails if any employee is assigned to it — deactivate instead to retire it.`}
         onConfirm={confirmDelete}
         onCancel={() => setDeleting(null)}
