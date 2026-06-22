@@ -1046,6 +1046,32 @@ async function fetchIssuesFromJira(issueKeys) {
 }
 
 export function registerDescriptionResolvers(resolver) {
+  resolver.define('analyzeDraftDescription', async (req) => {
+    const { payload } = req;
+    const { title, description, issueType, projectKey } = payload || {};
+
+    if (!title || !description || !issueType || !projectKey) {
+      return failure('Missing required fields for draft analysis');
+    }
+
+    try {
+      const result = await remoteRequest('/api/forge/description/analyze', {
+        method: 'POST',
+        body: {
+          issueKey: 'DRAFT',
+          title,
+          description,
+          issueType,
+          projectKey,
+          requestImprovement: false, // We only want the score/issues to be fast
+        }
+      });
+      return { success: true, ...result };
+    } catch (err) {
+      console.error('[descriptionResolvers] analyzeDraftDescription failed:', err.message);
+      return failure(`Failed to analyze draft: ${err.message}`);
+    }
+  });
   resolver.define('analyzeDescription', async (req) => {
     const { payload, context } = req;
     const issueKey = payload?.issueKey;

@@ -6,6 +6,7 @@
     "build": "esbuild src/index.js --bundle --outfile=build/index.js --format=esm && copy src\\index.html build\\index.html"
   },
   "dependencies": {
+    "@forge/bridge": "^5.17.0",
     "@forge/jira-bridge": "^0.40.1"
   },
   "devDependencies": {

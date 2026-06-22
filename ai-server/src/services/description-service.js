@@ -425,7 +425,7 @@ async function getSupabaseClient(getClientFn) {
 }
 
 async function readCache({ orgId, issueKey, contentHash, getClientFn }) {
-  if (!orgId || !issueKey || !contentHash) return null;
+  if (!orgId || !issueKey || !contentHash || issueKey === 'DRAFT') return null;
   try {
     const supabase = await getSupabaseClient(getClientFn);
     if (!supabase) return null;
@@ -448,7 +448,7 @@ async function readCache({ orgId, issueKey, contentHash, getClientFn }) {
 }
 
 async function writeCache({ orgId, issueKey, contentHash, issueType, result, getClientFn }) {
-  if (!orgId || !issueKey || !contentHash) return;
+  if (!orgId || !issueKey || !contentHash || issueKey === 'DRAFT') return;
   try {
     const supabase = await getSupabaseClient(getClientFn);
     if (!supabase) return;
@@ -477,7 +477,7 @@ async function writeCache({ orgId, issueKey, contentHash, issueType, result, get
 }
 
 async function recordEvent({ orgId, accountId, issueKey, eventType, scoreBefore, scoreAfter, source, getClientFn }) {
-  if (!orgId || !issueKey || !eventType) return;
+  if (!orgId || !issueKey || !eventType || issueKey === 'DRAFT') return;
   try {
     const supabase = await getSupabaseClient(getClientFn);
     if (!supabase) return;

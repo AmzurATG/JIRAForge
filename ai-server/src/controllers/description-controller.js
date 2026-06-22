@@ -51,7 +51,7 @@ function validateAnalyzePayload(body) {
   const { issueKey, title, description, issueType, projectKey, requestImprovement, parentContext, attachments } = body;
 
   if (typeof issueKey !== 'string' || issueKey.length === 0) return 'Missing required field: issueKey';
-  if (issueKey.length > MAX_ISSUE_KEY_LEN || !ISSUE_KEY_RE.test(issueKey)) return 'Invalid issueKey format';
+  if (issueKey !== 'DRAFT' && (issueKey.length > MAX_ISSUE_KEY_LEN || !ISSUE_KEY_RE.test(issueKey))) return 'Invalid issueKey format';
 
   if (typeof title !== 'string' || title.length === 0) return 'Missing required field: title';
   if (title.length > MAX_TITLE_LEN) return `title exceeds max length (${MAX_TITLE_LEN})`;
