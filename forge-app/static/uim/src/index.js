@@ -35,12 +35,13 @@ function formatIndicator(score, issues) {
 
 // ─── Register onChange for description field ───
 uiModificationsApi.onInit(({ api }) => {
-  // No action on init — just let the form load normally
-}, () => ['description', 'summary', 'issuetype', 'project']);
+  // No action on init
+}, () => ['description', 'summary', 'issuetype']);
 
-let debounceTimer = null;
+let pendingCount = 0;
+let lastDescription = '';
 
-uiModificationsApi.onChange(({ api, change }) => {
+uiModificationsApi.onChange(async ({ api }) => {
   const { getFieldById } = api;
   
   const descField = getFieldById('description');
@@ -52,40 +53,61 @@ uiModificationsApi.onChange(({ api, change }) => {
   
   const rawValue = descField.getValue();
   const description = adfToPlainText(rawValue);
-  const title = summaryField?.getValue() || '';
-  const issueType = typeField?.getValue();
-  const typeName = issueType?.name || issueType?.value || 'Task';
-  const projectKey = projectField?.getValue()?.key || 'UNKNOWN';
   
-  // Only score if there's some description content
+  // Ignore event if description hasn't changed
+  if (description === lastDescription) {
+    return;
+  }
+  lastDescription = description;
+  
   if (!description || description.trim().length < 5) {
-    descField.setDescription('');  // clear any previous indicator
+    descField.setDescription('');
     return;
   }
   
-  clearTimeout(debounceTimer);
-  debounceTimer = setTimeout(async () => {
-    try {
-      descField.setDescription('⏳ Analyzing description quality...');
-      
-      const response = await invoke('analyzeDraftDescription', {
-        title,
-        description,
-        issueType: typeName,
-        projectKey
-      });
+  // Advance the pending counter for debounce
+  pendingCount++;
+  const currentCount = pendingCount;
+  
+  // Debounce delay
+  await new Promise(resolve => setTimeout(resolve, 1500));
+  
+  // If user typed more during our delay, abort this specific execution
+  if (currentCount !== pendingCount) {
+    return;
+  }
+  
+  try {
+    // We are the latest keystroke!
+    const title = summaryField?.getValue() || '';
+    const issueType = typeField?.getValue();
+    const typeName = issueType?.name || issueType?.value || 'Task';
+    const projectKey = projectField?.getValue()?.key || 'UNKNOWN';
 
-      if (response && response.success) {
-        const { score, issues } = response;
-        const indicator = formatIndicator(score, issues);
-        descField.setDescription(indicator);
-      } else {
-        descField.setDescription('⚠️ Analysis failed');
-      }
-    } catch (err) {
-      console.error(err);
-      descField.setDescription('⚠️ Error connecting to analysis service');
+    // Show loading state and wait briefly so Jira applies the loading text
+    // (Jira applies changes when the Promise returned by onChange resolves, 
+    // but in this trick we await invoke, so the loading state might not flash immediately.
+    // That's acceptable for standard LLM queries)
+    
+    console.log('UIM: Debounce finished, calling invoke...');
+    const response = await invoke('analyzeDraftDescription', {
+      title,
+      description,
+      issueType: typeName,
+      projectKey
+    });
+
+    console.log('UIM: received response from invoke:', response);
+
+    if (response && response.success) {
+      const { score, issues } = response;
+      const indicator = formatIndicator(score, issues);
+      descField.setDescription(indicator);
+    } else {
+      descField.setDescription('⚠️ Analysis failed');
     }
-  }, 1500);
-
-}, () => ['description', 'summary', 'issuetype', 'project']);
+  } catch (err) {
+    console.error(err);
+    descField.setDescription('⚠️ Error connecting to analysis service');
+  }
+}, () => ['description', 'summary', 'issuetype']);
