@@ -10,6 +10,11 @@ remotes:
       - compute
 
 modules:
+  jira:uiModifications:
+    - key: description-quality-indicator
+      title: Description Quality Indicator
+      resource: uim-resource
+
   function:
     - key: main
       handler: index.handler
@@ -85,6 +90,8 @@ resources:
     path: static/main/build
   - key: settings
     path: static/settings/build
+  - key: uim-resource
+    path: static/uim/build
 
 permissions:
   scopes:
@@ -95,6 +102,7 @@ permissions:
       allowImpersonation: true
     read:jira-user:
       allowImpersonation: true
+    manage:jira-configuration: {}
     storage:app: {}
   external:
     fetch:

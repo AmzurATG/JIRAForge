@@ -360,4 +360,51 @@ export function registerSettingsResolvers(resolver) {
       };
     }
   });
+  /**
+   * Resolver to register UI modification contexts dynamically via REST API
+   */
+  resolver.define('registerUim', async (req) => {
+    try {
+      const api = require('@forge/api').default;
+      const { route } = require('@forge/api');
+      
+      // Get all projects
+      const projRes = await api.asApp().requestJira(route`/rest/api/3/project`);
+      const projects = await projRes.json();
+      
+      // Get all issue types
+      const itRes = await api.asApp().requestJira(route`/rest/api/3/issuetype`);
+      const issueTypes = await itRes.json();
+      
+      const contexts = [];
+      for (const it of issueTypes) {
+        if (contexts.length < 900 && it.id) {
+          contexts.push({
+            projectId: null,
+            issueTypeId: it.id,
+            viewType: 'GIC'
+          });
+        }
+      }
+      
+      const res = await api.asApp().requestJira(route`/rest/api/3/uiModifications`, {
+        method: 'POST',
+        headers: {
+          'Accept': 'application/json',
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          name: 'Real-Time Description Scoring',
+          contexts: contexts
+        })
+      });
+      
+      const responseData = await res.json();
+      console.log('UI Modification registered:', responseData);
+      return { success: true, data: responseData };
+    } catch (error) {
+      console.error('Error registering UIM:', error);
+      return { success: false, error: error.message };
+    }
+  });
 }

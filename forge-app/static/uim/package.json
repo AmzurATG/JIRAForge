@@ -1,0 +1,14 @@
+{
+  "name": "brd-time-tracker-uim",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "build": "esbuild src/index.js --bundle --outfile=build/index.js --format=esm && copy src\\index.html build\\index.html"
+  },
+  "dependencies": {
+    "@forge/jira-bridge": "^0.40.1"
+  },
+  "devDependencies": {
+    "esbuild": "^0.20.0"
+  }
+}
