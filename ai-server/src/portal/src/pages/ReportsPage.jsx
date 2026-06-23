@@ -40,11 +40,25 @@ const REPORT_TYPES = {
 // beside the hours within the same column.
 const hrPct = (hours, pct) => `${(hours ?? 0).toFixed(2)}h (${(pct ?? 0).toFixed(1)}%)`;
 
+// Export responses use responseType:'blob', so a server error body arrives as a
+// Blob (not parsed JSON). Read it back to surface the real message instead of a
+// generic "Failed to export".
+async function getExportError(err, fallback) {
+  const data = err?.response?.data;
+  if (data instanceof Blob) {
+    try { return JSON.parse(await data.text()).error || fallback; } catch { return fallback; }
+  }
+  return data?.error || fallback;
+}
+
 function ReportsPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [previewData, setPreviewData] = useState([]);
   const [totalCount, setTotalCount] = useState(0);
+  // Legal (expected) hours for the period — same for everyone, shown once above
+  // the Employee Summary table rather than as a repeated column.
+  const [legalHours, setLegalHours] = useState(null);
   const [page, setPage] = useState(1);
   const [limit] = useState(20);
   const [exportingCSV, setExportingCSV] = useState(false);
@@ -106,6 +120,7 @@ function ReportsPage() {
       
       setPreviewData(response.data || []);
       setTotalCount(response.totalCount || 0);
+      setLegalHours(response.legalHours ?? null);
       setPage(newPage);
     } catch (err) {
       console.error('Failed to generate report preview:', err);
@@ -158,7 +173,7 @@ function ReportsPage() {
       
     } catch (err) {
       console.error('Failed to export CSV:', err);
-      setError(err.response?.data?.error || 'Failed to export CSV');
+      setError(await getExportError(err, 'Failed to export CSV'));
     } finally {
       setExportingCSV(false);
     }
@@ -192,7 +207,7 @@ function ReportsPage() {
 
     } catch (err) {
       console.error('Failed to export Excel:', err);
-      setError(err.response?.data?.error || 'Failed to export Excel');
+      setError(await getExportError(err, 'Failed to export Excel'));
     } finally {
       setExportingExcel(false);
     }
@@ -226,7 +241,7 @@ function ReportsPage() {
       
     } catch (err) {
       console.error('Failed to export PDF:', err);
-      setError(err.response?.data?.error || 'Failed to export PDF');
+      setError(await getExportError(err, 'Failed to export PDF'));
     } finally {
       setExportingPDF(false);
     }
@@ -256,9 +271,7 @@ function ReportsPage() {
           { key: 'unknownHours', label: 'Unknown', sortable: true, render: (v, r) => hrPct(v, r.unknownPct) },
           { key: 'idleHours', label: 'Idle', sortable: true, render: (v, r) => hrPct(v, r.idlePct) },
           { key: 'trackedHours', label: 'Tracked Hrs', sortable: true, render: (v) => v?.toFixed(2) || '0.00' },
-          { key: 'legalHours', label: 'Legal Hrs', sortable: true, render: (v) => v?.toFixed(2) || '0.00' },
           { key: 'attainmentPct', label: 'Attainment %', sortable: true, render: (v) => `${v?.toFixed(1) || 0}%` },
-          { key: 'location', label: 'Branch', sortable: true, render: (v) => v || '—' },
         ];
       case 'application-usage':
         return [
@@ -295,31 +308,42 @@ function ReportsPage() {
           <h1 className="page-title">Reports</h1>
           <p className="text-gray-500 dark:text-gray-400 text-xs mt-0.5">Generate and export productivity reports</p>
         </div>
-        <div className="flex gap-3">
-          <button
-            onClick={handleExportCSV}
-            disabled={exportingCSV || previewData.length === 0}
-            className="btn-success flex items-center gap-2"
-          >
-            <FileDown className="w-4 h-4" />
-            {exportingCSV ? 'Exporting...' : 'Export CSV'}
-          </button>
-          <button
-            onClick={handleExportExcel}
-            disabled={exportingExcel || previewData.length === 0}
-            className="btn-primary flex items-center gap-2"
-          >
-            <FileSpreadsheet className="w-4 h-4" />
-            {exportingExcel ? 'Exporting...' : 'Export Excel'}
-          </button>
-          <button
-            onClick={handleExportPDF}
-            disabled={exportingPDF || previewData.length === 0}
-            className="btn-danger flex items-center gap-2"
-          >
-            <File className="w-4 h-4" />
-            {exportingPDF ? 'Exporting...' : 'Export PDF'}
-          </button>
+        {/* Export controls — one segmented "Export as" group so the three
+            formats read as a single related action instead of three clashing
+            colored buttons. Each segment keeps a format-colored icon. */}
+        <div className="flex items-center gap-2">
+          <span className="hidden sm:inline text-xs font-medium text-gray-500 dark:text-gray-400">
+            Export as
+          </span>
+          <div className="inline-flex rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 shadow-sm overflow-hidden divide-x divide-gray-200 dark:divide-gray-700">
+            <button
+              onClick={handleExportCSV}
+              disabled={exportingCSV}
+              className="flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700/50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+              title="Export as CSV"
+            >
+              <FileDown className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
+              {exportingCSV ? 'CSV…' : 'CSV'}
+            </button>
+            <button
+              onClick={handleExportExcel}
+              disabled={exportingExcel}
+              className="flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700/50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+              title="Export as Excel"
+            >
+              <FileSpreadsheet className="w-4 h-4 text-blue-600 dark:text-blue-400" />
+              {exportingExcel ? 'Excel…' : 'Excel'}
+            </button>
+            <button
+              onClick={handleExportPDF}
+              disabled={exportingPDF}
+              className="flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700/50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+              title="Export as PDF"
+            >
+              <File className="w-4 h-4 text-red-600 dark:text-red-400" />
+              {exportingPDF ? 'PDF…' : 'PDF'}
+            </button>
+          </div>
         </div>
       </div>
 
@@ -466,7 +490,16 @@ function ReportsPage() {
               {REPORT_TYPES[reportType]?.label}
             </div>
           </div>
-          
+
+          {/* Legal hours is the same for everyone over the period — shown once
+              here instead of as a repeated column. */}
+          {reportType === 'employee-summary' && legalHours != null && (
+            <div className="mb-3 inline-flex items-center gap-2 rounded-lg bg-primary-50 dark:bg-primary-900/20 border border-primary-100 dark:border-primary-800 px-3 py-1.5">
+              <span className="text-xs text-gray-500 dark:text-gray-400">Legal hours this period</span>
+              <span className="text-sm font-semibold text-primary-700 dark:text-primary-300">{legalHours.toFixed(2)}</span>
+            </div>
+          )}
+
           <DataTable
             columns={columns}
             data={previewData}
