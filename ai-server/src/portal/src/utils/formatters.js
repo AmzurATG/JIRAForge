@@ -39,15 +39,24 @@ export function formatPercentage(value, decimals = 1) {
 }
 
 /**
- * Format date to YYYY-MM-DD.
- * 
- * @param {Date} date 
+ * Format date to YYYY-MM-DD using the LOCAL calendar date.
+ *
+ * Every caller uses this for a calendar day (today, today-N days, month
+ * boundaries) in the user's own timezone. Slicing toISOString() would format
+ * in UTC, rolling local midnight back a day for timezones ahead of UTC (e.g.
+ * IST) — which breaks the "This/Last Month" presets and the "today" default
+ * near midnight. Use local components, matching the backend's formatDate.
+ *
+ * @param {Date} date
  * @returns {string}
  */
 export function formatDate(date) {
   if (!date) return '';
   const d = new Date(date);
-  return d.toISOString().split('T')[0];
+  const year = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
 }
 
 /**

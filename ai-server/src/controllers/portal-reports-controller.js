@@ -10,10 +10,32 @@ const logger = require('../utils/logger');
 const portalService = require('../services/portal-service');
 const lobService = require('../services/portal-lob-service');
 const profileService = require('../services/portal-employee-profile-service');
+const holidayService = require('../services/portal-holiday-service');
 const PDFDocument = require('pdfkit');
 const ExcelJS = require('exceljs');
 
 const SUPPORTED_REPORT_TYPES = ['activity-logs', 'daily-summary', 'employee-summary', 'application-usage'];
+
+/**
+ * Each activity category as a percentage of total tracked time
+ * (productive + non-productive + unknown + idle), so the four sum to ~100%.
+ * "unknown" is the WS-C "neutral" category (private/unclassified).
+ */
+function categoryPercents({ productiveHours = 0, nonProductiveHours = 0, unknownHours = 0, idleHours = 0 }) {
+  const total = productiveHours + nonProductiveHours + unknownHours + idleHours;
+  const pct = (h) => (total > 0 ? Math.round((h / total) * 1000) / 10 : 0);
+  return {
+    productivePct: pct(productiveHours),
+    nonProductivePct: pct(nonProductiveHours),
+    unknownPct: pct(unknownHours),
+    idlePct: pct(idleHours),
+  };
+}
+
+/** "5.00h (62.0%)" — combined hours+percent cell for the PDF and preview. */
+function fmtHrPct(hours, pct) {
+  return `${(hours || 0).toFixed(2)}h (${(pct || 0).toFixed(1)}%)`;
+}
 
 /** LOB scoping is only enforced when the flag is on (safe rollout). */
 function lobEnforced() {
@@ -87,19 +109,24 @@ async function getDailySummaryData(orgId, filters, visibleUserIds) {
 
   const dashboardData = await portalService.getDashboardData(orgId, from, to, userIds);
 
-  const data = dashboardData.dailyTrend.map(day => ({
-    date: day.date,
-    productiveHours: day.productiveHours,
-    nonProductiveHours: day.nonProductiveHours,
-    // Total keeps its original meaning (productive + non-productive) so
-    // existing consumers' numbers don't shift; neutral/idle are new columns.
-    totalHours: day.productiveHours + day.nonProductiveHours,
-    productivityPercentage: (day.productiveHours + day.nonProductiveHours) > 0
-      ? (day.productiveHours / (day.productiveHours + day.nonProductiveHours)) * 100
-      : 0,
-    neutralHours: day.neutralHours || 0,
-    idleHours: day.idleHours || 0
-  }));
+  // Per-category hours + percentage (each category ÷ total tracked time). The
+  // single Productivity % column is dropped in favour of a % per category.
+  const data = dashboardData.dailyTrend.map(day => {
+    const productiveHours = day.productiveHours || 0;
+    const nonProductiveHours = day.nonProductiveHours || 0;
+    const unknownHours = day.neutralHours || 0; // WS-C "neutral" surfaced as "Unknown"
+    const idleHours = day.idleHours || 0;
+    const totalHours = productiveHours + nonProductiveHours + unknownHours + idleHours;
+    return {
+      date: day.date,
+      productiveHours,
+      nonProductiveHours,
+      unknownHours,
+      idleHours,
+      totalHours,
+      ...categoryPercents({ productiveHours, nonProductiveHours, unknownHours, idleHours }),
+    };
+  });
 
   return { data, pagination: { totalCount: data.length } };
 }
@@ -110,25 +137,53 @@ async function getDailySummaryData(orgId, filters, visibleUserIds) {
 async function getEmployeeSummaryData(orgId, filters, visibleUserIds) {
   const { from, to, employee } = filters;
   const employeesData = await portalService.getEmployees(orgId, { from, to }, { page: 1, limit: 1000 }, visibleUserIds);
-  
-  let data = employeesData.data.map(emp => ({
-    employeeName: emp.name,
-    employeeEmail: emp.email,
-    userId: emp.userId,
-    productiveHours: emp.productiveHours,
-    nonProductiveHours: emp.nonProductiveHours,
-    totalHours: emp.productiveHours + emp.nonProductiveHours,
-    productivityPercentage: emp.productivityPercentage,
-    location: emp.location ? emp.location.name : '',
-    neutralHours: emp.neutralHours || 0,
-    idleHours: emp.idleHours || 0
-  }));
-  
+
+  // Legal (expected) hours are identical for everyone over the selected range —
+  // company-wide holidays, no per-employee leaves yet — so compute once.
+  // Tracked Hours = Active time (productive + non-productive + unknown), idle
+  // excluded; Attainment % = Tracked ÷ Legal.
+  // Degrade to 0 if the holiday lookup fails (e.g. the portal_holidays migration
+  // isn't applied yet) so the rest of the employee summary still renders instead
+  // of failing the whole report.
+  let legalHrs = 0;
+  if (from && to) {
+    try {
+      legalHrs = await holidayService.legalHours(from, to);
+    } catch (err) {
+      logger.warn('[PortalReports] legal hours unavailable; defaulting to 0', { error: err.message });
+    }
+  }
+
+  let data = employeesData.data.map(emp => {
+    const productiveHours = emp.productiveHours || 0;
+    const nonProductiveHours = emp.nonProductiveHours || 0;
+    const unknownHours = emp.neutralHours || 0; // WS-C "neutral" surfaced as "Unknown"
+    const idleHours = emp.idleHours || 0;
+    const totalHours = productiveHours + nonProductiveHours + unknownHours + idleHours;
+    const trackedHours = productiveHours + nonProductiveHours + unknownHours;
+    const attainmentPct = legalHrs > 0 ? Math.round((trackedHours / legalHrs) * 1000) / 10 : 0;
+    return {
+      employeeName: emp.name,
+      employeeEmail: emp.email,
+      userId: emp.userId,
+      productiveHours,
+      nonProductiveHours,
+      unknownHours,
+      idleHours,
+      totalHours,
+      trackedHours,
+      legalHours: legalHrs,
+      attainmentPct,
+      location: emp.location ? emp.location.name : '',
+      ...categoryPercents({ productiveHours, nonProductiveHours, unknownHours, idleHours }),
+    };
+  });
+
   // Filter by specific employee if provided
   if (employee) {
     data = data.filter(emp => emp.userId === employee);
   }
-  
+
   return { data, pagination: { totalCount: data.length } };
 }
 
@@ -245,39 +300,48 @@ async function exportCSV(req, res) {
     
     switch (type) {
       case 'daily-summary':
-        // New columns are APPENDED (never reordered) so existing downstream
-        // spreadsheet consumers keep their column positions.
-        headers = ['Date', 'Productive Hours', 'Non-Productive Hours', 'Total Hours', 'Productivity %', 'Neutral Hours', 'Idle Hours'];
+        // Per-category hours + % (each category ÷ total tracked). The single
+        // Productivity % column is intentionally removed (manager request);
+        // exports use separate numeric Hrs/% columns so cells stay summable.
+        headers = ['Date', 'Productive Hours', 'Productive %', 'Non-Productive Hours', 'Non-Productive %', 'Unknown Hours', 'Unknown %', 'Idle Hours', 'Idle %', 'Total Hours'];
         csvRows = [headers.join(',')];
         result.data.forEach(row => {
           csvRows.push([
             `"${row.date}"`,
             row.productiveHours?.toFixed(2) || '0.00',
+            row.productivePct?.toFixed(1) || '0.0',
             row.nonProductiveHours?.toFixed(2) || '0.00',
-            row.totalHours?.toFixed(2) || '0.00',
-            row.productivityPercentage?.toFixed(1) || '0.0',
-            row.neutralHours?.toFixed(2) || '0.00',
-            row.idleHours?.toFixed(2) || '0.00'
+            row.nonProductivePct?.toFixed(1) || '0.0',
+            row.unknownHours?.toFixed(2) || '0.00',
+            row.unknownPct?.toFixed(1) || '0.0',
+            row.idleHours?.toFixed(2) || '0.00',
+            row.idlePct?.toFixed(1) || '0.0',
+            row.totalHours?.toFixed(2) || '0.00'
           ].join(','));
         });
         break;
-        
+
       case 'employee-summary':
-        // New columns are APPENDED (never reordered) so existing downstream
-        // spreadsheet consumers keep their column positions.
-        headers = ['Employee Name', 'Email', 'Productive Hours', 'Non-Productive Hours', 'Total Hours', 'Productivity %', 'Location', 'Neutral Hours', 'Idle Hours'];
+        // Per-category Hrs/% + Legal/Tracked/Attainment. Productivity % removed;
+        // "Neutral" surfaced as "Unknown" (manager request).
+        headers = ['Employee Name', 'Email', 'Productive Hours', 'Productive %', 'Non-Productive Hours', 'Non-Productive %', 'Unknown Hours', 'Unknown %', 'Idle Hours', 'Idle %', 'Tracked Hours', 'Legal Hours', 'Attainment %', 'Branch'];
         csvRows = [headers.join(',')];
         result.data.forEach(row => {
           csvRows.push([
             `"${row.employeeName || ''}"`,
             `"${row.employeeEmail || ''}"`,
             row.productiveHours?.toFixed(2) || '0.00',
+            row.productivePct?.toFixed(1) || '0.0',
             row.nonProductiveHours?.toFixed(2) || '0.00',
-            row.totalHours?.toFixed(2) || '0.00',
-            row.productivityPercentage?.toFixed(1) || '0.0',
-            `"${row.location || ''}"`,
-            row.neutralHours?.toFixed(2) || '0.00',
-            row.idleHours?.toFixed(2) || '0.00'
+            row.nonProductivePct?.toFixed(1) || '0.0',
+            row.unknownHours?.toFixed(2) || '0.00',
+            row.unknownPct?.toFixed(1) || '0.0',
+            row.idleHours?.toFixed(2) || '0.00',
+            row.idlePct?.toFixed(1) || '0.0',
+            row.trackedHours?.toFixed(2) || '0.00',
+            row.legalHours?.toFixed(2) || '0.00',
+            row.attainmentPct?.toFixed(1) || '0.0',
+            `"${row.location || ''}"`
           ].join(','));
         });
         break;
@@ -342,24 +406,32 @@ function getExcelColumnsForType(type) {
     case 'daily-summary':
       return [
         { header: 'Date', key: 'date', width: 12 },
-        { header: 'Productive Hours', key: 'productiveHours', width: 17, numFmt: '0.00' },
-        { header: 'Non-Productive Hours', key: 'nonProductiveHours', width: 21, numFmt: '0.00' },
-        { header: 'Total Hours', key: 'totalHours', width: 12, numFmt: '0.00' },
-        { header: 'Productivity %', key: 'productivityPercentage', width: 14, numFmt: '0.0' },
-        { header: 'Neutral Hours', key: 'neutralHours', width: 14, numFmt: '0.00' },
+        { header: 'Productive Hours', key: 'productiveHours', width: 16, numFmt: '0.00' },
+        { header: 'Productive %', key: 'productivePct', width: 13, numFmt: '0.0' },
+        { header: 'Non-Productive Hours', key: 'nonProductiveHours', width: 20, numFmt: '0.00' },
+        { header: 'Non-Productive %', key: 'nonProductivePct', width: 16, numFmt: '0.0' },
+        { header: 'Unknown Hours', key: 'unknownHours', width: 14, numFmt: '0.00' },
+        { header: 'Unknown %', key: 'unknownPct', width: 11, numFmt: '0.0' },
         { header: 'Idle Hours', key: 'idleHours', width: 12, numFmt: '0.00' },
+        { header: 'Idle %', key: 'idlePct', width: 9, numFmt: '0.0' },
+        { header: 'Total Hours', key: 'totalHours', width: 12, numFmt: '0.00' },
       ];
     case 'employee-summary':
       return [
         { header: 'Employee Name', key: 'employeeName', width: 24 },
         { header: 'Email', key: 'employeeEmail', width: 28 },
-        { header: 'Productive Hours', key: 'productiveHours', width: 17, numFmt: '0.00' },
-        { header: 'Non-Productive Hours', key: 'nonProductiveHours', width: 21, numFmt: '0.00' },
-        { header: 'Total Hours', key: 'totalHours', width: 12, numFmt: '0.00' },
-        { header: 'Productivity %', key: 'productivityPercentage', width: 14, numFmt: '0.0' },
-        { header: 'Location', key: 'location', width: 16 },
-        { header: 'Neutral Hours', key: 'neutralHours', width: 14, numFmt: '0.00' },
+        { header: 'Productive Hours', key: 'productiveHours', width: 16, numFmt: '0.00' },
+        { header: 'Productive %', key: 'productivePct', width: 13, numFmt: '0.0' },
+        { header: 'Non-Productive Hours', key: 'nonProductiveHours', width: 20, numFmt: '0.00' },
+        { header: 'Non-Productive %', key: 'nonProductivePct', width: 16, numFmt: '0.0' },
+        { header: 'Unknown Hours', key: 'unknownHours', width: 14, numFmt: '0.00' },
+        { header: 'Unknown %', key: 'unknownPct', width: 11, numFmt: '0.0' },
         { header: 'Idle Hours', key: 'idleHours', width: 12, numFmt: '0.00' },
+        { header: 'Idle %', key: 'idlePct', width: 9, numFmt: '0.0' },
+        { header: 'Tracked Hours', key: 'trackedHours', width: 14, numFmt: '0.00' },
+        { header: 'Legal Hours', key: 'legalHours', width: 12, numFmt: '0.00' },
+        { header: 'Attainment %', key: 'attainmentPct', width: 13, numFmt: '0.0' },
+        { header: 'Branch', key: 'location', width: 16 },
       ];
     case 'application-usage':
       return [
@@ -566,30 +638,31 @@ async function exportPDF(req, res) {
 function getTableConfigForType(type) {
   switch (type) {
     case 'daily-summary':
+      // Each category cell combines hours + % (manager request); Productivity %
+      // removed, "Neutral" surfaced as "Unknown".
       return {
-        headers: ['Date', 'Productive Hrs', 'Non-Prod Hrs', 'Total Hrs', 'Productivity %', 'Neutral Hrs', 'Idle Hrs'],
+        headers: ['Date', 'Productive', 'Non-Productive', 'Unknown', 'Idle', 'Total Hrs'],
         columns: [
-          { key: 'date', width: 90 },
-          { key: 'productiveHours', width: 90, format: v => v?.toFixed(2) || '0.00' },
-          { key: 'nonProductiveHours', width: 90, format: v => v?.toFixed(2) || '0.00' },
-          { key: 'totalHours', width: 90, format: v => v?.toFixed(2) || '0.00' },
-          { key: 'productivityPercentage', width: 90, format: v => `${v?.toFixed(1) || 0}%` },
-          { key: 'neutralHours', width: 80, format: v => v?.toFixed(2) || '0.00' },
-          { key: 'idleHours', width: 80, format: v => v?.toFixed(2) || '0.00' }
+          { key: 'date', width: 80 },
+          { key: 'productiveHours', width: 95, format: (v, r) => fmtHrPct(v, r.productivePct) },
+          { key: 'nonProductiveHours', width: 100, format: (v, r) => fmtHrPct(v, r.nonProductivePct) },
+          { key: 'unknownHours', width: 90, format: (v, r) => fmtHrPct(v, r.unknownPct) },
+          { key: 'idleHours', width: 80, format: (v, r) => fmtHrPct(v, r.idlePct) },
+          { key: 'totalHours', width: 80, format: v => v?.toFixed(2) || '0.00' }
         ]
       };
     case 'employee-summary':
       return {
-        headers: ['Employee', 'Email', 'Productive Hrs', 'Non-Prod Hrs', 'Total Hrs', 'Productivity %', 'Neutral Hrs', 'Idle Hrs'],
+        headers: ['Employee', 'Productive', 'Non-Productive', 'Unknown', 'Idle', 'Tracked', 'Legal', 'Attain %'],
         columns: [
           { key: 'employeeName', width: 110 },
-          { key: 'employeeEmail', width: 140 },
-          { key: 'productiveHours', width: 75, format: v => v?.toFixed(2) || '0.00' },
-          { key: 'nonProductiveHours', width: 75, format: v => v?.toFixed(2) || '0.00' },
-          { key: 'totalHours', width: 70, format: v => v?.toFixed(2) || '0.00' },
-          { key: 'productivityPercentage', width: 80, format: v => `${v?.toFixed(1) || 0}%` },
-          { key: 'neutralHours', width: 70, format: v => v?.toFixed(2) || '0.00' },
-          { key: 'idleHours', width: 70, format: v => v?.toFixed(2) || '0.00' }
+          { key: 'productiveHours', width: 90, format: (v, r) => fmtHrPct(v, r.productivePct) },
+          { key: 'nonProductiveHours', width: 95, format: (v, r) => fmtHrPct(v, r.nonProductivePct) },
+          { key: 'unknownHours', width: 85, format: (v, r) => fmtHrPct(v, r.unknownPct) },
+          { key: 'idleHours', width: 75, format: (v, r) => fmtHrPct(v, r.idlePct) },
+          { key: 'trackedHours', width: 60, format: v => v?.toFixed(2) || '0.00' },
+          { key: 'legalHours', width: 55, format: v => v?.toFixed(2) || '0.00' },
+          { key: 'attainmentPct', width: 65, format: v => `${v?.toFixed(1) || 0}%` }
         ]
       };
     case 'application-usage':
@@ -678,7 +751,9 @@ function drawTable(doc, headers, data, columns) {
     x = startX;
     columns.forEach(col => {
       let value = row[col.key];
-      if (col.format) value = col.format(value);
+      // Pass the whole row so combined cells (e.g. "5.00h (62.0%)") can read a
+      // sibling field (the percentage) alongside the keyed value.
+      if (col.format) value = col.format(value, row);
       value = String(value || '').substring(0, 30); // Truncate long values
       
       doc.fillColor('#000000').text(value, x + 5, y + 5, { width: col.width - 10, height: rowHeight });

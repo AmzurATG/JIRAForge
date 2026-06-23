@@ -10,9 +10,9 @@ import { Info } from 'lucide-react';
 const DEFINITIONS = [
   ['Productive', 'Time in applications classified as work-related.'],
   ['Non-Productive', 'Time in applications classified as not work-related.'],
-  ['Neutral', 'Tracked time that is unclassified or private — counted as time, excluded from the productivity ratio.'],
+  ['Unknown', 'Tracked time that is unclassified or private — counted as time, excluded from the productivity ratio.'],
   ['Idle', 'No user activity (away, screen locked, or system asleep).'],
-  ['Active Time', 'Productive + Non-Productive + Neutral.'],
+  ['Active Time', 'Productive + Non-Productive + Unknown.'],
   ['Office Time', 'Active Time + Idle.'],
   ['Productivity %', 'Productive ÷ (Productive + Non-Productive).'],
 ];

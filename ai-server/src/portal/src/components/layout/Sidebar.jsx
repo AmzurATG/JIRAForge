@@ -9,7 +9,8 @@ import {
   ChevronLeft,
   ChevronRight,
   ListChecks,
-  Building2
+  Building2,
+  CalendarDays
 } from 'lucide-react';
 import { useState, useEffect } from 'react';
 import { useAuth } from '../../contexts/AuthContext';
@@ -40,6 +41,7 @@ function Sidebar({ collapsed, onToggle }) {
       ? { path: '/lobs', label: 'Line of Businesses', icon: Building2 }
       : (isHead ? { path: '/lobs', label: 'My LOBs', icon: Building2 } : null),
     { path: '/app-classifications', label: 'App Classifications', icon: ListChecks, superadminOnly: true },
+    { path: '/holidays', label: 'Holidays', icon: CalendarDays, superadminOnly: true },
     { path: '/settings', label: 'Settings', icon: Settings, superadminOnly: true },
   ].filter(Boolean).filter((item) => !item.superadminOnly || isSuperadmin);
 

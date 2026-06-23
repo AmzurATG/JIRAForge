@@ -13,6 +13,7 @@ const ReportsPage = lazy(() => import('./pages/ReportsPage'));
 const AppClassificationsPage = lazy(() => import('./pages/AppClassificationsPage'));
 const LobsPage = lazy(() => import('./pages/LobsPage'));
 const LobDetailPage = lazy(() => import('./pages/LobDetailPage'));
+const HolidaysPage = lazy(() => import('./pages/HolidaysPage'));
 const SettingsPage = lazy(() => import('./pages/SettingsPage'));
 
 // Layout
@@ -52,6 +53,7 @@ function App() {
             <Route path="reports" element={<ReportsPage />} />
             <Route path="lobs" element={<LobsPage />} />
             <Route path="lobs/:lobId" element={<LobDetailPage />} />
+            <Route path="holidays" element={<HolidaysPage />} />
             <Route path="app-classifications" element={<AppClassificationsPage />} />
             <Route path="settings" element={<SettingsPage />} />
           </Route>

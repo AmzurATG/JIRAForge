@@ -23,6 +23,7 @@ const portalLobController = require('./controllers/portal-lob-controller');
 const portalAppCatalogController = require('./controllers/portal-app-catalog-controller');
 const portalLobAppClassificationsController = require('./controllers/portal-lob-app-classifications-controller');
 const portalEmployeeProfileController = require('./controllers/portal-employee-profile-controller');
+const portalHolidayController = require('./controllers/portal-holiday-controller');
 const desktopDqNudgesController = require('./controllers/desktop-dq-nudges-controller');
 const desktopDqPreferencesController = require('./controllers/desktop-dq-preferences-controller');
 const authMiddleware = require('./middleware/auth');
@@ -125,7 +126,7 @@ const limiter = rateLimit({
 // from exhausting the budget for new logins.
 app.use('/api/', (req, res, next) => {
   if (req.path.startsWith('/forge/')) return next();
-  if (req.path.startsWith('/auth/'))  return next();
+  if (req.path.startsWith('/auth/')) return next();
   // Portal data routes have their own (per-user) limiter below — keep them out of
   // this strict IP-keyed bucket so a shared office/NAT IP can't starve all users.
   if (req.path.startsWith('/portal/')) return next();
@@ -293,11 +294,11 @@ app.get('/admin-dashboard/api/stats', adminDashboardController.requireSession, a
 // Dedicated limiter (200/min) — each dashboard refresh fires several parallel
 // requests (orgs + summary/wrong-pairs/by-app/recent-mistakes), and changing
 // a filter retriggers all of them.
-app.get('/api/forge/accuracy/orgs',             accuracyDashboardLimiter, forgeAuthMiddleware, accuracyDashboardController.listOrgs);
-app.get('/api/forge/accuracy/summary',          accuracyDashboardLimiter, forgeAuthMiddleware, accuracyDashboardController.getSummary);
-app.get('/api/forge/accuracy/wrong-pairs',      accuracyDashboardLimiter, forgeAuthMiddleware, accuracyDashboardController.getWrongPairs);
-app.get('/api/forge/accuracy/by-app',           accuracyDashboardLimiter, forgeAuthMiddleware, accuracyDashboardController.getByApp);
-app.get('/api/forge/accuracy/recent-mistakes',  accuracyDashboardLimiter, forgeAuthMiddleware, accuracyDashboardController.getRecentMistakes);
+app.get('/api/forge/accuracy/orgs', accuracyDashboardLimiter, forgeAuthMiddleware, accuracyDashboardController.listOrgs);
+app.get('/api/forge/accuracy/summary', accuracyDashboardLimiter, forgeAuthMiddleware, accuracyDashboardController.getSummary);
+app.get('/api/forge/accuracy/wrong-pairs', accuracyDashboardLimiter, forgeAuthMiddleware, accuracyDashboardController.getWrongPairs);
+app.get('/api/forge/accuracy/by-app', accuracyDashboardLimiter, forgeAuthMiddleware, accuracyDashboardController.getByApp);
+app.get('/api/forge/accuracy/recent-mistakes', accuracyDashboardLimiter, forgeAuthMiddleware, accuracyDashboardController.getRecentMistakes);
 
 // =============================================================================
 // LEGAL PAGES (Public - served as HTML from layout + content templates)
@@ -635,7 +636,7 @@ app.post('/api/trigger-org-clustering', authMiddleware, async (req, res, next) =
     // Get all users with unassigned work in this organization
     const supabaseService = require('./services/supabase-service');
     const usersWithUnassigned = await supabaseService.getUsersWithUnassignedWork();
-    
+
     // Filter to only users in this organization
     const orgUsers = usersWithUnassigned.filter(u => u.organization_id === organizationId);
 
@@ -761,6 +762,12 @@ app.put('/api/portal/employees/:userId/profile', portalAuthMiddleware.verifyPort
 // Bulk location assignment (Employees action bar + Locations members picker) — superadmin only
 app.put('/api/portal/employees/profiles', portalAuthMiddleware.verifyPortalToken, portalEmployeeProfileController.bulkSetEmployeeProfiles);
 
+// Company holidays — list: any portal user (needed for legal-hours); manage: superadmin only
+app.get('/api/portal/holidays', portalAuthMiddleware.verifyPortalToken, portalHolidayController.getHolidays);
+app.post('/api/portal/holidays', portalAuthMiddleware.verifyPortalToken, portalHolidayController.createHoliday);
+app.put('/api/portal/holidays/:id', portalAuthMiddleware.verifyPortalToken, portalHolidayController.updateHoliday);
+app.delete('/api/portal/holidays/:id', portalAuthMiddleware.verifyPortalToken, portalHolidayController.deleteHoliday);
+
 // Portal reports endpoints (authenticated)
 app.get('/api/portal/reports/data', portalAuthMiddleware.verifyPortalToken, portalReportsController.getReportData);
 app.get('/api/portal/reports/export/csv', portalAuthMiddleware.verifyPortalToken, portalReportsController.exportCSV);
@@ -871,7 +878,7 @@ async function startServer() {
 
       logger.info(`AI Analysis Server running on port ${PORT}`);
       logger.info(`Environment: ${process.env.NODE_ENV || 'development'}`);
-      
+
       // Initialize AI clients at startup
       logger.info('Initializing AI clients...');
       aiService.initializeClient();

@@ -13,7 +13,7 @@ import { PieChart, Pie, Cell, Tooltip, Legend, ResponsiveContainer } from 'recha
 const COLORS = {
   Productive: '#10b981',
   'Non-Productive': '#ef4444',
-  Neutral: '#64748b',
+  Unknown: '#64748b',
 };
 
 function ProductivityDonutChart({ productivePercentage, nonProductivePercentage, productiveHours, nonProductiveHours, neutralHours }) {
@@ -24,7 +24,7 @@ function ProductivityDonutChart({ productivePercentage, nonProductivePercentage,
     data = [
       { name: 'Productive', value: pct(productiveHours) },
       { name: 'Non-Productive', value: pct(nonProductiveHours) },
-      { name: 'Neutral', value: pct(neutralHours) },
+      { name: 'Unknown', value: pct(neutralHours) },
     ];
   } else {
     data = [

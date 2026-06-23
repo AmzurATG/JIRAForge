@@ -14,6 +14,15 @@ const STYLES = {
   idle: 'bg-gray-100 text-gray-500 dark:bg-gray-800 dark:text-gray-400',
 };
 
+// Display labels. The 'neutral' category is surfaced to users as "Unknown"
+// (the underlying category key stays 'neutral' for styling/data).
+const LABELS = {
+  productive: 'productive',
+  'non-productive': 'non-productive',
+  neutral: 'unknown',
+  idle: 'idle',
+};
+
 export function toCategory(value) {
   if (!value) return 'neutral';
   if (value === 'productive') return 'productive';
@@ -26,7 +35,7 @@ function CategoryBadge({ value }) {
   const category = toCategory(value);
   return (
     <span className={`px-2 py-1 rounded text-xs font-semibold ${STYLES[category]}`}>
-      {category}
+      {LABELS[category] || category}
     </span>
   );
 }

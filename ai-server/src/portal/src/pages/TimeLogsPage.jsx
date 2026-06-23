@@ -289,7 +289,7 @@ function TimeLogsPage() {
                 <option value="">All Classifications</option>
                 <option value="productive">Productive</option>
                 <option value="non-productive">Non-Productive</option>
-                <option value="neutral">Neutral</option>
+                <option value="neutral">Unknown</option>
               </select>
             </div>
 

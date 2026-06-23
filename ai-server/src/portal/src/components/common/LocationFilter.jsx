@@ -8,7 +8,7 @@
  */
 
 import { useEffect, useState } from 'react';
-import { MapPin } from 'lucide-react';
+import { Building2 } from 'lucide-react';
 import { locationsApi } from '../../api/locations';
 
 function LocationFilter({ value, onChange }) {
@@ -34,10 +34,10 @@ function LocationFilter({ value, onChange }) {
   return (
     <div>
       <label className="filter-label text-xs flex items-center gap-1">
-        <MapPin className="w-3 h-3" /> Location
+        <Building2 className="w-3 h-3" /> Branch
       </label>
       <select value={value || ''} onChange={(e) => onChange(e.target.value)} className="select-field">
-        <option value="">All Locations</option>
+        <option value="">All Branches</option>
         {locations.map((loc) => (
           <option key={loc.id} value={loc.id}>
             {loc.isActive ? loc.name : `${loc.name} (inactive)`}

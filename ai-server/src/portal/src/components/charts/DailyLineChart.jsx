@@ -16,7 +16,7 @@ import { ComposedChart, Bar, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend,
 const HOUR_SERIES = [
   { key: 'productiveHours', name: 'Productive', color: '#10b981' },
   { key: 'nonProductiveHours', name: 'Non-Productive', color: '#ef4444' },
-  { key: 'neutralHours', name: 'Neutral', color: '#64748b' },
+  { key: 'neutralHours', name: 'Unknown', color: '#64748b' },
   { key: 'idleHours', name: 'Idle', color: '#9ca3af' },
 ];
 
