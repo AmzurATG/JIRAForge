@@ -23,6 +23,7 @@ const portalLobController = require('./controllers/portal-lob-controller');
 const portalAppCatalogController = require('./controllers/portal-app-catalog-controller');
 const portalLobAppClassificationsController = require('./controllers/portal-lob-app-classifications-controller');
 const portalEmployeeProfileController = require('./controllers/portal-employee-profile-controller');
+const portalHolidayController = require('./controllers/portal-holiday-controller');
 const authMiddleware = require('./middleware/auth');
 const forgeAuthMiddleware = require('./middleware/forge-auth');
 const atlassianAuthMiddleware = require('./middleware/atlassian-auth');
@@ -751,6 +752,12 @@ app.delete('/api/portal/locations/:id', portalAuthMiddleware.verifyPortalToken, 
 app.put('/api/portal/employees/:userId/profile', portalAuthMiddleware.verifyPortalToken, portalEmployeeProfileController.setEmployeeProfile);
 // Bulk location assignment (Employees action bar + Locations members picker) — superadmin only
 app.put('/api/portal/employees/profiles', portalAuthMiddleware.verifyPortalToken, portalEmployeeProfileController.bulkSetEmployeeProfiles);
+
+// Company holidays — list: any portal user (needed for legal-hours); manage: superadmin only
+app.get('/api/portal/holidays', portalAuthMiddleware.verifyPortalToken, portalHolidayController.getHolidays);
+app.post('/api/portal/holidays', portalAuthMiddleware.verifyPortalToken, portalHolidayController.createHoliday);
+app.put('/api/portal/holidays/:id', portalAuthMiddleware.verifyPortalToken, portalHolidayController.updateHoliday);
+app.delete('/api/portal/holidays/:id', portalAuthMiddleware.verifyPortalToken, portalHolidayController.deleteHoliday);
 
 // Portal reports endpoints (authenticated)
 app.get('/api/portal/reports/data', portalAuthMiddleware.verifyPortalToken, portalReportsController.getReportData);

@@ -5,7 +5,7 @@
  */
 
 import { useState, useEffect } from 'react';
-import { FileText, FileDown, File, FileSpreadsheet } from 'lucide-react';
+import { FileText, FileDown, File, FileSpreadsheet, ChevronRight, X } from 'lucide-react';
 import { reportsApi } from '../api/reports';
 import { employeesApi } from '../api/employees';
 import DataTable from '../components/common/DataTable';
@@ -36,6 +36,10 @@ const REPORT_TYPES = {
   },
 };
 
+// Combined "5.00h (62.0%)" cell — the manager asked for the percentage shown
+// beside the hours within the same column.
+const hrPct = (hours, pct) => `${(hours ?? 0).toFixed(2)}h (${(pct ?? 0).toFixed(1)}%)`;
+
 function ReportsPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
@@ -55,7 +59,12 @@ function ReportsPage() {
   const [selectedEmployee, setSelectedEmployee] = useState('');
   const [lobId, setLobId] = useState('');
   const [locationId, setLocationId] = useState('');
-  
+  const [showAdvanced, setShowAdvanced] = useState(false);
+
+  // Refinement filters beyond report type + date range. Surfaced as a count so
+  // the user knows filters are applied even while the advanced section is collapsed.
+  const activeFilterCount = [classification, selectedEmployee, lobId, locationId].filter(Boolean).length;
+
   // Employee list for filter
   const [employees, setEmployees] = useState([]);
   
@@ -108,6 +117,17 @@ function ReportsPage() {
 
   const handlePageChange = (newPage) => {
     handleGeneratePreview(newPage);
+  };
+
+  // Reset the refinement filters (not report type / date range) and invalidate
+  // the current preview so the user re-generates against the cleared filters.
+  const handleClearFilters = () => {
+    setClassification('');
+    setSelectedEmployee('');
+    setLobId('');
+    setLocationId('');
+    setPreviewData([]);
+    setPage(1);
   };
 
   const handleExportCSV = async () => {
@@ -216,26 +236,29 @@ function ReportsPage() {
   const getColumns = () => {
     switch (reportType) {
       case 'daily-summary':
+        // Each category shows hours + its % of total tracked time; the single
+        // Productivity % column is replaced. "Neutral" surfaced as "Unknown".
         return [
           { key: 'date', label: 'Date', sortable: true },
-          { key: 'productiveHours', label: 'Productive Hours', sortable: true, render: (v) => v?.toFixed(2) || '0.00' },
-          { key: 'nonProductiveHours', label: 'Non-Productive Hours', sortable: true, render: (v) => v?.toFixed(2) || '0.00' },
+          { key: 'productiveHours', label: 'Productive', sortable: true, render: (v, r) => hrPct(v, r.productivePct) },
+          { key: 'nonProductiveHours', label: 'Non-Productive', sortable: true, render: (v, r) => hrPct(v, r.nonProductivePct) },
+          { key: 'unknownHours', label: 'Unknown', sortable: true, render: (v, r) => hrPct(v, r.unknownPct) },
+          { key: 'idleHours', label: 'Idle', sortable: true, render: (v, r) => hrPct(v, r.idlePct) },
           { key: 'totalHours', label: 'Total Hours', sortable: true, render: (v) => v?.toFixed(2) || '0.00' },
-          { key: 'productivityPercentage', label: 'Productivity %', sortable: true, render: (v) => `${v?.toFixed(1) || 0}%` },
-          { key: 'neutralHours', label: 'Neutral Hours', sortable: true, render: (v) => v?.toFixed(2) || '0.00' },
-          { key: 'idleHours', label: 'Idle Hours', sortable: true, render: (v) => v?.toFixed(2) || '0.00' },
         ];
       case 'employee-summary':
+        // Per-category hours+% plus Legal/Tracked/Attainment (the monthly view).
         return [
           { key: 'employeeName', label: 'Employee', sortable: true },
           { key: 'employeeEmail', label: 'Email', sortable: true },
-          { key: 'productiveHours', label: 'Productive Hours', sortable: true, render: (v) => v?.toFixed(2) || '0.00' },
-          { key: 'nonProductiveHours', label: 'Non-Productive Hours', sortable: true, render: (v) => v?.toFixed(2) || '0.00' },
-          { key: 'totalHours', label: 'Total Hours', sortable: true, render: (v) => v?.toFixed(2) || '0.00' },
-          { key: 'productivityPercentage', label: 'Productivity %', sortable: true, render: (v) => `${v?.toFixed(1) || 0}%` },
+          { key: 'productiveHours', label: 'Productive', sortable: true, render: (v, r) => hrPct(v, r.productivePct) },
+          { key: 'nonProductiveHours', label: 'Non-Productive', sortable: true, render: (v, r) => hrPct(v, r.nonProductivePct) },
+          { key: 'unknownHours', label: 'Unknown', sortable: true, render: (v, r) => hrPct(v, r.unknownPct) },
+          { key: 'idleHours', label: 'Idle', sortable: true, render: (v, r) => hrPct(v, r.idlePct) },
+          { key: 'trackedHours', label: 'Tracked Hrs', sortable: true, render: (v) => v?.toFixed(2) || '0.00' },
+          { key: 'legalHours', label: 'Legal Hrs', sortable: true, render: (v) => v?.toFixed(2) || '0.00' },
+          { key: 'attainmentPct', label: 'Attainment %', sortable: true, render: (v) => `${v?.toFixed(1) || 0}%` },
           { key: 'location', label: 'Branch', sortable: true, render: (v) => v || '—' },
-          { key: 'neutralHours', label: 'Neutral Hours', sortable: true, render: (v) => v?.toFixed(2) || '0.00' },
-          { key: 'idleHours', label: 'Idle Hours', sortable: true, render: (v) => v?.toFixed(2) || '0.00' },
         ];
       case 'application-usage':
         return [
@@ -306,15 +329,26 @@ function ReportsPage() {
 
       {/* Report Configuration */}
       <div className="card-elevated">
-        <h3 className="section-title mb-3">
-          <div className="p-1 bg-primary-100 dark:bg-primary-900/30 rounded">
-            <FileText className="w-3 h-3 text-primary-600 dark:text-primary-400" />
-          </div>
-          Report Configuration
-        </h3>
+        <div className="flex items-center justify-between mb-3">
+          <h3 className="section-title">
+            <div className="p-1 bg-primary-100 dark:bg-primary-900/30 rounded">
+              <FileText className="w-3 h-3 text-primary-600 dark:text-primary-400" />
+            </div>
+            Report Configuration
+          </h3>
+          {activeFilterCount > 0 && (
+            <button
+              onClick={handleClearFilters}
+              className="text-xs text-primary-600 dark:text-primary-400 hover:text-primary-700 dark:hover:text-primary-300 font-medium flex items-center gap-1"
+            >
+              <X className="w-3 h-3" /> Clear filters
+            </button>
+          )}
+        </div>
 
         <div className="space-y-3">
-          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3">
+          {/* Primary: what to report on + the period to export */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             {/* Report Type Filter */}
             <div>
               <label className="filter-label text-xs">Report Type</label>
@@ -331,31 +365,9 @@ function ReportsPage() {
                   <option key={key} value={key}>{label}</option>
                 ))}
               </select>
-            </div>
-
-            {/* Classification Filter */}
-            <div>
-              <label className="filter-label text-xs">Classification</label>
-              <select
-                value={classification}
-                onChange={(e) => { setClassification(e.target.value); setPreviewData([]); setPage(1); }}
-                className="select-field"
-              >
-                <option value="">All Classifications</option>
-                <option value="productive">Productive</option>
-                <option value="non-productive">Non-Productive</option>
-                <option value="neutral">Neutral</option>
-              </select>
-            </div>
-
-            {/* Employee Filter — searchable (type to filter as you go) */}
-            <div>
-              <label className="filter-label text-xs">Employee</label>
-              <EmployeeSelect
-                employees={employees}
-                value={selectedEmployee}
-                onChange={(v) => { setSelectedEmployee(v); setPreviewData([]); setPage(1); }}
-              />
+              <p className="mt-1 text-[10px] text-gray-500 dark:text-gray-400 leading-snug">
+                {REPORT_TYPES[reportType]?.description}
+              </p>
             </div>
 
             {/* Date Range */}
@@ -367,12 +379,58 @@ function ReportsPage() {
                 onChange={(r) => { setDateRange(r); setPreviewData([]); setPage(1); }}
               />
             </div>
+          </div>
 
-            {/* LOB Filter */}
-            <LobFilter value={lobId} onChange={(v) => { setLobId(v); setSelectedEmployee(''); setPreviewData([]); setPage(1); }} />
+          {/* Advanced refinement filters — collapsed by default so the common
+              flow (pick report + period → generate) stays uncluttered. The
+              count badge keeps applied filters visible while collapsed. */}
+          <div>
+            <button
+              type="button"
+              onClick={() => setShowAdvanced((s) => !s)}
+              className="flex items-center gap-1.5 text-xs font-medium text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-white transition-colors"
+            >
+              <ChevronRight className={`w-3.5 h-3.5 transition-transform ${showAdvanced ? 'rotate-90' : ''}`} />
+              More filters
+              {activeFilterCount > 0 && (
+                <span className="badge-info">{activeFilterCount}</span>
+              )}
+            </button>
 
-            {/* Location Filter */}
-            <LocationFilter value={locationId} onChange={(v) => { setLocationId(v); setSelectedEmployee(''); setPreviewData([]); setPage(1); }} />
+            {showAdvanced && (
+              <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3 mt-3">
+                {/* Classification Filter */}
+                <div>
+                  <label className="filter-label text-xs">Classification</label>
+                  <select
+                    value={classification}
+                    onChange={(e) => { setClassification(e.target.value); setPreviewData([]); setPage(1); }}
+                    className="select-field"
+                  >
+                    <option value="">All Classifications</option>
+                    <option value="productive">Productive</option>
+                    <option value="non-productive">Non-Productive</option>
+                    <option value="neutral">Unknown</option>
+                  </select>
+                </div>
+
+                {/* Employee Filter — searchable (type to filter as you go) */}
+                <div>
+                  <label className="filter-label text-xs">Employee</label>
+                  <EmployeeSelect
+                    employees={employees}
+                    value={selectedEmployee}
+                    onChange={(v) => { setSelectedEmployee(v); setPreviewData([]); setPage(1); }}
+                  />
+                </div>
+
+                {/* LOB Filter */}
+                <LobFilter value={lobId} onChange={(v) => { setLobId(v); setSelectedEmployee(''); setPreviewData([]); setPage(1); }} />
+
+                {/* Location Filter */}
+                <LocationFilter value={locationId} onChange={(v) => { setLocationId(v); setSelectedEmployee(''); setPreviewData([]); setPage(1); }} />
+              </div>
+            )}
           </div>
 
           {/* Generate Button — explicit page 1 (passing the raw click event

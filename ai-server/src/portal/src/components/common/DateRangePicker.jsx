@@ -1,12 +1,55 @@
 /**
  * DateRangePicker Component
- * 
+ *
  * Date range picker with preset dropdown and custom date inputs.
+ * Presets cover rolling windows (Today, Last 7/30/90 days) and calendar
+ * months (This Month, Last Month) — the month presets carry the month name
+ * in their label (e.g. "This Month (June)") so admins can see exactly which
+ * period they are about to export.
  */
 
 import { useState, useEffect, useRef } from 'react';
 import { Calendar, Check, ChevronDown } from 'lucide-react';
 import { formatDate } from '../../utils/formatters';
+
+const startOfMonth = (d) => new Date(d.getFullYear(), d.getMonth(), 1);
+const endOfMonth = (d) => new Date(d.getFullYear(), d.getMonth() + 1, 0);
+const monthName = (d) => d.toLocaleString('default', { month: 'long' });
+
+/**
+ * Build the preset list fresh (so "today" and the month names track the real
+ * current date). Each preset exposes a `range()` returning { from, to } as
+ * YYYY-MM-DD strings — the single source of truth for both applying and
+ * auto-detecting the active preset.
+ */
+function buildPresets() {
+  const now = new Date();
+  const lastMonthRef = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+
+  const rolling = (days) => () => {
+    const to = new Date();
+    const from = new Date();
+    from.setDate(to.getDate() - days);
+    return { from: formatDate(from), to: formatDate(to) };
+  };
+
+  return [
+    { name: 'today', label: 'Today', range: rolling(0) },
+    { name: '7d', label: 'Last 7 days', range: rolling(7) },
+    { name: '30d', label: 'Last 30 days', range: rolling(30) },
+    { name: '90d', label: 'Last 90 days', range: rolling(90) },
+    {
+      name: 'thisMonth',
+      label: `This Month (${monthName(now)})`,
+      range: () => ({ from: formatDate(startOfMonth(now)), to: formatDate(now) }),
+    },
+    {
+      name: 'lastMonth',
+      label: `Last Month (${monthName(lastMonthRef)})`,
+      range: () => ({ from: formatDate(startOfMonth(lastMonthRef)), to: formatDate(endOfMonth(lastMonthRef)) }),
+    },
+  ];
+}
 
 function DateRangePicker({ from, to, onChange }) {
   const [customFrom, setCustomFrom] = useState(from);
@@ -16,33 +59,18 @@ function DateRangePicker({ from, to, onChange }) {
   const [activePreset, setActivePreset] = useState(null);
   const dropdownRef = useRef(null);
 
-  // Sync customFrom/To when from/to props change
+  const presets = buildPresets();
+
+  // Sync local custom inputs and auto-detect which preset matches from/to.
   useEffect(() => {
     setCustomFrom(from);
     setCustomTo(to);
-    
-    // Auto-detect which preset matches the current date range
-    const today = formatDate(new Date());
-    if (to === today) {
-      const presets = [
-        { days: 0, name: 'today' },
-        { days: 7, name: '7d' },
-        { days: 30, name: '30d' },
-        { days: 90, name: '90d' },
-      ];
-      
-      for (const preset of presets) {
-        const expectedFrom = new Date();
-        expectedFrom.setDate(expectedFrom.getDate() - preset.days);
-        if (from === formatDate(expectedFrom)) {
-          setActivePreset(preset.name);
-          return;
-        }
-      }
-    }
-    
-    // If no preset matches, it's a custom range
-    setActivePreset('custom');
+
+    const match = buildPresets().find((p) => {
+      const r = p.range();
+      return r.from === from && r.to === to;
+    });
+    setActivePreset(match ? match.name : 'custom');
   }, [from, to]);
 
   // Close dropdown when clicking outside
@@ -56,17 +84,10 @@ function DateRangePicker({ from, to, onChange }) {
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
 
-  const handlePresetClick = (days, presetName) => {
-    const toDate = new Date();
-    const fromDate = new Date();
-    fromDate.setDate(toDate.getDate() - days);
-    
-    onChange({
-      from: formatDate(fromDate),
-      to: formatDate(toDate),
-    });
+  const handlePresetClick = (preset) => {
+    onChange(preset.range());
     setShowCustom(false);
-    setActivePreset(presetName);
+    setActivePreset(preset.name);
     setShowDropdown(false);
   };
 
@@ -88,16 +109,9 @@ function DateRangePicker({ from, to, onChange }) {
     setShowDropdown(false);
   };
 
-  const presets = [
-    { days: 0, label: 'Today', name: 'today' },
-    { days: 7, label: 'Last 7 days', name: '7d' },
-    { days: 30, label: 'Last 30 days', name: '30d' },
-    { days: 90, label: 'Last 90 days', name: '90d' },
-  ];
-
   const getActiveLabel = () => {
     if (activePreset === 'custom') return 'Custom Range';
-    const preset = presets.find(p => p.name === activePreset);
+    const preset = presets.find((p) => p.name === activePreset);
     return preset ? preset.label : 'Select Range';
   };
 
@@ -117,17 +131,17 @@ function DateRangePicker({ from, to, onChange }) {
 
         {showDropdown && (
           <div className="absolute z-20 mt-1 w-full bg-white dark:bg-gray-800 rounded-lg shadow-xl border border-gray-200 dark:border-gray-700 overflow-hidden">
-            {presets.map(({ days, label, name }) => (
+            {presets.map((preset) => (
               <button
-                key={name}
-                onClick={() => handlePresetClick(days, name)}
+                key={preset.name}
+                onClick={() => handlePresetClick(preset)}
                 className={`w-full px-3 py-2 text-xs text-left hover:bg-gray-50 dark:hover:bg-gray-700/50 transition-colors ${
-                  activePreset === name
+                  activePreset === preset.name
                     ? 'bg-primary-50 dark:bg-primary-900/20 text-primary-600 dark:text-primary-400 font-medium'
                     : 'text-gray-700 dark:text-gray-300'
                 }`}
               >
-                {label}
+                {preset.label}
               </button>
             ))}
             <button
@@ -144,7 +158,7 @@ function DateRangePicker({ from, to, onChange }) {
           </div>
         )}
       </div>
-      
+
       {showCustom && (
         <div className="flex flex-col gap-2 p-3 bg-gradient-to-r from-gray-50 to-gray-100 dark:from-gray-800 dark:to-gray-800/50 rounded-lg border border-gray-200 dark:border-gray-700">
           <div className="grid grid-cols-2 gap-2">
@@ -184,7 +198,7 @@ function DateRangePicker({ from, to, onChange }) {
           </div>
         </div>
       )}
-      
+
       <p className="text-[10px] text-gray-500 dark:text-gray-400 flex items-center gap-1">
         <span>Selected:</span>
         <span className="font-medium text-gray-700 dark:text-gray-300">{from}</span>
