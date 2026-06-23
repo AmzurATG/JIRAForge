@@ -114,7 +114,7 @@ function DashboardPage() {
         />
         {dashboardData?.summary?.totalNeutralHours !== undefined && (
           <KPICard
-            title="Total Neutral Hours"
+            title="Total Unknown Hours"
             value={dashboardData.summary.totalNeutralHours.toFixed(2)}
             subtitle="Unclassified / private — outside the ratio"
             icon={CircleDashed}

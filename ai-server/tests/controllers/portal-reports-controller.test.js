@@ -1,14 +1,18 @@
 'use strict';
 
 /**
- * Portal reports controller — CSV column additions (AC-B3, AC-C5) and the
- * viewer role check. New columns are appended, never reordered.
- * Plan: plan/2026-06-10_web-productivity-portal_ux-improvements.md
+ * Portal reports controller — per-category hours+% columns, legal/tracked/
+ * attainment on the employee summary, "Neutral" surfaced as "Unknown", and the
+ * viewer role check.
+ * Plans:
+ *   plan/2026-06-10_web-productivity-portal_ux-improvements.md (location filter)
+ *   plan/2026-06-23_web-productivity-portal_holidays-legal-hours-and-category-percentages.md
  */
 
 jest.mock('../../src/services/portal-service');
 jest.mock('../../src/services/portal-lob-service');
 jest.mock('../../src/services/portal-employee-profile-service');
+jest.mock('../../src/services/portal-holiday-service');
 jest.mock('../../src/utils/logger', () => ({
   info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn(),
 }));
@@ -16,6 +20,7 @@ jest.mock('../../src/utils/logger', () => ({
 const ExcelJS = require('exceljs');
 const portalService = require('../../src/services/portal-service');
 const profileService = require('../../src/services/portal-employee-profile-service');
+const holidayService = require('../../src/services/portal-holiday-service');
 const ctrl = require('../../src/controllers/portal-reports-controller');
 
 function makeRes() {
@@ -35,10 +40,12 @@ beforeEach(() => {
   delete process.env.PORTAL_LOB_ENFORCEMENT; // scoping off → no LOB resolution
   // Default: no location filter → scope passes through unchanged.
   profileService.applyLocationScope.mockImplementation(async (ids) => ids);
+  // Legal hours fixed for the employee-summary report (2 working days × 9 = 18).
+  holidayService.legalHours.mockResolvedValue(18);
 });
 
-describe('exportCSV — appended columns', () => {
-  test('daily-summary CSV appends Neutral/Idle after the original columns (AC-C5)', async () => {
+describe('exportCSV — per-category hours + percentages', () => {
+  test('daily-summary: each category shows Hours and %, no Productivity % column, Unknown label', async () => {
     portalService.getDashboardData.mockResolvedValue({
       summary: {},
       dailyTrend: [{ date: '2026-06-01', productiveHours: 1, nonProductiveHours: 0.5, neutralHours: 0.25, idleHours: 0.1 }],
@@ -48,15 +55,16 @@ describe('exportCSV — appended columns', () => {
     await ctrl.exportCSV(makeReq({ query: { type: 'daily-summary', from: '2026-06-01', to: '2026-06-02' } }), res);
 
     const [header, row] = res._sent.split('\n');
-    expect(header).toBe('Date,Productive Hours,Non-Productive Hours,Total Hours,Productivity %,Neutral Hours,Idle Hours');
-    expect(row).toBe('"2026-06-01",1.00,0.50,1.50,66.7,0.25,0.10');
+    expect(header).toBe('Date,Productive Hours,Productive %,Non-Productive Hours,Non-Productive %,Unknown Hours,Unknown %,Idle Hours,Idle %,Total Hours');
+    // total = 1 + 0.5 + 0.25 + 0.1 = 1.85; %s = each ÷ 1.85, summing to 100.
+    expect(row).toBe('"2026-06-01",1.00,54.1,0.50,27.0,0.25,13.5,0.10,5.4,1.85');
   });
 
-  test('employee-summary CSV appends Location, Neutral, Idle (AC-B3, AC-C5)', async () => {
+  test('employee-summary: per-category Hrs/% + Tracked/Legal/Attainment + Branch (Unknown label)', async () => {
     portalService.getEmployees.mockResolvedValue({
       data: [{
         userId: 'u1', name: 'Jane', email: 'j@x.com',
-        productiveHours: 2, nonProductiveHours: 1, productivityPercentage: 66.7,
+        productiveHours: 2, nonProductiveHours: 1,
         neutralHours: 0.5, idleHours: 0.2,
         location: { id: 'loc1', name: 'Hyderabad' },
       }],
@@ -67,9 +75,28 @@ describe('exportCSV — appended columns', () => {
     await ctrl.exportCSV(makeReq({ query: { type: 'employee-summary', from: '2026-06-01', to: '2026-06-02' } }), res);
 
     const [header, row] = res._sent.split('\n');
-    expect(header).toBe('Employee Name,Email,Productive Hours,Non-Productive Hours,Total Hours,Productivity %,Location,Neutral Hours,Idle Hours');
-    expect(row).toContain('"Hyderabad"');
-    expect(row).toContain('0.50,0.20');
+    expect(header).toBe('Employee Name,Email,Productive Hours,Productive %,Non-Productive Hours,Non-Productive %,Unknown Hours,Unknown %,Idle Hours,Idle %,Tracked Hours,Legal Hours,Attainment %,Branch');
+    // total = 3.7; tracked = 2 + 1 + 0.5 = 3.5; attainment = 3.5 / 18 = 19.4%.
+    expect(row).toBe('"Jane","j@x.com",2.00,54.1,1.00,27.0,0.50,13.5,0.20,5.4,3.50,18.00,19.4,"Hyderabad"');
+    expect(holidayService.legalHours).toHaveBeenCalledWith('2026-06-01', '2026-06-02');
+  });
+
+  test('employee-summary degrades to Legal=0 when the holiday lookup fails (migration not applied)', async () => {
+    portalService.getEmployees.mockResolvedValue({
+      data: [{
+        userId: 'u1', name: 'Jane', email: 'j@x.com',
+        productiveHours: 2, nonProductiveHours: 1, neutralHours: 0.5, idleHours: 0.2, location: null,
+      }],
+      pagination: { page: 1, limit: 1000, totalCount: 1 },
+    });
+    holidayService.legalHours.mockRejectedValue(new Error('relation "portal_holidays" does not exist'));
+
+    const res = makeRes();
+    await ctrl.exportCSV(makeReq({ query: { type: 'employee-summary', from: '2026-06-01', to: '2026-06-02' } }), res);
+
+    expect(res._status).toBe(200); // report still renders
+    const [, row] = res._sent.split('\n');
+    expect(row).toContain('3.50,0.00,0.0,'); // Tracked 3.50, Legal 0.00, Attainment 0.0
   });
 });
 
@@ -88,7 +115,7 @@ describe('location filter narrows report scope', () => {
 });
 
 describe('exportExcel — real .xlsx workbook', () => {
-  test('daily-summary: xlsx headers + numeric cells, correct content type', async () => {
+  test('daily-summary: xlsx headers + numeric Hrs/% cells, correct content type', async () => {
     portalService.getDashboardData.mockResolvedValue({
       summary: {},
       dailyTrend: [{ date: '2026-06-01', productiveHours: 1, nonProductiveHours: 0.5, neutralHours: 0.25, idleHours: 0.1 }],
@@ -104,23 +131,23 @@ describe('exportExcel — real .xlsx workbook', () => {
     await workbook.xlsx.load(res._sent);
     const sheet = workbook.getWorksheet('Daily Summary');
     expect(sheet).toBeTruthy();
-    // Header row mirrors the CSV columns (appended, never reordered).
     expect(sheet.getRow(1).values.slice(1)).toEqual([
-      'Date', 'Productive Hours', 'Non-Productive Hours', 'Total Hours', 'Productivity %', 'Neutral Hours', 'Idle Hours',
+      'Date', 'Productive Hours', 'Productive %', 'Non-Productive Hours', 'Non-Productive %',
+      'Unknown Hours', 'Unknown %', 'Idle Hours', 'Idle %', 'Total Hours',
     ]);
-    // Data cells are real numbers (summable in Excel), not strings.
+    // Real numbers (summable in Excel), not strings.
     expect(sheet.getCell('A2').value).toBe('2026-06-01');
-    expect(sheet.getCell('B2').value).toBe(1);
-    expect(sheet.getCell('D2').value).toBe(1.5);
-    expect(sheet.getCell('F2').value).toBe(0.25);
-    expect(sheet.getCell('G2').value).toBeCloseTo(0.1);
+    expect(sheet.getCell('B2').value).toBe(1);       // Productive Hours
+    expect(sheet.getCell('C2').value).toBeCloseTo(54.1); // Productive %
+    expect(sheet.getCell('F2').value).toBe(0.25);    // Unknown Hours
+    expect(sheet.getCell('J2').value).toBe(1.85);    // Total Hours
   });
 
-  test('employee-summary: includes Location, Neutral, Idle columns', async () => {
+  test('employee-summary: includes Hrs/%, Tracked/Legal/Attainment and Branch', async () => {
     portalService.getEmployees.mockResolvedValue({
       data: [{
         userId: 'u1', name: 'Jane', email: 'j@x.com',
-        productiveHours: 2, nonProductiveHours: 1, productivityPercentage: 66.7,
+        productiveHours: 2, nonProductiveHours: 1,
         neutralHours: 0.5, idleHours: 0.2,
         location: { id: 'loc1', name: 'Hyderabad' },
       }],
@@ -134,11 +161,14 @@ describe('exportExcel — real .xlsx workbook', () => {
     await workbook.xlsx.load(res._sent);
     const sheet = workbook.getWorksheet('Employee Summary');
     expect(sheet.getRow(1).values.slice(1)).toEqual([
-      'Employee Name', 'Email', 'Productive Hours', 'Non-Productive Hours', 'Total Hours', 'Productivity %', 'Location', 'Neutral Hours', 'Idle Hours',
+      'Employee Name', 'Email', 'Productive Hours', 'Productive %', 'Non-Productive Hours', 'Non-Productive %',
+      'Unknown Hours', 'Unknown %', 'Idle Hours', 'Idle %', 'Tracked Hours', 'Legal Hours', 'Attainment %', 'Branch',
     ]);
     expect(sheet.getCell('A2').value).toBe('Jane');
-    expect(sheet.getCell('G2').value).toBe('Hyderabad');
-    expect(sheet.getCell('H2').value).toBe(0.5);
+    expect(sheet.getCell('G2').value).toBe(0.5);  // Unknown Hours
+    expect(sheet.getCell('K2').value).toBe(3.5);  // Tracked Hours
+    expect(sheet.getCell('L2').value).toBe(18);   // Legal Hours
+    expect(sheet.getCell('N2').value).toBe('Hyderabad'); // Branch
   });
 
   test('unsupported type → 400', async () => {

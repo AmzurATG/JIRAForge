@@ -217,7 +217,7 @@ function EmployeeDetailPage() {
           variant="danger"
         />
         <KPICard
-          title="Neutral Hours"
+          title="Unknown Hours"
           value={employeeDetail?.summary?.neutralHours?.toFixed(2) || '0.00'}
           subtitle="Unclassified / private — outside the ratio"
           icon={CircleDashed}
@@ -289,7 +289,7 @@ function EmployeeDetailPage() {
                 : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-200'
             }`}
           >
-            Neutral
+            Unknown
           </button>
         </div>
         
