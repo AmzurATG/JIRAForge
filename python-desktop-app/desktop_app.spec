@@ -271,6 +271,16 @@ try:
     dynamic_hiddenimports += collect_submodules('presidio_anonymizer')
 except Exception:
     print("[WARN] Could not collect presidio submodules")
+# tqdm is a transitive RUNTIME dependency of Presidio (progress bars in the
+# recognizer registry / model loaders). PyInstaller does NOT auto-detect it, so
+# the frozen app failed at import with "No module named 'tqdm'" and Presidio
+# silently fell back to DEGRADED regex-only PII detection (NER for names/
+# addresses/phones + credit-card Luhn validation DISABLED). Bundle it explicitly
+# to restore full Presidio PII detection in the frozen build.
+try:
+    dynamic_hiddenimports += collect_submodules('tqdm')
+except Exception:
+    print("[WARN] Could not collect tqdm submodules")
 dynamic_hiddenimports += collect_submodules('supabase')
 dynamic_hiddenimports += collect_submodules('keyring')
 dynamic_hiddenimports += collect_submodules('pynput')

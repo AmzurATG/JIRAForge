@@ -56,7 +56,7 @@ app.set('trust proxy', 1);
 // CORS_ALLOWED_ORIGIN accepts a single origin OR a comma-separated list, so the
 // separately-deployed portal frontend (Vercel) plus any preview/custom domains
 // can all be whitelisted via env without a code change. Example:
-//   CORS_ALLOWED_ORIGIN=https://jira-forge-ualc.vercel.app,https://portal.amzur.com
+//   CORS_ALLOWED_ORIGIN=https://myworkmate.amzur.com
 const allowedOrigins = [
   // Production domains (set via env)
   process.env.AI_SERVER_URL,

@@ -37,7 +37,18 @@
   #define MyAppServerUrl "https://timetracker-forge.amzur.com"
 #endif
 
+; DISPLAY-NAME SPLIT (rebrand to "MyWorkMate"):
+;   MyAppName        = FUNCTIONAL identity. Keep "TimeTracker" — it drives the
+;                      install dir, HKLM registry subkey, the HKCU Run-key VALUE
+;                      NAME (must match desktop_app.py APP_NAME / its reg-delete),
+;                      and the ProgramData/AppData paths. Changing it would break
+;                      in-place auto-update and orphan existing installs.
+;   MyAppDisplayName = what USERS see (wizard, Start Menu, Add/Remove Programs).
+;                      Safe to rebrand; updated in place on upgrade via the fixed
+;                      AppId, so existing users migrate seamlessly (no re-login,
+;                      no data move).
 #define MyAppName        "TimeTracker"
+#define MyAppDisplayName "MyWorkMate"
 #define MyAppPublisher   "Amzur Technologies"
 #define MyAppExeName     "TimeTracker.exe"
 #define MyUpdateTaskName "TimeTracker Updater"
@@ -46,12 +57,15 @@
 ; Stable unique identifier for this product (keep constant across versions so
 ; upgrades replace in place and Add/Remove Programs tracks it correctly).
 AppId={{0302495E-0DC4-460E-85CE-92C26EFE0FF0}}
-AppName={#MyAppName}
+AppName={#MyAppDisplayName}
 AppVersion={#MyAppVersion}
 AppPublisher={#MyAppPublisher}
 ; Install per-machine into Program Files (the trusted location).
+; NOTE: DefaultDirName stays {#MyAppName} (TimeTracker) on purpose — the install
+; path is a functional identifier the app/updater depend on. With the fixed AppId,
+; existing installs upgrade IN PLACE to this same folder regardless of this value.
 DefaultDirName={autopf}\{#MyAppName}
-DefaultGroupName={#MyAppName}
+DefaultGroupName={#MyAppDisplayName}
 DisableProgramGroupPage=yes
 ; Streamlined install: don't ask the user anything — just install to the default
 ; Program Files location. (Forcing Program Files is also required so the install
@@ -75,7 +89,7 @@ WizardStyle=modern
 ; Close a running TimeTracker during install/upgrade and restart it afterwards.
 CloseApplications=yes
 RestartApplications=yes
-UninstallDisplayName={#MyAppName}
+UninstallDisplayName={#MyAppDisplayName}
 UninstallDisplayIcon={app}\{#MyAppExeName}
 
 [Languages]
@@ -90,8 +104,8 @@ Source: "update_service.ps1"; DestDir: "{app}"; Flags: ignoreversion
 Source: "clear_credentials.ps1"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
-Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
-Name: "{group}\Uninstall {#MyAppName}"; Filename: "{uninstallexe}"
+Name: "{group}\{#MyAppDisplayName}"; Filename: "{app}\{#MyAppExeName}"
+Name: "{group}\Uninstall {#MyAppDisplayName}"; Filename: "{uninstallexe}"
 
 [Registry]
 ; Record install dir machine-wide so other tooling (and the updater) can find it.
@@ -215,4 +229,17 @@ begin
        SW_HIDE, ewWaitUntilTerminated, ResultCode);
   Sleep(2000);   // give Windows a moment to release the file handles
   Result := '';  // empty string => proceed with installation
+end;
+
+// Rebrand cleanup (display-name split TimeTracker -> MyWorkMate). The Start Menu
+// group was renamed, so on upgrade from an old "TimeTracker"-named build the old
+// program group would linger beside the new "MyWorkMate" one. Remove the stale
+// old group after the new shortcuts are created. Cosmetic only: Start Menu
+// shortcuts carry no user data and are recreated by [Icons] above. On a fresh
+// machine this is a harmless no-op. The new group differs ({#MyAppDisplayName}),
+// so this never deletes the shortcuts we just created.
+procedure CurStepChanged(CurStep: TSetupStep);
+begin
+  if CurStep = ssPostInstall then
+    DelTree(ExpandConstant('{commonprograms}\TimeTracker'), True, True, True);
 end;
