@@ -85,14 +85,31 @@ class DqNudgePopupWindow:
             pass
 
         win.update_idletasks()
-        screen_w = win.winfo_screenwidth()
-        screen_h = win.winfo_screenheight()
+        try:
+            import ctypes
+            user32 = ctypes.windll.user32
+            screen_w = user32.GetSystemMetrics(0)
+            screen_h = user32.GetSystemMetrics(1)
+        except Exception:
+            screen_w = win.winfo_screenwidth()
+            screen_h = win.winfo_screenheight()
+
         width = min(DEFAULT_WIDTH, max(MIN_WIDTH, int(screen_w * 0.8)))
         height = min(DEFAULT_HEIGHT, max(MIN_HEIGHT, int(screen_h * 0.75)))
         
-        # Let the OS window manager handle placement naturally. 
-        # Explicit +x+y offsets or tk::PlaceWindow often fail in multi-monitor high-DPI Windows setups.
-        win.geometry(f'{width}x{height}')
+        # Calculate physical pixels for proper centering on DPI-scaled monitors
+        try:
+            scaling = win._get_window_scaling()
+        except Exception:
+            scaling = 1.0
+            
+        actual_width = int(width * scaling)
+        actual_height = int(height * scaling)
+        
+        # Explicit robust centering on the primary monitor using calculated physical offsets
+        x = max(0, int((screen_w / 2) - (actual_width / 2)))
+        y = max(0, int((screen_h / 2) - (actual_height / 2)))
+        win.geometry(f'{width}x{height}+{x}+{y}')
 
         win.configure(fg_color="#1d232a") # Dark background matching mock
 
@@ -123,7 +140,7 @@ class DqNudgePopupWindow:
         sort_dropdown = ctk.CTkOptionMenu(
             sort_frame,
             variable=self.sort_var,
-            values=["Score: Low to High", "Score: High to Low", "Newest", "Oldest"],
+            values=["Score: Low to High", "Score: High to Low"],
             command=self._on_sort_change,
             fg_color="#2a303c",
             button_color="#2a303c",
@@ -159,10 +176,6 @@ class DqNudgePopupWindow:
             self.nudges.sort(key=lambda n: n.get('score', 0))
         elif sort_type == "Score: High to Low":
             self.nudges.sort(key=lambda n: n.get('score', 0), reverse=True)
-        elif sort_type == "Newest":
-            self.nudges.sort(key=lambda n: n.get('id', 0), reverse=True)
-        elif sort_type == "Oldest":
-            self.nudges.sort(key=lambda n: n.get('id', 0))
 
     def _render_nudges(self) -> None:
         for widget in self.scrollable_frame.winfo_children():
