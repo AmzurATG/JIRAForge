@@ -105,7 +105,9 @@ function mapNudgeRow({ row, liveCandidate = null, jiraBaseUrl = null }) {
     summary: liveCandidate?.summary || payload.summary || null,
     issueUrl: liveCandidate?.issueUrl || payload.issueUrl || buildIssueUrl(jiraBaseUrl, issueKey),
     appUrl: payload.appUrl || null,
-    notifiedAt: row.notified_at
+    notifiedAt: row.notified_at,
+    issues: liveCandidate?.issues || payload.issues || [],
+    suggestions: liveCandidate?.suggestions || payload.suggestions || []
   };
 }
 
@@ -167,7 +169,9 @@ async function analyzeLiveIssues({ orgId, accountId, jiraBaseUrl, issues }) {
       score,
       summary: String(fields.summary || '').trim() || null,
       issueUrl: buildIssueUrl(jiraBaseUrl, issueKey),
-      appUrl: null
+      appUrl: null,
+      issues: result?.issues || [],
+      suggestions: result?.suggestions || []
     });
   }
 
@@ -259,7 +263,9 @@ async function syncLiveDesktopNudges({ caller, atlassianToken, limit = MAX_PENDI
         summary: candidate.summary,
         issueUrl: candidate.issueUrl,
         appUrl: candidate.appUrl,
-        createdAt: new Date().toISOString()
+        createdAt: new Date().toISOString(),
+        issues: candidate.issues || [],
+        suggestions: candidate.suggestions || []
       }
     });
 
@@ -323,7 +329,11 @@ async function refreshScoresForManualTrigger({ orgId, accountId, cachedIssues })
 
       const score = normalizeScore(result?.score);
       if (score !== null) {
-        freshScoreByIssue.set(row.issue_key, score);
+        freshScoreByIssue.set(row.issue_key, {
+          score,
+          issues: result?.issues || [],
+          suggestions: result?.suggestions || []
+        });
         logger.debug('[DesktopDqNudges] Trigger refresh %s: %d', row.issue_key, score);
       }
       refreshCount += 1;
@@ -461,7 +471,9 @@ router.get('/', async (req, res) => {
         summary: payload.summary || null,
         issueUrl: payload.issueUrl || null,
         appUrl: payload.appUrl || null,
-        notifiedAt: row.notified_at
+        notifiedAt: row.notified_at,
+        issues: payload.issues || [],
+        suggestions: payload.suggestions || []
       });
     }
 
@@ -608,15 +620,20 @@ router.post('/sync-recent-unassigned', async (req, res) => {
     });
 
     const mergedScores = new Map(cachedScores);
-    for (const [issueKey, score] of freshScores.entries()) {
-      mergedScores.set(issueKey, score);
+    for (const [issueKey, data] of freshScores.entries()) {
+      mergedScores.set(issueKey, data);
     }
 
     const scoreRows = [];
-    for (const [issueKey, score] of mergedScores.entries()) {
-      const numScore = Number(score);
+    for (const [issueKey, val] of mergedScores.entries()) {
+      const numScore = Number(typeof val === 'object' ? val.score : val);
       if (Number.isFinite(numScore) && numScore < MIN_NUDGE_SCORE) {
-        scoreRows.push({ issue_key: issueKey, score: numScore });
+        scoreRows.push({ 
+          issue_key: issueKey, 
+          score: numScore,
+          issues: typeof val === 'object' ? val.issues : [],
+          suggestions: typeof val === 'object' ? val.suggestions : []
+        });
       }
     }
     scoreRows.sort((a, b) => a.score - b.score);
@@ -661,7 +678,9 @@ router.post('/sync-recent-unassigned', async (req, res) => {
           summary: summaryByIssue.get(issueKey) || null,
           issueUrl: buildIssueUrl(caller.jiraBaseUrl, issueKey),
           appUrl: null,
-          createdAt: new Date().toISOString()
+          createdAt: new Date().toISOString(),
+          issues: row.issues || [],
+          suggestions: row.suggestions || []
         }
       });
 

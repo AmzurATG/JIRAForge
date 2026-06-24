@@ -1,59 +1,39 @@
 """Tkinter popup window for description-quality nudges (Enhancement #13)."""
 
+import json
 import logging
 import threading
 import tkinter as tk
 import webbrowser
 from datetime import datetime, timedelta, timezone
 from typing import Callable, List, Optional
+import customtkinter as ctk
 
 logger = logging.getLogger(__name__)
 
 SNOOZE_HOURS = 1
 
-# Color palette and sizing tuned for readability and low visual noise.
-BG = '#171a1f'
-SURFACE = '#1f242c'
-SURFACE_ALT = '#262d38'
-SURFACE_HOVER = '#2b3340'
-BORDER = '#313a47'
-HEADER_BG = '#141820'
-PRIMARY = '#3f8cff'
-PRIMARY_HOVER = '#5a9dff'
-DANGER = '#e66b6b'
-DANGER_HOVER = '#f07e7e'
-LINK = '#dbe7ff'
-LINK_HOVER = '#5a9dff'
-TXT_PRI = '#eef2f7'
-TXT_SEC = '#9ca8ba'
-TXT_MUTED = '#8693a9'
+# Configure CustomTkinter default appearance
+ctk.set_appearance_mode("System")
+ctk.set_default_color_theme("blue")
+ctk.set_widget_scaling(1.0)
+ctk.set_window_scaling(1.0)
 
-MIN_WIDTH = 760
-MIN_HEIGHT = 320
-DEFAULT_WIDTH = 860
-DEFAULT_HEIGHT = 440
-CARD_PAD = 16
-
+MIN_WIDTH = 1000
+MIN_HEIGHT = 600
+DEFAULT_WIDTH = 1200
+DEFAULT_HEIGHT = 800
 
 def _score_color(score: int) -> str:
     if score < 40:
-        return '#ff8585'
+        return '#ff4d4d' # Red
     if score < 70:
-        return '#f1cc6d'
-    return '#7bd99d'
-
-
-def _score_badge_bg(score: int) -> str:
-    if score < 40:
-        return '#3a2428'
-    if score < 70:
-        return '#38311f'
-    return '#203329'
-
+        return '#f5a623' # Orange
+    return '#28a745'     # Green
 
 class DqNudgePopupWindow:
     """
-    Single-shot popup. Pass `nudges` (list of dicts with at least
+    Single-shot popup using CustomTkinter. Pass `nudges` (list of dicts with at least
     {id, issueKey, score, summary, issueUrl, appUrl}) and the auth_manager
     so the popup can fire-and-forget acknowledgements via ack_client.
     """
@@ -69,14 +49,12 @@ class DqNudgePopupWindow:
         self._ack = ack_callback
         self._disable_popup = disable_popup_callback or (lambda: False)
         self._parent_root = parent_root
-        self._window: Optional[tk.Tk] = None
-        self._count_label: Optional[tk.Label] = None
+        self._window: Optional[ctk.CTk] = None
+        self._count_label: Optional[ctk.CTkLabel] = None
         self._owns_root = False
         self._ui_thread: Optional[threading.Thread] = None
 
-    # ------------------------------------------------------------------
     def show(self) -> None:
-        """Build and show the popup on a dedicated Tk thread."""
         if not self.nudges:
             return
         if self._ui_thread and self._ui_thread.is_alive():
@@ -91,18 +69,13 @@ class DqNudgePopupWindow:
             args=([n['id'] for n in self.nudges], 'viewed', None),
             daemon=True,
         ).start()
-        # Always own the root because this thread creates a fresh Tk instance.
         self._window.mainloop()
 
-    # ------------------------------------------------------------------
-    def _create_window(self) -> tk.Tk:
-        # Using tk._default_root / Toplevel from this background thread can
-        # fail when pystray owns the real main thread, so create a fresh root.
-        win = tk.Tk()
+    def _create_window(self) -> ctk.CTk:
+        win = ctk.CTk()
         self._owns_root = True
 
         win.title('Description Quality Nudges')
-        win.configure(bg=BG)
         win.attributes('-topmost', True)
         win.resizable(True, True)
         win.minsize(MIN_WIDTH, MIN_HEIGHT)
@@ -111,68 +84,96 @@ class DqNudgePopupWindow:
         except Exception:
             pass
 
+        win.update_idletasks()
         screen_w = win.winfo_screenwidth()
         screen_h = win.winfo_screenheight()
         width = min(DEFAULT_WIDTH, max(MIN_WIDTH, int(screen_w * 0.8)))
         height = min(DEFAULT_HEIGHT, max(MIN_HEIGHT, int(screen_h * 0.75)))
-        x = max(0, (screen_w - width) // 2)
-        y = max(0, (screen_h - height) // 2)
-        win.geometry(f'{width}x{height}+{x}+{y}')
+        
+        # Let the OS window manager handle placement naturally. 
+        # Explicit +x+y offsets or tk::PlaceWindow often fail in multi-monitor high-DPI Windows setups.
+        win.geometry(f'{width}x{height}')
 
-        # Keep the OS title bar as the named window header. This in-app strip
-        # only carries the nudge summary so the title is not repeated.
-        hdr = tk.Frame(win, bg=HEADER_BG, pady=0)
-        hdr.pack(fill='x')
+        win.configure(fg_color="#1d232a") # Dark background matching mock
 
-        self._count_label = tk.Label(
+        # Header Frame
+        hdr = ctk.CTkFrame(win, corner_radius=0, fg_color="transparent")
+        hdr.pack(fill='x', padx=30, pady=20)
+
+        self._count_label = ctk.CTkLabel(
             hdr,
             text=self._count_message(),
-            font=('Segoe UI', 10),
-            bg=HEADER_BG,
-            fg=TXT_SEC,
-            padx=18,
-            pady=12,
-            anchor='w',
+            font=ctk.CTkFont(family='Segoe UI', size=14),
+            text_color="#a6adbb"
         )
-        self._count_label.pack(fill='x')
+        self._count_label.pack(side="left")
 
-        tk.Frame(win, bg=BORDER, height=1).pack(fill='x')
+        # Sort Dropdown
+        sort_frame = ctk.CTkFrame(hdr, fg_color="transparent")
+        sort_frame.pack(side="right")
+        
+        ctk.CTkLabel(
+            sort_frame, 
+            text="Sort by:", 
+            font=ctk.CTkFont(family='Segoe UI', size=13),
+            text_color="#a6adbb"
+        ).pack(side="left", padx=(0, 10))
 
-        wrapper = tk.Frame(win, bg=BG)
-        wrapper.pack(fill='both', expand=True, padx=14, pady=(12, 12))
-        wrapper.grid_rowconfigure(0, weight=1)
-        wrapper.grid_columnconfigure(0, weight=1)
+        self.sort_var = ctk.StringVar(value="Score: Low to High")
+        sort_dropdown = ctk.CTkOptionMenu(
+            sort_frame,
+            variable=self.sort_var,
+            values=["Score: Low to High", "Score: High to Low", "Newest", "Oldest"],
+            command=self._on_sort_change,
+            fg_color="#2a303c",
+            button_color="#2a303c",
+            button_hover_color="#3b4252",
+            dropdown_fg_color="#2a303c",
+            dropdown_hover_color="#3b4252",
+            font=ctk.CTkFont(family='Segoe UI', size=13),
+            dropdown_font=ctk.CTkFont(family='Segoe UI', size=13),
+            text_color="#a6adbb",
+            corner_radius=6
+        )
+        sort_dropdown.pack(side="left")
 
-        canvas = tk.Canvas(wrapper, bg=BG, bd=0, highlightthickness=0)
-        canvas.grid(row=0, column=0, sticky='nsew')
+        # Scrollable Frame for Grid
+        self.scrollable_frame = ctk.CTkScrollableFrame(win, fg_color="transparent")
+        self.scrollable_frame.pack(fill='both', expand=True, padx=20, pady=0)
 
-        scrollbar = tk.Scrollbar(wrapper, orient='vertical', command=canvas.yview)
-        scrollbar.grid(row=0, column=1, sticky='ns')
-        canvas.configure(yscrollcommand=scrollbar.set)
+        # Configure 3 columns
+        self.scrollable_frame.grid_columnconfigure((0, 1, 2), weight=1, uniform="col")
 
-        inner = tk.Frame(canvas, bg=BG)
-        canvas_win_id = canvas.create_window((0, 0), window=inner, anchor='nw')
-
-        def _on_inner_configure(event):
-            canvas.configure(scrollregion=canvas.bbox('all'))
-
-        def _on_canvas_configure(event):
-            canvas.itemconfig(canvas_win_id, width=event.width)
-
-        inner.bind('<Configure>', _on_inner_configure)
-        canvas.bind('<Configure>', _on_canvas_configure)
-
-        def _on_mousewheel(event):
-            canvas.yview_scroll(int(-1 * (event.delta / 120)), 'units')
-
-        canvas.bind_all('<MouseWheel>', _on_mousewheel)
-
-        for idx, nudge in enumerate(self.nudges):
-            self._build_nudge_card(inner, nudge, is_last=(idx == len(self.nudges) - 1))
+        # Initial Sort
+        self._sort_nudges("Score: Low to High")
+        self._render_nudges()
 
         return win
 
-    # ------------------------------------------------------------------
+    def _on_sort_change(self, value: str) -> None:
+        self._sort_nudges(value)
+        self._render_nudges()
+
+    def _sort_nudges(self, sort_type: str) -> None:
+        if sort_type == "Score: Low to High":
+            self.nudges.sort(key=lambda n: n.get('score', 0))
+        elif sort_type == "Score: High to Low":
+            self.nudges.sort(key=lambda n: n.get('score', 0), reverse=True)
+        elif sort_type == "Newest":
+            self.nudges.sort(key=lambda n: n.get('id', 0), reverse=True)
+        elif sort_type == "Oldest":
+            self.nudges.sort(key=lambda n: n.get('id', 0))
+
+    def _render_nudges(self) -> None:
+        for widget in self.scrollable_frame.winfo_children():
+            widget.destroy()
+
+        for idx, nudge in enumerate(self.nudges):
+            row = idx // 3
+            col = idx % 3
+            card = self._build_nudge_card(self.scrollable_frame, nudge)
+            card.grid(row=row, column=col, padx=10, pady=10, sticky="nsew")
+
     def _close_window(self) -> None:
         win = self._window
         if win is None:
@@ -185,200 +186,166 @@ class DqNudgePopupWindow:
         finally:
             self._window = None
 
-    # ------------------------------------------------------------------
-    @staticmethod
-    def _make_button(parent, text, cmd, variant='primary', padx=14, pady=7):
-        if variant == 'primary':
-            bg = PRIMARY
-            hover_bg = PRIMARY_HOVER
-            fg = '#ffffff'
-            bd = 0
-            relief = 'flat'
-            active_fg = '#ffffff'
-        elif variant == 'danger-ghost':
-            bg = SURFACE
-            hover_bg = '#3a2a2a'
-            fg = DANGER
-            bd = 1
-            relief = 'solid'
-            active_fg = '#ffd9d9'
-        else:
-            bg = SURFACE
-            hover_bg = '#2b323e'
-            fg = TXT_SEC
-            bd = 1
-            relief = 'solid'
-            active_fg = TXT_PRI
-
-        btn = tk.Button(
-            parent,
-            text=text,
-            font=('Segoe UI', 9, 'bold'),
-            bg=bg,
-            fg=fg,
-            bd=bd,
-            relief=relief,
-            cursor='hand2',
-            activebackground=hover_bg,
-            activeforeground=active_fg,
-            highlightthickness=0,
-            padx=padx,
-            pady=pady,
-            command=cmd,
-        )
-        btn.bind('<Enter>', lambda e: btn.config(bg=hover_bg))
-        btn.bind('<Leave>', lambda e: btn.config(bg=bg))
-        return btn
-
     def _count_message(self) -> str:
         count = len(self.nudges)
         if count == 1:
             return '1 ticket needs a better description. Open it in Jira from the title.'
         return f'{count} tickets need better descriptions. Open them in Jira from each title.'
 
-    @staticmethod
-    def _pointer_inside(widget: tk.Widget) -> bool:
-        try:
-            x = widget.winfo_pointerx()
-            y = widget.winfo_pointery()
-            left = widget.winfo_rootx()
-            top = widget.winfo_rooty()
-            return left <= x <= left + widget.winfo_width() and top <= y <= top + widget.winfo_height()
-        except Exception:
-            return False
+    def _parse_ai_feedback(self, nudge: dict):
+        suggestions = nudge.get('suggestions')
+        issues = nudge.get('issues')
+        
+        if not suggestions or not issues:
+            for key in ['aiFeedback', 'feedback', 'result', 'data']:
+                val = nudge.get(key)
+                if isinstance(val, dict):
+                    if not suggestions: suggestions = val.get('suggestions')
+                    if not issues: issues = val.get('issues')
+                elif isinstance(val, str):
+                    try:
+                        parsed = json.loads(val)
+                        if not suggestions: suggestions = parsed.get('suggestions')
+                        if not issues: issues = parsed.get('issues')
+                    except Exception:
+                        pass
 
-    @staticmethod
-    def _bind_tree(widget: tk.Widget, sequence: str, callback) -> None:
-        try:
-            widget.bind(sequence, callback, add='+')
-            for child in widget.winfo_children():
-                DqNudgePopupWindow._bind_tree(child, sequence, callback)
-        except Exception:
-            pass
+        return issues or [], suggestions or []
 
-    @staticmethod
-    def _layout_action_buttons(btn_row, open_btn, snooze_btn, dismiss_btn) -> None:
-        """Legacy helper retained for tests and old callers."""
-        for btn in (open_btn, snooze_btn, dismiss_btn):
-            try:
-                btn.pack_forget()
-            except Exception:
-                pass
-
-        try:
-            row_width = int(btn_row.winfo_width())
-        except Exception:
-            row_width = 0
-
-        if row_width < 560:
-            open_btn.pack(side='top', fill='x', pady=(0, 6))
-            snooze_btn.pack(side='top', fill='x', pady=(0, 6))
-            dismiss_btn.pack(side='top', fill='x')
-            return
-
-        open_btn.pack(side='left')
-        snooze_btn.pack(side='left', padx=(10, 0))
-        dismiss_btn.pack(side='right')
-
-    def _build_nudge_card(self, parent: tk.Frame, nudge: dict, is_last: bool) -> None:
-        group = tk.Frame(parent, bg=BG)
-        group.pack(fill='x', padx=2, pady=(0, 10 if is_last else 0))
-
-        card = tk.Frame(
-            group,
-            bg=SURFACE_ALT,
-            padx=CARD_PAD,
-            pady=CARD_PAD,
-            highlightthickness=1,
-            highlightbackground=BORDER,
-            highlightcolor=BORDER,
+    def _build_nudge_card(self, parent: ctk.CTkScrollableFrame, nudge: dict) -> ctk.CTkFrame:
+        card = ctk.CTkFrame(
+            parent,
+            fg_color="#2a303c",
+            corner_radius=12
         )
-        card.pack(fill='x')
 
-        top_row = tk.Frame(card, bg=SURFACE_ALT)
-        top_row.pack(fill='x')
+        # Header Row: Key + Radial Gauge
+        top_row = ctk.CTkFrame(card, fg_color="transparent")
+        top_row.pack(fill='x', padx=20, pady=(20, 10))
 
-        meta_row = tk.Frame(top_row, bg=SURFACE_ALT)
-        meta_row.pack(side='left', fill='x', expand=True)
-
+        # Left side: Icon + Issue Key
+        key_frame = ctk.CTkFrame(top_row, fg_color="transparent")
+        key_frame.pack(side='left', anchor='nw')
+        
         issue_key = nudge.get('issueKey', '?')
-        issue_label = tk.Label(
-            meta_row,
+        ctk.CTkLabel(
+            key_frame, 
+            text="🔷", 
+            font=ctk.CTkFont(size=14)
+        ).pack(side='left', padx=(0, 6))
+        
+        issue_link = ctk.CTkLabel(
+            key_frame,
             text=issue_key,
-            font=('Segoe UI', 10, 'bold'),
-            bg=SURFACE_ALT,
-            fg=TXT_PRI,
+            font=ctk.CTkFont(family='Segoe UI', size=14, weight='bold', underline=True),
+            text_color="#3abff8",
+            cursor="hand2"
         )
-        issue_label.pack(side='left')
+        issue_link.pack(side='left')
+        issue_link.bind('<Button-1>', lambda e, n=nudge: self._on_open(n))
 
-        score = nudge.get('score')
-        if isinstance(score, (int, float)):
-            sc = int(score)
-            tk.Label(
-                meta_row,
-                text=f'{sc}/100',
-                font=('Segoe UI', 9, 'bold'),
-                bg=_score_badge_bg(sc),
-                fg=_score_color(sc),
-                padx=8,
-                pady=2,
-            ).pack(side='left', padx=(10, 0))
+        # Right side: Radial Gauge & Score
+        score = nudge.get('score', 0)
+        gauge_color = _score_color(score)
+        
+        gauge_frame = ctk.CTkFrame(top_row, fg_color="transparent")
+        gauge_frame.pack(side='right', anchor='ne')
+        
+        # Draw arc within Canvas to prevent clipping text
+        canvas_width = 64
+        canvas_height = 36
+        canvas = tk.Canvas(gauge_frame, width=canvas_width, height=canvas_height, bg="#2a303c", highlightthickness=0)
+        canvas.pack(side="top")
+        
+        pad = 4
+        bbox = (pad, pad, canvas_width - pad, (canvas_height * 2) - pad)
+        canvas.create_arc(bbox, start=0, extent=180, style="arc", outline="#3b4252", width=6)
+        extent = - (score / 100.0) * 180
+        canvas.create_arc(bbox, start=180, extent=extent, style="arc", outline=gauge_color, width=6)
+        
+        # Render text natively in CustomTkinter below the arc to avoid massive Tkinter Canvas fonts
+        ctk.CTkLabel(
+            gauge_frame,
+            text=f"{score}/100",
+            font=ctk.CTkFont(family='Segoe UI', size=14, weight='bold'),
+            text_color=gauge_color
+        ).pack(side="top", pady=(0, 0))
 
-        hover_bg_widgets = [top_row, meta_row, issue_label]
+        # Title
+        summary = nudge.get('summary') or 'No Title'
+        ctk.CTkLabel(
+            card,
+            text=summary,
+            font=ctk.CTkFont(family='Segoe UI', size=16, weight='bold'),
+            text_color="#ffffff",
+            wraplength=320,
+            justify='left',
+            anchor='w'
+        ).pack(fill='x', padx=20, pady=(0, 8))
 
-        summary = nudge.get('summary') or ''
-        if summary:
-            summary_label = tk.Label(
-                card,
-                text=summary,
-                font=('Segoe UI', 10),
-                bg=SURFACE_ALT,
-                fg=LINK,
-                wraplength=620,
-                justify='left',
-                anchor='w',
-                cursor='hand2',
-            )
-            summary_label.pack(fill='x', pady=(8, 0))
-            hover_bg_widgets.append(summary_label)
-            summary_label.bind('<Button-1>', lambda e, n=nudge: self._on_open(n))
-            summary_label.bind(
-                '<Enter>',
-                lambda e, lbl=summary_label: lbl.config(fg=LINK_HOVER, font=('Segoe UI', 10, 'underline')),
-            )
-            summary_label.bind(
-                '<Leave>',
-                lambda e, lbl=summary_label: lbl.config(fg=LINK, font=('Segoe UI', 10)),
-            )
+        # Parse Feedback
+        issues, suggestions = self._parse_ai_feedback(nudge)
 
-            def _update_wrap(event):
-                summary_label.configure(wraplength=max(280, event.width - 24))
+        # Subtitle (First issue) - Ensure we don't repeat the title
+        if issues:
+            first_issue = str(issues[0])
+            if first_issue.strip() != summary.strip():
+                ctk.CTkLabel(
+                    card,
+                    text=first_issue,
+                    font=ctk.CTkFont(family='Segoe UI', size=13),
+                    text_color="#a6adbb",
+                    wraplength=320,
+                    justify='left',
+                    anchor='w'
+                ).pack(fill='x', padx=20, pady=(0, 16))
+        else:
+            # Spacer if no subtitle
+            ctk.CTkFrame(card, height=16, fg_color="transparent").pack()
 
-            card.bind('<Configure>', _update_wrap)
+        # Inner feedback box for Suggestions
+        if suggestions:
+            feedback_box = ctk.CTkFrame(card, fg_color="#333b49", corner_radius=8)
+            feedback_box.pack(fill='x', padx=20, pady=(0, 20), expand=True)
 
-        def _show_card_actions(_event=None):
-            try:
-                card.config(bg=SURFACE_HOVER, highlightbackground=PRIMARY, highlightcolor=PRIMARY)
-                for widget in hover_bg_widgets:
-                    widget.config(bg=SURFACE_HOVER)
-            except Exception:
-                pass
+            ctk.CTkLabel(
+                feedback_box,
+                text="💡 Suggestions for Improvement",
+                font=ctk.CTkFont(family='Segoe UI', size=12, weight='bold'),
+                text_color="#a6adbb",
+                anchor='w'
+            ).pack(fill='x', padx=16, pady=(12, 4))
 
-        def _hide_card_actions(_event=None):
-            if self._pointer_inside(card):
-                return
-            try:
-                card.config(bg=SURFACE_ALT, highlightbackground=BORDER, highlightcolor=BORDER)
-                for widget in hover_bg_widgets:
-                    widget.config(bg=SURFACE_ALT)
-            except Exception:
-                pass
+            for sugg in suggestions[:2]: # Show up to 2 suggestions
+                ctk.CTkLabel(
+                    feedback_box,
+                    text=f"• {sugg}",
+                    font=ctk.CTkFont(family='Segoe UI', size=13),
+                    text_color="#eef2f7",
+                    wraplength=280,
+                    justify='left',
+                    anchor='w'
+                ).pack(fill='x', padx=16, pady=(0, 8))
 
-        self._bind_tree(card, '<Enter>', _show_card_actions)
-        self._bind_tree(card, '<Leave>', _hide_card_actions)
+        # Bottom Button
+        btn_frame = ctk.CTkFrame(card, fg_color="transparent")
+        btn_frame.pack(fill='x', padx=20, pady=(0, 20))
+        
+        open_btn = ctk.CTkButton(
+            btn_frame,
+            text="Open Ticket in Jira",
+            font=ctk.CTkFont(family='Segoe UI', size=13, weight='bold'),
+            fg_color="transparent",
+            border_width=1,
+            border_color="#4b5563",
+            text_color="#a6adbb",
+            hover_color="#3b4252",
+            corner_radius=6,
+            command=lambda n=nudge: self._on_open(n)
+        )
+        open_btn.pack(side='right')
 
-        if not is_last:
-            tk.Frame(group, bg=BORDER, height=1).pack(fill='x', pady=(10, 0))
+        return card
 
     # ------------------------------------------------------------------
     # Action handlers
@@ -386,7 +353,7 @@ class DqNudgePopupWindow:
     def _ack_safe(self, ids: List[int], action: str, snooze_until: Optional[str]) -> None:
         try:
             self._ack(ids, action, snooze_until)
-        except Exception as exc:  # noqa: BLE001 - best-effort ack
+        except Exception as exc:  # noqa: BLE001
             logger.warning('[DqNudge.popup] ack failed: %s', exc)
 
     def _on_open(self, nudge: dict) -> None:
@@ -410,7 +377,7 @@ class DqNudgePopupWindow:
             daemon=True,
         ).start()
 
-    def _on_dismiss_one(self, nudge: dict, card_group: Optional[tk.Widget] = None) -> None:
+    def _on_dismiss_one(self, nudge: dict) -> None:
         threading.Thread(
             target=self._ack_safe,
             args=([nudge['id']], 'dismissed', None),
@@ -419,29 +386,25 @@ class DqNudgePopupWindow:
         self.nudges = [n for n in self.nudges if n['id'] != nudge['id']]
         if self._count_label is not None:
             try:
-                self._count_label.config(text=self._count_message())
+                self._count_label.configure(text=self._count_message())
             except Exception:
                 pass
-        if card_group is not None:
-            try:
-                card_group.destroy()
-            except Exception:
-                pass
+        self._render_nudges()
         if not self.nudges:
             self._close_window()
 
-    def _on_dismiss_all(self, win: tk.Toplevel) -> None:
+    def _on_dismiss_all(self, win=None) -> None:
         ids = [n['id'] for n in self.nudges]
         threading.Thread(
             target=self._ack_safe,
             args=(ids, 'dismissed', None),
             daemon=True,
         ).start()
-        if self._window is None:
+        if win and self._window is None:
             self._window = win
         self._close_window()
 
-    def _on_dont_show(self, win: tk.Toplevel) -> None:
+    def _on_dont_show(self, win=None) -> None:
         ids = [n['id'] for n in self.nudges]
         threading.Thread(
             target=self._ack_safe,
@@ -452,6 +415,6 @@ class DqNudgePopupWindow:
             self._disable_popup()
         except Exception as exc:  # noqa: BLE001
             logger.warning('[DqNudge.popup] disable_popup failed: %s', exc)
-        if self._window is None:
+        if win and self._window is None:
             self._window = win
         self._close_window()
