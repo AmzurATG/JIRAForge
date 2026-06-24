@@ -68,7 +68,7 @@ function LoginPage() {
             </svg>
           </div>
           <div>
-            <p className="text-white font-bold text-lg leading-tight">Amzur Time Tracker</p>
+            <p className="text-white font-bold text-lg leading-tight">MyWorkMate</p>
           </div>
         </div>
 

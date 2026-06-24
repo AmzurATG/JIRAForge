@@ -58,9 +58,8 @@ function Sidebar({ collapsed, onToggle }) {
             </div>
             <div>
               <h1 className="text-sm font-bold text-white">
-                Amzur
+                MyWorkMate
               </h1>
-              <p className="text-[10px] text-gray-400">Time Tracker</p>
             </div>
           </div>
         )}
