@@ -101,23 +101,23 @@
 }
 
 .dq-score--green {
-  background: #E3FCEF;
-  color: #006644;
+  background: var(--ds-background-success, #E3FCEF);
+  color: var(--ds-text-success, #006644);
 }
 
 .dq-score--yellow {
-  background: #FFFAE6;
-  color: #974F0C;
+  background: var(--ds-background-warning, #FFFAE6);
+  color: var(--ds-text-warning, #974F0C);
 }
 
 .dq-score--red {
-  background: #FFEBE6;
-  color: #BF2600;
+  background: var(--ds-background-danger, #FFEBE6);
+  color: var(--ds-text-danger, #BF2600);
 }
 
 .dq-score--unknown {
-  background: #F4F5F7;
-  color: #6B778C;
+  background: var(--ds-background-neutral, #F4F5F7);
+  color: var(--ds-text-subtle, #6B778C);
 }
 
 /* Lists */
@@ -225,25 +225,25 @@
 }
 
 .dq-btn--primary {
-  background: #0052CC;
-  color: #FFFFFF;
-  border-color: #0052CC;
+  background: var(--ds-background-brand-bold, #0052CC);
+  color: var(--ds-text-inverse, #FFFFFF);
+  border-color: var(--ds-background-brand-bold, #0052CC);
 }
 
 .dq-btn--primary:hover:not(:disabled) {
-  background: #0747A6;
+  background: var(--ds-background-brand-bold-hover, #0747A6);
 }
 
 .dq-btn--secondary {
-  background: #FFFFFF;
-  color: #0052CC;
-  border-color: #DFE1E6;
+  background: var(--ds-background-default, #FFFFFF);
+  color: var(--ds-text-brand, #0052CC);
+  border-color: var(--ds-border, #DFE1E6);
 }
 
 .dq-btn--link {
   background: transparent;
   border-color: transparent;
-  color: #0052CC;
+  color: var(--ds-text-brand, #0052CC);
   padding: 6px 4px;
 }
 
@@ -271,9 +271,9 @@
 }
 
 .dq-error {
-  background: #FFEBE6;
-  color: #BF2600;
-  border: 1px solid #FFBDAD;
+  background: var(--ds-background-danger, #FFEBE6);
+  color: var(--ds-text-danger, #BF2600);
+  border: 1px solid var(--ds-border-danger, #FFBDAD);
   border-radius: 4px;
   padding: 8px 10px;
   display: flex;
@@ -283,9 +283,9 @@
 }
 
 .dq-success {
-  background: #E3FCEF;
-  color: #006644;
-  border: 1px solid #ABF5D1;
+  background: var(--ds-background-success, #E3FCEF);
+  color: var(--ds-text-success, #006644);
+  border: 1px solid var(--ds-border-success, #ABF5D1);
   border-radius: 4px;
   padding: 8px 10px;
   display: flex;

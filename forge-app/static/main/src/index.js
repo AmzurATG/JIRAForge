@@ -1,7 +1,9 @@
 import React from 'react';
 import ReactDOM from 'react-dom/client';
-import '@forge/bridge'; // Ensure bridge handshake fires immediately
+import { view } from '@forge/bridge'; // Ensure bridge handshake fires immediately
 import App from './App';
+
+view.theme.enable();
 
 const root = ReactDOM.createRoot(document.getElementById('root'));
 root.render(

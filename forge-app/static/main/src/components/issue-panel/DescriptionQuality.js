@@ -1,4 +1,4 @@
-import React, { useCallback, useState } from 'react';
+import React, { useCallback, useState, useEffect } from 'react';
 import { invoke, router } from '@forge/bridge';
 import './DescriptionQuality.css';
 
@@ -70,7 +70,7 @@ function recordEvent(issueKey, eventType, scoreBefore, scoreAfter, source) {
 }
 
 export default function DescriptionQuality({ issueKey }) {
-  const [stage, setStage] = useState(STAGE.IDLE);
+  const [stage, setStage] = useState(STAGE.LOADING);
   const [analysis, setAnalysis] = useState(null);
   const [error, setError] = useState(null);
   const [editedTitle, setEditedTitle] = useState('');
@@ -101,6 +101,10 @@ export default function DescriptionQuality({ issueKey }) {
       setStage(STAGE.ERROR);
     }
   }, [issueKey]);
+
+  useEffect(() => {
+    runAnalysis(false);
+  }, [runAnalysis]);
 
   const handleAccept = async ({ updateTitle, updateDescription }) => {
     if (!analysis) return;
