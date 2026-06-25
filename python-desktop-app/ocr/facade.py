@@ -11,10 +11,11 @@ import logging
 import re
 import time
 from typing import Dict, Any, Optional, List
+# pyrefly: ignore [missing-import]
 import numpy as np
 from PIL import Image
 
-from .config import OCRConfig, OCREngineConfig, apply_platform_filters
+from .config import OCRConfig, apply_platform_filters
 from .engine_factory import EngineFactory
 from .base_engine import BaseOCREngine
 from .image_processor import preprocess_image, preprocess_screenshot, resize_if_needed
@@ -632,6 +633,12 @@ class OCRFacade:
                     logger.warning(f"Engine {engine_name} failed: {error_str}")
                     engine_failures[engine_name] = f"Exception: {error_str}"
                     self._engine_failure_counts[engine_name] = self._engine_failure_counts.get(engine_name, 0) + 1
+                    if self._engine_failure_counts[engine_name] >= 3:
+                        self._engine_backoff_until[engine_name] = time.time() + self._engine_backoff_seconds
+                        logger.error(
+                            f"OCR engine '{engine_name}' failed 3 consecutive times. "
+                            f"Temporarily disabling (circuit breaker open) for {self._engine_backoff_seconds} seconds."
+                        )
                     continue
             
             # Build detailed error message for metadata fallback

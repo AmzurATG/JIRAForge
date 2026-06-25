@@ -48,16 +48,26 @@ except (ImportError, ValueError) as e:
 # PLATFORM DETECTION & WIN32 SETUP
 # ============================================================================
 
+# Placeholders for patchability in tests on non-Windows platforms
+win32gui = None
+win32api = None
+win32process = None
+ctypes = None
+
 _WIN32_AVAILABLE = False
 _DPI_AWARENESS_SET = False
 
 if sys.platform == 'win32':
     try:
-        import win32gui
-        import win32api
-        import win32process
-        import ctypes
+        import win32gui as _win32gui
+        import win32api as _win32api
+        import win32process as _win32process
+        import ctypes as _ctypes
         import ctypes.wintypes
+        win32gui = _win32gui
+        win32api = _win32api
+        win32process = _win32process
+        ctypes = _ctypes
         _WIN32_AVAILABLE = True
     except ImportError:
         pass
@@ -586,7 +596,9 @@ def _capture_xdg_portal():
         
         # Timeout and result storage
         result_data = {'screenshot_path': None, 'error': None}
-        main_loop = GLib.MainLoop()
+        context = GLib.MainContext.new()
+        context.push_thread_default()
+        main_loop = GLib.MainLoop(context)
         
         def on_response_signal(connection, sender_name, object_path, interface_name,
                              signal_name, parameters, user_data):
@@ -654,6 +666,7 @@ def _capture_xdg_portal():
         
         # Wait for response
         main_loop.run()
+        context.pop_thread_default()
         
         # Unsubscribe from signal
         connection.signal_unsubscribe(subscription_id)
@@ -977,7 +990,9 @@ def _capture_screencast():
             'step': 'init'
         }
         
-        loop = GLib.MainLoop()
+        context = GLib.MainContext.new()
+        context.push_thread_default()
+        loop = GLib.MainLoop(context)
         bus = Gio.bus_get_sync(Gio.BusType.SESSION, None)
         sender = bus.get_unique_name()[1:].replace('.', '_')
         
@@ -1279,6 +1294,7 @@ def _capture_screencast():
         
         # Run event loop
         loop.run()
+        context.pop_thread_default()
         
         # Check for errors
         if session_state['error']:
@@ -1375,7 +1391,9 @@ def _capture_frame_with_gstreamer(pipewire_fd, node_id):
             'frames_captured': 0
         }
         
-        loop = GLib.MainLoop()
+        context = GLib.MainContext.new()
+        context.push_thread_default()
+        loop = GLib.MainLoop(context)
         
         def on_message(bus, message):
             """Handle GStreamer bus messages"""
@@ -1458,6 +1476,7 @@ def _capture_frame_with_gstreamer(pipewire_fd, node_id):
         
         # Run event loop
         loop.run()
+        context.pop_thread_default()
         
         # Cleanup
         pipeline.set_state(Gst.State.NULL)
@@ -1576,64 +1595,62 @@ def _capture_linux():
     
     Phase 4: Enhanced with comprehensive diagnostics logging for compatibility issues.
     """
+    from capability_router import get_router_plan
+    plan = get_router_plan()
+    preferred_mode = plan.get('capture_mode', 'screencast_portal')
+
+    if preferred_mode == 'disabled':
+        logger.warning("[ScreenCapture] Screen capture is disabled by capability router policy.")
+        _record_black_image()
+        return None
+
     is_wayland = _is_wayland_session()
     methods_tried = []
 
-    if is_wayland:
-        # --- Wayland Method 1: ScreenCast Portal (NO FLASH) ---
-        if _check_screencast_available():
-            img = _capture_screencast()
-            if img is not None:
-                methods_tried.append("screencast: SUCCESS")
-                _reset_black_image_counter()  # Phase 5: good capture
-                return img
-            methods_tried.append("screencast: failed (capture returned None)")
-        else:
-            # Log specific reasons why ScreenCast is unavailable
-            if not _GSTREAMER_AVAILABLE:
-                methods_tried.append("screencast: SKIP (GStreamer not available)")
-                logger.debug("[ScreenCapture] ScreenCast unavailable: GStreamer (gst-launch-1.0) not found")
-            else:
-                # Check pipewiresrc specifically
-                try:
-                    result = subprocess.run(['gst-inspect-1.0', 'pipewiresrc'], capture_output=True, timeout=3)
-                    if result.returncode != 0:
-                        methods_tried.append("screencast: SKIP (gstreamer1.0-pipewire not installed)")
-                        logger.warning("[ScreenCapture] ScreenCast unavailable: gstreamer1.0-pipewire not installed")
-                        logger.info("[ScreenCapture] FIX: sudo apt install gstreamer1.0-pipewire")
-                except Exception:
-                    methods_tried.append("screencast: SKIP (pipewiresrc check failed)")
-        
-        # --- Wayland Method 2: XDG Desktop Portal Screenshot (HAS FLASH) ---
-        img = _capture_xdg_portal()
-        if img is not None:
-            methods_tried.append("xdg_portal: SUCCESS (with flash)")
-            _reset_black_image_counter()  # Phase 5: good capture
-            return img
-        methods_tried.append("xdg_portal: failed")
-        
-        # --- Wayland Method 3: GNOME D-Bus (flash=false, silent) ---
-        img = _capture_gnome_dbus_silent()
-        if img is not None:
-            methods_tried.append("gnome_dbus_silent: SUCCESS")
-            _reset_black_image_counter()  # Phase 5: good capture
-            return img
-        methods_tried.append("gnome_dbus_silent: failed")
-        
-        # --- Wayland Method 4: gnome-screenshot (muted sound, flash may occur) ---
-        img = _capture_gnome_screenshot_muted()
-        if img is not None:
-            methods_tried.append("gnome_screenshot_muted: SUCCESS (flash may occur)")
-            logger.debug("Linux capture: gnome-screenshot (muted) — flash may occur")
-            _reset_black_image_counter()  # Phase 5: good capture
-            return img
-        methods_tried.append("gnome_screenshot_muted: failed")
+    # Map profile capture modes to actual functions
+    mode_map = {
+        'screencast_portal': ('screencast', _capture_screencast),
+        'screenshot_portal': ('xdg_portal', _capture_xdg_portal),
+        'gnome_dbus': ('gnome_dbus_silent', _capture_gnome_dbus_silent),
+        'gnome_screenshot_cli': ('gnome_screenshot_muted', _capture_gnome_screenshot_muted),
+    }
 
-    # --- Method 2: scrot (X11 / XWayland) ---
+    # Determine order: preferred first, then remaining wayland options
+    ordered_modes = [preferred_mode]
+    for m in ['screencast_portal', 'screenshot_portal', 'gnome_dbus', 'gnome_screenshot_cli']:
+        if m not in ordered_modes:
+            ordered_modes.append(m)
+
+    for mode in ordered_modes:
+        if mode not in mode_map:
+            continue
+
+        label, func = mode_map[mode]
+
+        # Check availability specific to ScreenCast
+        if mode == 'screencast_portal':
+            if not _check_screencast_available():
+                if not _GSTREAMER_AVAILABLE:
+                    methods_tried.append("screencast: SKIP (GStreamer not available)")
+                else:
+                    methods_tried.append("screencast: SKIP (pipewiresrc check failed)")
+                continue
+
+        try:
+            img = func()
+            if img is not None:
+                methods_tried.append(f"{label}: SUCCESS")
+                _reset_black_image_counter()
+                return img
+            methods_tried.append(f"{label}: failed")
+        except Exception as e:
+            methods_tried.append(f"{label}: exception ({type(e).__name__})")
+
+    # --- Fallback: scrot (X11 / XWayland) ---
     if shutil.which('scrot'):
         fh, filepath = tempfile.mkstemp('.png')
         os.close(fh)
-        os.unlink(filepath)   # scrot won't overwrite an existing file
+        os.unlink(filepath)
         try:
             result = subprocess.run(
                 ['scrot', '--silent', filepath],
@@ -1641,7 +1658,7 @@ def _capture_linux():
             )
             if result.returncode == 0 and os.path.exists(filepath):
                 im = _PILImage.open(filepath)
-                im.load()   # read into memory before the temp file is deleted
+                im.load()
                 # On Wayland, scrot captures the XWayland root which is black.
                 # Detect and skip those to avoid feeding blank images to OCR.
                 import array as _array
@@ -1649,16 +1666,13 @@ def _capture_linux():
                 if any(max(_array.array('B', b.tobytes())) > 0 for b in bands):
                     methods_tried.append("scrot: SUCCESS")
                     logger.debug("Linux capture: scrot")
-                    _reset_black_image_counter()  # Phase 5: good capture
+                    _reset_black_image_counter()
                     return im.copy()
                 methods_tried.append("scrot: all-black image (Wayland XWayland root)")
-                logger.warning("scrot produced an all-black image (Wayland XWayland root) — skipping")
             else:
                 methods_tried.append(f"scrot: failed (rc={result.returncode})")
-                logger.warning(f"scrot exited with rc={result.returncode}: {result.stderr[:200]}")
-        except (subprocess.TimeoutExpired, Exception) as e:
+        except Exception as e:
             methods_tried.append(f"scrot: failed ({type(e).__name__})")
-            logger.warning(f"scrot capture failed: {e}")
         finally:
             try:
                 os.unlink(filepath)
@@ -1667,33 +1681,29 @@ def _capture_linux():
     else:
         methods_tried.append("scrot: not installed")
 
-    # --- Method 3: Pillow XCB (only when confirmed available) ---
+    # --- Fallback: Pillow XCB ---
     try:
         if getattr(_PILImage.core, 'HAVE_XCB', False):
             img = ImageGrab.grab()
             methods_tried.append("pillow_xcb: SUCCESS")
-            logger.debug("Linux capture: Pillow XCB")
-            _reset_black_image_counter()  # Phase 5: good capture
+            _reset_black_image_counter()
             return img
         else:
-            methods_tried.append("pillow_xcb: not available (HAVE_XCB=False)")
+            methods_tried.append("pillow_xcb: not available")
     except Exception as e:
         methods_tried.append(f"pillow_xcb: failed ({type(e).__name__})")
-        logger.warning(f"ImageGrab.grab() (XCB) failed: {e}")
 
-    # Phase 4+5: Log all methods tried when capture fails; record black-image event
-    _record_black_image()  # Phase 5: all methods failed counts as black/missing image
+    # Log and record failure
+    _record_black_image()
     logger.error("[ScreenCapture] ALL METHODS FAILED - returning None")
     logger.error(f"[ScreenCapture] Session: {'Wayland' if is_wayland else 'X11'}")
     logger.error(f"[ScreenCapture] Methods tried: {', '.join(methods_tried)}")
     logger.error(f"[ScreenCapture] Consecutive failures: {_CONSECUTIVE_BLACK_IMAGES}")
-    
     if is_wayland:
         logger.error("[ScreenCapture] WAYLAND CAPTURE TROUBLESHOOTING:")
         logger.error("[ScreenCapture]   1. Install gstreamer1.0-pipewire: sudo apt install gstreamer1.0-pipewire")
         logger.error("[ScreenCapture]   2. Ensure PipeWire is running: systemctl --user status pipewire")
         logger.error("[ScreenCapture]   3. Grant ScreenCast permission when prompted")
-    
     return None
 
 

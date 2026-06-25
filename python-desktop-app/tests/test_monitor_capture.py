@@ -21,6 +21,13 @@ from unittest.mock import patch, MagicMock, PropertyMock
 # Ensure the module can be imported regardless of platform
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+# Remove mock stub from conftest.py if present to import the real module
+if 'monitor_capture' in sys.modules:
+    if not hasattr(sys.modules['monitor_capture'], '__file__') or 'mock' in type(sys.modules['monitor_capture']).__name__.lower():
+        del sys.modules['monitor_capture']
+
+import monitor_capture
+
 
 class TestAlwaysOn(unittest.TestCase):
     """Test that multi-monitor capture is unconditionally active."""

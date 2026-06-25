@@ -229,10 +229,13 @@ del _certifi_startup, _sys_certifi, _certifi_bundle, _var, _existing
 from PIL import Image, ImageGrab, ImageDraw
 import psutil
 import requests
+# pyrefly: ignore [missing-import]
 from flask import Flask, render_template_string, jsonify, request, session, redirect, url_for
 from flask_cors import CORS
 try:
+    # pyrefly: ignore [missing-import]
     import pystray
+    # pyrefly: ignore [missing-import]
     from pystray import MenuItem as item
 except ImportError as _pystray_err:
     # pystray could not load ANY backend (appindicator, gtk, xorg all failed).
@@ -313,6 +316,7 @@ if _pystray_is_real and sys.platform.startswith('linux') and (
         _gi_patch.require_version('AyatanaAppIndicator3', '0.1')
         from gi.repository import AyatanaAppIndicator3 as _Ayatana
 
+        # pyrefly: ignore [missing-import]
         import pystray._appindicator as _pai
 
         # Case (b): _appindicator loaded but with the wrong (XEmbed) lib
@@ -340,7 +344,9 @@ if sys.platform.startswith('linux'):
 
 # Supabase
 from supabase import create_client, Client
+# pyrefly: ignore [missing-import]
 from supabase.lib.client_options import ClientOptions
+# pyrefly: ignore [missing-import]
 from dotenv import load_dotenv
 
 # SQLite for offline storage
@@ -687,6 +693,7 @@ def release_single_instance_lock():
 
 # Windows toast notifications
 try:
+    # pyrefly: ignore [missing-import]
     from winotify import Notification, audio
     WINOTIFY_AVAILABLE = True
 except ImportError:
@@ -724,7 +731,7 @@ load_dotenv()
 
 # Application version - IMPORTANT: Update this when releasing new versions
 # This is used for update checking and notifications
-APP_VERSION = "1.0.2"
+APP_VERSION = "1.0.3"
 
 # True when the process is running inside an AppImage bundle.
 # In FUSE mode, the AppImage runtime sets $APPIMAGE to the .AppImage file path.
@@ -1169,6 +1176,7 @@ def _utc_ts_to_local_date(utc_str):
     if not utc_str:
         return datetime.now().date().isoformat()
     try:
+        # pyrefly: ignore [missing-import]
         import tzlocal
         local_tz = tzlocal.get_localzone()
         # Handle both '+00' and '+00:00' offset suffixes
@@ -1194,6 +1202,7 @@ def get_local_timezone_name():
     This is used to correctly compute work_date for sessions that cross midnight.
     """
     try:
+        # pyrefly: ignore [missing-import]
         import tzlocal
         local_tz = tzlocal.get_localzone()
         return str(local_tz)
@@ -2101,6 +2110,7 @@ def _extract_appimage_from_deb(deb_path, output_path):
                 raw = gzip.decompress(data)
             elif name.endswith('.zst'):
                 try:
+                    # pyrefly: ignore [missing-import]
                     import zstandard
                     raw = zstandard.ZstdDecompressor().decompress(data)
                 except ImportError:
@@ -2108,7 +2118,8 @@ def _extract_appimage_from_deb(deb_path, output_path):
                     # dpkg-deb --fsys-tarfile streams the data tarball to stdout,
                     # handling any compression format the host dpkg supports.
                     import subprocess as _sub_zst
-                    _dpkg = _sub_zst.which('dpkg-deb')
+                    import shutil as _shutil
+                    _dpkg = _shutil.which('dpkg-deb')
                     if _dpkg:
                         try:
                             _result = _sub_zst.run(
@@ -3816,6 +3827,18 @@ class AtlassianAuthManager:
                             projected_fail_count = 5
                             invalid_flag_after_failure = True
                             next_action = 'show_auth_notification'
+                            
+                            # Purge stale remote tokens
+                            for key in ['access_token', 'refresh_token', 'supabase_token', 'google_refresh_token', 'expires_at', 'supabase_token_expires_at']:
+                                self.tokens.pop(key, None)
+                            
+                            try:
+                                self.secure_storage.delete_tokens()
+                            except Exception as e:
+                                print(f"[WARN] Failed to purge stale secure tokens: {e}")
+                            
+                            self.tokens['requires_interactive_reauth'] = True
+                            self._save_tokens()
                         else:
                             # Heuristic text-match — keep the 5-failure threshold as a
                             # safety net to avoid false-positives from transient errors.
@@ -4366,6 +4389,27 @@ def send_ocr_diagnostics(auth_manager):
         auth_manager.send_diagnostics('ocr', diagnostics)
     except Exception as e:
         print(f"[WARN] Failed to collect OCR diagnostics: {e}")
+
+
+def send_capability_diagnostics(auth_manager):
+    """
+    Collect and send startup Capability Router diagnostics to the AI server.
+    
+    Args:
+        auth_manager: AtlassianAuthManager instance
+    """
+    try:
+        from capability_router import get_router_plan, get_router_signature
+        plan = get_router_plan()
+        signature = get_router_signature()
+        
+        payload = {
+            'signature': signature,
+            'plan': plan
+        }
+        auth_manager.send_diagnostics('capability_router', payload)
+    except Exception as e:
+        print(f"[WARN] Failed to collect capability diagnostics: {e}")
 
 
 def send_login_diagnostics(auth_manager, status: str, step: str, error: str = None, error_details: dict = None):
@@ -6341,6 +6385,7 @@ class LocalOCRProcessor:
     def _validate_cv2_runtime(self):
         """Log actionable diagnostics when cv2 is importable but unusable."""
         try:
+            # pyrefly: ignore [missing-import]
             import cv2  # noqa: F401
 
             has_cvt = hasattr(cv2, 'cvtColor')
@@ -6718,6 +6763,16 @@ class TimeTracker:
             self.logger.info("TimeTracker.__init__() starting...")
         else:
             self.logger = None
+
+        # Initialize Startup Capability Router
+        try:
+            from capability_router import get_router_plan
+            # This triggers the first-run capability routing and logs it
+            get_router_plan()
+        except Exception as e:
+            if self.logger:
+                self.logger.warning(f"Failed to initialize Capability Router: {e}")
+            print(f"[WARN] Failed to initialize Capability Router: {e}")
 
         # ============================================================================
         # OS DIAGNOSTICS (Phase 1: Comprehensive OS compatibility detection)
@@ -7608,6 +7663,10 @@ class TimeTracker:
                 # Send OCR diagnostics now that user is authenticated
                 print("[INFO] Sending OCR diagnostics to server...")
                 send_ocr_diagnostics(self.auth_manager)
+                
+                # Send Capability Router diagnostics
+                print("[INFO] Sending Capability Router diagnostics to server...")
+                send_capability_diagnostics(self.auth_manager)
 
                 # Sync app classifications from Supabase (all projects)
                 try:
@@ -7865,6 +7924,7 @@ class TimeTracker:
                         except:
                             file_data = str(file_response).encode()
                     
+                    # pyrefly: ignore [missing-import]
                     from flask import Response
                     return Response(file_data, mimetype=content_type)
                 else:
@@ -8046,7 +8106,7 @@ class TimeTracker:
 
             elif action == 'force_sync':
                 try:
-                    synced, failed = self.offline_manager.sync_pending_screenshots(self)
+                    synced, failed = self.offline_manager.sync_all(self.supabase, self.supabase)
                     self.add_admin_log('INFO', f'Force sync completed: {synced} synced, {failed} failed')
                     return jsonify({'success': True, 'synced': synced, 'failed': failed})
                 except Exception as e:
@@ -10931,7 +10991,7 @@ function doRecheck() {{
         Uses custom JWT for RLS-scoped access (Atlassian OAuth → AI server JWT).
         """
         sessions = None
-        records = None
+        records = []
         batch_timestamp = None
         try:
             print(
@@ -12179,87 +12239,10 @@ function doRecheck() {{
                 _log_debug(f"atspi: AT-SPI2 D-Bus check failed: {e}")
                 # Continue anyway - the service might still work
             
-            def _atspi_query():
-                import gi as _gi  # noqa: PLC0415
-                _gi.require_version('Atspi', '2.0')
-                from gi.repository import Atspi as _Atspi  # noqa: PLC0415
-                _Atspi.init()
-                desktop = _Atspi.get_desktop(0)
-                ACTIVE = _Atspi.StateType.ACTIVE
-                FOCUSED = _Atspi.StateType.FOCUSED
-                app_count = desktop.get_child_count()
-                _log_debug(f"atspi: Desktop has {app_count} apps")
-                
-                # Expanded list of system apps to skip
-                SYSTEM_APPS = {
-                    'gnome-shell', 'gnome-software', 'ibus-daemon', 'gsd-color',
-                    'gsd-keyboard', 'gsd-wacom', 'gsd-power', 'gsd-media-keys',
-                    'gsd-xsettings', 'ibus-x11', 'ibus-extension-gtk3',
-                    'xdg-desktop-portal-gtk', 'xdg-desktop-portal-gnome',
-                    'update-notifier', 'gjs', 'evolution-alarm-notify'
-                }
-                
-                # Collect all candidate windows (both ACTIVE and FOCUSED)
-                candidates = []
-                for i in range(app_count):
-                    app = desktop.get_child_at_index(i)
-                    if not app:
-                        continue
-                    app_name = app.get_name() or ''
-                    
-                    # Skip system apps
-                    if app_name in SYSTEM_APPS:
-                        continue
-                    
-                    for j in range(app.get_child_count()):
-                        win = app.get_child_at_index(j)
-                        if not win:
-                            continue
-                        try:
-                            state_set = win.get_state_set()
-                            if not state_set:
-                                continue
-                            
-                            title = win.get_name() or ''
-                            if not title:  # Skip windows without titles
-                                continue
-                            
-                            is_active = state_set.contains(ACTIVE)
-                            is_focused = state_set.contains(FOCUSED)
-                            
-                            if is_active or is_focused:
-                                # Priority: FOCUSED > ACTIVE
-                                priority = 2 if is_focused else 1
-                                candidates.append((priority, title, app_name or 'Unknown'))
-                                _log_debug(f"atspi: Found window: {app_name} - {title[:50]} (focused={is_focused}, active={is_active})")
-                        except Exception as e:
-                            _log_debug(f"atspi: Error checking window: {e}")
-                            continue
-                
-                # Return the highest priority candidate
-                if candidates:
-                    candidates.sort(key=lambda x: x[0], reverse=True)
-                    _, title, app_name = candidates[0]
-                    _log_debug(f"atspi: Selected best match from {len(candidates)} candidates")
-                    return title, app_name
-                
-                _log_debug("atspi: No active/focused windows found with titles")
-                return None
+            # We no longer attempt in-process Atspi queries because doing so from a background
+            # thread corrupts the main thread's GLib MainLoop (used by the tray icon),
+            # leading to g_hash_table_lookup assertion failures and crashes.
 
-            # Attempt 1: in-process (development / system Python with python3-gi)
-            try:
-                _log_debug("atspi: Attempt 1 - in-process gi import")
-                result = _atspi_query()
-                if result:
-                    _log_debug(f"atspi: SUCCESS (in-process) - title='{result[0]}', app='{result[1]}'")
-                    return result
-                _log_debug("atspi: In-process query returned no focused window")
-            except ImportError as e:
-                _log_debug(f"atspi: In-process import failed: {e}")
-            except ValueError as e:
-                _log_debug(f"atspi: In-process Atspi typelib not found: {e}")
-            except Exception as e:
-                _log_debug(f"atspi: In-process query failed: {type(e).__name__}: {e}")
 
             # Attempt 2 & 3: spawn system python3 (AppImage where gi is not bundled)
             code = (
@@ -12607,47 +12590,53 @@ if best:
         #   3. gdbus - Shell.Eval (only works if user enabled development-tools)
         #   4. xdotool - XWayland fallback (only sees XWayland apps)
         #
-        # X11 METHOD ORDER:
-        #   1. xdotool - most reliable on X11
-        #   2. gdbus - Shell.Eval works on X11 GNOME
-        #   3. gnome_introspect - fallback
-        #   4. atspi - last resort
+        # Router-selected window title tracking integration
+        from capability_router import get_router_plan
+        plan = get_router_plan()
+        routed_window_mode = plan.get('window_mode', 'gnome_introspect')
         
-        # Phase 2: Version-specific method selection for GNOME 49+ compatibility
+        if routed_window_mode == 'unknown_only':
+            _log_warning("Window tracking is disabled/unsupported by capability router policy.")
+            return 'Unknown', 'Unknown'
+
+        # Map generic window mode to specific implementation method names
+        primary_method = None
+        if routed_window_mode == 'gnome_introspect':
+            primary_method = 'gnome_introspect_v2' if gnome_version and gnome_version[0] >= 49 else 'gnome_introspect'
+        elif routed_window_mode == 'atspi':
+            primary_method = 'atspi_v2' if gnome_version and gnome_version[0] >= 49 else 'atspi'
+        elif routed_window_mode == 'xdotool_xwayland':
+            primary_method = 'xdotool'
+
+        all_methods = {
+            'gnome_introspect_v2': _from_gnome_introspect_v2,
+            'gnome_introspect': _from_gnome_introspect,
+            'atspi_v2': _from_atspi_v2,
+            'atspi': _from_atspi,
+            'gdbus': _from_gdbus,
+            'xdotool': _from_xdotool
+        }
+
+        # Build ordered list starting with primary method
+        method_pairs = []
+        if primary_method and primary_method in all_methods:
+            method_pairs.append((primary_method, all_methods[primary_method]))
+
+        # Append fallbacks in context-sensitive order
+        default_order = []
         if is_wayland:
             if gnome_version and gnome_version[0] >= 49:
-                # GNOME 49+: Use v2 methods with optimized timeouts and parsing
-                _log_debug("Using GNOME 49+ optimized method order (v2 methods)")
-                method_pairs = [
-                    ('atspi_v2', _from_atspi_v2),                    # Often most reliable on GNOME 49
-                    ('gnome_introspect_v2', _from_gnome_introspect_v2),
-                    ('xdotool', _from_xdotool),                      # XWayland fallback
-                ]
+                default_order = ['atspi_v2', 'gnome_introspect_v2', 'xdotool']
             elif gnome_version and gnome_version[0] >= 45:
-                # GNOME 45-48: Shell.Eval disabled, but original methods work
-                _log_debug("Using GNOME 45-48 method order")
-                method_pairs = [
-                    ('gnome_introspect', _from_gnome_introspect),
-                    ('atspi', _from_atspi),
-                    ('xdotool', _from_xdotool),
-                ]
+                default_order = ['gnome_introspect', 'atspi', 'xdotool']
             else:
-                # GNOME < 45 or unknown: Shell.Eval may work
-                _log_debug("Using standard Wayland method order")
-                method_pairs = [
-                    ('gnome_introspect', _from_gnome_introspect),
-                    ('atspi', _from_atspi),
-                    ('gdbus', _from_gdbus),
-                    ('xdotool', _from_xdotool),
-                ]
+                default_order = ['gnome_introspect', 'atspi', 'gdbus', 'xdotool']
         else:
-            # X11: Standard order
-            method_pairs = [
-                ('xdotool', _from_xdotool),
-                ('gdbus', _from_gdbus),
-                ('gnome_introspect', _from_gnome_introspect),
-                ('atspi', _from_atspi),
-            ]
+            default_order = ['xdotool', 'gdbus', 'gnome_introspect', 'atspi']
+
+        for method_name in default_order:
+            if method_name in all_methods and method_name != primary_method:
+                method_pairs.append((method_name, all_methods[method_name]))
 
         # FIX-6 (BL-17): Circuit-breaker — skip methods that have failed 3+ times recently.
         # Prevents stalling the 2-second tracking loop for 9+ seconds on minimal Linux
@@ -13985,18 +13974,18 @@ if best:
             result['warnings'] = self.os_diagnostics.warnings
             result['recommendations'] = self.os_diagnostics.recommendations
             
-            if self.os_diagnostics.os_info:
+            if getattr(self.os_diagnostics, 'os_info', None):
                 result['os_info'] = {
                     'distro': self.os_diagnostics.os_info.distro_name,
                     'version': self.os_diagnostics.os_info.distro_version,
                     'kernel': self.os_diagnostics.os_info.kernel_version,
-                    'display_server': self.os_diagnostics.os_info.display_server,
+                    'display_server': 'Wayland' if self.os_diagnostics.desktop.is_wayland else 'X11',
                 }
             
-            if self.os_diagnostics.desktop_env:
+            if getattr(self.os_diagnostics, 'desktop', None):
                 result['desktop_environment'] = {
-                    'name': self.os_diagnostics.desktop_env.name,
-                    'version': self.os_diagnostics.desktop_env.version,
+                    'name': self.os_diagnostics.desktop.name,
+                    'version': self.os_diagnostics.desktop.version,
                 }
         
         return result
@@ -14670,7 +14659,8 @@ if best:
                 
                 if should_skip:
                     if skip_reason in ('private_app', 'non_productive_app'):
-                        if not hasattr(self, '_last_skip_log') or time.time() - self._last_skip_log > 60:
+                        _last = getattr(self, '_last_skip_log', 0)
+                        if time.time() - _last > 60:
                             print(f"[SKIP] {skip_reason}: {app_name}")
                             self._last_skip_log = time.time()
                 
@@ -15107,6 +15097,7 @@ if best:
             return
 
         try:
+            # pyrefly: ignore [missing-import]
             from winotify import Notification, audio
 
             notification = Notification(
@@ -15588,7 +15579,7 @@ if best:
         print("[INFO] Exit requested from tray menu")
         self._close_pause_popup()  # Close popup if open
         self._shutdown_cleanup()
-        self.stop()
+        self.running = False
         if self.tray:
             self.tray.stop()
 
@@ -15658,11 +15649,18 @@ if best:
                     except Exception:
                         pass  # notify-send not available — silently skip
 
+                # Suppress pystray "Failed to dock icon" log spam when running without a system tray
+                import logging
+                class _PystrayNoDockFilter(logging.Filter):
+                    def filter(self, record):
+                        return "Failed to dock icon" not in str(record.msg)
+                logging.getLogger('pystray._base').addFilter(_PystrayNoDockFilter())
+
                 # Start periodic icon update in a separate daemon thread
                 def update_icon_periodically():
                     while self.tray and self.tray.visible:
                         try:
-                            self.update_tray_icon()
+                            self._safe_update_tray_icon()
                             # Remind user to log in every 15 minutes if not logged in
                             # (skip for anonymous/offline users — they can't log in)
                             if not self.current_user and not (self.current_user_id and self.current_user_id.startswith('anonymous_')):
