@@ -219,6 +219,91 @@ async function removeLobMember(lobId, userId) {
 }
 
 // ---------------------------------------------------------------------------
+// Expected-member roster (adoption tracking) — portal_lob_expected_members
+// ---------------------------------------------------------------------------
+
+/** Imported roster rows for one LOB (email-keyed expected members). */
+async function listExpectedMembers(lobId) {
+  const supabase = getClient();
+  if (!supabase) throw new Error('Supabase client not initialized');
+
+  const { data, error } = await supabase
+    .from('portal_lob_expected_members')
+    .select('id, email, full_name')
+    .eq('lob_id', lobId)
+    .order('email', { ascending: true });
+  if (error) {
+    logger.error('[PortalLobDB] listExpectedMembers failed', { lobId, error });
+    throw error;
+  }
+  return data || [];
+}
+
+/**
+ * Upsert roster rows for a LOB. `rows` are pre-normalized { email, full_name }.
+ * Re-import refreshes full_name (merge, not ignore) so a corrected name sticks.
+ */
+async function upsertExpectedMembers(lobId, rows, importedBy) {
+  const supabase = getClient();
+  if (!supabase) throw new Error('Supabase client not initialized');
+  if (!Array.isArray(rows) || rows.length === 0) return [];
+
+  const payload = rows.map((r) => ({
+    lob_id: lobId,
+    email: r.email,
+    full_name: r.full_name || null,
+    imported_by: importedBy || null,
+  }));
+  const { data, error } = await supabase
+    .from('portal_lob_expected_members')
+    .upsert(payload, { onConflict: 'lob_id,email' })
+    .select();
+  if (error) {
+    logger.error('[PortalLobDB] upsertExpectedMembers failed', { lobId, error });
+    throw error;
+  }
+  return data || [];
+}
+
+async function deleteExpectedMember(lobId, id) {
+  const supabase = getClient();
+  if (!supabase) throw new Error('Supabase client not initialized');
+
+  const { data, error } = await supabase
+    .from('portal_lob_expected_members')
+    .delete()
+    .eq('lob_id', lobId)
+    .eq('id', id)
+    .select();
+  if (error) {
+    logger.error('[PortalLobDB] deleteExpectedMember failed', { lobId, id, error });
+    throw error;
+  }
+  return data && data.length > 0;
+}
+
+/**
+ * Read-only lookup of the (Jira-owned) users table by email — the install
+ * signal. `emails` must be normalized lower-case; matching is exact (see the
+ * email-privacy follow-up in the spec). Never writes to users.
+ */
+async function getUsersByEmails(emails) {
+  const supabase = getClient();
+  if (!supabase) throw new Error('Supabase client not initialized');
+  if (!Array.isArray(emails) || emails.length === 0) return [];
+
+  const { data, error } = await supabase
+    .from('users')
+    .select('id, display_name, email')
+    .in('email', emails);
+  if (error) {
+    logger.error('[PortalLobDB] getUsersByEmails failed', { error });
+    throw error;
+  }
+  return data || [];
+}
+
+// ---------------------------------------------------------------------------
 // Heads
 // ---------------------------------------------------------------------------
 
@@ -471,6 +556,11 @@ module.exports = {
   getUsersByIds,
   addLobMembers,
   removeLobMember,
+  // expected-member roster
+  listExpectedMembers,
+  upsertExpectedMembers,
+  deleteExpectedMember,
+  getUsersByEmails,
   // heads
   getLobHeadRows,
   getHeadRowsForAdmins,

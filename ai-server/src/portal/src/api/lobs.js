@@ -46,6 +46,26 @@ export const lobsApi = {
     return response.data;
   },
 
+  // --- Roster (expected members + install status) ---
+
+  /** Union of imported roster + members, each with a derived `installed` flag. */
+  async listRoster(lobId, params) {
+    const response = await apiClient.get(`/api/portal/lobs/${lobId}/roster`, { params });
+    return response.data;
+  },
+
+  /** Import an .xlsx/.csv roster (base64-encoded) for a LOB (superadmin). */
+  async importRoster(lobId, { filename, contentBase64 }) {
+    const response = await apiClient.post(`/api/portal/lobs/${lobId}/roster/import`, { filename, contentBase64 });
+    return response.data;
+  },
+
+  /** Remove a single imported roster entry (superadmin). */
+  async removeRosterEntry(lobId, id) {
+    const response = await apiClient.delete(`/api/portal/lobs/${lobId}/roster/${id}`);
+    return response.data;
+  },
+
   // --- Heads (superadmin) ---
 
   async listHeads(lobId) {
