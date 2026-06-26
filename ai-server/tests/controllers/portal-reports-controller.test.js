@@ -60,7 +60,7 @@ describe('exportCSV — per-category hours + percentages', () => {
     expect(row).toBe('"2026-06-01",1.00,54.1,0.50,27.0,0.25,13.5,0.10,5.4,1.85');
   });
 
-  test('employee-summary: per-category Hrs/% + Tracked/Attainment; legal hours shown once on top; no Branch', async () => {
+  test('employee-summary: per-category Hrs/%; legal hours shown once on top; no Branch/Tracked/Attainment', async () => {
     portalService.getEmployees.mockResolvedValue({
       data: [{
         userId: 'u1', name: 'Jane', email: 'j@x.com',
@@ -77,9 +77,9 @@ describe('exportCSV — per-category hours + percentages', () => {
     const lines = res._sent.split('\n');
     expect(lines[0]).toBe('Legal Hours (period),18.00'); // once, not per row
     expect(lines[1]).toBe('');
-    expect(lines[2]).toBe('Employee Name,Email,Productive Hours,Productive %,Non-Productive Hours,Non-Productive %,Unknown Hours,Unknown %,Idle Hours,Idle %,Tracked Hours,Attainment %');
-    // total = 3.7; tracked = 2 + 1 + 0.5 = 3.5; attainment = 3.5 / 18 = 19.4%.
-    expect(lines[3]).toBe('"Jane","j@x.com",2.00,54.1,1.00,27.0,0.50,13.5,0.20,5.4,3.50,19.4');
+    expect(lines[2]).toBe('Employee Name,Email,Productive Hours,Productive %,Non-Productive Hours,Non-Productive %,Unknown Hours,Unknown %,Idle Hours,Idle %');
+    // total = 3.7; %s = each ÷ 3.7. Tracked Hrs / Attainment % columns removed.
+    expect(lines[3]).toBe('"Jane","j@x.com",2.00,54.1,1.00,27.0,0.50,13.5,0.20,5.4');
     expect(holidayService.legalHours).toHaveBeenCalledWith('2026-06-01', '2026-06-02');
   });
 
@@ -99,7 +99,7 @@ describe('exportCSV — per-category hours + percentages', () => {
     expect(res._status).toBe(200); // report still renders
     const lines = res._sent.split('\n');
     expect(lines[0]).toBe('Legal Hours (period),0.00'); // degraded to 0, still shown once
-    expect(lines[3]).toBe('"Jane","j@x.com",2.00,54.1,1.00,27.0,0.50,13.5,0.20,5.4,3.50,0.0'); // Tracked 3.50, Attainment 0.0
+    expect(lines[3]).toBe('"Jane","j@x.com",2.00,54.1,1.00,27.0,0.50,13.5,0.20,5.4'); // report still renders
   });
 });
 
@@ -146,7 +146,7 @@ describe('exportExcel — real .xlsx workbook', () => {
     expect(sheet.getCell('J2').value).toBe(1.85);    // Total Hours
   });
 
-  test('employee-summary: legal hours as a title row, then Hrs/% + Tracked/Attainment (no Branch)', async () => {
+  test('employee-summary: legal hours as a title row, then per-category Hrs/% (no Branch/Tracked/Attainment)', async () => {
     portalService.getEmployees.mockResolvedValue({
       data: [{
         userId: 'u1', name: 'Jane', email: 'j@x.com',
@@ -166,11 +166,11 @@ describe('exportExcel — real .xlsx workbook', () => {
     expect(sheet.getCell('A1').value).toBe('Legal Hours (period): 18.00'); // shown once on top
     expect(sheet.getRow(2).values.slice(1)).toEqual([
       'Employee Name', 'Email', 'Productive Hours', 'Productive %', 'Non-Productive Hours', 'Non-Productive %',
-      'Unknown Hours', 'Unknown %', 'Idle Hours', 'Idle %', 'Tracked Hours', 'Attainment %',
+      'Unknown Hours', 'Unknown %', 'Idle Hours', 'Idle %',
     ]);
     expect(sheet.getCell('A3').value).toBe('Jane');
     expect(sheet.getCell('G3').value).toBe(0.5);  // Unknown Hours
-    expect(sheet.getCell('K3').value).toBe(3.5);  // Tracked Hours
+    expect(sheet.getCell('I3').value).toBe(0.2);  // Idle Hours (last data column)
   });
 
   test('unsupported type → 400', async () => {

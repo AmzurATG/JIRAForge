@@ -90,10 +90,10 @@ async function createAdminUser(req, res) {
     }
     
     // Validate role
-    if (!['superadmin', 'admin', 'viewer'].includes(newUserRole)) {
-      return res.status(400).json({ 
-        success: false, 
-        error: 'Invalid role. Must be superadmin, admin, or viewer' 
+    if (!['superadmin', 'admin'].includes(newUserRole)) {
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid role. Must be superadmin or admin'
       });
     }
     
@@ -244,10 +244,10 @@ async function updateAdminUser(req, res) {
     }
     
     // Validate role if provided
-    if (newRole && !['superadmin', 'admin', 'viewer'].includes(newRole)) {
-      return res.status(400).json({ 
-        success: false, 
-        error: 'Invalid role. Must be superadmin, admin, or viewer' 
+    if (newRole && !['superadmin', 'admin'].includes(newRole)) {
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid role. Must be superadmin or admin'
       });
     }
     

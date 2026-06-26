@@ -5,7 +5,6 @@
 export const ROLES = {
   SUPERADMIN: 'superadmin',
   ADMIN: 'admin',
-  VIEWER: 'viewer',
 };
 
 export const PRODUCTIVITY_RANGES = {
