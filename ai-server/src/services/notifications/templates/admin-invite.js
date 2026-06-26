@@ -15,7 +15,7 @@ module.exports = {
      * @param {Object} data - Template data
      * @param {string} data.displayName - User's display name
      * @param {string} data.email - User's email
-     * @param {string} data.role - User's role (superadmin, admin, viewer)
+     * @param {string} data.role - User's role (superadmin, admin)
      * @param {string} data.portalUrl - URL to portal login
      * @param {string} [data.invitedBy] - Name of person who created the account
      * @returns {string} Plain text email body

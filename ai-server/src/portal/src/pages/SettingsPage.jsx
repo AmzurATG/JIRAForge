@@ -364,7 +364,6 @@ function SettingsPage() {
                 >
                   <option value="superadmin">Superadmin</option>
                   <option value="admin">Admin</option>
-                  <option value="viewer">Viewer</option>
                 </select>
               </div>
 
