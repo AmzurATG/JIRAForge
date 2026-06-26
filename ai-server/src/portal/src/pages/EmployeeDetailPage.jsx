@@ -13,6 +13,7 @@ import CategoryBadge from '../components/common/CategoryBadge';
 import CategoryLegend from '../components/common/CategoryLegend';
 import DateRangePicker from '../components/common/DateRangePicker';
 import DailyLineChart from '../components/charts/DailyLineChart';
+import DayTimeline from '../components/charts/DayTimeline';
 import DataTable from '../components/common/DataTable';
 import LoadingSpinner from '../components/common/LoadingSpinner';
 import ErrorBanner from '../components/common/ErrorBanner';
@@ -29,6 +30,12 @@ function EmployeeDetailPage() {
   const [activeTab, setActiveTab] = useState('all'); // 'all', 'productive', 'non-productive'
   const [logsPage, setLogsPage] = useState(1);
   const [logsTotalCount, setLogsTotalCount] = useState(0);
+
+  // Activity Logs section view: 'timeline' (default) shows the merged day bar;
+  // 'table' shows the existing paginated DataTable.
+  const [logsView, setLogsView] = useState('timeline');
+  const [timelineLogs, setTimelineLogs] = useState([]);
+  const [timelineLoading, setTimelineLoading] = useState(false);
   
   // Default to today (shown as the "Today" preset in the picker)
   const [dateRange, setDateRange] = useState(() => {
@@ -40,9 +47,51 @@ function EmployeeDetailPage() {
     loadEmployeeDetail();
   }, [userId, dateRange]);
 
+  // Table logs: only fetch while the Table view is active.
   useEffect(() => {
+    if (logsView !== 'table') return;
     loadEmployeeLogs();
-  }, [userId, activeTab, logsPage, dateRange]);
+  }, [userId, activeTab, logsPage, dateRange, logsView]);
+
+  // Timeline: full-day fetch (all categories incl. idle), not the 10-row page.
+  // Initial/explicit loads show a one-off "Loading…"; background polls are silent.
+  const loadTimeline = async ({ silent = false } = {}) => {
+    if (!silent) setTimelineLoading(true);
+    try {
+      const response = await employeesApi.getLogs(userId, {
+        from: dateRange.from,
+        to: dateRange.to,
+        limit: 5000,
+        includeIdle: true,
+      });
+      setTimelineLogs(response.data || []);
+    } catch (err) {
+      console.error('Failed to load timeline:', err);
+    } finally {
+      if (!silent) setTimelineLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (logsView !== 'timeline') return;
+    loadTimeline({ silent: false });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [userId, dateRange, logsView]);
+
+  // Silent live refresh: while viewing the timeline and the range includes today,
+  // re-fetch every 60s WITHOUT a loading state (the bar just extends). Paused when
+  // the tab is hidden; off for past-only ranges.
+  useEffect(() => {
+    if (logsView !== 'timeline') return undefined;
+    const today = formatDate(new Date());
+    const includesToday = dateRange.from <= today && today <= dateRange.to;
+    if (!includesToday) return undefined;
+    const id = setInterval(() => {
+      if (!document.hidden) loadTimeline({ silent: true });
+    }, 60000);
+    return () => clearInterval(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [userId, dateRange, logsView]);
 
   const loadEmployeeDetail = async () => {
     setLoading(true);
@@ -247,8 +296,40 @@ function EmployeeDetailPage() {
 
       {/* Activity Logs */}
       <div className="card">
-        <h3 className="section-title mb-4">Activity Logs</h3>
-        
+        <div className="flex items-center justify-between mb-4 gap-2 flex-wrap">
+          <div className="flex items-center gap-1">
+            <h3 className="section-title">Activity Logs</h3>
+            {logsView === 'timeline' && <CategoryLegend />}
+          </div>
+          {/* Timeline ⇄ Table view toggle */}
+          <div className="flex gap-1 p-1 bg-gray-100 dark:bg-gray-800 rounded-xl">
+            <button
+              onClick={() => setLogsView('timeline')}
+              className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-all ${
+                logsView === 'timeline'
+                  ? 'bg-white dark:bg-gray-700 text-primary-600 dark:text-primary-400 shadow-md'
+                  : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-200'
+              }`}
+            >
+              Timeline
+            </button>
+            <button
+              onClick={() => setLogsView('table')}
+              className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-all ${
+                logsView === 'table'
+                  ? 'bg-white dark:bg-gray-700 text-primary-600 dark:text-primary-400 shadow-md'
+                  : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-200'
+              }`}
+            >
+              Table
+            </button>
+          </div>
+        </div>
+
+        {logsView === 'timeline' ? (
+          <DayTimeline records={timelineLogs} loading={timelineLoading} />
+        ) : (
+        <>
         {/* Tabs */}
         <div className="flex gap-1 mb-6 p-1 bg-gray-100 dark:bg-gray-800 rounded-xl w-fit">
           <button
@@ -306,6 +387,8 @@ function EmployeeDetailPage() {
             onPageChange: setLogsPage,
           }}
         />
+        </>
+        )}
       </div>
     </div>
   );
