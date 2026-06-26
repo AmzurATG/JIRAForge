@@ -200,11 +200,10 @@ async function getRoster(lobId, { page = 1, limit = 20, search } = {}) {
   ]);
   const memberUsers = memberUserIds.length ? await db.getUsersByIds(memberUserIds) : [];
 
-  // Which roster/member emails actually exist in users (the install signal).
-  const rosterEmails = roster.map((r) => r.email).filter(Boolean);
-  const memberEmails = memberUsers.map((u) => normalizeEmail(u.email)).filter(Boolean);
-  const candidateEmails = [...new Set([...rosterEmails, ...memberEmails])];
-  const installedUsers = candidateEmails.length ? await db.getUsersByEmails(candidateEmails) : [];
+  // Only roster emails need the install lookup — existing members already have a
+  // users row (seeded installed below), so they never consult this map.
+  const rosterEmails = [...new Set(roster.map((r) => r.email).filter(Boolean))];
+  const installedUsers = rosterEmails.length ? await db.getUsersByEmails(rosterEmails) : [];
   const installedByEmail = new Map(
     installedUsers.filter((u) => u.email).map((u) => [normalizeEmail(u.email), u])
   );

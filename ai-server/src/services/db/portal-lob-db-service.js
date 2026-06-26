@@ -286,21 +286,33 @@ async function deleteExpectedMember(lobId, id) {
  * Read-only lookup of the (Jira-owned) users table by email — the install
  * signal. `emails` must be normalized lower-case; matching is exact (see the
  * email-privacy follow-up in the spec). Never writes to users.
+ *
+ * The IN() list is chunked so a large roster import can't blow past PostgREST's
+ * URL/query limits; chunks run in parallel and are merged.
  */
 async function getUsersByEmails(emails) {
   const supabase = getClient();
   if (!supabase) throw new Error('Supabase client not initialized');
   if (!Array.isArray(emails) || emails.length === 0) return [];
 
-  const { data, error } = await supabase
-    .from('users')
-    .select('id, display_name, email')
-    .in('email', emails);
-  if (error) {
-    logger.error('[PortalLobDB] getUsersByEmails failed', { error });
-    throw error;
-  }
-  return data || [];
+  const CHUNK = 300;
+  const chunks = [];
+  for (let i = 0; i < emails.length; i += CHUNK) chunks.push(emails.slice(i, i + CHUNK));
+
+  const batches = await Promise.all(
+    chunks.map(async (chunk) => {
+      const { data, error } = await supabase
+        .from('users')
+        .select('id, display_name, email')
+        .in('email', chunk);
+      if (error) {
+        logger.error('[PortalLobDB] getUsersByEmails failed', { error });
+        throw error;
+      }
+      return data || [];
+    })
+  );
+  return batches.flat();
 }
 
 // ---------------------------------------------------------------------------
