@@ -57,20 +57,36 @@ async function resolveCaller(req) {
     };
   }
   if (req.atlassianUser?.account_id) {
+    const accountId = req.atlassianUser.account_id;
     const supabase = getClient();
-    if (!supabase) return null;
+    if (!supabase) {
+      logger.warn('[DesktopDqPreferences] resolveCaller Atlassian path failed: No Supabase client');
+      return null;
+    }
     const { data: user, error } = await supabase
       .from('users')
       .select('id, organization_id, atlassian_account_id')
-      .eq('atlassian_account_id', req.atlassianUser.account_id)
+      .eq('atlassian_account_id', accountId)
       .maybeSingle();
-    if (error || !user) return null;
+    if (error) {
+      logger.warn('[DesktopDqPreferences] resolveCaller Atlassian path failed: DB Error %s', error.message);
+      return null;
+    }
+    if (!user) {
+      logger.warn('[DesktopDqPreferences] resolveCaller Atlassian path failed: No user found for account_id %s', accountId);
+      return null;
+    }
     const org = await getOrganizationById(user.organization_id);
+    if (!org) {
+      logger.warn('[DesktopDqPreferences] resolveCaller Atlassian path: Organization %s not found', user.organization_id);
+    }
     return {
       atlassianAccountId: user.atlassian_account_id,
       orgId: org?.jira_cloud_id || user.organization_id
     };
   }
+  
+  logger.warn('[DesktopDqPreferences] resolveCaller failed: No valid identifiers (Sub or Atlassian ID)');
   return null;
 }
 
@@ -82,7 +98,8 @@ router.get('/', async (req, res) => {
   try {
     const caller = await resolveCaller(req);
     if (!caller || !caller.atlassianAccountId || !caller.orgId) {
-      return res.status(404).json({ success: false, error: 'User profile not found' });
+      logger.warn('[DesktopDqPreferences] GET / failed: resolveCaller returned invalid caller');
+      return res.status(403).json({ success: false, error: 'User profile not found or lacking orgId' });
     }
 
     const supabase = getClient();
@@ -126,7 +143,8 @@ router.put('/', async (req, res) => {
 
     const caller = await resolveCaller(req);
     if (!caller || !caller.atlassianAccountId || !caller.orgId) {
-      return res.status(404).json({ success: false, error: 'User profile not found' });
+      logger.warn('[DesktopDqPreferences] PUT / failed: resolveCaller returned invalid caller');
+      return res.status(403).json({ success: false, error: 'User profile not found or lacking orgId' });
     }
 
     const supabase = getClient();

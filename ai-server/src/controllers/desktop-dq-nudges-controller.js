@@ -395,14 +395,27 @@ async function resolveCaller(req) {
     const accountId = req.atlassianUser.account_id;
     try {
       const supabase = getClient();
-      if (!supabase) return null;
+      if (!supabase) {
+        logger.warn('[DesktopDqNudges] resolveCaller Atlassian path failed: No Supabase client');
+        return null;
+      }
       const { data: user, error } = await supabase
         .from('users')
         .select('id, organization_id, atlassian_account_id')
         .eq('atlassian_account_id', accountId)
         .maybeSingle();
-      if (error || !user) return null;
+      if (error) {
+        logger.warn('[DesktopDqNudges] resolveCaller Atlassian path failed: DB Error %s', error.message);
+        return null;
+      }
+      if (!user) {
+        logger.warn('[DesktopDqNudges] resolveCaller Atlassian path failed: No user found for account_id %s', accountId);
+        return null;
+      }
       const org = await getOrganizationById(user.organization_id);
+      if (!org) {
+        logger.warn('[DesktopDqNudges] resolveCaller Atlassian path: Organization %s not found', user.organization_id);
+      }
       return {
         userId: user.id,
         organizationId: user.organization_id,
@@ -416,6 +429,7 @@ async function resolveCaller(req) {
     }
   }
 
+  logger.warn('[DesktopDqNudges] resolveCaller failed: No valid identifiers (Sub or Atlassian ID)');
   return null;
 }
 
@@ -425,7 +439,8 @@ router.get('/', async (req, res) => {
   try {
     const caller = await resolveCaller(req);
     if (!caller || !caller.atlassianAccountId || !caller.orgId) {
-      return res.status(404).json({ success: false, error: 'User profile not found' });
+      logger.warn('[DesktopDqNudges] GET / failed: resolveCaller returned invalid caller');
+      return res.status(403).json({ success: false, error: 'User profile not found or lacking orgId' });
     }
 
     if (req.atlassianToken) {
@@ -519,7 +534,8 @@ router.post('/ack', async (req, res) => {
 
     const caller = await resolveCaller(req);
     if (!caller || !caller.atlassianAccountId || !caller.orgId) {
-      return res.status(404).json({ success: false, error: 'User profile not found' });
+      logger.warn('[DesktopDqNudges] POST /ack failed: resolveCaller returned invalid caller');
+      return res.status(403).json({ success: false, error: 'User profile not found or lacking orgId' });
     }
 
     const count = await dqNotificationsRepo.acknowledgeNudges({
@@ -541,7 +557,8 @@ router.post('/sync-recent-unassigned', async (req, res) => {
   try {
     const caller = await resolveCaller(req);
     if (!caller || !caller.atlassianAccountId || !caller.orgId) {
-      return res.status(404).json({ success: false, error: 'User profile not found' });
+      logger.warn('[DesktopDqNudges] POST /sync-recent-unassigned failed: resolveCaller returned invalid caller');
+      return res.status(403).json({ success: false, error: 'User profile not found or lacking orgId' });
     }
 
     const rawWindow = Number(req.body?.windowMinutes ?? 30);
@@ -720,7 +737,8 @@ router.post('/trigger', async (req, res) => {
   try {
     const caller = await resolveCaller(req);
     if (!caller || !caller.atlassianAccountId || !caller.orgId) {
-      return res.status(404).json({ success: false, error: 'User profile not found' });
+      logger.warn('[DesktopDqNudges] POST /trigger failed: resolveCaller returned invalid caller');
+      return res.status(403).json({ success: false, error: 'User profile not found or lacking orgId' });
     }
 
     const rawLimit = Number(req.body?.limit || MAX_PENDING_NUDGES);
