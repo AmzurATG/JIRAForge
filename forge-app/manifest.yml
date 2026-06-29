@@ -37,6 +37,8 @@ modules:
       timeoutSeconds: 900
     - key: issueCreatedHandler
       handler: index.issueCreatedHandler
+    - key: glanceStatusHandler
+      handler: index.glanceStatusHandler
 
   jira:projectPage:
     - key: brd-time-tracker-project-page
@@ -52,6 +54,24 @@ modules:
       resolver:
         function: main
       title: Time Analytics
+      icon: https://developer.atlassian.com/platform/forge/images/issue-panel-icon.svg
+
+  jira:issueGlance:
+    - key: brd-dq-issue-glance
+      resource: main
+      resolver:
+        function: main
+      title: "Description Quality Score"
+      label: " "
+      dynamicProperties:
+        function: glanceStatusHandler
+
+  jira:issueAction:
+    - key: brd-dq-issue-action
+      resource: main
+      resolver:
+        function: main
+      title: Check Description Quality
       icon: https://developer.atlassian.com/platform/forge/images/issue-panel-icon.svg
 
   jira:adminPage:

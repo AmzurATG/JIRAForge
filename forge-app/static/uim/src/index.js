@@ -30,7 +30,7 @@ const toBold = (str) => str.split('').map(c => {
   return c;
 }).join('');
 
-// ─── Format the indicator message ───
+// ─── Format the indicator message (GIC / IssueView) ───
 function formatIndicator(score, issues) {
   if (score >= 80) {
     return `🌟 🌟 🌟\n${toBold(`EXCELLENT QUALITY | Description Quality Score: ${score}/100`)}\n✨ ${toBold('Your description is well-detailed!')} ✨`;
@@ -50,9 +50,35 @@ ${bullets}
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`;
 }
 
-// ─── Register onChange for description field ───
+// ─── Format the transition-view warning (IssueTransition) ───
+// Uses a softer, actionable format — the user is about to move the issue forward,
+// so we want to nudge without blocking (unless score < 50, where we set required).
+function formatTransitionWarning(score, issues) {
+  if (score >= 80) {
+    return `✅ ${toBold(`Description Quality Score: ${score}/100 — Excellent`)} ✨\nThis ticket is well-described. Good to transition!`;
+  }
+
+  const isPoor = score < 50;
+  const icon = isPoor ? '🛑' : '⚠️';
+  const urgency = isPoor
+    ? `${toBold('POOR description quality detected!')} Jira transitions with poor descriptions make handoffs harder for your team.`
+    : `${toBold('Description could be improved')} before moving this ticket forward.`;
+  const top3 = (issues || []).slice(0, 3).map(i => `  • ${i}`).join('\n');
+  const actionHint = isPoor
+    ? `${toBold('Required:')} Please open the Time Analytics panel and use "Improve with AI" before transitioning.`
+    : `Tip: Open the Time Analytics panel → "Improve with AI" to fix these quickly.`;
+
+  return `${icon} DQ Score: ${toBold(`${score}/100`)} — ${isPoor ? 'Poor' : 'Needs Work'}
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+${urgency}
+${top3 ? `\nIssues found:\n${top3}` : ''}
+
+${actionHint}`;
+}
+
+// ─── Register onChange for description field (GIC + IssueView) ───
 uiModificationsApi.onInit(({ api }) => {
-  // No action on init
+  // No action on init for GIC / IssueView
 }, () => ['description', 'summary', 'issuetype']);
 
 let pendingCount = 0;
@@ -83,7 +109,7 @@ uiModificationsApi.onChange(async ({ api }) => {
   }
 
   if (description.trim().length < 10) {
-    descField.setDescription(`🛑 🛑 🛑\n${toBold('POOR QUALITY | Description Quality Score: 10/100')}\n  ➤ ${toBold('Description is too short. Please provide more details.')}`);
+    descField.setDescription(`🛑 🛑 🛑\n${toBold('POOR QUALITY | Description Quality Score: 1/100')}\n  ➤ ${toBold('Description is too short. Please provide more details.')}`);
     return;
   }
 
@@ -170,3 +196,87 @@ uiModificationsApi.onChange(async ({ api }) => {
     loadingFlag.close();
   }
 }, () => ['description', 'summary', 'issuetype']);
+
+// ─────────────────────────────────────────────────────────────────
+// IssueTransition view — DQ soft gate
+//
+// On the transition dialog (IssueTransition viewType), we run a
+// one-time score fetch on init rather than debounced keystroke
+// tracking. The description field hint is set to show the current
+// score and quality issues. If score < 50, the description field is
+// also marked required so Jira prevents the transition until the
+// user acknowledges (edits the description) — a soft quality gate
+// that works today without the preview workflowValidator module.
+// ─────────────────────────────────────────────────────────────────
+
+let transitionScoredIssueKey = null; // prevents redundant fetches on re-renders
+
+uiModificationsApi.onInit(async ({ api, context }) => {
+  // Only activate on IssueTransition views
+  const viewType = context?.viewType;
+  if (viewType !== 'IssueTransition') return;
+
+  const { getFieldById } = api;
+  const descField = getFieldById('description');
+  if (!descField) return;
+
+  // Extract issue key from context
+  const issueKey = context?.issue?.key || context?.issueKey;
+  if (!issueKey) return;
+
+  // Skip redundant fetch if we already scored this issue in this session
+  if (transitionScoredIssueKey === issueKey) return;
+  transitionScoredIssueKey = issueKey;
+
+  // Show a temporary "Checking..." hint while we fetch
+  descField.setDescription(`⏳ ${toBold('Checking description quality before transition…')}`);
+
+  try {
+    const response = await invoke('analyzeDescription', {
+      issueKey,
+      requestImprovement: false
+    });
+
+    if (!response?.success) {
+      // On failure, clear the hint and do nothing else — don't block the user
+      descField.setDescription('');
+      return;
+    }
+
+    const { score, issues } = response;
+    const warning = formatTransitionWarning(score, issues);
+    descField.setDescription(warning);
+
+    // Soft gate: mark description required when quality is poor (<50)
+    // This prevents the transition from completing until the user
+    // edits the description field (acknowledging the warning).
+    if (score < 50) {
+      try {
+        descField.setRequired(true);
+      } catch {
+        // setRequired may not be supported on all Jira versions — fail silently
+      }
+
+      // Show a persistent flag so the user understands why the button may be blocked
+      showFlag({
+        id: 'dq-transition-gate',
+        title: '🛑 Poor Description Quality',
+        description: `Score: ${score}/100. Please improve the description in the Time Analytics panel before transitioning.`,
+        type: 'error',
+        isAutoDismiss: false
+      });
+    } else if (score < 80) {
+      showFlag({
+        id: 'dq-transition-warn',
+        title: '⚠️ Description Could Be Improved',
+        description: `Score: ${score}/100. Consider improving via Time Analytics → "Improve with AI".`,
+        type: 'warning',
+        isAutoDismiss: true
+      });
+    }
+  } catch (err) {
+    console.error('[UIM IssueTransition] DQ fetch failed:', err);
+    // Fail silently — never block the user on an error
+    descField.setDescription('');
+  }
+}, () => ['description']);

@@ -49,7 +49,7 @@ function failure(message) {
  * @returns {Promise<{title: string, description: string, issueType: string,
  *                   projectKey: string, parentKey: string|null, attachments: Array}>}
  */
-async function fetchIssueForAnalysis(issueKey) {
+export async function fetchIssueForAnalysis(issueKey) {
   const response = await api
     .asUser()
     .requestJira(route`/rest/api/3/issue/${issueKey}?fields=summary,description,issuetype,project,parent,attachment,issuelinks`, {
@@ -106,7 +106,7 @@ async function fetchParentContext(parentKey) {
  * Concatenates parent and grandparent descriptions with a separator.
  * Total context is capped at 3000 characters.
  */
-async function buildParentContext(parentKey) {
+export async function buildParentContext(parentKey) {
   if (!parentKey) return null;
   const parent = await fetchParentContext(parentKey);
   if (!parent) return null;
@@ -141,7 +141,7 @@ const MAX_IMAGES = 2;
  * base64-encoded data. Only selects recent, reasonably-sized images.
  * Best-effort — silently skips failures.
  */
-async function fetchImageAttachments(rawAttachments) {
+export async function fetchImageAttachments(rawAttachments) {
   if (!Array.isArray(rawAttachments) || rawAttachments.length === 0) {
     console.log('[descriptionResolvers] fetchImageAttachments: no rawAttachments to process');
     return [];
@@ -229,7 +229,7 @@ const MAX_DOCUMENTS = 3;
  * Supported: PDF, DOCX, plain text, markdown, CSV.
  * Best-effort — silently skips failures.
  */
-async function fetchDocumentAttachments(rawAttachments) {
+export async function fetchDocumentAttachments(rawAttachments) {
   if (!Array.isArray(rawAttachments) || rawAttachments.length === 0) return [];
 
   const candidates = rawAttachments
@@ -285,7 +285,7 @@ const MAX_LINKED_ISSUES = 5;
  * Fetches summary + description for each linked issue (best-effort).
  * Returns up to MAX_LINKED_ISSUES links with title, description, status, etc.
  */
-async function fetchLinkedIssuesContext(rawIssueLinks) {
+export async function fetchLinkedIssuesContext(rawIssueLinks) {
   if (!Array.isArray(rawIssueLinks) || rawIssueLinks.length === 0) return [];
 
   // Normalize the link structure: each link has either inwardIssue or outwardIssue
@@ -338,8 +338,8 @@ async function fetchLinkedIssuesContext(rawIssueLinks) {
  * upstream 400. (Some Jira sites have custom issue types that map well to
  * Task for prompt purposes.)
  */
-function normalizeIssueType(type) {
-  return ALLOWED_ISSUE_TYPES.has(type) ? type : 'Task';
+export function normalizeIssueType(issueType) {
+  return ALLOWED_ISSUE_TYPES.has(issueType) ? issueType : 'Task';
 }
 
 function recentUnassignedCutoffIso(windowMinutes = RECENT_UNASSIGNED_WINDOW_MINUTES) {

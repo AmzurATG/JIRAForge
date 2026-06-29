@@ -96,3 +96,5 @@ export const lifecycleHandler = async (event, context) => {
 export const personalDataHandler = async (event) => {
   return await handlePersonalDataRequest(event);
 };
+
+export { glanceStatusHandler } from './handlers/glanceStatusHandler.js';

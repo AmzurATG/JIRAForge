@@ -1,5 +1,5 @@
 import React, { useCallback, useState, useEffect } from 'react';
-import { invoke, router } from '@forge/bridge';
+import { invoke, router, events } from '@forge/bridge';
 import './DescriptionQuality.css';
 
 /**
@@ -81,6 +81,11 @@ export default function DescriptionQuality({ issueKey }) {
   const runAnalysis = useCallback(async (requestImprovement) => {
     setError(null);
     setStage(requestImprovement ? STAGE.LOADING_LLM : STAGE.LOADING);
+    
+    if (!requestImprovement) {
+      events.emit('dq-loading').catch(() => {});
+    }
+
     try {
       const res = await invoke('analyzeDescription', { issueKey, requestImprovement });
       if (!res?.success) {
@@ -91,6 +96,11 @@ export default function DescriptionQuality({ issueKey }) {
       setAnalysis(res);
       setEditedTitle(res.improved_title || '');
       setEditedDescription(res.improved_description || '');
+      
+      if (!requestImprovement) {
+        events.emit('dq-score-update', res).catch(() => {});
+      }
+
       if (requestImprovement && res.improved_description) {
         setStage(STAGE.COMPARISON);
       } else {
