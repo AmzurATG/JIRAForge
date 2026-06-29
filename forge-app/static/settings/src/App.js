@@ -133,6 +133,32 @@ function App() {
           <div className="secure-badge">
             <span className="checkmark">&#10003;</span> Securely Connected
           </div>
+
+          <div style={{ marginTop: '20px', padding: '15px', backgroundColor: '#e9f2ff', borderRadius: '4px', border: '1px solid #cce0ff' }}>
+            <h3 style={{ marginTop: 0, fontSize: '14px', color: '#0747a6' }}>Advanced Configuration</h3>
+            <p style={{ fontSize: '12px', margin: '8px 0' }}>
+              The Real-Time Description Scoring feature requires a one-time registration with your Jira workspace to apply to all projects.
+            </p>
+            <button 
+              type="button" 
+              onClick={async (e) => {
+                e.target.disabled = true;
+                e.target.innerText = 'Registering...';
+                try {
+                  const res = await invoke('registerUim');
+                  if (res.success) {
+                    e.target.innerText = '✅ Registered Successfully';
+                  } else {
+                    e.target.innerText = '❌ Failed: ' + res.error;
+                  }
+                } catch(err) {
+                  e.target.innerText = '❌ Error';
+                }
+              }}
+            >
+              Enable Real-Time Description Scoring
+            </button>
+          </div>
         </section>
 
         <section className="settings-section">

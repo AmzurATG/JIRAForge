@@ -378,8 +378,12 @@ except ImportError:
 # Note: AI analysis is now handled by the separate AI server
 # Desktop app only captures and uploads screenshots to Supabase
 
-# Load environment variables
-load_dotenv()
+# Load environment variables only in source/dev runs.
+# In frozen PyInstaller builds, loading nearby template .env files can inject
+# placeholder values (for example "your_client_id_here") into child processes.
+# That can break first-login OAuth after install/update handoff.
+if not getattr(sys, 'frozen', False):
+    load_dotenv()
 
 # ============================================================================
 # CONFIGURATION
@@ -387,7 +391,7 @@ load_dotenv()
 
 # Application version - IMPORTANT: Update this when releasing new versions
 # This is used for update checking and notifications
-APP_VERSION = "1.4.9"
+APP_VERSION = "18.0.1"
 
 # Hard-disable screenshot monitoring/storage in desktop app.
 # OCR text extraction for activity records still runs via event-based flow.
@@ -419,9 +423,32 @@ RUNTIME_OCR_CONFIG = {}
 
 def get_env_var(key, default=None):
     """Get environment variable with fallback to embedded/runtime values"""
+    def _is_template_placeholder(raw_value):
+        if raw_value is None:
+            return False
+
+        value = str(raw_value).strip().lower()
+        if not value:
+            return False
+
+        # Ignore common template placeholders from sample .env files.
+        return (
+            value in {
+                'your_client_id_here',
+                'your_google_desktop_client_id',
+                'your_ai_server_url',
+                'your-ai-server-url',
+                'your-project.supabase.co',
+            }
+            or value.startswith('your_')
+            or value.startswith('your-')
+            or 'your-ai-server-url' in value
+            or 'your-project.supabase.co' in value
+        )
+
     # First try environment variable (for development with .env)
     value = os.getenv(key)
-    if value:
+    if value and not _is_template_placeholder(value):
         return value
     # Then try runtime Supabase config (fetched from AI server)
     if key in RUNTIME_SUPABASE_CONFIG and RUNTIME_SUPABASE_CONFIG[key]:
@@ -2770,6 +2797,8 @@ class AtlassianAuthManager:
 
         B-15: Rate limiting added to prevent refresh storms (min 5 seconds between calls).
         """
+        self._ensure_refresh_rate_limit_state()
+
         # B-15: Rate limiting - prevent refresh storms
         time_since_last_refresh = time.time() - self._last_token_refresh_time
         if time_since_last_refresh < self._token_refresh_min_interval:
@@ -2814,6 +2843,13 @@ class AtlassianAuthManager:
                     next_action='show_auth_notification'
                 )
                 return False
+
+    def _ensure_refresh_rate_limit_state(self):
+        """Backfill refresh rate-limit fields for legacy/partially initialized instances."""
+        if not hasattr(self, '_last_token_refresh_time'):
+            self._last_token_refresh_time = 0
+        if not hasattr(self, '_token_refresh_min_interval'):
+            self._token_refresh_min_interval = 5
 
         refresh_token_before = self.tokens.get('refresh_token')
         if not refresh_token_before and not self.tokens.get('device_token'):
@@ -6280,6 +6316,10 @@ class TimeTracker:
         if self.logger:
             self.logger.info("Atlassian authentication manager initialized")
         
+        # Description-Quality nudge poller (lazy-started after login)
+        self.dq_nudge_poller = None
+        self.dq_nudge_preferences = None
+
         # User state
         self.current_user = None
         self.current_user_id = None  # UUID from public.users table
@@ -13023,6 +13063,13 @@ class TimeTracker:
 
         print("[OK] Tracking started with idle detection")
         self.add_admin_log('INFO', f'Tracking started (interval: {self.capture_interval}s)')
+
+        # Start description-quality nudge poller (best-effort)
+        try:
+            self._start_dq_nudge_poller()
+            self._run_dq_startup_sync()
+        except Exception as e:
+            print(f"[WARN] Failed to start DQ nudge poller: {e}")
     
     def stop_tracking(self):
         """Stop screenshot tracking"""
@@ -13479,6 +13526,65 @@ class TimeTracker:
         except Exception as e:
             print(f"[ERROR] Manual update trigger failed: {e}")
 
+    def _manual_dq_nudge_trigger(self, icon=None, it=None):
+        """Run a one-off description-quality nudge poll for manual testing."""
+        try:
+            if not self.current_user:
+                print("[DQNUDGE] Manual trigger ignored: user is not logged in")
+                return
+
+            if getattr(self, 'dq_nudge_poller', None) is None:
+                print("[DQNUDGE] Manual trigger requested; poller not running, attempting start")
+                self._start_dq_nudge_poller()
+
+            poller = getattr(self, 'dq_nudge_poller', None)
+            if poller is None:
+                print("[WARN] Manual DQ trigger unavailable: poller could not be started")
+                return
+
+            if getattr(self, 'dq_nudge_preferences', None):
+                try:
+                    self.dq_nudge_preferences.refresh()
+                except Exception as pref_err:
+                    print(f"[WARN] Manual DQ trigger preference refresh failed: {pref_err}")
+
+            print("[DQNUDGE] Running manual one-off DQ nudge poll")
+
+            def poll_in_background():
+                try:
+                    if hasattr(poller, 'trigger_generation'):
+                        trigger_result = poller.trigger_generation(timeout=60.0, limit=5, force=True)
+                        if trigger_result.get('success'):
+                            generated = trigger_result.get('generated', 0)
+                            candidates = trigger_result.get('candidates', 0)
+                            if generated == 0:
+                                reason = trigger_result.get('reason') or 'unspecified'
+                                skipped = trigger_result.get('skippedCooldown', 0)
+                                print(
+                                    f"[DQNUDGE] Manual trigger generated 0 rows "
+                                    f"(candidates={candidates}, reason={reason}, skippedCooldown={skipped})"
+                                )
+                            else:
+                                print(
+                                    f"[DQNUDGE] Manual trigger generated {generated} "
+                                    f"nudge row(s) from {candidates} candidate(s)"
+                                )
+                        else:
+                            print(f"[DQNUDGE] Manual trigger generation result: {trigger_result}")
+
+                    nudges = poller.poll_once(timeout=15.0)
+                    if nudges:
+                        print(f"[DQNUDGE] Manual poll found {len(nudges)} pending nudge(s)")
+                        self._handle_dq_nudges(nudges)
+                    else:
+                        print("[DQNUDGE] Manual poll found no pending nudges")
+                except Exception as poll_err:
+                    print(f"[WARN] Manual DQ trigger poll failed: {poll_err}")
+
+            threading.Thread(target=poll_in_background, daemon=True).start()
+        except Exception as e:
+            print(f"[ERROR] Manual DQ trigger failed: {e}")
+
     def _build_tray_menu(self):
         """Build the tray menu with current state"""
         def get_menu_label():
@@ -13538,6 +13644,10 @@ class TimeTracker:
                 '  View All App Rules\u2026',
                 _open_classifications,
             ))
+            menu_items.append(item(
+                '  Test Description Quality Nudges...',
+                self._manual_dq_nudge_trigger,
+            ))
 
         # Add separator and update-related menu items
         menu_items.append(pystray.Menu.SEPARATOR)
@@ -13569,6 +13679,12 @@ class TimeTracker:
         if getattr(self, '_shutdown_done', False):
             return
         self._shutdown_done = True
+        try:
+            if getattr(self, 'dq_nudge_poller', None):
+                print("[SHUTDOWN] Stopping description-quality nudge poller...")
+                self.dq_nudge_poller.stop()
+        except Exception as e:
+            print(f"[SHUTDOWN] DQ nudge poller shutdown error: {e}")
         try:
             print("[SHUTDOWN] Stopping OCR worker thread...")
             if self.ocr_processor:
@@ -13663,6 +13779,132 @@ class TimeTracker:
             except Exception as e2:
                 print(f"[ERROR] System tray fallback also failed: {e2}")
     
+    def _start_dq_nudge_poller(self):
+        """Start the description-quality nudge poller if not already running.
+
+        Best-effort: silently no-ops if the dq_nudge package is unavailable or
+        the user is not yet authenticated.
+        """
+        if getattr(self, 'dq_nudge_poller', None) is not None:
+            return  # already running
+
+        try:
+            from dq_nudge import DqNudgePoller, DqNudgePreferences
+        except ImportError as e:
+            print(f"[WARN] dq_nudge package unavailable: {e}")
+            return
+
+        if not self.auth_manager:
+            # Auth manager not ready yet.
+            return
+
+        try:
+            self.dq_nudge_preferences = DqNudgePreferences(self.auth_manager)
+            try:
+                self.dq_nudge_preferences.refresh()
+            except Exception:
+                pass  # best-effort; defaults are fine
+
+            self.dq_nudge_poller = DqNudgePoller(
+                self.auth_manager,
+                on_nudges=self._handle_dq_nudges,
+                preferences=self.dq_nudge_preferences,
+            )
+            self.dq_nudge_poller.start()
+            print("[OK] Description-quality nudge poller started")
+        except Exception as e:
+            print(f"[WARN] Could not start DQ nudge poller: {e}")
+            self.dq_nudge_poller = None
+
+    def _run_dq_startup_sync(self):
+        """One-time DQ sync after tracking starts — show popup immediately if nudges exist."""
+        poller = getattr(self, 'dq_nudge_poller', None)
+        if poller is None:
+            return
+
+        def _sync():
+            max_attempts = 6
+            retry_delay_seconds = 20
+            try:
+                for attempt in range(max_attempts):
+                    # Trigger DQ nudges for all in-progress Jira tickets
+                    trigger_result = poller.trigger_generation(timeout=30.0, force=True)
+                    trigger_reason = trigger_result.get('reason') if isinstance(trigger_result, dict) else None
+
+                    # Sync recent unassigned work
+                    result = poller.sync_recent_unassigned_once(timeout=30.0)
+                    reason = result.get('reason') if isinstance(result, dict) else None
+
+                    sync_nudges = list(result.get('nudges') or []) if isinstance(result, dict) else []
+                    polled_nudges = poller.poll_once(timeout=30.0)
+                    if not isinstance(polled_nudges, list):
+                        polled_nudges = []
+
+                    # Combine avoiding duplicates
+                    seen = set()
+                    nudges = []
+                    for n in sync_nudges + polled_nudges:
+                        if isinstance(n, dict) and 'id' in n:
+                            if n['id'] not in seen:
+                                seen.add(n['id'])
+                                nudges.append(n)
+
+                    if nudges:
+                        self._handle_dq_nudges(nudges)
+                        return
+
+                    retryable_reason = reason in {'missing-token', 'request-exception'} or trigger_reason in {'missing-token', 'request-exception'}
+                    if retryable_reason and attempt < (max_attempts - 1):
+                        time.sleep(retry_delay_seconds)
+                        continue
+                    return
+            except Exception as e:
+                print(f"[WARN] DQ startup sync failed: {e}")
+
+        threading.Thread(target=_sync, name='DqStartupSync', daemon=True).start()
+
+    def _handle_dq_nudges(self, nudges):
+        """Background-thread callback: schedule popup on the main thread."""
+        if not nudges:
+            return
+        try:
+            # Show on a fresh daemon thread to avoid blocking the poller loop.
+            threading.Thread(
+                target=self._show_dq_popup,
+                args=(nudges,),
+                daemon=True,
+            ).start()
+        except Exception as e:
+            print(f"[WARN] Failed to dispatch DQ popup: {e}")
+
+    def _show_dq_popup(self, nudges):
+        """Build and show the DQ nudge popup."""
+        try:
+            from dq_nudge import DqNudgePopupWindow, acknowledge_nudges
+        except ImportError:
+            return
+
+        def ack_cb(ids, action, snooze_until):
+            try:
+                return acknowledge_nudges(self.auth_manager, ids, action, snooze_until)
+            except Exception as e:
+                print(f"[WARN] DQ ack failed: {e}")
+                return False
+
+        def disable_cb():
+            try:
+                if self.dq_nudge_preferences:
+                    return self.dq_nudge_preferences.set_popup_enabled(False)
+            except Exception as e:
+                print(f"[WARN] DQ disable-popup failed: {e}")
+            return False
+
+        try:
+            popup = DqNudgePopupWindow(nudges, ack_cb, disable_popup_callback=disable_cb)
+            popup.show()
+        except Exception as e:
+            print(f"[WARN] DQ popup display failed: {e}")
+
     def quit_app(self):
         """B-13: Quit application with bounded join on tracking thread"""
         print("[EXIT] Shutting down application...")

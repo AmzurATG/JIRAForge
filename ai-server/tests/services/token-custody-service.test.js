@@ -132,7 +132,7 @@ describe('Token Custody Service', () => {
       const { deviceToken } = await custody.issueDeviceSession('user-1', {
         organizationId: 'org-1',
         deviceName: 'LAP-001',
-        appVersion: '1.4.8'
+        appVersion: '18.0.1'
       });
 
       expect(deviceToken).toBeTruthy();
@@ -146,7 +146,7 @@ describe('Token Custody Service', () => {
       supa.queue.push({ data: { id: 'new-session-id' }, error: null }); // the insert
       supa.queue.push({ data: [{ id: 'old-1' }], error: null });        // the revoke update
 
-      await custody.issueDeviceSession('user-1', { deviceName: 'LAP-001', appVersion: '1.4.8' });
+      await custody.issueDeviceSession('user-1', { deviceName: 'LAP-001', appVersion: '18.0.1' });
 
       const revoke = supa.calls.find((c) => c._table === 'device_sessions' && c._op === 'update');
       expect(revoke).toBeTruthy();

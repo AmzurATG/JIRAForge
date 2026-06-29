@@ -109,6 +109,9 @@ function handleSpecialParam(key, value, query) {
     case 'or':
       query.or = value.replaceAll(/(?:^\()|(?:\)$)/g, '');
       return true;
+    case 'and':
+      query.and = value.replaceAll(/(?:^\()|(?:\)$)/g, '');
+      return true;
     default:
       return false;
   }

@@ -18,11 +18,26 @@
 
 import api, { route } from '@forge/api';
 import { remoteRequest } from '../utils/remote.js';
-import { isValidIssueKey } from '../utils/validators.js';
+import { isValidIssueKey, sanitizeUUIDArray } from '../utils/validators.js';
 import { markdownToADF, validateADF, adfToText, extractMediaNodes } from '../utils/adfBuilder.js';
+import { supabaseRequest } from '../utils/supabase.js';
+import { initializeRequestContext, ensureArray, handleResolverError } from './unassigned/helpers.js';
+import { updateSessionsAndAnalysis, markGroupAsAssigned } from './unassigned/assignmentResolvers.js';
+import { createWorklogIfNeeded, isAutoSyncEnabled } from '../services/workAssignmentService.js';
 
 const ALLOWED_ISSUE_TYPES = new Set(['Bug', 'Story', 'Task', 'Epic', 'Sub-task']);
 const ALLOWED_EVENTS = new Set(['analyze', 'improve', 'accept', 'edit', 'reject']);
+const RECENT_UNASSIGNED_WINDOW_MINUTES = 30;
+const SYNC_JOB_TABLE = 'unassigned_sync_jobs';
+const SYNC_JOB_TYPE = 'sync_recent_unassigned_with_updated_issues';
+const SYNC_JOB_STATUS = {
+  QUEUED: 'queued',
+  IN_PROGRESS: 'in_progress',
+  COMPLETED: 'completed',
+  FAILED: 'failed'
+};
+const MAX_SYNC_INVOCATION_BUDGET_MS = 18000;
+const ACTIVE_SYNC_PROCESSING_LEASE_MS = 20000;
 
 function failure(message) {
   return { success: false, error: message };
@@ -34,7 +49,7 @@ function failure(message) {
  * @returns {Promise<{title: string, description: string, issueType: string,
  *                   projectKey: string, parentKey: string|null, attachments: Array}>}
  */
-async function fetchIssueForAnalysis(issueKey) {
+export async function fetchIssueForAnalysis(issueKey) {
   const response = await api
     .asUser()
     .requestJira(route`/rest/api/3/issue/${issueKey}?fields=summary,description,issuetype,project,parent,attachment,issuelinks`, {
@@ -91,7 +106,7 @@ async function fetchParentContext(parentKey) {
  * Concatenates parent and grandparent descriptions with a separator.
  * Total context is capped at 3000 characters.
  */
-async function buildParentContext(parentKey) {
+export async function buildParentContext(parentKey) {
   if (!parentKey) return null;
   const parent = await fetchParentContext(parentKey);
   if (!parent) return null;
@@ -126,7 +141,7 @@ const MAX_IMAGES = 2;
  * base64-encoded data. Only selects recent, reasonably-sized images.
  * Best-effort — silently skips failures.
  */
-async function fetchImageAttachments(rawAttachments) {
+export async function fetchImageAttachments(rawAttachments) {
   if (!Array.isArray(rawAttachments) || rawAttachments.length === 0) {
     console.log('[descriptionResolvers] fetchImageAttachments: no rawAttachments to process');
     return [];
@@ -214,7 +229,7 @@ const MAX_DOCUMENTS = 3;
  * Supported: PDF, DOCX, plain text, markdown, CSV.
  * Best-effort — silently skips failures.
  */
-async function fetchDocumentAttachments(rawAttachments) {
+export async function fetchDocumentAttachments(rawAttachments) {
   if (!Array.isArray(rawAttachments) || rawAttachments.length === 0) return [];
 
   const candidates = rawAttachments
@@ -270,7 +285,7 @@ const MAX_LINKED_ISSUES = 5;
  * Fetches summary + description for each linked issue (best-effort).
  * Returns up to MAX_LINKED_ISSUES links with title, description, status, etc.
  */
-async function fetchLinkedIssuesContext(rawIssueLinks) {
+export async function fetchLinkedIssuesContext(rawIssueLinks) {
   if (!Array.isArray(rawIssueLinks) || rawIssueLinks.length === 0) return [];
 
   // Normalize the link structure: each link has either inwardIssue or outwardIssue
@@ -323,11 +338,740 @@ async function fetchLinkedIssuesContext(rawIssueLinks) {
  * upstream 400. (Some Jira sites have custom issue types that map well to
  * Task for prompt purposes.)
  */
-function normalizeIssueType(type) {
-  return ALLOWED_ISSUE_TYPES.has(type) ? type : 'Task';
+export function normalizeIssueType(issueType) {
+  return ALLOWED_ISSUE_TYPES.has(issueType) ? issueType : 'Task';
+}
+
+function recentUnassignedCutoffIso(windowMinutes = RECENT_UNASSIGNED_WINDOW_MINUTES) {
+  return new Date(Date.now() - windowMinutes * 60 * 1000).toISOString();
+}
+
+function getTimeframeBoundsIso(timeframe = 'yesterday') {
+  const now = new Date();
+  const todayStartUtc = new Date(Date.UTC(
+    now.getUTCFullYear(),
+    now.getUTCMonth(),
+    now.getUTCDate(),
+    0,
+    0,
+    0,
+    0
+  ));
+  
+  if (timeframe === 'last_3_days') {
+    const startUtc = new Date(todayStartUtc.getTime() - (3 * 24 * 60 * 60 * 1000));
+    return { startIso: startUtc.toISOString(), endIso: todayStartUtc.toISOString() };
+  } else if (timeframe === 'last_one_week') {
+    const startUtc = new Date(todayStartUtc.getTime() - (7 * 24 * 60 * 60 * 1000));
+    return { startIso: startUtc.toISOString(), endIso: todayStartUtc.toISOString() };
+  } else {
+    // yesterday
+    const yesterdayStartUtc = new Date(todayStartUtc.getTime() - (24 * 60 * 60 * 1000));
+    return { startIso: yesterdayStartUtc.toISOString(), endIso: todayStartUtc.toISOString() };
+  }
+}
+
+function chunkArray(items, chunkSize) {
+  if (!Array.isArray(items) || items.length === 0) return [];
+  const chunks = [];
+  for (let i = 0; i < items.length; i += chunkSize) {
+    chunks.push(items.slice(i, i + chunkSize));
+  }
+  return chunks;
+}
+
+const MAX_SESSIONS_PER_LLM_CALL = 50;
+  const MIN_SESSIONS_PER_LLM_CALL = 1;
+
+function groupAssignmentsByIssue(assignments) {
+  const byIssue = new Map();
+  for (const row of assignments || []) {
+    if (!row?.sessionId || !row?.issueKey) continue;
+    if (!byIssue.has(row.issueKey)) byIssue.set(row.issueKey, []);
+    byIssue.get(row.issueKey).push(row.sessionId);
+  }
+  return byIssue;
+}
+
+function parseJobPayload(raw) {
+  if (!raw || typeof raw !== 'object') return {};
+  return raw;
+}
+
+function parseJobProgress(raw) {
+  if (!raw || typeof raw !== 'object') {
+    return {
+      cursor: 0,
+      processedSessions: 0,
+      processedChunks: 0,
+      matchedCount: 0,
+      issuesScanned: 0,
+      reason: null
+    };
+  }
+  return {
+    cursor: Number(raw.cursor) || 0,
+    processedSessions: Number(raw.processedSessions) || 0,
+    processedChunks: Number(raw.processedChunks) || 0,
+    matchedCount: Number(raw.matchedCount) || 0,
+    issuesScanned: Number(raw.issuesScanned) || 0,
+    reason: raw.reason || null,
+    assignments: Array.isArray(raw.assignments) ? raw.assignments : []
+  };
+}
+
+function toPositiveInt(value, fallback) {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n <= 0) return fallback;
+  return Math.floor(n);
+}
+
+function computeDynamicChunkSize({ issuesCount, remainingSessions, elapsedMs, budgetMs }) {
+  const safeIssues = Math.max(1, toPositiveInt(issuesCount, 1));
+  // Keep issue x session complexity bounded per AI call.
+  // Lower target complexity = smaller chunks = more processing iterations per invocation budget.
+  // Conservative starting point to ensure first poll completes well under 25s Forge limit.
+  const targetComplexity = 60;
+  let chunkSize = Math.floor(targetComplexity / safeIssues);
+  chunkSize = Math.max(MIN_SESSIONS_PER_LLM_CALL, Math.min(MAX_SESSIONS_PER_LLM_CALL, chunkSize));
+
+  // As invocation budget is consumed, reduce chunk size proactively.
+  if (elapsedMs > budgetMs * 0.5) chunkSize = Math.max(MIN_SESSIONS_PER_LLM_CALL, Math.floor(chunkSize * 0.6));
+  if (elapsedMs > budgetMs * 0.75) chunkSize = Math.max(MIN_SESSIONS_PER_LLM_CALL, Math.floor(chunkSize * 0.5));
+
+  return Math.max(1, Math.min(chunkSize, remainingSessions));
+}
+
+function toJobResponse(jobRow) {
+  const payload = parseJobPayload(jobRow?.payload);
+  const progress = parseJobProgress(jobRow?.progress);
+  const sessions = Array.isArray(payload.sessions) ? payload.sessions : [];
+  const issues = Array.isArray(payload.issues) ? payload.issues : [];
+  const matchedSessions = (progress.assignments || jobRow?.result?.assignments || []).map(a => {
+    const session = sessions.find(s => s.sessionId === a.sessionId) || {};
+    return {
+      sessionId: a.sessionId,
+      issueKey: a.issueKey,
+      windowTitle: session.windowTitle || '',
+      applicationName: session.applicationName || '',
+      durationSeconds: session.durationSeconds || 0
+    };
+  });
+
+  return {
+    success: true,
+    jobId: jobRow?.id,
+    status: jobRow?.status,
+    matchedCount: progress.matchedCount,
+    sessionsScanned: sessions.length,
+    sessionsProcessed: progress.processedSessions,
+    issuesScanned: issues.length,
+    processedChunks: progress.processedChunks,
+    reason: progress.reason || jobRow?.result?.reason || null,
+    error: jobRow?.error || null,
+    matchedSessions
+  };
+}
+
+async function insertSyncJob({ supabaseConfig, userId, organizationId, payload, progress }) {
+  const rows = ensureArray(await supabaseRequest(
+    supabaseConfig,
+    `${SYNC_JOB_TABLE}?select=*`,
+    {
+      method: 'POST',
+      headers: { Prefer: 'return=representation' },
+      body: {
+        user_id: userId,
+        organization_id: organizationId,
+        job_type: SYNC_JOB_TYPE,
+        status: SYNC_JOB_STATUS.QUEUED,
+        payload,
+        progress,
+        started_at: null,
+        completed_at: null,
+        last_heartbeat_at: new Date().toISOString()
+      }
+    }
+  ));
+  return rows[0] || null;
+}
+
+async function updateSyncJob({ supabaseConfig, jobId, patch }) {
+  const rows = ensureArray(await supabaseRequest(
+    supabaseConfig,
+    `${SYNC_JOB_TABLE}?id=eq.${jobId}&select=*`,
+    {
+      method: 'PATCH',
+      headers: { Prefer: 'return=representation' },
+      body: {
+        ...patch,
+        last_heartbeat_at: new Date().toISOString()
+      }
+    }
+  ));
+  return rows[0] || null;
+}
+
+async function getSyncJobById({ supabaseConfig, jobId, userId, organizationId }) {
+  const rows = ensureArray(await supabaseRequest(
+    supabaseConfig,
+    `${SYNC_JOB_TABLE}?id=eq.${jobId}&user_id=eq.${userId}&organization_id=eq.${organizationId}&select=*`
+  ));
+  return rows[0] || null;
+}
+
+function hasFreshHeartbeat(heartbeatAt, maxAgeMs = ACTIVE_SYNC_PROCESSING_LEASE_MS) {
+  if (!heartbeatAt) return false;
+  const heartbeatMs = Date.parse(heartbeatAt);
+  if (Number.isNaN(heartbeatMs)) return false;
+  return (Date.now() - heartbeatMs) < maxAgeMs;
+}
+
+function isSyncJobActivelyProcessing(jobRow) {
+  const progress = parseJobProgress(jobRow?.progress);
+  return jobRow?.status === SYNC_JOB_STATUS.IN_PROGRESS
+    && progress.reason === 'processing'
+    && hasFreshHeartbeat(jobRow?.last_heartbeat_at);
+}
+
+async function processSyncJobWithinBudget({
+  supabaseConfig,
+  userId,
+  organizationId,
+  accountId,
+  cloudId,
+  jobRow,
+  budgetMs = MAX_SYNC_INVOCATION_BUDGET_MS
+}) {
+  const startedAt = Date.now();
+  const payload = parseJobPayload(jobRow?.payload);
+  const progress = parseJobProgress(jobRow?.progress);
+
+  const sessions = Array.isArray(payload.sessions) ? payload.sessions : [];
+  const issues = Array.isArray(payload.issues) ? payload.issues : [];
+
+  if (sessions.length === 0 || issues.length === 0) {
+    return await updateSyncJob({
+      supabaseConfig,
+      jobId: jobRow.id,
+      patch: {
+        status: SYNC_JOB_STATUS.COMPLETED,
+        completed_at: new Date().toISOString(),
+        progress: { ...progress, reason: sessions.length === 0 ? 'no_previous_day_sessions' : 'no_in_progress_issues' },
+        result: { reason: sessions.length === 0 ? 'no_previous_day_sessions' : 'no_in_progress_issues' }
+      }
+    });
+  }
+
+  let cursor = Math.min(progress.cursor, sessions.length);
+  let processedSessions = progress.processedSessions;
+  let processedChunks = progress.processedChunks;
+  let matchedCount = progress.matchedCount;
+  const autoSyncEnabled = await isAutoSyncEnabled(accountId, cloudId);
+
+  let updatedRow = jobRow;
+  updatedRow = await updateSyncJob({
+    supabaseConfig,
+    jobId: jobRow.id,
+    patch: {
+      status: SYNC_JOB_STATUS.IN_PROGRESS,
+      started_at: jobRow.started_at || new Date().toISOString(),
+      payload: { ...payload, cursor },
+      progress: {
+        ...progress,
+        cursor,
+        processedSessions,
+        processedChunks,
+        matchedCount,
+        issuesScanned: issues.length,
+        reason: 'processing'
+      }
+    }
+  }) || updatedRow;
+
+  try {
+    while (cursor < sessions.length) {
+      const elapsedMs = Date.now() - startedAt;
+      // Leave headroom for DB writes + resolver response marshalling.
+      if (elapsedMs >= budgetMs - 1500) {
+        updatedRow = await updateSyncJob({
+          supabaseConfig,
+          jobId: jobRow.id,
+          patch: {
+            status: SYNC_JOB_STATUS.IN_PROGRESS,
+            progress: {
+              ...progress,
+              cursor,
+              processedSessions,
+              processedChunks,
+              matchedCount,
+              issuesScanned: issues.length,
+              reason: 'partial_timeout_budget'
+            },
+            payload: { ...payload, cursor }
+          }
+        }) || updatedRow;
+        return updatedRow;
+      }
+
+      const remaining = sessions.length - cursor;
+      const chunkSize = computeDynamicChunkSize({
+        issuesCount: issues.length,
+        remainingSessions: remaining,
+        elapsedMs,
+        budgetMs
+      });
+      const sessionChunk = sessions.slice(cursor, cursor + chunkSize);
+
+      const matchData = await remoteRequest('/api/forge/description/sync-all-unassigned', {
+        method: 'POST',
+        body: { issues, sessions: sessionChunk }
+      });
+      const assignments = Array.isArray(matchData?.assignments) ? matchData.assignments : [];
+      const byIssue = groupAssignmentsByIssue(assignments);
+
+      for (const [issueKey, sessionIds] of byIssue.entries()) {
+        matchedCount += await assignMatchedSessions({
+          supabaseConfig,
+          userId,
+          organizationId,
+          accountId,
+          cloudId,
+          issueKey,
+          sessionIds,
+          autoSyncEnabledOverride: autoSyncEnabled
+        });
+      }
+
+      const allAssignments = [...(progress.assignments || []), ...assignments];
+
+      cursor += sessionChunk.length;
+      processedSessions += sessionChunk.length;
+      processedChunks += 1;
+
+      updatedRow = await updateSyncJob({
+        supabaseConfig,
+        jobId: jobRow.id,
+        patch: {
+          status: cursor >= sessions.length ? SYNC_JOB_STATUS.COMPLETED : SYNC_JOB_STATUS.IN_PROGRESS,
+          completed_at: cursor >= sessions.length ? new Date().toISOString() : null,
+          payload: { ...payload, cursor },
+          progress: {
+            ...progress,
+            cursor,
+            processedSessions,
+            processedChunks,
+            matchedCount,
+            issuesScanned: issues.length,
+            assignments: allAssignments,
+            reason: cursor >= sessions.length
+              ? (matchedCount > 0 ? 'assigned' : 'no_llm_matches')
+              : 'processing'
+          },
+          result: cursor >= sessions.length
+            ? {
+                matchedCount,
+                sessionsScanned: sessions.length,
+                issuesScanned: issues.length,
+                reason: matchedCount > 0 ? 'assigned' : 'no_llm_matches',
+                assignments: allAssignments
+              }
+            : null
+        }
+      }) || updatedRow;
+
+      if (cursor >= sessions.length) {
+        return updatedRow;
+      }
+    }
+
+    return updatedRow;
+  } catch (err) {
+    updatedRow = await updateSyncJob({
+      supabaseConfig,
+      jobId: jobRow.id,
+      patch: {
+        status: SYNC_JOB_STATUS.FAILED,
+        completed_at: new Date().toISOString(),
+        error: err.message || 'sync job failed',
+        progress: {
+          ...progress,
+          cursor,
+          processedSessions,
+          processedChunks,
+          matchedCount,
+          issuesScanned: issues.length,
+          reason: 'failed'
+        }
+      }
+    }) || updatedRow;
+    return updatedRow;
+  }
+}
+
+async function fetchRecentUnassignedSessions(supabaseConfig, userId, organizationId, windowMinutes = RECENT_UNASSIGNED_WINDOW_MINUTES) {
+  const cutoff = recentUnassignedCutoffIso(windowMinutes);
+
+  // Match the Unassigned Work UI: filter by when work occurred (start_time / end_time),
+  // not when the DB row was created. Clustered groups can be days old while member
+  // activity still falls inside the 30-minute sync window.
+  const [activityResults, legacyResults] = await Promise.all([
+    supabaseRequest(
+      supabaseConfig,
+      `activity_records?user_id=eq.${userId}&organization_id=eq.${organizationId}` +
+      `&user_assigned_issue_key=is.null&status=in.(pending,processing,analyzed)` +
+      `&classification=in.(productive,unknown)&clustering_dismissed=eq.false` +
+      `&or=(start_time.gte.${cutoff},end_time.gte.${cutoff},created_at.gte.${cutoff})` +
+      `&select=id,window_title,application_name,ocr_text,duration_seconds,total_time_seconds,start_time,end_time,created_at`
+    ),
+    supabaseRequest(
+      supabaseConfig,
+      `unassigned_activity?user_id=eq.${userId}&organization_id=eq.${organizationId}` +
+      `&manually_assigned=eq.false&clustering_dismissed=eq.false` +
+      `&timestamp=gte.${cutoff}` +
+      `&select=id,window_title,application_name,extracted_text,time_spent_seconds`
+    )
+  ]);
+
+  const sessions = [];
+  const seenIds = new Set();
+  for (const record of ensureArray(activityResults)) {
+    if (!record?.id || seenIds.has(record.id)) continue;
+    seenIds.add(record.id);
+    sessions.push({
+      sessionId: record.id,
+      applicationName: record.application_name || '',
+      windowTitle: record.window_title || '',
+      screenText: (record.ocr_text || '').slice(0, 500),
+      durationSeconds: record.duration_seconds || record.total_time_seconds || 0,
+      source: 'activity_records'
+    });
+  }
+  for (const record of ensureArray(legacyResults)) {
+    if (!record?.id || seenIds.has(record.id)) continue;
+    seenIds.add(record.id);
+    sessions.push({
+      sessionId: record.id,
+      applicationName: record.application_name || '',
+      windowTitle: record.window_title || '',
+      screenText: (record.extracted_text || '').slice(0, 500),
+      durationSeconds: record.time_spent_seconds || 0,
+      source: 'unassigned_activity'
+    });
+  }
+  return sessions;
+}
+
+async function fetchPreviousDayUnassignedSessions(supabaseConfig, userId, organizationId, options = {}) {
+  const { startIso, endIso } = getTimeframeBoundsIso(options.timeframe);
+  const maxSessions = Number.isFinite(options.maxSessions) && options.maxSessions > 0
+    ? Math.floor(options.maxSessions)
+    : Number.POSITIVE_INFINITY;
+
+  // 1. Fetch activities in the timeframe
+  const activityRows = ensureArray(await supabaseRequest(
+    supabaseConfig,
+    `activity_records?user_id=eq.${userId}&organization_id=eq.${organizationId}` +
+    `&user_assigned_issue_key=is.null&status=in.(pending,processing,analyzed)` +
+    `&classification=in.(productive,unknown)&clustering_dismissed=eq.false` +
+    `&start_time=gte.${startIso}&start_time=lt.${endIso}` +
+    `&select=id,window_title,application_name,ocr_text,duration_seconds,total_time_seconds`
+  ));
+
+  const legacyRows = ensureArray(await supabaseRequest(
+    supabaseConfig,
+    `unassigned_activity?user_id=eq.${userId}&organization_id=eq.${organizationId}` +
+    `&manually_assigned=eq.false&clustering_dismissed=eq.false` +
+    `&timestamp=gte.${startIso}&timestamp=lt.${endIso}` +
+    `&select=id,window_title,application_name,extracted_text,time_spent_seconds`
+  ));
+
+  const activityIds = sanitizeUUIDArray(activityRows.map(r => r.id));
+  const legacyIds = sanitizeUUIDArray(legacyRows.map(r => r.id));
+
+  if (activityIds.length === 0 && legacyIds.length === 0) return [];
+
+  const ID_QUERY_CHUNK_SIZE = 300;
+  const chunkIds = (ids) => {
+    const chunks = [];
+    for (let i = 0; i < ids.length; i += ID_QUERY_CHUNK_SIZE) {
+      chunks.push(ids.slice(i, i + ID_QUERY_CHUNK_SIZE));
+    }
+    return chunks;
+  };
+
+  // 2. Map IDs to group members
+  const members = [];
+  for (const chunk of chunkIds(activityIds)) {
+    const rows = await supabaseRequest(
+      supabaseConfig,
+      `unassigned_group_members?activity_record_id=in.(${chunk.join(',')})&select=group_id,activity_record_id`
+    );
+    members.push(...ensureArray(rows));
+  }
+  for (const chunk of chunkIds(legacyIds)) {
+    const rows = await supabaseRequest(
+      supabaseConfig,
+      `unassigned_group_members?unassigned_activity_id=in.(${chunk.join(',')})&select=group_id,unassigned_activity_id`
+    );
+    members.push(...ensureArray(rows));
+  }
+
+  const groupIdsToVerify = sanitizeUUIDArray([...new Set(members.map(m => m.group_id).filter(Boolean))]);
+  if (groupIdsToVerify.length === 0) return [];
+
+  // 3. Verify which groups are still unassigned and undismissed
+  const validGroups = [];
+  for (const chunk of chunkIds(groupIdsToVerify)) {
+    const rows = await supabaseRequest(
+      supabaseConfig,
+      `unassigned_work_groups?id=in.(${chunk.join(',')})&user_id=eq.${userId}&organization_id=eq.${organizationId}` +
+      `&is_assigned=eq.false&is_dismissed=eq.false&select=id`
+    );
+    validGroups.push(...ensureArray(rows));
+  }
+
+  const validGroupIds = new Set(validGroups.map(g => g.id));
+
+  // 4. Build ID to Group ID map (only for valid groups)
+  const idToGroupId = new Map();
+  for (const m of members) {
+    if (m.group_id && validGroupIds.has(m.group_id)) {
+      if (m.activity_record_id) idToGroupId.set(m.activity_record_id, m.group_id);
+      if (m.unassigned_activity_id) idToGroupId.set(m.unassigned_activity_id, m.group_id);
+    }
+  }
+
+  // 5. Construct final sessions, limiting to maxSessions
+  const sessions = [];
+
+  for (const record of activityRows) {
+    if (!record?.id || !idToGroupId.has(record.id)) continue;
+    sessions.push({
+      sessionId: record.id,
+      groupId: idToGroupId.get(record.id),
+      applicationName: record.application_name || '',
+      windowTitle: record.window_title || '',
+      screenText: (record.ocr_text || '').slice(0, 500),
+      durationSeconds: record.duration_seconds || record.total_time_seconds || 0,
+      source: 'activity_records'
+    });
+    if (sessions.length >= maxSessions) return sessions;
+  }
+
+  for (const record of legacyRows) {
+    if (!record?.id || !idToGroupId.has(record.id)) continue;
+    sessions.push({
+      sessionId: record.id,
+      groupId: idToGroupId.get(record.id),
+      applicationName: record.application_name || '',
+      windowTitle: record.window_title || '',
+      screenText: (record.extracted_text || '').slice(0, 500),
+      durationSeconds: record.time_spent_seconds || 0,
+      source: 'unassigned_activity'
+    });
+    if (sessions.length >= maxSessions) return sessions;
+  }
+
+  return sessions;
+}
+
+async function sumSessionDurations(supabaseConfig, userId, organizationId, sessionIds) {
+  const validIds = sanitizeUUIDArray(sessionIds);
+  if (validIds.length === 0) return 0;
+
+  const idsParam = validIds.join(',');
+  const [activityRows, legacyRows] = await Promise.all([
+    supabaseRequest(
+      supabaseConfig,
+      `activity_records?id=in.(${idsParam})&user_id=eq.${userId}` +
+      `&select=duration_seconds,total_time_seconds`
+    ),
+    supabaseRequest(
+      supabaseConfig,
+      `unassigned_activity?id=in.(${idsParam})&user_id=eq.${userId}` +
+      `&organization_id=eq.${organizationId}` +
+      `&select=time_spent_seconds`
+    )
+  ]);
+
+  let total = 0;
+  for (const row of ensureArray(activityRows)) {
+    total += row.duration_seconds || row.total_time_seconds || 0;
+  }
+  for (const row of ensureArray(legacyRows)) {
+    total += row.time_spent_seconds || 0;
+  }
+  return total;
+}
+
+async function assignMatchedSessions({
+  supabaseConfig,
+  userId,
+  organizationId,
+  accountId,
+  cloudId,
+  issueKey,
+  sessionIds,
+  autoSyncEnabledOverride
+}) {
+  const validSessionIds = sanitizeUUIDArray(sessionIds);
+  if (validSessionIds.length === 0) return 0;
+
+  await updateSessionsAndAnalysis({
+    validSessionIds,
+    issueKey,
+    userId,
+    organizationId,
+    supabaseConfig,
+    groupId: null
+  });
+
+  const idsParam = validSessionIds.join(',');
+  const members = ensureArray(await supabaseRequest(
+    supabaseConfig,
+    `unassigned_group_members?or=(activity_record_id.in.(${idsParam}),unassigned_activity_id.in.(${idsParam}))` +
+    `&select=group_id,activity_record_id,unassigned_activity_id`
+  ));
+
+  const sessionIdsSet = new Set(validSessionIds);
+  const groupIds = [...new Set(members.map((m) => m.group_id).filter(Boolean))];
+
+  let groupMembersByGroupId = new Map();
+  if (groupIds.length > 0) {
+    const groupIdsParam = groupIds.join(',');
+    const allGroupMembers = ensureArray(await supabaseRequest(
+      supabaseConfig,
+      `unassigned_group_members?group_id=in.(${groupIdsParam})&select=group_id,activity_record_id,unassigned_activity_id`
+    ));
+
+    groupMembersByGroupId = allGroupMembers.reduce((acc, member) => {
+      if (!member?.group_id) {
+        return acc;
+      }
+      const existing = acc.get(member.group_id) || [];
+      existing.push(member);
+      acc.set(member.group_id, existing);
+      return acc;
+    }, new Map());
+  }
+
+  for (const groupId of groupIds) {
+    const groupMembers = groupMembersByGroupId.get(groupId) || [];
+    const memberSessionIds = groupMembers
+      .flatMap((m) => [m.activity_record_id, m.unassigned_activity_id])
+      .filter(Boolean);
+    if (memberSessionIds.length > 0 && memberSessionIds.every((id) => sessionIdsSet.has(id))) {
+      await markGroupAsAssigned({ groupId, issueKey, userId, supabaseConfig });
+    }
+  }
+
+  const timeToLog = await sumSessionDurations(supabaseConfig, userId, organizationId, validSessionIds);
+  const autoSyncEnabled = typeof autoSyncEnabledOverride === 'boolean'
+    ? autoSyncEnabledOverride
+    : await isAutoSyncEnabled(accountId, cloudId);
+  await createWorklogIfNeeded({
+    issueKey,
+    timeToLog,
+    sessionCount: validSessionIds.length,
+    autoSyncEnabled,
+    customComment: 'Time tracked from unassigned work, auto-matched during Jira sync.'
+  });
+
+  return validSessionIds.length;
+}
+
+async function fetchInProgressIssueKeysFromJira() {
+  const jql = 'assignee = currentUser() AND resolution = EMPTY AND statusCategory = "In Progress" ORDER BY updated DESC';
+  try {
+    const response = await api.asUser().requestJira(
+      route`/rest/api/3/search/jql`,
+      {
+        method: 'POST',
+        headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          jql,
+          maxResults: 50,
+          fields: ['summary', 'description', 'updated']
+        })
+      }
+    );
+    if (!response.ok) {
+      const text = await response.text();
+      console.warn('[descriptionResolvers] Jira recent-updated search failed:', response.status, text.slice(0, 200));
+      return [];
+    }
+    const body = await response.json();
+    const issues = Array.isArray(body.issues) ? body.issues : [];
+    return issues
+      .map((issue) => issue?.key)
+      .filter((key) => key && isValidIssueKey(key));
+  } catch (err) {
+    console.warn('[descriptionResolvers] Jira recent-updated search error:', err.message);
+    return [];
+  }
+}
+
+function buildAttachmentContext(rawAttachments) {
+  if (!Array.isArray(rawAttachments) || rawAttachments.length === 0) return '';
+
+  return rawAttachments
+    .slice(0, 8)
+    .map((att) => {
+      const filename = att?.filename || 'unnamed';
+      const mimeType = att?.mimeType || 'unknown';
+      const size = Number(att?.size) || 0;
+      const sizeText = size > 0 ? `${size} bytes` : 'size unknown';
+      return `${filename} (${mimeType}, ${sizeText})`;
+    })
+    .join('\n');
+}
+
+async function fetchIssuesFromJira(issueKeys) {
+  const issues = [];
+  for (const issueKey of issueKeys) {
+    try {
+      const { title, description, rawAttachments } = await fetchIssueForAnalysis(issueKey);
+      issues.push({
+        issueKey,
+        title,
+        description,
+        attachmentContext: buildAttachmentContext(rawAttachments)
+      });
+    } catch (err) {
+      console.warn(`[descriptionResolvers] Skipping issue ${issueKey}: ${err.message}`);
+    }
+  }
+  return issues;
 }
 
 export function registerDescriptionResolvers(resolver) {
+  resolver.define('analyzeDraftDescription', async (req) => {
+    const { payload } = req;
+    const { title, description, issueType, projectKey } = payload || {};
+
+    if (!title || !description || !issueType || !projectKey) {
+      return failure('Missing required fields for draft analysis');
+    }
+
+    try {
+      const result = await remoteRequest('/api/forge/description/analyze', {
+        method: 'POST',
+        body: {
+          issueKey: 'DRAFT',
+          title,
+          description,
+          issueType,
+          projectKey,
+          requestImprovement: false, // We only want the score/issues to be fast
+        }
+      });
+      return { success: true, ...result };
+    } catch (err) {
+      console.error('[descriptionResolvers] analyzeDraftDescription failed:', err.message);
+      return failure(`Failed to analyze draft: ${err.message}`);
+    }
+  });
   resolver.define('analyzeDescription', async (req) => {
     const { payload, context } = req;
     const issueKey = payload?.issueKey;
@@ -359,17 +1103,14 @@ export function registerDescriptionResolvers(resolver) {
         description,
         issueType: normalizeIssueType(issueType),
         projectKey,
-        requestImprovement
+        requestImprovement,
+        parentContext,
+        attachments,
+        documents,
+        linkedIssues,
+        accountId: context?.accountId,
+        cloudId: context?.cloudId
       };
-
-      // Only include optional context fields if they have data (saves payload size)
-      if (parentContext) body.parentContext = parentContext;
-      if (attachments && attachments.length > 0) body.attachments = attachments;
-      if (documents && documents.length > 0) body.documents = documents;
-      if (linkedIssues && linkedIssues.length > 0) body.linkedIssues = linkedIssues;
-
-      const bodySize = JSON.stringify(body).length;
-      console.log(`[descriptionResolvers] Sending to ai-server: bodySize=${bodySize} bytes, hasParent=${!!body.parentContext}, hasAttachments=${!!body.attachments}, attachmentCount=${body.attachments?.length || 0}, documents=${body.documents?.length || 0}, linkedIssues=${body.linkedIssues?.length || 0}`);
 
       const data = await remoteRequest('/api/forge/description/analyze', {
         method: 'POST',
@@ -377,8 +1118,6 @@ export function registerDescriptionResolvers(resolver) {
       });
 
       // remoteRequest unwraps { success, data } when the upstream uses that
-      // shape. The description controller returns the analysis fields directly
-      // on the response object, so `data` here may be undefined if the server
       // returned a plain { success: true, ... } payload. Fall back to a sane
       // shape so the UI always sees the expected keys.
       const result = data || {};
@@ -540,6 +1279,328 @@ export function registerDescriptionResolvers(resolver) {
       // Analytics is best-effort — never surface failures to the UI.
       console.warn('[descriptionResolvers] recordDescriptionEvent skipped:', err.message);
       return { success: true };
+    }
+  });
+
+  resolver.define('syncRecentUnassignedWorkForIssue', async (req) => {
+    const issueKey = req.payload?.issueKey;
+    if (!issueKey || !isValidIssueKey(issueKey)) {
+      return failure('Invalid or missing issueKey');
+    }
+
+    try {
+      const ctx = await initializeRequestContext(req);
+      if (!ctx.success) return ctx;
+
+      const { config: supabaseConfig, organization, userId, accountId, cloudId } = ctx;
+      const sessions = await fetchPreviousDayUnassignedSessions(supabaseConfig, userId, organization.id, {
+        maxSessions: 100
+      });
+      if (sessions.length === 0) {
+        return { success: true, matchedCount: 0 };
+      }
+
+      const { title, description, rawAttachments } = await fetchIssueForAnalysis(issueKey);
+      const attachmentContext = buildAttachmentContext(rawAttachments);
+      const sessionChunks = chunkArray(sessions, MAX_SESSIONS_PER_LLM_CALL);
+      const matchedSessionIdSet = new Set();
+
+      for (const sessionChunk of sessionChunks) {
+        const matchData = await remoteRequest('/api/forge/description/sync-issue-unassigned', {
+          method: 'POST',
+          body: { issueKey, title, description, attachmentContext, sessions: sessionChunk }
+        });
+        const chunkMatchedSessionIds = Array.isArray(matchData?.matchedSessionIds)
+          ? matchData.matchedSessionIds
+          : [];
+        for (const sessionId of chunkMatchedSessionIds) {
+          matchedSessionIdSet.add(sessionId);
+        }
+      }
+
+      const matchedSessionIds = Array.from(matchedSessionIdSet);
+      if (matchedSessionIds.length === 0) {
+        return { success: true, matchedCount: 0 };
+      }
+
+      const matchedCount = await assignMatchedSessions({
+        supabaseConfig,
+        userId,
+        organizationId: organization.id,
+        accountId,
+        cloudId,
+        issueKey,
+        sessionIds: matchedSessionIds
+      });
+
+      return { success: true, matchedCount };
+    } catch (err) {
+      console.error('[descriptionResolvers] syncRecentUnassignedWorkForIssue failed:', err.message);
+      return failure(err.message || 'Failed to sync recent unassigned work');
+    }
+  });
+
+  resolver.define('syncRecentUnassignedWorkWithAllUpdatedIssues', async (req) => {
+    try {
+      const ctx = await initializeRequestContext(req);
+      if (!ctx.success) return ctx;
+
+      const { config: supabaseConfig, organization, userId, accountId, cloudId } = ctx;
+      const [sessions, issueKeys] = await Promise.all([
+        fetchPreviousDayUnassignedSessions(supabaseConfig, userId, organization.id, {
+          maxSessions: 100
+        }),
+        fetchInProgressIssueKeysFromJira()
+      ]);
+
+      console.log(
+        '[descriptionResolvers] syncRecentUnassignedWorkWithAllUpdatedIssues: previousDaySessions=%d inProgressIssues=%d',
+        sessions.length,
+        issueKeys.length
+      );
+
+      if (sessions.length === 0) {
+        return {
+          success: true,
+          matchedCount: 0,
+          reason: 'no_previous_day_sessions',
+          sessionsScanned: 0,
+          issuesScanned: 0
+        };
+      }
+
+      if (issueKeys.length === 0) {
+        return {
+          success: true,
+          matchedCount: 0,
+          reason: 'no_in_progress_issues',
+          sessionsScanned: sessions.length,
+          issuesScanned: 0
+        };
+      }
+
+      const issues = await fetchIssuesFromJira(issueKeys);
+      if (issues.length === 0) {
+        return {
+          success: true,
+          matchedCount: 0,
+          reason: 'no_issue_details',
+          sessionsScanned: sessions.length,
+          issuesScanned: 0
+        };
+      }
+
+      console.log(
+        '[descriptionResolvers] Invoking LLM match for %d sessions against %d issues',
+        sessions.length,
+        issues.length
+      );
+
+      const sessionChunks = chunkArray(sessions, MAX_SESSIONS_PER_LLM_CALL);
+      const assignments = [];
+      for (const sessionChunk of sessionChunks) {
+        const matchData = await remoteRequest('/api/forge/description/sync-all-unassigned', {
+          method: 'POST',
+          body: { issues, sessions: sessionChunk }
+        });
+        const chunkAssignments = Array.isArray(matchData?.assignments) ? matchData.assignments : [];
+        assignments.push(...chunkAssignments);
+      }
+
+      if (assignments.length === 0) {
+        return {
+          success: true,
+          matchedCount: 0,
+          reason: 'no_llm_matches',
+          sessionsScanned: sessions.length,
+          issuesScanned: issues.length
+        };
+      }
+
+      const byIssue = new Map();
+      for (const row of assignments) {
+        if (!row?.sessionId || !row?.issueKey) continue;
+        if (!byIssue.has(row.issueKey)) byIssue.set(row.issueKey, []);
+        byIssue.get(row.issueKey).push(row.sessionId);
+      }
+
+      let matchedCount = 0;
+      for (const [issueKey, sessionIds] of byIssue.entries()) {
+        matchedCount += await assignMatchedSessions({
+          supabaseConfig,
+          userId,
+          organizationId: organization.id,
+          accountId,
+          cloudId,
+          issueKey,
+          sessionIds
+        });
+      }
+
+      return {
+        success: true,
+        matchedCount,
+        reason: matchedCount > 0 ? 'assigned' : 'no_llm_matches',
+        sessionsScanned: sessions.length,
+        issuesScanned: issues.length
+      };
+    } catch (err) {
+      console.error('[descriptionResolvers] syncRecentUnassignedWorkWithAllUpdatedIssues failed:', err.message);
+      return handleResolverError(err, 'syncing recent unassigned work with updated issues');
+    }
+  });
+
+  resolver.define('startUnassignedSyncWithJiraJob', async (req) => {
+    try {
+      const ctx = await initializeRequestContext(req);
+      if (!ctx.success) return ctx;
+
+      const { config: supabaseConfig, organization, userId, accountId, cloudId } = ctx;
+      const { timeframe = 'yesterday' } = req.payload || {};
+      const [sessions, issueKeys] = await Promise.all([
+        fetchPreviousDayUnassignedSessions(supabaseConfig, userId, organization.id, {
+          maxSessions: 100,
+          timeframe
+        }),
+        fetchInProgressIssueKeysFromJira()
+      ]);
+
+      if (sessions.length === 0) {
+        return {
+          success: true,
+          status: SYNC_JOB_STATUS.COMPLETED,
+          matchedCount: 0,
+          reason: 'no_previous_day_sessions',
+          sessionsScanned: 0,
+          sessionsProcessed: 0,
+          issuesScanned: 0
+        };
+      }
+
+      if (issueKeys.length === 0) {
+        return {
+          success: true,
+          status: SYNC_JOB_STATUS.COMPLETED,
+          matchedCount: 0,
+          reason: 'no_in_progress_issues',
+          sessionsScanned: sessions.length,
+          sessionsProcessed: 0,
+          issuesScanned: 0
+        };
+      }
+
+      const issues = await fetchIssuesFromJira(issueKeys);
+      if (issues.length === 0) {
+        return {
+          success: true,
+          status: SYNC_JOB_STATUS.COMPLETED,
+          matchedCount: 0,
+          reason: 'no_issue_details',
+          sessionsScanned: sessions.length,
+          sessionsProcessed: 0,
+          issuesScanned: 0
+        };
+      }
+
+      const totalSessions = sessions.length;
+      const totalIssues = issues.length;
+      let jobRow = await insertSyncJob({
+        supabaseConfig,
+        userId,
+        organizationId: organization.id,
+        payload: {
+          sessions,
+          issues,
+          cursor: 0,
+          totalSessions,
+          totalIssues
+        },
+        progress: {
+          cursor: 0,
+          processedSessions: 0,
+          processedChunks: 0,
+          matchedCount: 0,
+          issuesScanned: totalIssues,
+          reason: 'queued'
+        }
+      });
+
+      if (!jobRow?.id) {
+        return failure('Failed to create sync job');
+      }
+
+      // Return immediately with queued job. UI polling will handle all processing.
+      return toJobResponse(jobRow);
+    } catch (err) {
+      console.error('[descriptionResolvers] startUnassignedSyncWithJiraJob failed:', err.message);
+      return handleResolverError(err, 'starting async unassigned sync job');
+    }
+  });
+
+  resolver.define('getUnassignedSyncWithJiraJobStatus', async (req) => {
+    try {
+      const ctx = await initializeRequestContext(req);
+      if (!ctx.success) return ctx;
+      const { config: supabaseConfig, organization, userId, accountId, cloudId } = ctx;
+      const jobId = req.payload?.jobId;
+      if (!jobId) return failure('Missing jobId');
+
+      let jobRow = await getSyncJobById({
+        supabaseConfig,
+        jobId,
+        userId,
+        organizationId: organization.id
+      });
+
+      if (!jobRow) {
+        return failure('Sync job not found');
+      }
+
+      if (isSyncJobActivelyProcessing(jobRow)) {
+        return toJobResponse(jobRow);
+      }
+
+      if (jobRow.status === SYNC_JOB_STATUS.QUEUED || jobRow.status === SYNC_JOB_STATUS.IN_PROGRESS) {
+        jobRow = await processSyncJobWithinBudget({
+          supabaseConfig,
+          userId,
+          organizationId: organization.id,
+          accountId,
+          cloudId,
+          jobRow,
+          budgetMs: MAX_SYNC_INVOCATION_BUDGET_MS
+        });
+      }
+
+      return toJobResponse(jobRow);
+    } catch (err) {
+      console.error('[descriptionResolvers] getUnassignedSyncWithJiraJobStatus failed:', err.message);
+      return handleResolverError(err, 'getting async unassigned sync job status');
+    }
+  });
+
+  resolver.define('getUnassignedSyncCounts', async (req) => {
+    try {
+      const ctx = await initializeRequestContext(req);
+      if (!ctx.success) return ctx;
+
+      const { config: supabaseConfig, organization, userId } = ctx;
+      const { timeframe = 'yesterday' } = req.payload || {};
+
+      const sessions = await fetchPreviousDayUnassignedSessions(supabaseConfig, userId, organization.id, {
+        timeframe,
+        maxSessions: Number.POSITIVE_INFINITY
+      });
+
+      const activeGroupIds = new Set();
+      for (const s of sessions) {
+        if (s.groupId) activeGroupIds.add(s.groupId);
+      }
+
+      return { success: true, groupCount: activeGroupIds.size, memberCount: sessions.length };
+    } catch (err) {
+      console.error('[descriptionResolvers] getUnassignedSyncCounts failed:', err.message);
+      return handleResolverError(err, 'getting unassigned sync counts');
     }
   });
 }

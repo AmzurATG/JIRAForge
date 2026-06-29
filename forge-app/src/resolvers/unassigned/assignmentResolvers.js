@@ -1717,3 +1717,5 @@ export function registerAssignmentResolvers(resolver) {
   resolver.define('dismissGroupMember', dismissGroupMember);
   resolver.define('deleteSelectedSessions', deleteSelectedSessions);
 }
+
+export { updateSessionsAndAnalysis, markGroupAsAssigned };

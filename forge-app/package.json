@@ -4,9 +4,10 @@
   "description": "BRD Automation & Time Tracker for Jira",
   "main": "src/index.js",
   "scripts": {
-    "build": "npm run build:main && npm run build:settings",
+    "build": "npm run build:main && npm run build:settings && npm run build:uim",
     "build:main": "cd static/main && npm run build",
     "build:settings": "cd static/settings && npm run build",
+    "build:uim": "cd static/uim && npm run build",
     "deploy": "forge deploy",
     "install-app": "forge install",
     "tunnel": "forge tunnel",

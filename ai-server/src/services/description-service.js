@@ -22,9 +22,10 @@ const { extractAllDocuments } = require('./document-extractor');
 // Constants
 // ---------------------------------------------------------------------------
 
-const LLM_GATE_THRESHOLD = 80;          // Score >= threshold skips LLM
+const LLM_GATE_THRESHOLD = 101;         // Score >= threshold skips LLM (Set to 101 to disable deterministic gating and always use LLM)
 const LLM_TIMEOUT_MS = 8000;            // 8 second LLM timeout per attempt
-const LLM_MAX_TOKENS = 2000;
+const MATCH_LLM_TIMEOUT_MS = 30000;     // 30 second timeout for match LLM calls (larger payload)
+const LLM_MAX_TOKENS = 20000;
 const LLM_TEMPERATURE = 0.3;
 const TITLE_MIN = 10;
 const TITLE_MAX = 80;
@@ -156,7 +157,7 @@ function evaluateCriterion(id, title, description) {
       return STEPS_PATTERNS.some(re => re.test(description || ''));
     case 'expected_actual':
       return EXPECTED_ACTUAL_PATTERNS.expected.test(description || '') &&
-             EXPECTED_ACTUAL_PATTERNS.actual.test(description || '');
+        EXPECTED_ACTUAL_PATTERNS.actual.test(description || '');
     case 'acceptance_criteria':
       return ACCEPTANCE_PATTERNS.some(re => re.test(description || ''));
     case 'no_placeholder':
@@ -284,6 +285,55 @@ function parseLLMContent(content) {
   }
 }
 
+/**
+ * Attempt to repair truncated JSON from LLM responses.
+ * When the LLM hits a token limit, the JSON is typically cut off mid-object
+ * inside an array. This function strips the incomplete last entry, closes
+ * open brackets, and attempts to parse the result.
+ *
+ * Handles the pattern: {"assignments": [..., {"sessionId": "abc", "issueKey": "FE
+ * Returns null if the content is unrecoverable.
+ */
+function repairTruncatedJSON(content) {
+  if (!content || typeof content !== 'string') return null;
+
+  // Find the outermost JSON object start
+  const objStart = content.indexOf('{');
+  if (objStart === -1) return null;
+
+  let candidate = content.slice(objStart);
+
+  // Try progressively stripping from the end to find parseable JSON
+  // First, try to remove everything after the last complete object in an array
+  const lastCompleteObjEnd = candidate.lastIndexOf('}');
+  if (lastCompleteObjEnd === -1) return null;
+
+  // Find the last complete array entry by looking for the last ", {" or "[{"
+  // Strip from after the last complete object closing brace
+  const trimmed = candidate.slice(0, lastCompleteObjEnd + 1);
+
+  // Count open vs close brackets to determine what needs closing
+  let openBraces = 0;
+  let openBrackets = 0;
+  for (const ch of trimmed) {
+    if (ch === '{') openBraces++;
+    if (ch === '}') openBraces--;
+    if (ch === '[') openBrackets++;
+    if (ch === ']') openBrackets--;
+  }
+
+  // Close any unclosed brackets/braces
+  let repaired = trimmed;
+  for (let i = 0; i < openBrackets; i++) repaired += ']';
+  for (let i = 0; i < openBraces; i++) repaired += '}';
+
+  try {
+    return JSON.parse(repaired);
+  } catch {
+    return null;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // LLM invocation with timeout + one retry on malformed JSON
 // ---------------------------------------------------------------------------
@@ -375,7 +425,7 @@ async function getSupabaseClient(getClientFn) {
 }
 
 async function readCache({ orgId, issueKey, contentHash, getClientFn }) {
-  if (!orgId || !issueKey || !contentHash) return null;
+  if (!orgId || !issueKey || !contentHash || issueKey === 'DRAFT') return null;
   try {
     const supabase = await getSupabaseClient(getClientFn);
     if (!supabase) return null;
@@ -398,7 +448,7 @@ async function readCache({ orgId, issueKey, contentHash, getClientFn }) {
 }
 
 async function writeCache({ orgId, issueKey, contentHash, issueType, result, getClientFn }) {
-  if (!orgId || !issueKey || !contentHash) return;
+  if (!orgId || !issueKey || !contentHash || issueKey === 'DRAFT') return;
   try {
     const supabase = await getSupabaseClient(getClientFn);
     if (!supabase) return;
@@ -427,7 +477,7 @@ async function writeCache({ orgId, issueKey, contentHash, issueType, result, get
 }
 
 async function recordEvent({ orgId, accountId, issueKey, eventType, scoreBefore, scoreAfter, source, getClientFn }) {
-  if (!orgId || !issueKey || !eventType) return;
+  if (!orgId || !issueKey || !eventType || issueKey === 'DRAFT') return;
   try {
     const supabase = await getSupabaseClient(getClientFn);
     if (!supabase) return;
@@ -530,10 +580,10 @@ async function analyzeDescription(params) {
     // Sanitize linked issues context
     const sanitizedLinkedIssues = Array.isArray(linkedIssues) && linkedIssues.length > 0
       ? linkedIssues.map(li => ({
-          ...li,
-          title: sanitizePII(li.title || ''),
-          description: sanitizePII(li.description || '')
-        }))
+        ...li,
+        title: sanitizePII(li.title || ''),
+        description: sanitizePII(li.description || '')
+      }))
       : null;
 
     const llm = await runLLM({
@@ -579,16 +629,214 @@ async function analyzeDescription(params) {
   return result;
 }
 
+// ---------------------------------------------------------------------------
+// Recent unassigned work matching (post-description-update sync)
+// ---------------------------------------------------------------------------
+
+const MATCH_MIN_CONFIDENCE = 0.7;
+const MATCH_LLM_MAX_TOKENS = 81920;
+
+const SYNC_ISSUE_UNASSIGNED_SYSTEM_PROMPT = `You are an expert assistant matching time tracking activity records to a specific Jira issue.
+You will be given the Jira issue's key, title, description, optional attachment context, and a list of unassigned work sessions from the previous day.
+Determine which sessions represent work on this specific issue.
+
+MATCHING RULES:
+1. Look at application names, window titles, and screen text context to identify a semantic match.
+  Use the issue description and attachment context to disambiguate similar-looking sessions.
+2. Be conservative. Only match if you are highly confident (confidence score >= 0.7) that the activity directly maps to the issue.
+3. Return a JSON object containing a "matches" array. Each match must include "sessionId" (string UUID) and "confidence" (number 0-1).
+4. Only include session IDs from the provided sessions list.`;
+
+const SYNC_ALL_UNASSIGNED_SYSTEM_PROMPT = `You are an expert assistant matching time tracking activity records to a list of in-progress Jira issues.
+You will be given a list of candidate Jira issues (each with key, title, description, and optional attachment context) and a list of unassigned work sessions from the previous day.
+Determine which session matches which issue.
+
+MATCHING RULES:
+1. Match a session to an issue key only if there is a strong semantic relationship (e.g. VS Code folder matches issue component, browser URL matches ticket context).
+  Use the issue description and attachment context to disambiguate similar issue titles.
+2. Be conservative. Only match if you are highly confident (confidence score >= 0.7). If no candidate issue is a strong match, do not assign it.
+3. Return a JSON object with an "assignments" array. Each item must include "sessionId", "issueKey", and "confidence" (number 0-1).
+4. Each session may match at most one issue. Only use issue keys from the provided list.`;
+
+function validateSessionList(sessions) {
+  if (!Array.isArray(sessions)) return [];
+  return sessions.filter((s) => s && typeof s.sessionId === 'string' && s.sessionId.length > 0);
+}
+
+function filterMatchesByConfidence(matches, validSessionIds, validIssueKeys = null) {
+  const sessionSet = new Set(validSessionIds);
+  const issueSet = validIssueKeys ? new Set(validIssueKeys) : null;
+  const out = [];
+
+  for (const row of matches || []) {
+    if (!row || typeof row.sessionId !== 'string') continue;
+    if (!sessionSet.has(row.sessionId)) continue;
+    const confidence = Number(row.confidence);
+    if (!Number.isFinite(confidence) || confidence < MATCH_MIN_CONFIDENCE) continue;
+    if (issueSet && (!row.issueKey || !issueSet.has(row.issueKey))) continue;
+    out.push({
+      sessionId: row.sessionId,
+      issueKey: row.issueKey || null,
+      confidence
+    });
+  }
+
+  return out;
+}
+
+async function invokeMatchLLM({ systemPrompt, userPayload, deps = {} }) {
+  const runChat = deps.runChat || chatCompletionWithFallback;
+  if (!deps.runChat && !isPortkeyEnabled()) {
+    logger.warn('[DescQuality] Match LLM unavailable: Portkey not enabled');
+    return null;
+  }
+
+  const messages = [
+    { role: 'system', content: systemPrompt },
+    { role: 'user', content: JSON.stringify(userPayload) }
+  ];
+
+  try {
+    const { response } = await withTimeout(
+      runChat({
+        messages,
+        max_tokens: MATCH_LLM_MAX_TOKENS,
+        temperature: 0.2,
+        response_format: { type: 'json_object' }
+      }),
+      MATCH_LLM_TIMEOUT_MS,
+      'MatchLLM'
+    );
+
+    const choice = response?.choices?.[0] || {};
+    const finishReason = choice.finish_reason || choice.finishReason || '';
+    const content = choice?.message?.content || '';
+
+    // Parse response. If truncated (finish_reason: length), attempt to repair
+    // the partial JSON by closing open brackets and stripping incomplete entries.
+    const parsed = parseLLMContent(content);
+    if (parsed) return parsed;
+
+    if (String(finishReason).toLowerCase() === 'length') {
+      logger.warn('[DescQuality] Match LLM response truncated (finish_reason=length). Attempting JSON repair.');
+      const repaired = repairTruncatedJSON(content);
+      if (repaired) {
+        logger.info('[DescQuality] Truncated JSON repaired successfully. Recovered %d assignment(s).',
+          Array.isArray(repaired.assignments) ? repaired.assignments.length :
+            Array.isArray(repaired.matches) ? repaired.matches.length : 0);
+        return repaired;
+      }
+      logger.warn('[DescQuality] Truncated JSON repair failed. Returning empty assignments.');
+    }
+
+    return null;
+  } catch (err) {
+    logger.error('[DescQuality] Match LLM failed: %s', err.message);
+    return null;
+  }
+}
+
+/**
+ * Match recent unassigned sessions to a single updated issue.
+ * @returns {Promise<{matchedSessionIds: string[]}>}
+ */
+async function syncIssueUnassigned({ issueKey, title, description, attachmentContext = '', sessions, deps = {} }) {
+  const validSessions = validateSessionList(sessions);
+  if (!issueKey || validSessions.length === 0) {
+    return { matchedSessionIds: [] };
+  }
+
+  const parsed = await invokeMatchLLM({
+    systemPrompt: SYNC_ISSUE_UNASSIGNED_SYSTEM_PROMPT,
+    userPayload: {
+      issueKey,
+      title: sanitizePII(title || ''),
+      description: sanitizePII(description || ''),
+      attachmentContext: sanitizePII((attachmentContext || '').slice(0, 1500)),
+      sessions: validSessions.map((s) => ({
+        sessionId: s.sessionId,
+        applicationName: sanitizePII(s.applicationName || ''),
+        windowTitle: sanitizePII(s.windowTitle || ''),
+        screenText: sanitizePII((s.screenText || '').slice(0, 500))
+      }))
+    },
+    deps
+  });
+
+  const matches = filterMatchesByConfidence(
+    parsed?.matches || parsed?.assignments || [],
+    validSessions.map((s) => s.sessionId)
+  );
+
+  return { matchedSessionIds: matches.map((m) => m.sessionId) };
+}
+
+/**
+ * Match recent unassigned sessions across multiple recently updated issues.
+ * @returns {Promise<{assignments: Array<{sessionId: string, issueKey: string}>}>}
+ */
+async function syncAllUnassigned({ issues, sessions, deps = {} }) {
+  const validSessions = validateSessionList(sessions);
+  const validIssues = Array.isArray(issues)
+    ? issues.filter((i) => i && typeof i.issueKey === 'string')
+    : [];
+
+  if (validIssues.length === 0 || validSessions.length === 0) {
+    return { assignments: [] };
+  }
+
+  const parsed = await invokeMatchLLM({
+    systemPrompt: SYNC_ALL_UNASSIGNED_SYSTEM_PROMPT,
+    userPayload: {
+      issues: validIssues.map((i) => ({
+        issueKey: i.issueKey,
+        title: sanitizePII(i.title || ''),
+        description: sanitizePII((i.description || '').slice(0, 3000)),
+        attachmentContext: sanitizePII((i.attachmentContext || '').slice(0, 1500))
+      })),
+      sessions: validSessions.map((s) => ({
+        sessionId: s.sessionId,
+        applicationName: sanitizePII(s.applicationName || ''),
+        windowTitle: sanitizePII(s.windowTitle || ''),
+        screenText: sanitizePII((s.screenText || '').slice(0, 500))
+      }))
+    },
+    deps
+  });
+
+  const issueKeys = validIssues.map((i) => i.issueKey);
+  const matches = filterMatchesByConfidence(
+    parsed?.assignments || parsed?.matches || [],
+    validSessions.map((s) => s.sessionId),
+    issueKeys
+  );
+
+  const seen = new Set();
+  const assignments = [];
+  for (const match of matches) {
+    if (seen.has(match.sessionId)) continue;
+    seen.add(match.sessionId);
+    assignments.push({ sessionId: match.sessionId, issueKey: match.issueKey });
+  }
+
+  return { assignments };
+}
+
 module.exports = {
   // Public
   analyzeDescription,
   recordEvent,
+  syncIssueUnassigned,
+  syncAllUnassigned,
   // Internals exposed for unit tests
   sanitizePII,
   scoreDeterministic,
   validateLLMResponse,
   parseLLMContent,
+  repairTruncatedJSON,
   generateContentHash,
   runLLMAnalysis,
-  LLM_GATE_THRESHOLD
+  filterMatchesByConfidence,
+  LLM_GATE_THRESHOLD,
+  MATCH_MIN_CONFIDENCE
 };

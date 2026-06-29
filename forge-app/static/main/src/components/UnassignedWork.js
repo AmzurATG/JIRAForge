@@ -30,7 +30,19 @@ function UnassignedWork() {
   // Notification settings state
   const [notificationsEnabled, setNotificationsEnabled] = useState(true);
   const [savingNotificationSettings, setSavingNotificationSettings] = useState(false);
+  const [syncingWithJira, setSyncingWithJira] = useState(false);
+  const [syncBanner, setSyncBanner] = useState(null);
+  const syncPollTimerRef = useRef(null);
+  const syncJobIdRef = useRef(null);
+  const syncPollInFlightRef = useRef(false);
   const unassignedRequestIdRef = useRef(0);
+
+  // Sync timeframe and confirmation state
+  const [syncTimeframe, setSyncTimeframe] = useState('yesterday');
+  const [showSyncConfirmModal, setShowSyncConfirmModal] = useState(false);
+  const [syncCounts, setSyncCounts] = useState(null);
+  const [syncCountsLoading, setSyncCountsLoading] = useState(false);
+  const [syncJobResult, setSyncJobResult] = useState(null);
 
   // Date range filter state
   const [dateFrom, setDateFrom] = useState('');
@@ -665,6 +677,151 @@ This will permanently dismiss these sessions from clustering. They won't appear 
     loadUnassignedWork();
   };
 
+  const clearSyncPolling = () => {
+    if (syncPollTimerRef.current) {
+      window.clearTimeout(syncPollTimerRef.current);
+      syncPollTimerRef.current = null;
+    }
+  };
+
+  const scheduleNextSyncPoll = (delayMs = 2500) => {
+    clearSyncPolling();
+    if (!syncJobIdRef.current) {
+      return;
+    }
+    syncPollTimerRef.current = window.setTimeout(() => {
+      pollSyncJobStatus();
+    }, delayMs);
+  };
+
+  const buildSyncCompletedMessage = (result) => {
+    const count = result?.matchedCount || 0;
+    if (count > 0) {
+      return `Sync complete. Automatically assigned ${count} session${count === 1 ? '' : 's'} to in-progress tickets.`;
+    }
+    if (result?.reason === 'no_previous_day_sessions') {
+      return 'Sync complete. No unassigned work sessions were found from the previous day.';
+    }
+    if (result?.reason === 'no_in_progress_issues') {
+      return 'Sync complete. No in-progress tickets were found for matching.';
+    }
+    if (result?.reason === 'no_llm_matches') {
+      return `Sync complete. Reviewed ${result?.sessionsScanned || 0} previous-day session(s) against ${result?.issuesScanned || 0} in-progress ticket(s) - no high-confidence matches.`;
+    }
+    return 'Sync complete. No matching unassigned work found for the previous day.';
+  };
+
+  const isSyncTimeoutError = (err) => {
+    const message = err?.message || '';
+    return /Task timed out after 25\.00 seconds|FUNCTION_TIME_OUT/i.test(message);
+  };
+
+  const pollSyncJobStatus = async () => {
+    const jobId = syncJobIdRef.current;
+    if (!jobId || syncPollInFlightRef.current) return;
+    syncPollInFlightRef.current = true;
+    try {
+      const status = await invoke('getUnassignedSyncWithJiraJobStatus', { jobId });
+      if (!status?.success) {
+        clearSyncPolling();
+        setSyncingWithJira(false);
+        setSyncBanner({ type: 'error', message: status?.error || 'Sync failed while polling job status' });
+        return;
+      }
+
+      if (status.status === 'completed') {
+        clearSyncPolling();
+        syncJobIdRef.current = null;
+        setSyncingWithJira(false);
+        setSyncJobResult(status);
+        await loadUnassignedWork();
+        return;
+      }
+
+      if (status.status === 'failed') {
+        clearSyncPolling();
+        syncJobIdRef.current = null;
+        setSyncingWithJira(false);
+        setSyncJobResult({ error: status.error || 'Sync failed' });
+        return;
+      }
+
+      // In-progress: just schedule next poll. We removed banner spam here
+      // since the button loader handles the "syncing in progress" state.
+      scheduleNextSyncPoll();
+    } catch (err) {
+      if (isSyncTimeoutError(err) && syncJobIdRef.current) {
+        // Just continue polling quietly
+        scheduleNextSyncPoll(1000);
+      } else {
+        clearSyncPolling();
+        setSyncingWithJira(false);
+        setSyncJobResult({ error: err?.message || 'Sync polling failed' });
+      }
+    } finally {
+      syncPollInFlightRef.current = false;
+    }
+  };
+
+  const initiateSyncWithJira = async () => {
+    setSyncCountsLoading(true);
+    setShowSyncConfirmModal(true);
+    setSyncCounts(null);
+    setSyncJobResult(null);
+    try {
+      const result = await invoke('getUnassignedSyncCounts', { timeframe: syncTimeframe });
+      if (result.success) {
+        setSyncCounts({ groupCount: result.groupCount, memberCount: result.memberCount });
+      } else {
+        setSyncCounts({ error: result.error || 'Failed to fetch counts' });
+      }
+    } catch (err) {
+      setSyncCounts({ error: err.message || 'Failed to fetch counts' });
+    } finally {
+      setSyncCountsLoading(false);
+    }
+  };
+
+  const confirmSyncWithJira = async () => {
+    setSyncingWithJira(true);
+    setSyncBanner(null);
+    setSyncJobResult(null);
+    clearSyncPolling();
+    syncJobIdRef.current = null;
+
+    try {
+      const startResult = await invoke('startUnassignedSyncWithJiraJob', { timeframe: syncTimeframe });
+      if (!startResult?.success) {
+        setSyncJobResult({ error: startResult?.error || 'Sync failed to start' });
+        setSyncingWithJira(false);
+        return;
+      }
+
+      if (startResult.status === 'completed') {
+        setSyncingWithJira(false);
+        setSyncJobResult(startResult);
+        await loadUnassignedWork();
+        return;
+      }
+
+      if (!startResult.jobId) {
+        setSyncingWithJira(false);
+        setSyncJobResult({ error: 'Sync job did not return a valid job id' });
+        return;
+      }
+
+      syncJobIdRef.current = startResult.jobId;
+      await pollSyncJobStatus();
+    } catch (err) {
+      setSyncJobResult({ error: err?.message || 'Sync failed' });
+      setSyncingWithJira(false);
+    }
+  };
+
+  useEffect(() => () => {
+    clearSyncPolling();
+  }, []);
+
   useEffect(() => {
     clearSelection();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -752,6 +909,34 @@ This will permanently dismiss these sessions from clustering. They won't appear 
         <div className="header-top-row">
           <h2>Unassigned Work</h2>
           <div className="header-buttons-row">
+            <select
+              className="sync-timeframe-dropdown"
+              value={syncTimeframe}
+              onChange={(e) => setSyncTimeframe(e.target.value)}
+              disabled={syncingWithJira || syncCountsLoading}
+              aria-label="Select timeframe for Jira sync"
+            >
+              <option value="yesterday">Yesterday</option>
+              <option value="last_3_days">Last 3 days</option>
+              <option value="last_one_week">Last 1 week</option>
+            </select>
+            <button
+              className="sync-with-jira-btn"
+              onClick={initiateSyncWithJira}
+              disabled={syncingWithJira || syncCountsLoading}
+              title="Match unassigned work to your in-progress Jira tickets"
+            >
+              {syncingWithJira ? (
+                <span className="sync-with-jira-spinner" aria-hidden="true" />
+              ) : (
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <polyline points="23 4 23 10 17 10" />
+                  <polyline points="1 20 1 14 7 14" />
+                  <path d="M3.51 9a9 9 0 0 1 14.13-3.36L23 10M1 14l5.36 5.36A9 9 0 0 0 20.49 15" />
+                </svg>
+              )}
+              {syncingWithJira ? 'Syncing…' : 'Sync with Jira'}
+            </button>
             <button
               className="bulk-time-edit-btn"
               onClick={() => setShowBulkEditModal(true)}
@@ -765,6 +950,12 @@ This will permanently dismiss these sessions from clustering. They won't appear 
             </button>
           </div>
         </div>
+        {syncBanner && (
+          <div className={`sync-banner sync-banner--${syncBanner.type}`} role="status">
+            {syncBanner.message}
+          </div>
+        )}
+
         <div className="unassigned-work-summary">
           <span className="summary-item">
             {/* When a date filter is active, show the count of sessions that actually
@@ -972,6 +1163,76 @@ This will permanently dismiss these sessions from clustering. They won't appear 
         onClose={() => setShowBulkEditModal(false)}
         onSuccess={handleBulkEditSuccess}
       />
+
+      {/* Sync Confirm Modal */}
+      {showSyncConfirmModal && (
+        <div className="sync-confirm-modal-overlay">
+          <div className="sync-confirm-modal" style={syncJobResult ? { maxWidth: '600px' } : {}}>
+            <h3>{syncJobResult ? 'Jira Sync Results' : 'Confirm Jira Sync'}</h3>
+            <div className="sync-confirm-content">
+              {syncJobResult ? (
+                syncJobResult.error ? (
+                  <p className="sync-confirm-error">Error: {syncJobResult.error}</p>
+                ) : (
+                  <div>
+                    <p className="sync-success-summary" style={{ fontWeight: '600', marginBottom: '12px' }}>
+                      {buildSyncCompletedMessage(syncJobResult)}
+                    </p>
+                    {syncJobResult.matchedSessions && syncJobResult.matchedSessions.length > 0 && (
+                      <div className="sync-matched-sessions" style={{ textAlign: 'left', background: '#F4F5F7', padding: '12px', borderRadius: '4px' }}>
+                        <h4 style={{ marginTop: '0', marginBottom: '8px', fontSize: '14px' }}>Assigned Sessions:</h4>
+                        <ul style={{ maxHeight: '200px', overflowY: 'auto', paddingLeft: '20px', margin: 0, fontSize: '13px' }}>
+                          {syncJobResult.matchedSessions.map((session, idx) => (
+                            <li key={idx} style={{ marginBottom: '8px' }}>
+                              <strong>{session.issueKey}</strong> - {session.windowTitle || session.applicationName} 
+                              <span style={{ color: '#6B778C', marginLeft: '8px' }}>({formatTime(session.durationSeconds)})</span>
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+                  </div>
+                )
+              ) : (
+                syncCountsLoading ? (
+                  <p>Calculating sessions to sync...</p>
+                ) : syncCounts?.error ? (
+                  <p className="sync-confirm-error">Error: {syncCounts.error}</p>
+                ) : (
+                  <p>Are you sure you want to sync <strong>{syncCounts?.memberCount || 0}</strong> unassigned sessions across <strong>{syncCounts?.groupCount || 0}</strong> groups for the selected timeframe?</p>
+                )
+              )}
+            </div>
+            <div className="sync-confirm-actions">
+              {syncJobResult ? (
+                <button 
+                  className="sync-confirm-btn" 
+                  onClick={() => setShowSyncConfirmModal(false)}
+                >
+                  Close
+                </button>
+              ) : (
+                <>
+                  <button 
+                    className="sync-cancel-btn" 
+                    onClick={() => setShowSyncConfirmModal(false)}
+                    disabled={syncingWithJira}
+                  >
+                    Cancel
+                  </button>
+                  <button 
+                    className="sync-confirm-btn" 
+                    onClick={confirmSyncWithJira}
+                    disabled={syncingWithJira || syncCountsLoading || !!syncCounts?.error}
+                  >
+                    {syncingWithJira ? 'Syncing...' : 'Confirm Sync'}
+                  </button>
+                </>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

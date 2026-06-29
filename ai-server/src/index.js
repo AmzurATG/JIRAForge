@@ -25,6 +25,8 @@ const portalAppCatalogController = require('./controllers/portal-app-catalog-con
 const portalLobAppClassificationsController = require('./controllers/portal-lob-app-classifications-controller');
 const portalEmployeeProfileController = require('./controllers/portal-employee-profile-controller');
 const portalHolidayController = require('./controllers/portal-holiday-controller');
+const desktopDqNudgesController = require('./controllers/desktop-dq-nudges-controller');
+const desktopDqPreferencesController = require('./controllers/desktop-dq-preferences-controller');
 const authMiddleware = require('./middleware/auth');
 const forgeAuthMiddleware = require('./middleware/forge-auth');
 const atlassianAuthMiddleware = require('./middleware/atlassian-auth');
@@ -125,7 +127,7 @@ const limiter = rateLimit({
 // from exhausting the budget for new logins.
 app.use('/api/', (req, res, next) => {
   if (req.path.startsWith('/forge/')) return next();
-  if (req.path.startsWith('/auth/'))  return next();
+  if (req.path.startsWith('/auth/')) return next();
   // Portal data routes have their own (per-user) limiter below — keep them out of
   // this strict IP-keyed bucket so a shared office/NAT IP can't starve all users.
   if (req.path.startsWith('/portal/')) return next();
@@ -293,11 +295,11 @@ app.get('/admin-dashboard/api/stats', adminDashboardController.requireSession, a
 // Dedicated limiter (200/min) — each dashboard refresh fires several parallel
 // requests (orgs + summary/wrong-pairs/by-app/recent-mistakes), and changing
 // a filter retriggers all of them.
-app.get('/api/forge/accuracy/orgs',             accuracyDashboardLimiter, forgeAuthMiddleware, accuracyDashboardController.listOrgs);
-app.get('/api/forge/accuracy/summary',          accuracyDashboardLimiter, forgeAuthMiddleware, accuracyDashboardController.getSummary);
-app.get('/api/forge/accuracy/wrong-pairs',      accuracyDashboardLimiter, forgeAuthMiddleware, accuracyDashboardController.getWrongPairs);
-app.get('/api/forge/accuracy/by-app',           accuracyDashboardLimiter, forgeAuthMiddleware, accuracyDashboardController.getByApp);
-app.get('/api/forge/accuracy/recent-mistakes',  accuracyDashboardLimiter, forgeAuthMiddleware, accuracyDashboardController.getRecentMistakes);
+app.get('/api/forge/accuracy/orgs', accuracyDashboardLimiter, forgeAuthMiddleware, accuracyDashboardController.listOrgs);
+app.get('/api/forge/accuracy/summary', accuracyDashboardLimiter, forgeAuthMiddleware, accuracyDashboardController.getSummary);
+app.get('/api/forge/accuracy/wrong-pairs', accuracyDashboardLimiter, forgeAuthMiddleware, accuracyDashboardController.getWrongPairs);
+app.get('/api/forge/accuracy/by-app', accuracyDashboardLimiter, forgeAuthMiddleware, accuracyDashboardController.getByApp);
+app.get('/api/forge/accuracy/recent-mistakes', accuracyDashboardLimiter, forgeAuthMiddleware, accuracyDashboardController.getRecentMistakes);
 
 // =============================================================================
 // LEGAL PAGES (Public - served as HTML from layout + content templates)
@@ -521,6 +523,8 @@ app.get('/api/forge/issues/active-accounts', ...forgeMiddleware, forgeProxyContr
 // Description quality (AI-assisted ticket description enhancement)
 app.post('/api/forge/description/analyze', ...forgeMiddleware, descriptionController.analyze);
 app.post('/api/forge/description/event', ...forgeMiddleware, descriptionController.recordEvent);
+app.post('/api/forge/description/sync-issue-unassigned', ...forgeMiddleware, descriptionController.syncIssueUnassigned);
+app.post('/api/forge/description/sync-all-unassigned', ...forgeMiddleware, descriptionController.syncAllUnassigned);
 
 // Uninstall handler — called when app is uninstalled from Jira site (Forge-authenticated)
 // Marks organization for deletion with 30-day grace period
@@ -563,6 +567,11 @@ app.post('/api/analyze-batch', express.json({ limit: '10mb' }), authMiddleware, 
 app.post('/api/classify-app', desktopAuthMiddleware, activityController.classifyApp);
 // identify-app uses Forge auth (called from Forge app for admin app classification)
 app.post('/api/identify-app', ...forgeMiddleware, activityController.identifyApp);
+
+// Description-Quality scheduled nudges (Enhancement #13) — desktop endpoints.
+// Both routers use desktopAuthMiddleware (Supabase JWT OR Atlassian token).
+app.use('/api/desktop/description-quality-nudges', desktopAuthMiddleware, desktopDqNudgesController);
+app.use('/api/desktop/preferences/dq-nudges', desktopAuthMiddleware, desktopDqPreferencesController);
 
 // Analytics endpoints (unified aggregation service)
 app.get('/api/analytics/daily', authMiddleware, analyticsController.getDailyTotal);
@@ -628,7 +637,7 @@ app.post('/api/trigger-org-clustering', authMiddleware, async (req, res, next) =
     // Get all users with unassigned work in this organization
     const supabaseService = require('./services/supabase-service');
     const usersWithUnassigned = await supabaseService.getUsersWithUnassignedWork();
-    
+
     // Filter to only users in this organization
     const orgUsers = usersWithUnassigned.filter(u => u.organization_id === organizationId);
 
@@ -875,7 +884,7 @@ async function startServer() {
 
       logger.info(`AI Analysis Server running on port ${PORT}`);
       logger.info(`Environment: ${process.env.NODE_ENV || 'development'}`);
-      
+
       // Initialize AI clients at startup
       logger.info('Initializing AI clients...');
       aiService.initializeClient();

@@ -443,6 +443,67 @@
   }
 }
 
+/* Sync with Jira Button */
+.sync-with-jira-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px;
+  height: 36px;
+  background: linear-gradient(135deg, #6656fc 0%, #7b6cff 100%);
+  border: 1px solid #5a4de0;
+  border-radius: 8px;
+  cursor: pointer;
+  color: #fff;
+  font-size: 13px;
+  font-weight: 600;
+  transition: all 0.2s ease;
+  box-shadow: 0 2px 6px rgba(102, 86, 252, 0.25);
+}
+
+.sync-with-jira-btn:hover:not(:disabled) {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 10px rgba(102, 86, 252, 0.35);
+}
+
+.sync-with-jira-btn:disabled {
+  opacity: 0.75;
+  cursor: not-allowed;
+}
+
+.sync-with-jira-spinner {
+  width: 14px;
+  height: 14px;
+  border: 2px solid rgba(255, 255, 255, 0.35);
+  border-top-color: #fff;
+  border-radius: 50%;
+  animation: uw-spin 0.8s linear infinite;
+}
+
+.sync-banner {
+  margin: 8px 0 10px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.sync-banner--success {
+  background: #e3fcef;
+  color: #006644;
+  border: 1px solid #abf5d1;
+}
+
+.sync-banner--error {
+  background: #ffebe6;
+  color: #bf2600;
+  border: 1px solid #ffbdad;
+}
+
+@keyframes uw-spin {
+  to { transform: rotate(360deg); }
+}
+
 /* Bulk Time Edit Button */
 .bulk-time-edit-btn {
   display: inline-flex;
@@ -591,5 +652,148 @@
   .notification-popover {
     width: 260px;
     right: -50px;
+  }
+}
+
+/* Sync Timeframe Dropdown */
+.sync-timeframe-dropdown {
+  height: 36px;
+  border: 1px solid var(--ds-border, #dfe1e6);
+  border-radius: 6px;
+  padding: 0 12px;
+  font-size: 13px;
+  color: var(--ds-text, #172b4d);
+  background: #fff;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  outline: none;
+}
+
+.sync-timeframe-dropdown:hover:not(:disabled) {
+  border-color: #6656fc;
+}
+
+.sync-timeframe-dropdown:focus {
+  border-color: #6656fc;
+  box-shadow: 0 0 0 2px rgba(102, 86, 252, 0.2);
+}
+
+.sync-timeframe-dropdown:disabled {
+  background: #f4f5f7;
+  color: #a5adba;
+  cursor: not-allowed;
+}
+
+/* Sync Confirm Modal */
+.sync-confirm-modal-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(9, 30, 66, 0.54);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 9000;
+  animation: uw-fade-in 0.2s ease;
+}
+
+.sync-confirm-modal {
+  background: #fff;
+  border-radius: 8px;
+  width: 100%;
+  max-width: 420px;
+  padding: 24px;
+  box-shadow: 0 8px 16px -4px rgba(9, 30, 66, 0.25);
+  animation: uw-slide-up 0.2s ease;
+}
+
+.sync-confirm-modal h3 {
+  margin: 0 0 16px 0;
+  font-size: 20px;
+  color: var(--ds-text, #172b4d);
+  font-weight: 600;
+}
+
+.sync-confirm-content {
+  font-size: 14px;
+  color: var(--ds-text-subtle, #42526e);
+  line-height: 1.5;
+  margin-bottom: 24px;
+  min-height: 42px;
+}
+
+.sync-confirm-content strong {
+  color: var(--ds-text, #172b4d);
+  font-weight: 600;
+}
+
+.sync-confirm-error {
+  color: #de350b;
+}
+
+.sync-confirm-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 12px;
+}
+
+.sync-cancel-btn {
+  background: none;
+  border: none;
+  color: var(--ds-text-subtle, #42526e);
+  font-weight: 500;
+  font-size: 14px;
+  cursor: pointer;
+  padding: 8px 12px;
+  border-radius: 4px;
+  transition: background 0.2s;
+}
+
+.sync-cancel-btn:hover:not(:disabled) {
+  background: rgba(9, 30, 66, 0.08);
+}
+
+.sync-cancel-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.sync-confirm-btn {
+  background: #6656fc;
+  color: #fff;
+  border: none;
+  border-radius: 4px;
+  padding: 8px 16px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.sync-confirm-btn:hover:not(:disabled) {
+  background: #5b4bf0;
+  box-shadow: 0 2px 4px rgba(102, 86, 252, 0.3);
+}
+
+.sync-confirm-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+@keyframes uw-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes uw-slide-up {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
   }
 }

@@ -10,6 +10,13 @@ remotes:
       - compute
 
 modules:
+  jira:uiModifications:
+    - key: description-quality-indicator
+      title: Description Quality Indicator
+      resource: uim-resource
+      resolver:
+        function: main
+
   function:
     - key: main
       handler: index.handler
@@ -25,6 +32,13 @@ modules:
       handler: index.personalDataHandler
     - key: lifecycleHandler
       handler: index.lifecycleHandler
+    - key: descriptionQualityNudge
+      handler: index.descriptionQualityNudgeHandler
+      timeoutSeconds: 900
+    - key: issueCreatedHandler
+      handler: index.issueCreatedHandler
+    - key: glanceStatusHandler
+      handler: index.glanceStatusHandler
 
   jira:projectPage:
     - key: brd-time-tracker-project-page
@@ -42,6 +56,24 @@ modules:
       title: Time Analytics
       icon: https://developer.atlassian.com/platform/forge/images/issue-panel-icon.svg
 
+  jira:issueGlance:
+    - key: brd-dq-issue-glance
+      resource: main
+      resolver:
+        function: main
+      title: "Description Quality Score"
+      label: " "
+      dynamicProperties:
+        function: glanceStatusHandler
+
+  jira:issueAction:
+    - key: brd-dq-issue-action
+      resource: main
+      resolver:
+        function: main
+      title: Check Description Quality
+      icon: https://developer.atlassian.com/platform/forge/images/issue-panel-icon.svg
+
   jira:adminPage:
     - key: brd-time-tracker-settings
       title: Time Tracker Settings
@@ -56,6 +88,12 @@ modules:
     - key: issue-cache-refresh-trigger
       function: issueCacheRefresh
       interval: hour
+    # Description-quality nudge.
+    # Forge allows only one fiveMinute scheduled trigger; 30-minute cadence
+    # is enforced in handler logic via KVS last-run gate.
+    - key: description-quality-nudge-a
+      function: descriptionQualityNudge
+      interval: fiveMinute
 
   trigger:
     - key: issue-cache-trigger
@@ -70,12 +108,18 @@ modules:
       function: lifecycleHandler
       events:
         - avi:forge:uninstalled:app
+    - key: issue-created-trigger
+      function: issueCreatedHandler
+      events:
+        - avi:jira:created:issue
 
 resources:
   - key: main
     path: static/main/build
   - key: settings
     path: static/settings/build
+  - key: uim-resource
+    path: static/uim/build
 
 permissions:
   scopes:
@@ -86,6 +130,7 @@ permissions:
       allowImpersonation: true
     read:jira-user:
       allowImpersonation: true
+    manage:jira-configuration: {}
     storage:app: {}
   external:
     fetch:

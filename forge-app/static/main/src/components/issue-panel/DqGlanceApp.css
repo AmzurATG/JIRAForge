@@ -1,0 +1,289 @@
+/* ─────────────────────────────────────────────────────────────
+   DQ Glance Widget — jira:issueGlance surface
+   Rendered in the issue right sidebar. Stays compact by default;
+   expands to show issues + suggestions on click.
+───────────────────────────────────────────────────────────── */
+
+.dqg-root {
+  font-size: 13px;
+  color: var(--ds-text, #172B4D);
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+}
+
+/* ── Collapsed row ── */
+.dqg-collapsed {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  padding: 4px 0;
+  border: none;
+  background: transparent;
+  width: 100%;
+  text-align: left;
+}
+
+.dqg-collapsed:hover .dqg-badge {
+  filter: brightness(0.93);
+}
+
+.dqg-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 36px;
+  height: 24px;
+  padding: 0 7px;
+  border-radius: 12px;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.2px;
+  flex-shrink: 0;
+  transition: filter 0.15s ease;
+}
+
+.dqg-badge--green {
+  background: var(--ds-background-success, #E3FCEF);
+  color: var(--ds-text-success, #006644);
+}
+
+.dqg-badge--yellow {
+  background: var(--ds-background-warning, #FFFAE6);
+  color: var(--ds-text-warning, #974F0C);
+}
+
+.dqg-badge--red {
+  background: var(--ds-background-danger, #FFEBE6);
+  color: var(--ds-text-danger, #BF2600);
+}
+
+.dqg-badge--unknown {
+  background: var(--ds-background-neutral, #F4F5F7);
+  color: var(--ds-text-subtle, #6B778C);
+}
+
+.dqg-label {
+  font-size: 12px;
+  color: var(--ds-text-subtle, #6B778C);
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.dqg-label--good {
+  color: var(--ds-text-success, #006644);
+}
+
+.dqg-label--warn {
+  color: var(--ds-text-warning, #974F0C);
+}
+
+.dqg-label--poor {
+  color: var(--ds-text-danger, #BF2600);
+  font-weight: 600;
+}
+
+.dqg-chevron {
+  width: 14px;
+  height: 14px;
+  color: var(--ds-text-subtlest, #97A0AF);
+  flex-shrink: 0;
+  transition: transform 0.2s ease;
+}
+
+.dqg-chevron--open {
+  transform: rotate(180deg);
+}
+
+/* ── Expanded panel ── */
+.dqg-expanded {
+  margin-top: 8px;
+  padding: 10px 12px;
+  background: var(--ds-surface-raised, #FFFFFF);
+  border: 1px solid var(--ds-border, #DFE1E6);
+  border-radius: 6px;
+  animation: dqg-slide-in 0.15s ease;
+}
+
+@keyframes dqg-slide-in {
+  from { opacity: 0; transform: translateY(-4px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+.dqg-score-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.dqg-score-circle {
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  font-weight: 700;
+}
+
+.dqg-score-circle--green {
+  background: var(--ds-background-success, #E3FCEF);
+  color: var(--ds-text-success, #006644);
+}
+
+.dqg-score-circle--yellow {
+  background: var(--ds-background-warning, #FFFAE6);
+  color: var(--ds-text-warning, #974F0C);
+}
+
+.dqg-score-circle--red {
+  background: var(--ds-background-danger, #FFEBE6);
+  color: var(--ds-text-danger, #BF2600);
+}
+
+.dqg-score-circle--unknown {
+  background: var(--ds-background-neutral, #F4F5F7);
+  color: var(--ds-text-subtle, #6B778C);
+}
+
+.dqg-score-number {
+  font-size: 18px;
+  line-height: 1;
+}
+
+.dqg-score-denom {
+  font-size: 9px;
+  opacity: 0.75;
+}
+
+.dqg-score-meta {
+  flex: 1;
+}
+
+.dqg-score-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ds-text, #172B4D);
+  margin-bottom: 2px;
+}
+
+.dqg-score-source {
+  font-size: 11px;
+  color: var(--ds-text-subtle, #6B778C);
+}
+
+/* ── Issues / suggestions list ── */
+.dqg-section {
+  margin-bottom: 8px;
+}
+
+.dqg-section-label {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--ds-text-subtle, #6B778C);
+  margin-bottom: 4px;
+}
+
+.dqg-list {
+  margin: 0;
+  padding-left: 16px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--ds-text, #172B4D);
+}
+
+.dqg-list--issues li::marker {
+  color: var(--ds-text-danger, #BF2600);
+}
+
+.dqg-list--suggestions li::marker {
+  color: var(--ds-text-information, #0052CC);
+}
+
+/* ── Actions ── */
+.dqg-actions {
+  margin-top: 10px;
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.dqg-btn {
+  font-size: 12px;
+  padding: 5px 10px;
+  border-radius: 3px;
+  cursor: pointer;
+  border: 1px solid transparent;
+  line-height: 1.2;
+  transition: background 0.1s ease;
+}
+
+.dqg-btn--primary {
+  background: var(--ds-background-brand-bold, #0052CC);
+  color: #FFFFFF;
+  border-color: var(--ds-background-brand-bold, #0052CC);
+}
+
+.dqg-btn--primary:hover {
+  background: var(--ds-background-brand-bold-hover, #0747A6);
+}
+
+.dqg-btn--link {
+  background: transparent;
+  border-color: transparent;
+  color: var(--ds-text-brand, #0052CC);
+  padding: 5px 4px;
+}
+
+.dqg-btn--link:hover {
+  text-decoration: underline;
+}
+
+.dqg-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+/* ── Loading & error states ── */
+.dqg-loading {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--ds-text-subtle, #6B778C);
+  padding: 2px 0;
+}
+
+.dqg-spinner {
+  width: 12px;
+  height: 12px;
+  border: 2px solid var(--ds-border, #DFE1E6);
+  border-top-color: #0052CC;
+  border-radius: 50%;
+  animation: dqg-spin 0.7s linear infinite;
+  flex-shrink: 0;
+}
+
+@keyframes dqg-spin {
+  to { transform: rotate(360deg); }
+}
+
+.dqg-error {
+  font-size: 12px;
+  color: var(--ds-text-danger, #BF2600);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.dqg-good-msg {
+  font-size: 12px;
+  color: var(--ds-text-success, #006644);
+  margin-top: 4px;
+}

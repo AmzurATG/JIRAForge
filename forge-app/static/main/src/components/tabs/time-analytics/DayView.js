@@ -376,11 +376,16 @@ function DayView({ loading, timeData, onTodayTotalReconciled, onOpenWorklogReass
     if (!idleBlocks || idleBlocks.length === 0) return [];
 
     return idleBlocks.map(block => {
-      const startTime = parseUTC(block.startTime);
+      const parsedStartTime = parseUTC(block.startTime);
       const endTime = parseUTC(block.endTime);
-      if (!startTime || !endTime) return null;
+      if (!parsedStartTime || !endTime) return null;
 
-      const leftPercent = timeToPercent(startTime);
+      const durationSeconds = block.durationSeconds || 0;
+      const actualStart = durationSeconds > 0
+        ? new Date(endTime.getTime() - (durationSeconds * 1000))
+        : endTime;
+
+      const leftPercent = timeToPercent(actualStart);
       const rightPercent = timeToPercent(endTime);
       const widthPercent = Math.max(0.3, rightPercent - leftPercent);
 
@@ -388,9 +393,9 @@ function DayView({ loading, timeData, onTodayTotalReconciled, onOpenWorklogReass
         id: block.id,
         left: leftPercent,
         width: widthPercent,
-        startTime,
+        startTime: actualStart,
         endTime,
-        durationSeconds: block.durationSeconds || 0,
+        durationSeconds: durationSeconds,
         converted: !!block.reclassifiedFrom,
         convertedIssueKey: block.convertedIssueKey,
         convertedReason: block.reason || null,
@@ -455,19 +460,25 @@ function DayView({ loading, timeData, onTodayTotalReconciled, onOpenWorklogReass
       }
     }
 
-    // Convert to percentage positions
+    // Convert to percentage positions — match assigned block positioning
     return merged.map((block, index) => {
-      const leftPercent = timeToPercent(block.startTime);
-      const rightPercent = timeToPercent(block.endTime);
+      const endTime = block.endTime;
+      const durationSeconds = block.durationSeconds || 0;
+      const actualStart = durationSeconds > 0
+        ? new Date(endTime.getTime() - (durationSeconds * 1000))
+        : endTime;
+
+      const leftPercent = timeToPercent(actualStart);
+      const rightPercent = timeToPercent(endTime);
       const widthPercent = Math.max(0.3, rightPercent - leftPercent);
 
       return {
         sessionIds: sessionIdsByMergedBlock[index] || [],
         left: leftPercent,
         width: widthPercent,
-        startTime: block.startTime,
-        endTime: block.endTime,
-        durationSeconds: block.durationSeconds || 0
+        startTime: actualStart,  // for tooltips
+        endTime: endTime,
+        durationSeconds: durationSeconds
       };
     }).filter(block => block.left < 100 && (block.left + block.width) > 0);
   };

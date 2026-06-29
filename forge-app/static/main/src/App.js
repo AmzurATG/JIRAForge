@@ -1,6 +1,8 @@
 import React, { useEffect, useState } from 'react';
 import { invoke, view } from '@forge/bridge';
 import IssuePanelApp from './components/issue-panel/IssuePanelApp';
+import DqGlanceApp from './components/issue-panel/DqGlanceApp';
+import DqActionApp from './components/issue-panel/DqActionApp';
 import './App.css';
 import './components/common/Sidebar.css';
 import './components/modals/Modals.css';
@@ -424,7 +426,7 @@ function AppContent() {
 }
 
 function App() {
-  const [surface, setSurface] = useState({ ready: false, issueKey: null });
+  const [surface, setSurface] = useState({ ready: false, issueKey: null, extensionType: null });
 
   useEffect(() => {
     let cancelled = false;
@@ -432,9 +434,15 @@ function App() {
       try {
         const ctx = await view.getContext();
         const issueKey = ctx?.extension?.issue?.key || null;
-        if (!cancelled) setSurface({ ready: true, issueKey });
+        // The extension.type field identifies which Forge module is rendering:
+        //   'jira:issuePanel'  → IssuePanelApp  (existing)
+        //   'jira:issueGlance' → DqGlanceApp    (new)
+        //   'jira:issueAction' → DqActionApp    (new)
+        //   undefined          → AppContent (project page / admin page)
+        const extensionType = ctx?.extension?.type || null;
+        if (!cancelled) setSurface({ ready: true, issueKey, extensionType });
       } catch {
-        if (!cancelled) setSurface({ ready: true, issueKey: null });
+        if (!cancelled) setSurface({ ready: true, issueKey: null, extensionType: null });
       }
     })();
     return () => { cancelled = true; };
@@ -442,10 +450,22 @@ function App() {
 
   if (!surface.ready) return null;
 
+  // ── jira:issueGlance — DQ score chip in the right sidebar ──
+  if (surface.extensionType === 'jira:issueGlance') {
+    return <DqGlanceApp issueKey={surface.issueKey} />;
+  }
+
+  // ── jira:issueAction — "Check Description Quality" ··· menu entry ──
+  if (surface.extensionType === 'jira:issueAction') {
+    return <DqActionApp issueKey={surface.issueKey} />;
+  }
+
+  // ── jira:issuePanel — existing Time Analytics + DQ panel ──
   if (surface.issueKey) {
     return <IssuePanelApp issueKey={surface.issueKey} />;
   }
 
+  // ── jira:projectPage / jira:adminPage — full sidebar app ──
   return (
     <AppProvider>
       <AppContent />

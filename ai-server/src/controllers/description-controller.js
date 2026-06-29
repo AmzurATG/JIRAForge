@@ -51,7 +51,7 @@ function validateAnalyzePayload(body) {
   const { issueKey, title, description, issueType, projectKey, requestImprovement, parentContext, attachments } = body;
 
   if (typeof issueKey !== 'string' || issueKey.length === 0) return 'Missing required field: issueKey';
-  if (issueKey.length > MAX_ISSUE_KEY_LEN || !ISSUE_KEY_RE.test(issueKey)) return 'Invalid issueKey format';
+  if (issueKey !== 'DRAFT' && (issueKey.length > MAX_ISSUE_KEY_LEN || !ISSUE_KEY_RE.test(issueKey))) return 'Invalid issueKey format';
 
   if (typeof title !== 'string' || title.length === 0) return 'Missing required field: title';
   if (title.length > MAX_TITLE_LEN) return `title exceeds max length (${MAX_TITLE_LEN})`;
@@ -209,7 +209,86 @@ async function recordEvent(req, res) {
   }
 }
 
+function validateSyncIssueUnassignedPayload(body) {
+  if (!body || typeof body !== 'object') return 'Request body must be a JSON object';
+  const { issueKey, title, description, sessions } = body;
+  if (typeof issueKey !== 'string' || !ISSUE_KEY_RE.test(issueKey)) return 'Invalid issueKey';
+  if (typeof title !== 'string') return 'title must be a string';
+  if (typeof description !== 'string') return 'description must be a string';
+  if (!Array.isArray(sessions)) return 'sessions must be an array';
+  if (sessions.length > 100) return 'sessions exceeds max count (100)';
+  for (let i = 0; i < sessions.length; i++) {
+    const s = sessions[i];
+    if (!s || typeof s.sessionId !== 'string') return `sessions[${i}].sessionId is required`;
+  }
+  return null;
+}
+
+function validateSyncAllUnassignedPayload(body) {
+  if (!body || typeof body !== 'object') return 'Request body must be a JSON object';
+  const { issues, sessions } = body;
+  if (!Array.isArray(issues)) return 'issues must be an array';
+  if (!Array.isArray(sessions)) return 'sessions must be an array';
+  if (issues.length > 20) return 'issues exceeds max count (20)';
+  if (sessions.length > 100) return 'sessions exceeds max count (100)';
+  for (let i = 0; i < issues.length; i++) {
+    const issue = issues[i];
+    if (!issue || typeof issue.issueKey !== 'string' || !ISSUE_KEY_RE.test(issue.issueKey)) {
+      return `issues[${i}].issueKey is invalid`;
+    }
+  }
+  for (let i = 0; i < sessions.length; i++) {
+    const s = sessions[i];
+    if (!s || typeof s.sessionId !== 'string') return `sessions[${i}].sessionId is required`;
+  }
+  return null;
+}
+
+async function syncIssueUnassigned(req, res) {
+  const validationError = validateSyncIssueUnassignedPayload(req.body);
+  if (validationError) return badRequest(res, validationError);
+
+  const { issueKey, title, description, sessions } = req.body;
+  try {
+    const result = await descriptionService.syncIssueUnassigned({
+      issueKey,
+      title,
+      description,
+      sessions
+    });
+    return res.json({ success: true, data: result });
+  } catch (err) {
+    logger.error('[DescQuality] syncIssueUnassigned failed for %s: %s', issueKey, err.message);
+    return res.status(500).json({ success: false, error: 'Internal server error' });
+  }
+}
+
+async function syncAllUnassigned(req, res) {
+  const validationError = validateSyncAllUnassignedPayload(req.body);
+  if (validationError) return badRequest(res, validationError);
+
+  const { issues, sessions } = req.body;
+  logger.info(
+    '[DescQuality] syncAllUnassigned | issues=%d sessions=%d',
+    Array.isArray(issues) ? issues.length : 0,
+    Array.isArray(sessions) ? sessions.length : 0
+  );
+  try {
+    const result = await descriptionService.syncAllUnassigned({ issues, sessions });
+    logger.info(
+      '[DescQuality] syncAllUnassigned complete | assignments=%d',
+      Array.isArray(result?.assignments) ? result.assignments.length : 0
+    );
+    return res.json({ success: true, data: result });
+  } catch (err) {
+    logger.error('[DescQuality] syncAllUnassigned failed: %s', err.message);
+    return res.status(500).json({ success: false, error: 'Internal server error' });
+  }
+}
+
 module.exports = {
   analyze,
-  recordEvent
+  recordEvent,
+  syncIssueUnassigned,
+  syncAllUnassigned
 };
