@@ -33,11 +33,9 @@ function buildPresets() {
     return { from: formatDate(from), to: formatDate(to) };
   };
 
+  // Calendar-month presets are listed first — they are the most common pick for
+  // payroll/attainment reporting, so they sit at the top of the dropdown.
   return [
-    { name: 'today', label: 'Today', range: rolling(0) },
-    { name: '7d', label: 'Last 7 days', range: rolling(7) },
-    { name: '30d', label: 'Last 30 days', range: rolling(30) },
-    { name: '90d', label: 'Last 90 days', range: rolling(90) },
     {
       name: 'thisMonth',
       label: `This Month (${monthName(now)})`,
@@ -48,6 +46,10 @@ function buildPresets() {
       label: `Last Month (${monthName(lastMonthRef)})`,
       range: () => ({ from: formatDate(startOfMonth(lastMonthRef)), to: formatDate(endOfMonth(lastMonthRef)) }),
     },
+    { name: 'today', label: 'Today', range: rolling(0) },
+    { name: '7d', label: 'Last 7 days', range: rolling(7) },
+    { name: '30d', label: 'Last 30 days', range: rolling(30) },
+    { name: '90d', label: 'Last 90 days', range: rolling(90) },
   ];
 }
 

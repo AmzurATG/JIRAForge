@@ -139,9 +139,8 @@ async function getEmployeeSummaryData(orgId, filters, visibleUserIds) {
   const employeesData = await portalService.getEmployees(orgId, { from, to }, { page: 1, limit: 1000 }, visibleUserIds);
 
   // Legal (expected) hours are identical for everyone over the selected range —
-  // company-wide holidays, no per-employee leaves yet — so compute once.
-  // Tracked Hours = Active time (productive + non-productive + unknown), idle
-  // excluded; Attainment % = Tracked ÷ Legal.
+  // company-wide holidays, no per-employee leaves yet — so compute once and show
+  // it on a single summary line rather than a repeated column.
   // Degrade to 0 if the holiday lookup fails (e.g. the portal_holidays migration
   // isn't applied yet) so the rest of the employee summary still renders instead
   // of failing the whole report.
@@ -160,8 +159,6 @@ async function getEmployeeSummaryData(orgId, filters, visibleUserIds) {
     const unknownHours = emp.neutralHours || 0; // WS-C "neutral" surfaced as "Unknown"
     const idleHours = emp.idleHours || 0;
     const totalHours = productiveHours + nonProductiveHours + unknownHours + idleHours;
-    const trackedHours = productiveHours + nonProductiveHours + unknownHours;
-    const attainmentPct = legalHrs > 0 ? Math.round((trackedHours / legalHrs) * 1000) / 10 : 0;
     return {
       employeeName: emp.name,
       employeeEmail: emp.email,
@@ -171,8 +168,6 @@ async function getEmployeeSummaryData(orgId, filters, visibleUserIds) {
       unknownHours,
       idleHours,
       totalHours,
-      trackedHours,
-      attainmentPct,
       ...categoryPercents({ productiveHours, nonProductiveHours, unknownHours, idleHours }),
     };
   });
@@ -325,11 +320,11 @@ async function exportCSV(req, res) {
         break;
 
       case 'employee-summary': {
-        // Per-category Hrs/% + Tracked/Attainment. Legal hours is identical for
-        // everyone over the range, so it's shown once on a summary line at the
-        // top instead of a repeated column; the Branch column was dropped.
+        // Per-category Hrs/%. Legal hours is identical for everyone over the
+        // range, so it's shown once on a summary line at the top instead of a
+        // repeated column; the Branch column was dropped.
         const legalCsv = (result.legalHours ?? 0).toFixed(2);
-        headers = ['Employee Name', 'Email', 'Productive Hours', 'Productive %', 'Non-Productive Hours', 'Non-Productive %', 'Unknown Hours', 'Unknown %', 'Idle Hours', 'Idle %', 'Tracked Hours', 'Attainment %'];
+        headers = ['Employee Name', 'Email', 'Productive Hours', 'Productive %', 'Non-Productive Hours', 'Non-Productive %', 'Unknown Hours', 'Unknown %', 'Idle Hours', 'Idle %'];
         csvRows = [`Legal Hours (period),${legalCsv}`, '', headers.join(',')];
         result.data.forEach(row => {
           csvRows.push([
@@ -342,9 +337,7 @@ async function exportCSV(req, res) {
             row.unknownHours?.toFixed(2) || '0.00',
             row.unknownPct?.toFixed(1) || '0.0',
             row.idleHours?.toFixed(2) || '0.00',
-            row.idlePct?.toFixed(1) || '0.0',
-            row.trackedHours?.toFixed(2) || '0.00',
-            row.attainmentPct?.toFixed(1) || '0.0'
+            row.idlePct?.toFixed(1) || '0.0'
           ].join(','));
         });
         break;
@@ -432,8 +425,6 @@ function getExcelColumnsForType(type) {
         { header: 'Unknown %', key: 'unknownPct', width: 11, numFmt: '0.0' },
         { header: 'Idle Hours', key: 'idleHours', width: 12, numFmt: '0.00' },
         { header: 'Idle %', key: 'idlePct', width: 9, numFmt: '0.0' },
-        { header: 'Tracked Hours', key: 'trackedHours', width: 14, numFmt: '0.00' },
-        { header: 'Attainment %', key: 'attainmentPct', width: 13, numFmt: '0.0' },
       ];
     case 'application-usage':
       return [
@@ -668,15 +659,13 @@ function getTableConfigForType(type) {
       // Legal hours is shown once in the header block (same for everyone), not
       // as a per-row column; the Branch column was dropped (manager request).
       return {
-        headers: ['Employee', 'Productive', 'Non-Productive', 'Unknown', 'Idle', 'Tracked', 'Attain %'],
+        headers: ['Employee', 'Productive', 'Non-Productive', 'Unknown', 'Idle'],
         columns: [
-          { key: 'employeeName', width: 120 },
-          { key: 'productiveHours', width: 95, format: (v, r) => fmtHrPct(v, r.productivePct) },
-          { key: 'nonProductiveHours', width: 100, format: (v, r) => fmtHrPct(v, r.nonProductivePct) },
-          { key: 'unknownHours', width: 90, format: (v, r) => fmtHrPct(v, r.unknownPct) },
-          { key: 'idleHours', width: 80, format: (v, r) => fmtHrPct(v, r.idlePct) },
-          { key: 'trackedHours', width: 70, format: v => v?.toFixed(2) || '0.00' },
-          { key: 'attainmentPct', width: 75, format: v => `${v?.toFixed(1) || 0}%` }
+          { key: 'employeeName', width: 150 },
+          { key: 'productiveHours', width: 110, format: (v, r) => fmtHrPct(v, r.productivePct) },
+          { key: 'nonProductiveHours', width: 115, format: (v, r) => fmtHrPct(v, r.nonProductivePct) },
+          { key: 'unknownHours', width: 105, format: (v, r) => fmtHrPct(v, r.unknownPct) },
+          { key: 'idleHours', width: 95, format: (v, r) => fmtHrPct(v, r.idlePct) }
         ]
       };
     case 'application-usage':

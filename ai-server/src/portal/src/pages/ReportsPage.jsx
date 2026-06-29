@@ -40,6 +40,22 @@ const REPORT_TYPES = {
 // beside the hours within the same column.
 const hrPct = (hours, pct) => `${(hours ?? 0).toFixed(2)}h (${(pct ?? 0).toFixed(1)}%)`;
 
+// Label the legal-hours figure after the selected period rather than a generic
+// "this period" — "today" / "this month" / "last month" when the range matches
+// those presets (mirrors DateRangePicker), else falls back to "this period".
+function legalHoursLabel(from, to) {
+  const now = new Date();
+  const todayStr = formatDate(now);
+  const monthStart = formatDate(new Date(now.getFullYear(), now.getMonth(), 1));
+  const lastMonthStart = formatDate(new Date(now.getFullYear(), now.getMonth() - 1, 1));
+  const lastMonthEnd = formatDate(new Date(now.getFullYear(), now.getMonth(), 0));
+
+  if (from === todayStr && to === todayStr) return 'Legal hours today';
+  if (from === monthStart && to === todayStr) return 'Legal hours this month';
+  if (from === lastMonthStart && to === lastMonthEnd) return 'Legal hours last month';
+  return 'Legal hours this period';
+}
+
 // Export responses use responseType:'blob', so a server error body arrives as a
 // Blob (not parsed JSON). Read it back to surface the real message instead of a
 // generic "Failed to export".
@@ -262,7 +278,7 @@ function ReportsPage() {
           { key: 'totalHours', label: 'Total Hours', sortable: true, render: (v) => v?.toFixed(2) || '0.00' },
         ];
       case 'employee-summary':
-        // Per-category hours+% plus Legal/Tracked/Attainment (the monthly view).
+        // Per-category hours+%; legal hours shown once above the table.
         return [
           { key: 'employeeName', label: 'Employee', sortable: true },
           { key: 'employeeEmail', label: 'Email', sortable: true },
@@ -270,8 +286,6 @@ function ReportsPage() {
           { key: 'nonProductiveHours', label: 'Non-Productive', sortable: true, render: (v, r) => hrPct(v, r.nonProductivePct) },
           { key: 'unknownHours', label: 'Unknown', sortable: true, render: (v, r) => hrPct(v, r.unknownPct) },
           { key: 'idleHours', label: 'Idle', sortable: true, render: (v, r) => hrPct(v, r.idlePct) },
-          { key: 'trackedHours', label: 'Tracked Hrs', sortable: true, render: (v) => v?.toFixed(2) || '0.00' },
-          { key: 'attainmentPct', label: 'Attainment %', sortable: true, render: (v) => `${v?.toFixed(1) || 0}%` },
         ];
       case 'application-usage':
         return [
@@ -495,7 +509,7 @@ function ReportsPage() {
               here instead of as a repeated column. */}
           {reportType === 'employee-summary' && legalHours != null && (
             <div className="mb-3 inline-flex items-center gap-2 rounded-lg bg-primary-50 dark:bg-primary-900/20 border border-primary-100 dark:border-primary-800 px-3 py-1.5">
-              <span className="text-xs text-gray-500 dark:text-gray-400">Legal hours this period</span>
+              <span className="text-xs text-gray-500 dark:text-gray-400">{legalHoursLabel(dateRange.from, dateRange.to)}</span>
               <span className="text-sm font-semibold text-primary-700 dark:text-primary-300">{legalHours.toFixed(2)}</span>
             </div>
           )}

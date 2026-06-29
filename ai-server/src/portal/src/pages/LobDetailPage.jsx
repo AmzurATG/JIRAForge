@@ -9,7 +9,7 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { ArrowLeft, Plus, Trash2, Search, X, Sparkles, Eye, EyeOff } from 'lucide-react';
+import { ArrowLeft, Plus, Trash2, Search, X, Sparkles, Eye, EyeOff, Upload } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { lobsApi } from '../api/lobs';
 import { employeesApi } from '../api/employees';
@@ -155,18 +155,90 @@ function TabButton({ id, tab, setTab, children }) {
 
 // --- Members ----------------------------------------------------------------
 
+/** Inline install-status pill shown beside a member's name. */
+function InstallBadge({ installed }) {
+  return installed ? (
+    <span className="inline-flex items-center gap-1 text-xs font-medium text-green-700 dark:text-green-300">
+      <span className="w-1.5 h-1.5 rounded-full bg-green-500" /> Installed
+    </span>
+  ) : (
+    <span className="inline-flex items-center gap-1 text-xs font-medium text-gray-500 dark:text-gray-400">
+      <span className="w-1.5 h-1.5 rounded-full bg-gray-400" /> Not installed
+    </span>
+  );
+}
+
+/** Read a File as base64 (strips the data: URL prefix). */
+function fileToBase64(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result).split(',')[1] || '');
+    reader.onerror = () => reject(new Error('Could not read the file'));
+    reader.readAsDataURL(file);
+  });
+}
+
+function ImportRosterModal({ lobId, onClose, onImported, setError }) {
+  const [file, setFile] = useState(null);
+  const [importing, setImporting] = useState(false);
+
+  const submit = async () => {
+    if (!file) return;
+    setImporting(true);
+    setError(null);
+    try {
+      const contentBase64 = await fileToBase64(file);
+      const res = await lobsApi.importRoster(lobId, { filename: file.name, contentBase64 });
+      onImported(res);
+    } catch (err) {
+      setError(err.response?.data?.error || err.message || 'Failed to import roster');
+    } finally {
+      setImporting(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+      <div className="bg-white dark:bg-gray-800 rounded-lg p-6 max-w-sm w-full mx-4">
+        <h3 className="text-lg font-semibold mb-1">Import roster</h3>
+        <p className="text-sm text-gray-500 dark:text-gray-400 mb-4">
+          Upload an Excel/CSV with <b>email</b> (required) and <b>name</b> columns. Existing
+          entries are updated, not duplicated.
+        </p>
+        <input
+          type="file"
+          accept=".xlsx,.csv"
+          onChange={(e) => setFile(e.target.files?.[0] || null)}
+          className="block w-full text-sm text-gray-700 dark:text-gray-300 file:mr-3 file:py-1.5 file:px-3 file:rounded file:border-0 file:bg-primary-600 file:text-white file:cursor-pointer"
+        />
+        <div className="flex gap-2 justify-end mt-5">
+          <button onClick={onClose} className="btn-secondary">Cancel</button>
+          <button onClick={submit} disabled={!file || importing} className="btn-primary">
+            {importing ? 'Importing…' : 'Import'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function MembersTab({ lobId, setError, flash }) {
+  const { user } = useAuth();
+  const isSuperadmin = user?.role === 'superadmin';
   const [members, setMembers] = useState([]);
   const [totalCount, setTotalCount] = useState(0);
   const [page, setPage] = useState(1);
   const [loading, setLoading] = useState(true);
   const [showAdd, setShowAdd] = useState(false);
+  const [showImport, setShowImport] = useState(false);
   const [removing, setRemoving] = useState(null);
 
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const res = await lobsApi.listMembers(lobId, { page, limit: 10 });
+      // Roster = union of imported expected members + existing members, each
+      // badged Installed / Not installed (derived from users.email).
+      const res = await lobsApi.listRoster(lobId, { page, limit: 10 });
       setMembers(res.data || []);
       setTotalCount(res.pagination?.totalCount || 0);
     } catch (err) {
@@ -179,34 +251,63 @@ function MembersTab({ lobId, setError, flash }) {
   useEffect(() => { load(); }, [load]);
 
   const columns = [
-    { key: 'name', label: 'Name', sortable: true },
-    { key: 'email', label: 'Email', sortable: true },
     {
+      key: 'name', label: 'Name', sortable: true,
+      render: (_, row) => (
+        <div className="flex items-center gap-2">
+          <span>{row.name}</span>
+          <InstallBadge installed={row.installed} />
+        </div>
+      ),
+    },
+    { key: 'email', label: 'Email', sortable: true },
+    ...(isSuperadmin ? [{
       key: 'actions', label: 'Actions', sortable: false,
       render: (_, row) => (
         <button onClick={() => setRemoving(row)} className="p-1 hover:bg-red-100 dark:hover:bg-red-900 rounded text-red-600" title="Remove from LOB">
           <Trash2 className="w-4 h-4" />
         </button>
       ),
-    },
+    }] : []),
   ];
 
   return (
     <div className="card">
       <div className="flex justify-between items-center mb-3">
         <h3 className="section-title">Members ({totalCount})</h3>
-        <button onClick={() => setShowAdd(true)} className="btn-primary flex items-center gap-1.5">
-          <Plus className="w-3.5 h-3.5" /> Add Employee
-        </button>
+        {isSuperadmin && (
+          <div className="flex items-center gap-2">
+            <button onClick={() => setShowImport(true)} className="btn-secondary flex items-center gap-1.5">
+              <Upload className="w-3.5 h-3.5" /> Import roster
+            </button>
+            <button onClick={() => setShowAdd(true)} className="btn-primary flex items-center gap-1.5">
+              <Plus className="w-3.5 h-3.5" /> Add Employee
+            </button>
+          </div>
+        )}
       </div>
 
       <DataTable
         columns={columns}
         data={members}
         loading={loading}
-        emptyMessage="No employees assigned to this LOB"
+        emptyMessage="No employees in this LOB yet — import a roster or add employees"
         pagination={{ page, limit: 10, totalCount, onPageChange: setPage }}
       />
+
+      {showImport && (
+        <ImportRosterModal
+          lobId={lobId}
+          setError={setError}
+          onClose={() => setShowImport(false)}
+          onImported={(res) => {
+            flash(`Imported ${res.imported} · ${res.duplicatesSkipped} duplicate(s) · ${res.invalidSkipped} invalid skipped`);
+            setShowImport(false);
+            setPage(1);
+            load();
+          }}
+        />
+      )}
 
       {showAdd && (
         <PeoplePickerModal
@@ -234,10 +335,20 @@ function MembersTab({ lobId, setError, flash }) {
         isOpen={!!removing}
         title="Remove Member"
         confirmLabel="Remove"
-        message={`Remove ${removing?.name} from this LOB? (The employee and their activity are not deleted.)`}
+        message={
+          removing?.rosterId
+            ? `Remove ${removing?.name} from this LOB's roster? (Their user account and activity are not deleted.)`
+            : `Remove ${removing?.name} from this LOB? (The employee and their activity are not deleted.)`
+        }
         onConfirm={async () => {
           try {
-            await lobsApi.removeMember(lobId, removing.userId);
+            // rosterId present → remove the imported roster entry; otherwise it's
+            // an existing portal_lob_employees member → remove the membership.
+            if (removing.rosterId) {
+              await lobsApi.removeRosterEntry(lobId, removing.rosterId);
+            } else if (removing.userId) {
+              await lobsApi.removeMember(lobId, removing.userId);
+            }
             flash('Member removed');
             setRemoving(null);
             load();

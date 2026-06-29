@@ -204,23 +204,25 @@ async function getEmployeeLogs(req, res) {
   try {
     const { orgId } = req.portalUser;
     const { userId } = req.params;
-    const { classification, from, to, page = 1, limit = 20 } = req.query;
-    
+    const { classification, from, to, page = 1, limit = 20, includeIdle } = req.query;
+
     if (!userId) {
-      return res.status(400).json({ 
-        success: false, 
-        error: 'userId is required' 
+      return res.status(400).json({
+        success: false,
+        error: 'userId is required'
       });
     }
-    
+
     // Enforce that the requested employee is within the caller's LOB scope.
     const visibleUserIds = await resolveVisibleUserIds(req);
     if (Array.isArray(visibleUserIds) && !visibleUserIds.includes(userId)) {
       return res.status(403).json({ success: false, error: 'Insufficient permissions for this employee' });
     }
 
-    // Reuse getTimeLogs with employee filter
-    const filters = { classification, employee: userId, from, to };
+    // Reuse getTimeLogs with employee filter. includeIdle (opt-in) lets the
+    // day-timeline view show idle time as its own blocks; the table view omits
+    // it and keeps today's default (idle excluded).
+    const filters = { classification, employee: userId, from, to, includeIdle: String(includeIdle) === 'true' };
     const pagination = { page: parseInt(page), limit: parseInt(limit) };
 
     const result = await portalService.getTimeLogs(orgId, filters, pagination, visibleUserIds);

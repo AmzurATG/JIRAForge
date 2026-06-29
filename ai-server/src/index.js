@@ -20,6 +20,7 @@ const portalReportsController = require('./controllers/portal-reports-controller
 const portalAdminUsersController = require('./controllers/portal-admin-users-controller');
 const portalAppClassificationsController = require('./controllers/portal-app-classifications-controller');
 const portalLobController = require('./controllers/portal-lob-controller');
+const portalLobRosterController = require('./controllers/portal-lob-roster-controller');
 const portalAppCatalogController = require('./controllers/portal-app-catalog-controller');
 const portalLobAppClassificationsController = require('./controllers/portal-lob-app-classifications-controller');
 const portalEmployeeProfileController = require('./controllers/portal-employee-profile-controller');
@@ -802,6 +803,11 @@ app.delete('/api/portal/lobs/:lobId', portalAuthMiddleware.verifyPortalToken, po
 app.get('/api/portal/lobs/:lobId/members', portalAuthMiddleware.verifyPortalToken, portalLobController.getMembers);
 app.post('/api/portal/lobs/:lobId/members', portalAuthMiddleware.verifyPortalToken, portalLobController.addMembers);
 app.delete('/api/portal/lobs/:lobId/members/:userId', portalAuthMiddleware.verifyPortalToken, portalLobController.removeMember);
+
+// LOB expected-member roster (adoption tracking) — import/delete: superadmin; read: superadmin or head
+app.post('/api/portal/lobs/:lobId/roster/import', portalAuthMiddleware.verifyPortalToken, portalLobRosterController.importRoster);
+app.get('/api/portal/lobs/:lobId/roster', portalAuthMiddleware.verifyPortalToken, portalLobRosterController.getRoster);
+app.delete('/api/portal/lobs/:lobId/roster/:id', portalAuthMiddleware.verifyPortalToken, portalLobRosterController.removeRosterEntry);
 
 // LOB heads — superadmin only
 app.get('/api/portal/lobs/:lobId/heads', portalAuthMiddleware.verifyPortalToken, portalLobController.getHeads);
