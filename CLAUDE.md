@@ -8,7 +8,7 @@ BRD Time Tracker — a multi-component time tracking system that integrates with
 
 ## Architecture
 
-Four components, each in its own subdirectory:
+Five components. Four live in their own top-level subdirectory; the Portal is a separate web app nested under `ai-server/src/portal/`.
 
 ### forge-app/ — Jira Forge Application (Node.js 22.x runtime)
 The Jira-embedded UI and backend logic. Uses Atlassian Forge platform (not a standard Express app).
@@ -22,9 +22,14 @@ Receives screenshots and activity data, runs AI analysis via OpenAI, manages clu
 - `src/controllers/` — Express route handlers (activity, auth, feedback, notifications, admin dashboard, forge-proxy, user data, app versioning)
 - `src/services/ai/` — OpenAI integration; prompt definitions in `prompts.js`, classification in `activity-service.js`
 - `src/services/db/` — Supabase operations (activity, clustering, feedback, notifications, user, storage)
-- `src/services/notifications/` — Email via notifme-sdk
+- `src/services/notifications/` — Notification orchestration
+- `src/services/mail/` — Email delivery via a pluggable adapter (`IMailAdapter`) with `SendGridAdapter` + `ResendAdapter` and automatic provider fallback. Use `MailService` / `index.js`, not the providers directly. (Legacy notifme-sdk is still a dependency but mail is being routed through this adapter.)
 - `src/middleware/` — Four auth layers, one per caller type (see Auth below)
 - `src/dashboard/` — Single HTML admin dashboard served at `/admin-dashboard` (built via `npm run build:dashboard`)
+- `src/portal/` — The Portal web app (see below); served by ai-server in production from its built output
+
+### Portal (ai-server/src/portal/) — Productivity Web Portal (Vite + React)
+A standalone React SPA (Vite, not react-scripts) for viewing employee analytics and reports outside Jira — Dashboard, Employees, Time Logs, Reports (CSV/PDF export), Settings. Dev server runs on port 3002 and proxies API calls to the ai-server on port 8080. Auth state in `src/contexts/`, API clients in `src/api/`, pages in `src/pages/`. This is the surface being rebranded **MyWorkMate** (prod URL `https://myworkmate.amzur.com`); the API host stays `timetracker-forge`/`forgesync.amzur.com`.
 
 ### python-desktop-app/ — Desktop Screenshot Capture (Python 3.8+)
 A large single-file app (`desktop_app.py`, ~563KB) with supporting modules. Runs as a Windows system-tray application.
@@ -35,9 +40,13 @@ A large single-file app (`desktop_app.py`, ~563KB) with supporting modules. Runs
 - Built/distributed via PyInstaller (`desktop_app.spec`, `build.bat`).
 
 ### supabase/ — Database & Edge Functions
-- `migrations/` — Incremental SQL migrations, named `YYYYMMDD_description.sql`. **Never modify an existing migration** — add a new one. Every new table must have RLS enabled with at least one policy gated on `org_id`.
+- `migrations/` — Incremental SQL migrations, named `YYYYMMDD_description.sql`. **Never modify an existing migration** — add a new one. Every new table must have RLS enabled with at least one policy gated on `org_id`. **Treat the live database as read-only**: write migration `.sql` files, but do not apply migrations or otherwise write to the DB — the user reviews and runs all SQL.
 - `functions/` — Edge Functions (Deno/TypeScript): `screenshot-webhook`, `activity-webhook`, `document-webhook`, `update-issues-cache`. JWT verification is **disabled** (`verify_jwt = false`) — these endpoints validate their own callers.
 - `config.toml` — Local dev (API 54321, DB 54322, Studio 54323).
+
+### Repo-root helpers
+- `scripts/` — Ad-hoc SQL diagnostics/debugging queries and one-off utilities (e.g. `debug_*.sql`, portal seed/password helpers). Not part of the build; run manually.
+- `plan/` — Spec documents for the spec-driven workflow below, named `<YYYY-MM-DD>_<component>_<feature>.md`.
 
 ## Build & Run Commands
 
@@ -59,6 +68,12 @@ npm run dev                # nodemon, port 3001
 npm start                  # production
 npm test                   # Jest
 npm run build:dashboard    # Build admin dashboard sub-app
+
+# portal (Vite + React, under ai-server/src/portal)
+cd ai-server/src/portal && npm install
+npm run dev                # Vite dev server, port 3002 (proxies API to :8080)
+npm run build              # Production build → build/
+npm run lint               # ESLint
 
 # python-desktop-app
 cd python-desktop-app && pip install -r requirements.txt
