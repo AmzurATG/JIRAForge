@@ -400,14 +400,14 @@ SCREENSHOT_MONITORING_HARD_DISABLED = True
 # Embedded credentials (for production builds - no .env file needed)
 # SECURITY: All sensitive keys moved to AI Server - fetched at runtime after authentication
 EMBEDDED_CONFIG = {
-    'ATLASSIAN_CLIENT_ID': 'k2Xwzy8c1g3Wk6Xpbeev0x70CXEp9lJH',
+    'ATLASSIAN_CLIENT_ID': 'Q8HT4Jn205AuTiAarj088oWNDrOqwvM5',  # DEV Atlassian OAuth client ID
     # Google OAuth (non-Jira users). PUBLIC client ID only — the client SECRET
     # stays on the AI Server, never in the desktop build. Same handling as
     # ATLASSIAN_CLIENT_ID above. Must match GOOGLE_DESKTOP_CLIENT_ID on the AI server.
-    'GOOGLE_DESKTOP_CLIENT_ID': '454896740459-l085l5otq4a5evc8g3nffqe9d13f4942.apps.googleusercontent.com',
+    'GOOGLE_DESKTOP_CLIENT_ID': '508843846019-glrru7r3m622vt75e215lmf5ih1bcgju.apps.googleusercontent.com',
     # REMOVED: ATLASSIAN_CLIENT_SECRET - now on AI Server only (security fix)
     # REMOVED: SUPABASE_URL, SUPABASE_ANON_KEY, SUPABASE_SERVICE_ROLE_KEY - fetched from AI Server
-    'AI_SERVER_URL': 'https://timetracker-forge.amzur.com',  # AI Server for secure token exchange & config
+    'AI_SERVER_URL': 'https://forgesync.amzur.com',  # DEV AI Server (forgesync) - secure token exchange & config
     'CAPTURE_INTERVAL': '300',
     'WEB_PORT': '51777',
 }
@@ -2086,7 +2086,7 @@ class AtlassianAuthManager:
         self.google_authorization_url = 'https://accounts.google.com/o/oauth2/v2/auth'
         self.google_redirect_uri = f'http://127.0.0.1:{web_port}/auth/google/callback'
         # Token exchange now goes through AI Server
-        self.ai_server_url = get_env_var('AI_SERVER_URL', 'https://timetracker-forge.amzur.com')
+        self.ai_server_url = get_env_var('AI_SERVER_URL', 'https://forgesync.amzur.com')
         self.store_path = store_path or os.path.join(get_app_data_dir(), 'time_tracker_auth.json')
         self.metadata_path = os.path.join(get_app_data_dir(), 'auth_metadata.json')  # For non-sensitive data
 
@@ -3481,7 +3481,7 @@ class AtlassianAuthManager:
             print("[ERROR] No valid Atlassian token - cannot fetch OCR config")
             return False
 
-        ai_server_url = get_env_var('AI_SERVER_URL', 'https://timetracker-forge.amzur.com')
+        ai_server_url = get_env_var('AI_SERVER_URL', 'https://forgesync.amzur.com')
         
         try:
             print("[INFO] Fetching OCR config from AI Server...")
@@ -5030,6 +5030,33 @@ LOCK_SCREEN_APPS = {'lockapp.exe', 'logonui.exe'}
 BROWSER_PROCESSES = {
     'chrome.exe', 'msedge.exe', 'firefox.exe', 'brave.exe',
     'opera.exe', 'vivaldi.exe', 'arc.exe',
+}
+
+# ---------------------------------------------------------------------------
+# Body-redacted surfaces (email / chat)
+# ---------------------------------------------------------------------------
+# Window surfaces whose on-screen BODY must never be captured. For these, OCR is
+# skipped entirely and the activity record's body is set to a fixed mask. The
+# window TITLE is still captured (and still runs through the title PII filter),
+# so time is still tracked — only the message/email content is withheld, and it
+# never leaves the device because it is never extracted in the first place.
+#
+# Gmail, Google Chat and Outlook-on-the-web all run inside a browser process
+# (chrome.exe / msedge.exe / ...), so they cannot be told apart by process name
+# and are matched by markers in the window title. The Outlook desktop clients are
+# matched by process name. To add/remove a surface, edit the lists below.
+REDACTED_BODY_PLACEHOLDER = '***'
+REDACTED_BODY_TITLE_MARKERS = (
+    'gmail',            # Gmail (web)
+    'mail.google.com',  # Gmail (web — URL shown in title)
+    'google chat',      # Google Chat (web)
+    'chat.google.com',  # Google Chat (web — URL shown in title)
+    'outlook',          # Outlook (web) — e.g. "Mail - <name> - Outlook"
+)
+REDACTED_BODY_PROCESSES = {
+    'outlook.exe',    # classic Outlook desktop client
+    'hxoutlook.exe',  # "new Outlook" / Windows Mail
+    'olk.exe',        # newest Outlook desktop client
 }
 
 PROCESS_IDENTIFIER_ALIASES = {
@@ -10382,6 +10409,13 @@ class TimeTracker:
         if classification == 'non_productive':
             return (True, 'non_productive_app')
 
+        # Email/chat surfaces: never screenshot the body. The activity pipeline
+        # already masks the body to '***' (see process_window_event); this keeps
+        # the legacy screenshot/OCR path from capturing it too, should screenshot
+        # monitoring ever be re-enabled (SCREENSHOT_MONITORING_HARD_DISABLED=False).
+        if self._should_redact_body(app_name, window_title):
+            return (True, 'redacted_body_app')
+
         return (False, None)
 
     def upload_activity_batch(self):
@@ -10843,6 +10877,24 @@ class TimeTracker:
                 self.add_admin_log('ERROR', f'Idle record insert failed — CHECK constraint may not allow classification=idle. Run migration 20260325.')
             self.last_batch_upload_time = time.time()
 
+    def _should_redact_body(self, app_name, window_title):
+        """Return True when the active window is an email/chat surface whose
+        on-screen body must be masked (Gmail, Google Chat, Outlook).
+
+        Desktop email clients are matched by process name; browser-based mail and
+        chat are matched by markers in the window title, because Gmail, Google Chat
+        and Outlook-web all share the same browser process name and cannot be told
+        apart by process alone. Matching is intentionally inclusive (a page merely
+        mentioning one of these in its title is masked) — erring toward redaction.
+        """
+        app_lower = (app_name or '').lower().strip()
+        if app_lower in REDACTED_BODY_PROCESSES:
+            return True
+        if app_lower in BROWSER_PROCESSES:
+            title_lower = (window_title or '').lower()
+            return any(marker in title_lower for marker in REDACTED_BODY_TITLE_MARKERS)
+        return False
+
     def process_window_event(self, window_info):
         """Core event handler for event-based activity tracking.
         Called on every window switch.
@@ -10864,6 +10916,11 @@ class TimeTracker:
 
         # Classify the application
         classification, match_type = self.classification_manager.classify(app_name, window_title)
+
+        # Email/chat surfaces (Gmail, Google Chat, Outlook): the on-screen body is
+        # masked instead of OCR'd. The title is still captured and PII-filtered
+        # below, so time is tracked without the conversation/email content.
+        redact_body = self._should_redact_body(app_name, window_title)
 
         ocr_result = None
         display_title = window_title
@@ -10893,39 +10950,53 @@ class TimeTracker:
             print(f"[NON-PROD] {app_name} — {window_title[:50]}")
 
         elif classification in ('productive', 'unknown'):
-            # Productive or unknown: capture screenshot (fast, ~50ms) then dispatch OCR async
-            issue_key_in_title = bool(re.search(r'\b[A-Z][A-Z0-9]+-\d+\b', window_title or ''))
-            spreadsheet_processes = {'excel.exe', 'libreofficecalc.exe', 'soffice.bin'}
-            force_ocr = (classification == 'unknown') or issue_key_in_title or (app_name.lower() in spreadsheet_processes)
-
-            if not self.ocr_processor:
-                return
-            capture_result = self.ocr_processor.capture_screenshot_only(force=force_ocr)
-            screenshot = capture_result.get('screenshot')
-            throttled = capture_result.get('throttled', False)
-
-            if throttled and screenshot:
-                # Throttled: save screenshot for batch backfill
+            if redact_body:
+                # Email/chat surface: mask the body WITHOUT OCR. The content is
+                # never extracted, so it cannot be written to local SQLite or
+                # uploaded. The title (already PII-filtered above) is kept and the
+                # record is still created below, so the time is tracked.
                 ocr_result = {
-                    'text': None, 'method': None, 'confidence': 0.0,
-                    'error_message': None, 'throttled': True,
-                    'screenshot': screenshot
+                    'text': REDACTED_BODY_PLACEHOLDER,
+                    'method': 'redacted_body',
+                    'confidence': 1.0,
+                    'error_message': None,
                 }
-            elif not screenshot:
-                if classification == 'unknown':
-                    self._maybe_classify_unknown_app(app_name, window_title, None)
+                print(f"[REDACT-BODY] {app_name} — body masked, title kept, no OCR ({window_title[:50]})")
+            else:
+                # Productive or unknown: capture screenshot (fast, ~50ms) then dispatch OCR async
+                issue_key_in_title = bool(re.search(r'\b[A-Z][A-Z0-9]+-\d+\b', window_title or ''))
+                spreadsheet_processes = {'excel.exe', 'libreofficecalc.exe', 'soffice.bin'}
+                force_ocr = (classification == 'unknown') or issue_key_in_title or (app_name.lower() in spreadsheet_processes)
 
-            if classification == 'productive':
-                print(f"[PROD] {app_name} — {window_title[:50]}")
-            elif classification == 'unknown':
-                print(f"[UNKNOWN] {app_name}")
+                if not self.ocr_processor:
+                    return
+                capture_result = self.ocr_processor.capture_screenshot_only(force=force_ocr)
+                screenshot = capture_result.get('screenshot')
+                throttled = capture_result.get('throttled', False)
+
+                if throttled and screenshot:
+                    # Throttled: save screenshot for batch backfill
+                    ocr_result = {
+                        'text': None, 'method': None, 'confidence': 0.0,
+                        'error_message': None, 'throttled': True,
+                        'screenshot': screenshot
+                    }
+                elif not screenshot:
+                    if classification == 'unknown':
+                        self._maybe_classify_unknown_app(app_name, window_title, None)
+
+                if classification == 'productive':
+                    print(f"[PROD] {app_name} — {window_title[:50]}")
+                elif classification == 'unknown':
+                    print(f"[UNKNOWN] {app_name}")
 
         # CRITICAL: Create session FIRST so it exists when async OCR callback fires.
         # This fixes race condition where OCR completes before session is created.
         self.session_manager.on_window_switch(display_title, app_name, classification, ocr_result)
 
-        # Now dispatch async OCR AFTER session exists (only for productive/unknown with valid screenshot)
-        if classification in ('productive', 'unknown'):
+        # Now dispatch async OCR AFTER session exists (only for productive/unknown with valid screenshot).
+        # Skipped for redacted-body surfaces — no screenshot was captured and the body is already masked.
+        if classification in ('productive', 'unknown') and not redact_body:
             # Re-check if we have a non-throttled screenshot to process
             if 'capture_result' in dir() and capture_result.get('screenshot') and not capture_result.get('throttled'):
                 screenshot = capture_result.get('screenshot')
@@ -11872,10 +11943,16 @@ class TimeTracker:
 
     def _create_idle_record(self, reason="idle timeout"):
         """Create an idle record from idle_start_time to now and queue it for upload."""
-        if self.idle_start_time is None:
+        # Snapshot the shared field once. Other threads (the system-event handler
+        # and resume_from_idle) may set self.idle_start_time = None concurrently
+        # on wake/unlock; reading it repeatedly here previously caused
+        # "AttributeError: 'NoneType' object has no attribute 'isoformat'".
+        # Operating on the local copy makes this method crash-safe.
+        idle_start = self.idle_start_time
+        if idle_start is None:
             return
         idle_end = datetime.now(timezone.utc)
-        idle_duration = int((idle_end - self.idle_start_time).total_seconds())
+        idle_duration = int((idle_end - idle_start).total_seconds())
         if idle_duration < 60:
             # Skip very short idle periods (< 1 minute)
             self.idle_start_time = None
@@ -11906,10 +11983,10 @@ class TimeTracker:
             'ocr_error_message': None,
             'total_time_seconds': idle_duration,
             'visit_count': 1,
-            'start_time': self.idle_start_time.isoformat(),
+            'start_time': idle_start.isoformat(),
             'end_time': idle_end.isoformat(),
             'duration_seconds': idle_duration,
-            'work_date': _utc_ts_to_local_date(self.idle_start_time.isoformat()),
+            'work_date': _utc_ts_to_local_date(idle_start.isoformat()),
             'user_timezone': get_local_timezone_name(),
             'project_key': project_key,
             'user_assigned_issues': json.dumps(self.user_issues) if self.user_issues else None,  # FIX: PGRST102
@@ -11922,7 +11999,7 @@ class TimeTracker:
             }
         }
         self._pending_idle_records.append(record)
-        print(f"[IDLE] Created idle record: {self.idle_start_time.strftime('%H:%M:%S')} → {idle_end.strftime('%H:%M:%S')} ({idle_duration}s, reason: {reason})")
+        print(f"[IDLE] Created idle record: {idle_start.strftime('%H:%M:%S')} → {idle_end.strftime('%H:%M:%S')} ({idle_duration}s, reason: {reason})")
         self.idle_start_time = None
 
     def get_system_idle_seconds(self):
@@ -12760,7 +12837,7 @@ class TimeTracker:
                 should_skip, skip_reason = self.should_skip_screenshot(app_name, window_title)
                 
                 if should_skip:
-                    if skip_reason in ('private_app', 'non_productive_app'):
+                    if skip_reason in ('private_app', 'non_productive_app', 'redacted_body_app'):
                         if not hasattr(self, '_last_skip_log') or time.time() - self._last_skip_log > 60:
                             print(f"[SKIP] {skip_reason}: {app_name}")
                             self._last_skip_log = time.time()
