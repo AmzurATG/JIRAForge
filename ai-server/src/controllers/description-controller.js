@@ -286,9 +286,34 @@ async function syncAllUnassigned(req, res) {
   }
 }
 
+async function getScoresBatch(req, res) {
+  const { issues } = req.body;
+  const { cloudId, accountId } = req.forgeContext || {};
+
+  if (!Array.isArray(issues)) {
+    return badRequest(res, 'issues must be an array');
+  }
+  if (issues.length > 50) {
+    return badRequest(res, 'Cannot batch analyze more than 50 issues');
+  }
+
+  try {
+    const result = await descriptionService.batchAnalyzeDescriptions({
+      issues,
+      orgId: cloudId,
+      accountId
+    });
+    return res.json({ success: true, data: result });
+  } catch (err) {
+    logger.error('[DescQuality] Batch analyze controller failed: %s', err.message);
+    return res.status(500).json({ success: false, error: 'Internal server error' });
+  }
+}
+
 module.exports = {
   analyze,
   recordEvent,
   syncIssueUnassigned,
-  syncAllUnassigned
+  syncAllUnassigned,
+  getScoresBatch
 };

@@ -522,6 +522,7 @@ app.get('/api/forge/issues/active-accounts', ...forgeMiddleware, forgeProxyContr
 
 // Description quality (AI-assisted ticket description enhancement)
 app.post('/api/forge/description/analyze', ...forgeMiddleware, descriptionController.analyze);
+app.post('/api/forge/description/scores/batch', ...forgeMiddleware, descriptionController.getScoresBatch);
 app.post('/api/forge/description/event', ...forgeMiddleware, descriptionController.recordEvent);
 app.post('/api/forge/description/sync-issue-unassigned', ...forgeMiddleware, descriptionController.syncIssueUnassigned);
 app.post('/api/forge/description/sync-all-unassigned', ...forgeMiddleware, descriptionController.syncAllUnassigned);

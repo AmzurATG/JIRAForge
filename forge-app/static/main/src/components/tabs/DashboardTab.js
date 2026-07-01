@@ -1,10 +1,12 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { invoke } from '@forge/bridge';
 import { useApp } from '../../context';
 import { IssueTypeIcon, StatusDropdown } from '../common';
 import { navigateToIssue, formatTime } from '../../utils';
 import { parseUTC } from '../tabs/time-analytics/dateUtils';
+import QualityCell from './QualityCell';
 import './DashboardTab.css';
+
 
 function DashboardTab({ onOpenReassignModal }) {
   const {
@@ -17,12 +19,28 @@ function DashboardTab({ onOpenReassignModal }) {
   } = useApp();
 
   const [issueFilter, setIssueFilter] = useState('all');
+  const [statusFilter, setStatusFilter] = useState('all');
   const [timeFilter, setTimeFilter] = useState('all');
   const [searchQuery, setSearchQuery] = useState('');
   const [currentPage, setCurrentPage] = useState(1);
   const [approvingSessionId, setApprovingSessionId] = useState(null);
   const [approvingIssueKey, setApprovingIssueKey] = useState(null);
   const itemsPerPage = 10;
+
+  // Description Quality states
+  const [qualityScores, setQualityScores] = useState({});
+  const [qualitySortOrder, setQualitySortOrder] = useState(null); // null, 'asc', or 'desc'
+  const [lastAnalysedTime, setLastAnalysedTime] = useState(null);
+  const [, setTick] = useState(0);
+
+  // Timer tick to update last analysed relative time
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setTick(t => t + 1);
+    }, 10000);
+    return () => clearInterval(interval);
+  }, []);
+
 
   const pendingReviewCount = activeIssues.filter(i => i.hasPendingApproval).length;
   const isPendingReviewView = issueFilter === 'pending-review';
@@ -95,6 +113,122 @@ function DashboardTab({ onOpenReassignModal }) {
     loadActiveIssues();
   }, [loadActiveIssues]);
 
+  // Fetch quality scores for a list of issues
+  const fetchQualityScoresForIssues = useCallback(async (issuesList) => {
+    if (!issuesList || issuesList.length === 0) return;
+    const issueKeys = issuesList.map(i => i.key);
+    
+    // Set loading state
+    setQualityScores(prev => {
+      const next = { ...prev };
+      for (const key of issueKeys) {
+        if (!next[key]) {
+          next[key] = { status: 'pending' };
+        }
+      }
+      return next;
+    });
+
+    try {
+      // Pass 1: Cache read
+      const cacheRes = await invoke('getDescriptionScores', { issueKeys });
+      const cachedScores = cacheRes?.scores || {};
+      
+      setQualityScores(prev => {
+        const next = { ...prev };
+        for (const key of issueKeys) {
+          if (cachedScores[key]) {
+            next[key] = {
+              status: 'success',
+              score: cachedScores[key].score,
+              source: cachedScores[key].source,
+              cachedAt: cachedScores[key].cachedAt
+            };
+          }
+        }
+        return next;
+      });
+
+      // Update last analysed time
+      setLastAnalysedTime(new Date());
+
+      // Pass 2: Cache fill for misses
+      const missKeys = issueKeys.filter(key => !cachedScores[key]);
+      if (missKeys.length > 0) {
+        setQualityScores(prev => {
+          const next = { ...prev };
+          for (const key of missKeys) {
+            next[key] = { status: 'pending' };
+          }
+          return next;
+        });
+
+        const fillRes = await invoke('fillDescriptionScores', { issueKeys: missKeys });
+        const filledScores = fillRes?.scores || {};
+
+        setQualityScores(prev => {
+          const next = { ...prev };
+          for (const key of missKeys) {
+            if (filledScores[key]) {
+              if (filledScores[key].error) {
+                next[key] = { status: 'error', error: filledScores[key].message || filledScores[key].error };
+              } else {
+                next[key] = {
+                  status: 'success',
+                  score: filledScores[key].score,
+                  source: filledScores[key].source,
+                  cachedAt: filledScores[key].cachedAt
+                };
+              }
+            } else {
+              next[key] = { status: 'error', error: 'Analysis failed' };
+            }
+          }
+          return next;
+        });
+      }
+    } catch (err) {
+      console.error('[DashboardTab] Failed to fetch quality scores:', err);
+      setQualityScores(prev => {
+        const next = { ...prev };
+        for (const key of issueKeys) {
+          if (next[key]?.status === 'pending') {
+            next[key] = { status: 'error', error: err.message };
+          }
+        }
+        return next;
+      });
+    }
+  }, []);
+
+  const handleRetryQuality = (issueKey) => {
+    const issue = activeIssues.find(i => i.key === issueKey);
+    if (issue) {
+      fetchQualityScoresForIssues([issue]);
+    }
+  };
+
+
+
+  const handleToggleQualitySort = () => {
+    setQualitySortOrder(prev => {
+      if (prev === null) return 'asc';
+      if (prev === 'asc') return 'desc';
+      return null;
+    });
+  };
+
+  function formatLastAnalysed(time) {
+    if (!time) return '';
+    const seconds = Math.floor((new Date() - time) / 1000);
+    if (seconds < 10) return 'just now';
+    if (seconds < 60) return `${seconds}s ago`;
+    const minutes = Math.floor(seconds / 60);
+    if (minutes < 60) return `${minutes}m ago`;
+    return time.toLocaleTimeString();
+  }
+
+
   const matchesTimeFilter = (issue) => {
     const trackedSeconds = Number(issue.timeTracked) || 0;
     if (timeFilter === 'all') return true;
@@ -106,8 +240,11 @@ function DashboardTab({ onOpenReassignModal }) {
   const getFilterDescription = () => {
     const parts = [];
 
-    if (issueFilter !== 'all') {
-      parts.push(issueFilter.replace('-', ' '));
+    if (issueFilter === 'pending-review') {
+      parts.push('pending review');
+    }
+    if (statusFilter !== 'all') {
+      parts.push(statusFilter === 'in-progress' ? 'in progress' : 'done');
     }
     if (timeFilter === 'with-time') {
       parts.push('with time tracked');
@@ -126,14 +263,23 @@ function DashboardTab({ onOpenReassignModal }) {
   // Reset to page 1 when filters change
   useEffect(() => {
     setCurrentPage(1);
-  }, [issueFilter, searchQuery, timeFilter]);
+  }, [issueFilter, searchQuery, timeFilter, statusFilter]);
+
 
   const filteredIssues = activeIssues.filter(issue => {
-    // Filter by status category
+    // Filter by tab (issueFilter)
+    let tabMatch = true;
+    if (issueFilter === 'pending-review') {
+      tabMatch = !!issue.hasPendingApproval;
+    }
+
+    // Filter by status category dropdown
     let statusMatch = true;
-    if (issueFilter === 'in-progress') statusMatch = issue.statusCategory === 'indeterminate';
-    if (issueFilter === 'done') statusMatch = issue.statusCategory === 'done';
-    if (issueFilter === 'pending-review') statusMatch = !!issue.hasPendingApproval;
+    if (statusFilter === 'in-progress') {
+      statusMatch = issue.statusCategory === 'indeterminate';
+    } else if (statusFilter === 'done') {
+      statusMatch = issue.statusCategory === 'done';
+    }
 
     // Filter by time tracked
     let timeMatch = matchesTimeFilter(issue);
@@ -149,14 +295,47 @@ function DashboardTab({ onOpenReassignModal }) {
         issue.priority.toLowerCase().includes(query);
     }
 
-    return statusMatch && timeMatch && searchMatch;
+    return tabMatch && statusMatch && timeMatch && searchMatch;
   });
+
+  // Apply sorting
+  if (qualitySortOrder) {
+    filteredIssues.sort((a, b) => {
+      const scoreA = qualityScores[a.key]?.status === 'success' ? qualityScores[a.key].score : null;
+      const scoreB = qualityScores[b.key]?.status === 'success' ? qualityScores[b.key].score : null;
+
+      // Pending/error/null scores always sort to the end
+      if (scoreA === null && scoreB === null) return 0;
+      if (scoreA === null) return 1;
+      if (scoreB === null) return -1;
+
+      if (qualitySortOrder === 'asc') {
+        return scoreA - scoreB;
+      } else {
+        return scoreB - scoreA;
+      }
+    });
+  }
+
 
   // Pagination calculations
   const totalPages = Math.ceil(filteredIssues.length / itemsPerPage);
   const startIndex = (currentPage - 1) * itemsPerPage;
   const endIndex = startIndex + itemsPerPage;
   const paginatedIssues = filteredIssues.slice(startIndex, endIndex);
+
+  // Fetch quality scores for currently visible issues on mount/paginate/filter
+  useEffect(() => {
+    if (paginatedIssues.length > 0) {
+      const needsLoading = paginatedIssues.filter(i => {
+        const state = qualityScores[i.key];
+        return !state;
+      });
+      if (needsLoading.length > 0) {
+        fetchQualityScoresForIssues(needsLoading);
+      }
+    }
+  }, [paginatedIssues, fetchQualityScoresForIssues, qualityScores]);
 
   const handlePageChange = (page) => {
     if (page >= 1 && page <= totalPages) {
@@ -211,18 +390,6 @@ function DashboardTab({ onOpenReassignModal }) {
               All Issues
             </button>
             <button
-              className={issueFilter === 'in-progress' ? 'active' : ''}
-              onClick={() => setIssueFilter('in-progress')}
-            >
-              In Progress
-            </button>
-            <button
-              className={issueFilter === 'done' ? 'active' : ''}
-              onClick={() => setIssueFilter('done')}
-            >
-              Done
-            </button>
-            <button
               className={issueFilter === 'pending-review' ? 'active' : ''}
               onClick={() => setIssueFilter('pending-review')}
               title="AI-assigned time waiting for your approval"
@@ -235,6 +402,19 @@ function DashboardTab({ onOpenReassignModal }) {
           </div>
 
           <div className="focus-controls">
+            <div className="focus-status-filter" aria-label="Filter issues by status category">
+              <label className="focus-status-filter-label" htmlFor="my-focus-status-filter">Status:</label>
+              <select
+                id="my-focus-status-filter"
+                className="focus-status-filter-select"
+                value={statusFilter}
+                onChange={(e) => setStatusFilter(e.target.value)}
+              >
+                <option value="all">All</option>
+                <option value="in-progress">In Progress</option>
+                <option value="done">Done</option>
+              </select>
+            </div>
             <div className="focus-time-filter" aria-label="Filter issues by time status">
               <label className="focus-time-filter-label" htmlFor="my-focus-time-filter">Time:</label>
               <select
@@ -302,6 +482,11 @@ function DashboardTab({ onOpenReassignModal }) {
                 Refreshing…
               </div>
             )}
+            {lastAnalysedTime && filteredIssues.length > 0 && (
+              <div className="quality-recheck-row">
+                <span>Last analysed: {formatLastAnalysed(lastAnalysedTime)}</span>
+              </div>
+            )}
             {filteredIssues.length > 0 ? (
               <div className="issues-table-container">
                 <table className="issues-table">
@@ -311,6 +496,14 @@ function DashboardTab({ onOpenReassignModal }) {
                       <th>Title</th>
                       <th>Status</th>
                       <th>Priority</th>
+                      <th 
+                        className={`sortable-header ${qualitySortOrder ? 'sorted' : ''}`}
+                        onClick={handleToggleQualitySort}
+                        style={{ cursor: 'pointer', textAlign: 'right', paddingRight: '16px' }}
+                        title="Sort by description quality"
+                      >
+                        Quality {qualitySortOrder === 'asc' ? '▲' : qualitySortOrder === 'desc' ? '▼' : ''}
+                      </th>
                       <th>Time Tracked</th>
                     </tr>
                   </thead>
@@ -373,6 +566,16 @@ function DashboardTab({ onOpenReassignModal }) {
                               {issue.priority}
                             </span>
                           </td>
+                          <td className="issue-quality-cell">
+                            <QualityCell
+                              issueKey={issue.key}
+                              score={qualityScores[issue.key]?.score}
+                              status={qualityScores[issue.key]?.status}
+                              error={qualityScores[issue.key]?.error}
+                              cachedAt={qualityScores[issue.key]?.cachedAt}
+                              onRetry={handleRetryQuality}
+                            />
+                          </td>
                           <td className={`issue-time ${showPendingCell ? 'pending-cell' : (hasTrackedTime ? 'has-time' : 'no-time')}`}>
                             {showPendingCell ? (
                               <div className="pending-approval-cell">
@@ -431,7 +634,7 @@ function DashboardTab({ onOpenReassignModal }) {
                         </tr>
                         {issue.sessions?.length > 0 && (
                           <tr className="details-row">
-                            <td colSpan="5">
+                            <td colSpan="6">
                               <div className="session-details">
                                 <h4>Work Sessions ({issue.sessions.length})</h4>
                                 <div className="sessions-by-date">
