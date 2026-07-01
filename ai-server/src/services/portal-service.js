@@ -44,6 +44,33 @@ function categorizeActivity(row) {
   return 'neutral';
 }
 
+/**
+ * Total covered seconds of a set of [startMs, endMs] intervals, counting any
+ * overlap ONCE (union coverage). This is the C4 fix: overlapping/duplicate rows
+ * — e.g. a screen-lock flap that wrote one idle stretch as dozens of nested
+ * cumulative rows — must not be summed multiple times, or a day's totals exceed
+ * the real elapsed time (>24 h/day observed in production).
+ */
+function mergedCoverageSeconds(intervals) {
+  if (!intervals || intervals.length === 0) return 0;
+  const sorted = intervals.slice().sort((a, b) => a[0] - b[0]);
+  let totalMs = 0;
+  let curStart = sorted[0][0];
+  let curEnd = sorted[0][1];
+  for (let i = 1; i < sorted.length; i++) {
+    const [s, e] = sorted[i];
+    if (s > curEnd) {
+      totalMs += curEnd - curStart;
+      curStart = s;
+      curEnd = e;
+    } else if (e > curEnd) {
+      curEnd = e;
+    }
+  }
+  totalMs += curEnd - curStart;
+  return Math.round(totalMs / 1000);
+}
+
 // Warn once (per process) when the 20260610 category-breakdown migration has
 // not been applied — the portal then renders the pre-breakdown view (AC-C6).
 let warnedMissingBreakdown = false;
@@ -392,7 +419,7 @@ class PortalService {
     for (;;) {
       const { data: batch, error: activityError } = await supabase
         .from('activity_records')
-        .select('classification, duration_seconds, work_date, is_idle')
+        .select('classification, duration_seconds, work_date, is_idle, start_time, end_time')
         .eq('user_id', userId)
         .gte('work_date', from)
         .lte('work_date', to)
@@ -417,31 +444,62 @@ class PortalService {
       pageStart += PAGE_SIZE;
     }
     
-    // Calculate summary — single pass, canonical WS-C taxonomy:
-    // Productive / Non-Productive (both spellings) / Neutral (everything
-    // else non-idle) / Idle. Active = P + NP + Neutral; Office = Active + Idle.
-    const totals = { productive: 0, 'non-productive': 0, neutral: 0, idle: 0 };
-    const dailyTrend = {};
+    // Calculate summary — canonical WS-C taxonomy with OVERLAP-SAFE coverage (C4):
+    // Productive / Non-Productive (both spellings) / Neutral (everything else
+    // non-idle) / Idle. Active = P + NP + Neutral; Office = Active + Idle.
+    //
+    // Per category we UNION each row's [start_time, end_time] and sum the merged
+    // spans, so overlapping rows (e.g. a lock-flap idle cluster) are counted
+    // once instead of blindly summed. Rows without usable timestamps fall back
+    // to a plain duration sum — parity with the pre-C4 behaviour and the SQL
+    // aggregates (this also keeps callers that don't provide start/end correct).
+    const ACTIVE_CATS = ['productive', 'non-productive', 'neutral'];
+    const ALL_CATS = ['productive', 'non-productive', 'neutral', 'idle'];
+    const makeBuckets = () => ({
+      intervals: { productive: [], 'non-productive': [], neutral: [], idle: [] },
+      fallback: { productive: 0, 'non-productive': 0, neutral: 0, idle: 0 }
+    });
+    const overall = makeBuckets();
+    const dailyBuckets = {};
 
     activities.forEach(activity => {
       // Parity with the pre-WS-C `.neq('is_idle', true)` filter and with the
       // SQL aggregates: rows where is_idle IS NULL fall in NO bucket (the old
       // query excluded them entirely; `is_idle <> true` drops NULL in SQL).
       if (activity.is_idle !== true && activity.is_idle !== false) return;
-      const seconds = activity.duration_seconds || 0;
       const category = categorizeActivity(activity);
-      totals[category] += seconds;
+      const seconds = activity.duration_seconds || 0;
+
+      const startMs = activity.start_time ? Date.parse(activity.start_time) : NaN;
+      const endMs = activity.end_time ? Date.parse(activity.end_time) : NaN;
+      const hasInterval = Number.isFinite(startMs) && Number.isFinite(endMs) && endMs > startMs;
 
       const date = activity.work_date;
-      if (!dailyTrend[date]) {
-        dailyTrend[date] = { date, productive: 0, 'non-productive': 0, neutral: 0, idle: 0 };
+      if (!dailyBuckets[date]) dailyBuckets[date] = makeBuckets();
+
+      if (hasInterval) {
+        overall.intervals[category].push([startMs, endMs]);
+        dailyBuckets[date].intervals[category].push([startMs, endMs]);
+      } else {
+        overall.fallback[category] += seconds;
+        dailyBuckets[date].fallback[category] += seconds;
       }
-      dailyTrend[date][category] += seconds;
     });
 
-    const productiveSeconds = totals.productive;
-    const nonProductiveSeconds = totals['non-productive'];
-    const activeSeconds = productiveSeconds + nonProductiveSeconds + totals.neutral;
+    const catSeconds = (b, c) => mergedCoverageSeconds(b.intervals[c]) + b.fallback[c];
+    const unionSeconds = (b, cats) => {
+      const intervals = [];
+      let fb = 0;
+      for (const c of cats) { intervals.push(...b.intervals[c]); fb += b.fallback[c]; }
+      return mergedCoverageSeconds(intervals) + fb;
+    };
+
+    const productiveSeconds = catSeconds(overall, 'productive');
+    const nonProductiveSeconds = catSeconds(overall, 'non-productive');
+    const neutralSeconds = catSeconds(overall, 'neutral');
+    const idleSeconds = catSeconds(overall, 'idle');
+    const activeSeconds = unionSeconds(overall, ACTIVE_CATS);
+    const officeSeconds = unionSeconds(overall, ALL_CATS);
 
     // Productivity % = productive ÷ (productive + non-productive); neutral and
     // idle are shown as time but excluded from the ratio (same denominator as
@@ -461,25 +519,31 @@ class PortalService {
       summary: {
         productiveHours: productiveSeconds / 3600,
         nonProductiveHours: nonProductiveSeconds / 3600,
-        neutralHours: totals.neutral / 3600,
-        idleHours: totals.idle / 3600,
+        neutralHours: neutralSeconds / 3600,
+        idleHours: idleSeconds / 3600,
         activeHours: activeSeconds / 3600,
-        officeHours: (activeSeconds + totals.idle) / 3600,
+        officeHours: officeSeconds / 3600,
         productivityPercentage: Math.round(productivityPercentage * 10) / 10
       },
-      dailyTrend: Object.values(dailyTrend).map(day => {
-        const dayDenominator = day.productive + day['non-productive'];
+      dailyTrend: Object.keys(dailyBuckets).map(date => {
+        const b = dailyBuckets[date];
+        const dayProd = catSeconds(b, 'productive');
+        const dayNonProd = catSeconds(b, 'non-productive');
+        const dayNeutral = catSeconds(b, 'neutral');
+        const dayIdle = catSeconds(b, 'idle');
+        const dayActive = unionSeconds(b, ACTIVE_CATS);
+        const dayDenominator = dayProd + dayNonProd;
         return {
-          date: day.date,
+          date,
           productivityPercentage: dayDenominator > 0
-            ? Math.round((day.productive / dayDenominator) * 1000) / 10
+            ? Math.round((dayProd / dayDenominator) * 1000) / 10
             : 0,
-          productiveHours: day.productive / 3600,
-          nonProductiveHours: day['non-productive'] / 3600,
-          neutralHours: day.neutral / 3600,
-          idleHours: day.idle / 3600,
+          productiveHours: dayProd / 3600,
+          nonProductiveHours: dayNonProd / 3600,
+          neutralHours: dayNeutral / 3600,
+          idleHours: dayIdle / 3600,
           // Active time (idle excluded) — same meaning the field had before.
-          totalHours: (day.productive + day['non-productive'] + day.neutral) / 3600
+          totalHours: dayActive / 3600
         };
       }).sort((a, b) => a.date.localeCompare(b.date))
     };

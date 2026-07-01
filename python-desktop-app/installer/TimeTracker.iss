@@ -23,7 +23,7 @@
 ; ============================================================================
 
 #ifndef MyAppVersion
-  #define MyAppVersion "1.4.9"    ; fallback; build.bat overrides with /D
+  #define MyAppVersion "1.4.10"    ; fallback; build.bat overrides with /D
 #endif
 
 ; Update server the SYSTEM updater (update_service.ps1) must query. Persisted to

@@ -19,12 +19,13 @@ The Jira-embedded UI and backend logic. Uses Atlassian Forge platform (not a sta
 
 ### ai-server/ — AI Analysis Server (Node.js >=20, Express)
 Receives screenshots and activity data, runs AI analysis via OpenAI, manages clustering, notifications, and an admin dashboard. **Two deployments exist** (verified 2026-06-12): the desktop fleet's PRODUCTION server is `timetracker-forge.amzur.com` (AWS, prod Supabase `bzdoztgfozxkhkvctvdk`); `forgesync.amzur.com` (E2E Networks box) is the DEV/staging pair (dev Supabase `jvijitdewbypqbatfboi`). The Forge remote baseUrl above still says forgesync — verify which server the deployed Forge manifest actually targets before relying on it.
-- `src/controllers/` — Express route handlers (activity, auth, feedback, notifications, admin dashboard, forge-proxy, user data, app versioning)
-- `src/services/ai/` — OpenAI integration; prompt definitions in `prompts.js`, classification in `activity-service.js`
+- `src/controllers/` — Express route handlers (activity, auth, feedback, notifications, admin dashboard, forge-proxy, user data, app versioning, plus the `portal-*` controllers below)
+- `src/services/ai/` — AI classification; prompt definitions in `prompts.js`, classification in `activity-service.js`. Model calls go through a **Portkey/LiteLLM gateway** (configured via `PORTKEY_API_KEY`/`PORTKEY_CONFIG_ID`/`PORTKEY_MODEL`, e.g. `gemini-2.0-flash`), not the raw OpenAI SDK — do not hardcode a provider.
 - `src/services/db/` — Supabase operations (activity, clustering, feedback, notifications, user, storage)
-- `src/services/notifications/` — Email via notifme-sdk
-- `src/middleware/` — Four auth layers, one per caller type (see Auth below)
+- `src/services/notifications/` — Email (notifme-sdk, plus Resend/SendGrid paths; see `EMAIL_SYSTEM_MIGRATION.md`)
+- `src/middleware/` — Six auth layers, one per caller type (see Auth below)
 - `src/dashboard/` — Single HTML admin dashboard served at `/admin-dashboard` (built via `npm run build:dashboard`)
+- **Portal (`src/portal/`)** — A separate React + Vite + Tailwind SPA (dev on port 3002, proxies API calls to ai-server) for org/workforce management: LOB (Line of Business) setup, rosters, holidays, employee profiles, app catalog & classifications, and reports. Backed by the `portal-*` controllers mounted under `/api/portal/`, guarded by `src/middleware/portal-auth.js` (its own JWT, secret `PORTAL_JWT_SECRET`). Portal behavior is gated by `PORTAL_*` feature flags (e.g. `PORTAL_LOB_ENFORCEMENT`, `PORTAL_AI_APP_SUGGEST`) — default `off`.
 
 ### python-desktop-app/ — Desktop Screenshot Capture (Python 3.8+)
 A large single-file app (`desktop_app.py`, ~563KB) with supporting modules. Runs as a Windows system-tray application.
@@ -59,6 +60,12 @@ npm run dev                # nodemon, port 3001
 npm start                  # production
 npm test                   # Jest
 npm run build:dashboard    # Build admin dashboard sub-app
+
+# ai-server portal SPA (separate Vite app inside ai-server/src/portal)
+cd ai-server/src/portal && npm install
+npm run dev                # Vite dev server, port 3002 (proxies /api to ai-server)
+npm run build              # Vite production build
+npm run lint               # ESLint
 
 # python-desktop-app
 cd python-desktop-app && pip install -r requirements.txt
@@ -111,14 +118,16 @@ Test locations: Jest tests in `tests/` mirroring `src/` (forge-app, ai-server); 
 Every DB operation that reads or writes user data must include `org_id`. Supabase RLS enforces this at the DB level, but service-layer code must also pass `org_id` explicitly — missing it is a data-leak bug, not just a permissions error.
 
 ### Auth middleware layers (ai-server)
-Three token types are in play — match middleware to caller:
+Multiple caller types are in play — match middleware to caller; do not reuse one guard for a different caller:
 
 | Caller | Middleware |
 |--------|-----------|
-| Desktop app | `src/middleware/auth.js` (JWT) |
+| Desktop app (server-minted JWT) | `src/middleware/auth.js` |
+| Desktop app (accepts either our JWT **or** an Atlassian OAuth token) | `src/middleware/desktop-auth.js` |
 | Forge app | `src/middleware/forge-auth.js` (Forge-signed) |
-| Atlassian OAuth | `src/middleware/atlassian-auth.js` |
+| Atlassian OAuth | `src/middleware/atlassian-auth.js` (verifies against `api.atlassian.com/me`) |
 | Admin dashboard | `src/middleware/dashboard-auth.js` (session) |
+| Portal SPA | `src/middleware/portal-auth.js` (Portal JWT, `PORTAL_JWT_SECRET`) |
 
 ### Data flow
 Desktop captures screenshot → OCR extracts text → `privacy/` redacts PII → POST to AI server (or Edge Function webhook) → AI server calls OpenAI → results written to Supabase → Forge app reads from Supabase (via Forge Remote) to render Jira analytics.
@@ -169,4 +178,4 @@ When editing `src/services/ai/prompts.js` or `activity-service.js`:
 
 ## Environment Variables
 
-Each component has its own `.env` (not committed). See `.env.example` files in `ai-server/` and `python-desktop-app/`. Required: Supabase URL/keys, OpenAI API key, JWT secrets, OCR engine config.
+Each component has its own `.env` (not committed). See `.env.example` files in `ai-server/` and `python-desktop-app/`. Required: Supabase URL/keys, Portkey gateway config (`PORTKEY_API_KEY`/`PORTKEY_CONFIG_ID`/`PORTKEY_MODEL`), JWT secrets (including `PORTAL_JWT_SECRET`), `PORTAL_*` feature flags, OCR engine config.
