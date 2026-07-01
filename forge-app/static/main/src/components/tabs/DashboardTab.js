@@ -502,7 +502,7 @@ function DashboardTab({ onOpenReassignModal }) {
                         style={{ cursor: 'pointer', textAlign: 'right', paddingRight: '16px' }}
                         title="Sort by description quality"
                       >
-                        Quality {qualitySortOrder === 'asc' ? '▲' : qualitySortOrder === 'desc' ? '▼' : ''}
+                        Description Quality {qualitySortOrder === 'asc' ? '▲' : qualitySortOrder === 'desc' ? '▼' : ''}
                       </th>
                       <th>Time Tracked</th>
                     </tr>
