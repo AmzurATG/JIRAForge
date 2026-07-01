@@ -86,14 +86,6 @@ function QualityCell({ score, status, error, cachedAt, issueKey, onRetry }) {
       <span className={`quality-badge badge-${badgeClass}`}>
         {score} · {badgeLabel}
       </span>
-      {showImprove && (
-        <button 
-          className="quality-improve-button"
-          onClick={() => navigateToIssueWithImprove(issueKey)}
-        >
-          Improve →
-        </button>
-      )}
     </div>
   );
 }
