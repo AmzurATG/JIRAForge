@@ -360,6 +360,84 @@ describe('getTimeLogs — category filters and field (WS-C)', () => {
   });
 });
 
+describe('getEmployeeDetail — overlap-safe interval-merge aggregation (C4)', () => {
+  // Same shape as the WS-C helper, but rows carry start_time/end_time so the
+  // service can merge overlapping intervals instead of blindly summing.
+  function buildDetailClient({ user, activityRows }) {
+    const userChain = {
+      select: jest.fn(function () { return this; }),
+      eq: jest.fn(function () { return this; }),
+      single: jest.fn(async () => ({ data: user, error: null })),
+    };
+    const activityChain = {
+      select: jest.fn(function () { return this; }),
+      eq: jest.fn(function () { return this; }),
+      gte: jest.fn(function () { return this; }),
+      lte: jest.fn(function () { return this; }),
+      order: jest.fn(function () { return this; }),
+      range: jest.fn(async () => ({ data: activityRows, error: null })),
+    };
+    return { from: jest.fn((table) => (table === 'users' ? userChain : activityChain)) };
+  }
+
+  test('AC7: overlapping idle rows are counted once (merged coverage), not summed', async () => {
+    // 4 overlapping idle rows all inside [13:00, 15:00] (merged span = 2h),
+    // whose raw durations sum to 6h — the exact overcount shape from the incident.
+    // One disjoint productive hour [10:00, 11:00] exercises office = merged(all).
+    const activityRows = [
+      { classification: 'productive', is_idle: false, work_date: '2026-06-29',
+        start_time: '2026-06-29T10:00:00Z', end_time: '2026-06-29T11:00:00Z', duration_seconds: 3600 },
+      { classification: 'idle', is_idle: true, work_date: '2026-06-29',
+        start_time: '2026-06-29T13:00:00Z', end_time: '2026-06-29T14:00:00Z', duration_seconds: 3600 },
+      { classification: 'idle', is_idle: true, work_date: '2026-06-29',
+        start_time: '2026-06-29T13:00:00Z', end_time: '2026-06-29T14:30:00Z', duration_seconds: 5400 },
+      { classification: 'idle', is_idle: true, work_date: '2026-06-29',
+        start_time: '2026-06-29T13:00:00Z', end_time: '2026-06-29T15:00:00Z', duration_seconds: 7200 },
+      { classification: 'idle', is_idle: true, work_date: '2026-06-29',
+        start_time: '2026-06-29T13:30:00Z', end_time: '2026-06-29T15:00:00Z', duration_seconds: 5400 },
+    ];
+    getClient.mockReturnValue(buildDetailClient({
+      user: { id: 'u1', display_name: 'Jane', email: 'j@x.com' },
+      activityRows,
+    }));
+
+    const { summary: s } = await portalService.getEmployeeDetail('org', 'u1', '2026-06-29', '2026-06-29');
+
+    // Merged idle span = 2h (NOT the 6h raw sum).
+    expect(s.idleHours).toBeCloseTo(2);
+    expect(s.productiveHours).toBeCloseTo(1);
+    // Active = merged(active union) = the single productive hour.
+    expect(s.activeHours).toBeCloseTo(1);
+    // Office = merged(all) = disjoint 1h productive + 2h idle = 3h.
+    expect(s.officeHours).toBeCloseTo(3);
+    // Sanity: office is far below the raw-sum figure (1h + 6h = 7h) that caused >24h days.
+    expect(s.officeHours).toBeLessThan(7);
+  });
+
+  test('AC8: disjoint rows yield the same totals as a plain sum (no undercount)', async () => {
+    const activityRows = [
+      { classification: 'productive', is_idle: false, work_date: '2026-06-29',
+        start_time: '2026-06-29T10:00:00Z', end_time: '2026-06-29T11:00:00Z', duration_seconds: 3600 },
+      { classification: 'non_productive', is_idle: false, work_date: '2026-06-29',
+        start_time: '2026-06-29T11:00:00Z', end_time: '2026-06-29T11:15:00Z', duration_seconds: 900 },
+      { classification: 'idle', is_idle: true, work_date: '2026-06-29',
+        start_time: '2026-06-29T12:00:00Z', end_time: '2026-06-29T12:30:00Z', duration_seconds: 1800 },
+    ];
+    getClient.mockReturnValue(buildDetailClient({
+      user: { id: 'u1', display_name: 'Jane', email: 'j@x.com' },
+      activityRows,
+    }));
+
+    const { summary: s } = await portalService.getEmployeeDetail('org', 'u1', '2026-06-29', '2026-06-29');
+
+    expect(s.productiveHours).toBeCloseTo(3600 / 3600);
+    expect(s.nonProductiveHours).toBeCloseTo(900 / 3600);
+    expect(s.idleHours).toBeCloseTo(1800 / 3600);
+    expect(s.activeHours).toBeCloseTo((3600 + 900) / 3600);
+    expect(s.officeHours).toBeCloseTo((3600 + 900 + 1800) / 3600);
+  });
+});
+
 describe('empty scope short-circuits (head with no employees sees nothing)', () => {
   test('getDashboardData returns a zeroed dashboard without touching the DB', async () => {
     const from = jest.fn();

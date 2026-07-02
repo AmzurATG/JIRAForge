@@ -391,7 +391,7 @@ if not getattr(sys, 'frozen', False):
 
 # Application version - IMPORTANT: Update this when releasing new versions
 # This is used for update checking and notifications
-APP_VERSION = "18.0.1"
+APP_VERSION = "1.4.10"
 
 # Hard-disable screenshot monitoring/storage in desktop app.
 # OCR text extraction for activity records still runs via event-based flow.
@@ -6433,6 +6433,12 @@ class TimeTracker:
         self.idle_start_time = None  # When the current idle period began (UTC datetime)
         self.idle_project_key = None  # Project key at idle entry — used for idle record's project_key
         self._pending_idle_records = []  # Idle records waiting to be uploaded in next batch
+        # C3 overlap guard: the anchor + end of the last idle record we emitted.
+        # Repeated emission for the SAME anchor records only the increment beyond
+        # _last_idle_end, so queued idle time for one anchor can never exceed real
+        # elapsed time (defends against any re-emission slipping past C1).
+        self._last_idle_anchor = None
+        self._last_idle_end = None
         self._tracking_thread = None
         self._activity_monitor_thread = None  # Activity monitoring thread
         self._activity_monitor_failed = False  # B-1: Track if pynput failed — enables fallback
@@ -10949,46 +10955,45 @@ class TimeTracker:
             # Non-productive: no OCR, just metadata
             print(f"[NON-PROD] {app_name} — {window_title[:50]}")
 
+        elif redact_body:
+            # Email/chat surface (Gmail, Google Chat, Outlook): store the body mask
+            # and skip screen capture/OCR entirely — nothing is ever read, so there
+            # is nothing to leak. Title is kept and the session is still created.
+            ocr_result = {
+                'text': REDACTED_BODY_PLACEHOLDER,
+                'method': 'redacted_body',
+                'confidence': 1.0,
+                'error_message': None,
+            }
+            print(f"[REDACT] {app_name} — body redacted to '{REDACTED_BODY_PLACEHOLDER}' (title kept, time tracked)")
+
         elif classification in ('productive', 'unknown'):
-            if redact_body:
-                # Email/chat surface: mask the body WITHOUT OCR. The content is
-                # never extracted, so it cannot be written to local SQLite or
-                # uploaded. The title (already PII-filtered above) is kept and the
-                # record is still created below, so the time is tracked.
+            # Productive or unknown: capture screenshot (fast, ~50ms) then dispatch OCR async
+            issue_key_in_title = bool(re.search(r'\b[A-Z][A-Z0-9]+-\d+\b', window_title or ''))
+            spreadsheet_processes = {'excel.exe', 'libreofficecalc.exe', 'soffice.bin'}
+            force_ocr = (classification == 'unknown') or issue_key_in_title or (app_name.lower() in spreadsheet_processes)
+
+            if not self.ocr_processor:
+                return
+            capture_result = self.ocr_processor.capture_screenshot_only(force=force_ocr)
+            screenshot = capture_result.get('screenshot')
+            throttled = capture_result.get('throttled', False)
+
+            if throttled and screenshot:
+                # Throttled: save screenshot for batch backfill
                 ocr_result = {
-                    'text': REDACTED_BODY_PLACEHOLDER,
-                    'method': 'redacted_body',
-                    'confidence': 1.0,
-                    'error_message': None,
+                    'text': None, 'method': None, 'confidence': 0.0,
+                    'error_message': None, 'throttled': True,
+                    'screenshot': screenshot
                 }
-                print(f"[REDACT-BODY] {app_name} — body masked, title kept, no OCR ({window_title[:50]})")
-            else:
-                # Productive or unknown: capture screenshot (fast, ~50ms) then dispatch OCR async
-                issue_key_in_title = bool(re.search(r'\b[A-Z][A-Z0-9]+-\d+\b', window_title or ''))
-                spreadsheet_processes = {'excel.exe', 'libreofficecalc.exe', 'soffice.bin'}
-                force_ocr = (classification == 'unknown') or issue_key_in_title or (app_name.lower() in spreadsheet_processes)
+            elif not screenshot:
+                if classification == 'unknown':
+                    self._maybe_classify_unknown_app(app_name, window_title, None)
 
-                if not self.ocr_processor:
-                    return
-                capture_result = self.ocr_processor.capture_screenshot_only(force=force_ocr)
-                screenshot = capture_result.get('screenshot')
-                throttled = capture_result.get('throttled', False)
-
-                if throttled and screenshot:
-                    # Throttled: save screenshot for batch backfill
-                    ocr_result = {
-                        'text': None, 'method': None, 'confidence': 0.0,
-                        'error_message': None, 'throttled': True,
-                        'screenshot': screenshot
-                    }
-                elif not screenshot:
-                    if classification == 'unknown':
-                        self._maybe_classify_unknown_app(app_name, window_title, None)
-
-                if classification == 'productive':
-                    print(f"[PROD] {app_name} — {window_title[:50]}")
-                elif classification == 'unknown':
-                    print(f"[UNKNOWN] {app_name}")
+            if classification == 'productive':
+                print(f"[PROD] {app_name} — {window_title[:50]}")
+            elif classification == 'unknown':
+                print(f"[UNKNOWN] {app_name}")
 
         # CRITICAL: Create session FIRST so it exists when async OCR callback fires.
         # This fixes race condition where OCR completes before session is created.
@@ -11819,16 +11824,22 @@ class TimeTracker:
                 # Stop SQLite activity timer so idle time isn't counted in activity_records
                 self.session_manager.stop_current_timer()
                 
-                # Record when idle started (backdate to last activity)
-                self.idle_start_time = datetime.fromtimestamp(self.last_activity_time, tz=timezone.utc)
-                
-                # Store the project key at idle entry — this is the project the user
-                # was actually working on, not whatever project is active when they resume
-                self.idle_project_key = self.current_project_key
+                # C2: never re-anchor an already-open idle period. idle_start_time
+                # is cleared only on a genuine resume, so a non-null value here means
+                # an idle stretch is still open (e.g. a lock flap that briefly flipped
+                # us back to ACTIVE). Keep the ORIGINAL anchor — moving it forward is
+                # what let one locked period be re-emitted as many cumulative rows.
+                if self.idle_start_time is None:
+                    # Record when idle started (backdate to last activity)
+                    self.idle_start_time = datetime.fromtimestamp(self.last_activity_time, tz=timezone.utc)
+                    # Store the project key at idle entry — this is the project the user
+                    # was actually working on, not whatever project is active when they resume
+                    self.idle_project_key = self.current_project_key
             else:
                 # Entering idle from STOPPED state (e.g., system sleep before tracking starts)
-                # Just record the current time
-                self.idle_start_time = datetime.now(timezone.utc)
+                # Just record the current time — but never clobber an open anchor.
+                if self.idle_start_time is None:
+                    self.idle_start_time = datetime.now(timezone.utc)
             
             # Store idle reason for logging
             self.idle_reason = reason
@@ -11895,8 +11906,57 @@ class TimeTracker:
             self.current_window_key = None  # Force detection as "new" window
             self.current_project_key = None
             self.current_window_title = None
-            
+
             return True
+
+    def _should_resume_from_idle(self, idle_duration, current_idle_timeout):
+        """C1: decide whether the resume safeguard should fire this cycle.
+
+        It fires only when ALL hold:
+          - we are currently idle,
+          - the OS reports genuine recent input (idle_duration back under the
+            threshold), and
+          - the screen is NOT locked.
+
+        The lock check is the fix: while the workstation is locked the OS idle
+        clock (GetLastInputInfo) does not reflect true away-time, so a low
+        idle_duration is not a real return. Treating it as one made the app
+        "resume" every ~5 s and re-emit overlapping idle records from a frozen
+        anchor — the root cause of idle/office hours exceeding 24 h/day.
+        """
+        if not self.is_idle:
+            return False
+        if idle_duration > current_idle_timeout:
+            return False
+        if self._is_screen_locked():
+            return False
+        return True
+
+    def _process_idle_resume(self):
+        """C1: act on a pending resume signal, but never while the screen is
+        locked. Returns True only when we actually resumed.
+
+        While locked we leave the event set (so a genuine unlock, or real input
+        after unlock, still resumes) and do nothing else — no resume, no idle
+        record. That guarantees one continuous locked period produces exactly one
+        idle record covering the whole span instead of a cumulative cluster.
+        """
+        if not self.idle_resume_event.is_set():
+            return False
+        if self._is_screen_locked():
+            # Locked → ignore this cycle. Do NOT clear the event, resume, or emit.
+            return False
+
+        resumed = self.resume_from_idle()
+        if resumed and self._pending_idle_records:
+            try:
+                print(f"[IDLE] Flushing {len(self._pending_idle_records)} idle record(s)...")
+                self.upload_activity_batch()
+            except Exception as e:
+                print(f"[WARN] Idle record flush failed: {e}")
+        # We acted on the signal this cycle (screen not locked) — clear it.
+        self.idle_resume_event.clear()
+        return resumed
 
     def _is_within_work_hours(self, utc_dt):
         """Check if a UTC datetime falls within configured working hours (local time).
@@ -11942,7 +12002,15 @@ class TimeTracker:
             return True  # Fail-open: record idle if check fails
 
     def _create_idle_record(self, reason="idle timeout"):
-        """Create an idle record from idle_start_time to now and queue it for upload."""
+        """Create an idle record from idle_start_time to now and queue it for upload.
+
+        C3 (overlap-proof): if a record was already emitted for the current
+        anchor, only the segment beyond the previously emitted end is recorded.
+        Re-emission (a lock flap, or the suspend + unlock paths both firing) is
+        therefore idempotent — total queued idle time for one anchor can never
+        exceed real elapsed time, so a day's totals cannot balloon past 24 h even
+        if a re-emission ever slips past the C1 guards.
+        """
         # Snapshot the shared field once. Other threads (the system-event handler
         # and resume_from_idle) may set self.idle_start_time = None concurrently
         # on wake/unlock; reading it repeatedly here previously caused
@@ -11952,9 +12020,26 @@ class TimeTracker:
         if idle_start is None:
             return
         idle_end = datetime.now(timezone.utc)
-        idle_duration = int((idle_end - idle_start).total_seconds())
+
+        # Start of the segment still to record. If we already emitted a row for
+        # THIS anchor, resume from where that row ended so the new row does not
+        # overlap it (avoids the triangular cumulative sum from a frozen anchor).
+        # Read the coverage markers defensively (getattr) so paths that build a
+        # tracker without running __init__ still work — mirrors idle_project_key
+        # below.
+        last_anchor = getattr(self, '_last_idle_anchor', None)
+        last_end = getattr(self, '_last_idle_end', None)
+        effective_start = idle_start
+        if (last_anchor is not None
+                and idle_start == last_anchor
+                and last_end is not None
+                and last_end > effective_start):
+            effective_start = last_end
+
+        idle_duration = int((idle_end - effective_start).total_seconds())
         if idle_duration < 60:
-            # Skip very short idle periods (< 1 minute)
+            # Nothing new worth recording (period < 1 min, or the increment since
+            # the last emission is sub-minute). Leave _last_idle_end untouched.
             self.idle_start_time = None
             return
 
@@ -11983,10 +12068,10 @@ class TimeTracker:
             'ocr_error_message': None,
             'total_time_seconds': idle_duration,
             'visit_count': 1,
-            'start_time': idle_start.isoformat(),
+            'start_time': effective_start.isoformat(),
             'end_time': idle_end.isoformat(),
             'duration_seconds': idle_duration,
-            'work_date': _utc_ts_to_local_date(idle_start.isoformat()),
+            'work_date': _utc_ts_to_local_date(effective_start.isoformat()),
             'user_timezone': get_local_timezone_name(),
             'project_key': project_key,
             'user_assigned_issues': json.dumps(self.user_issues) if self.user_issues else None,  # FIX: PGRST102
@@ -11999,7 +12084,11 @@ class TimeTracker:
             }
         }
         self._pending_idle_records.append(record)
-        print(f"[IDLE] Created idle record: {idle_start.strftime('%H:%M:%S')} → {idle_end.strftime('%H:%M:%S')} ({idle_duration}s, reason: {reason})")
+        # Remember coverage for this anchor so a later re-emission only adds the
+        # increment beyond idle_end.
+        self._last_idle_anchor = idle_start
+        self._last_idle_end = idle_end
+        print(f"[IDLE] Created idle record: {effective_start.strftime('%H:%M:%S')} → {idle_end.strftime('%H:%M:%S')} ({idle_duration}s, reason: {reason})")
         self.idle_start_time = None
 
     def get_system_idle_seconds(self):
@@ -12772,7 +12861,7 @@ class TimeTracker:
                 # has died. This replaces the old "window changed → force resume"
                 # logic, which wrongly treated a self-changing window title as the
                 # user returning. Only real input resumes.
-                if self.is_idle and idle_duration <= current_idle_timeout:
+                if self._should_resume_from_idle(idle_duration, current_idle_timeout):
                     self.idle_resume_event.set()
 
                 if idle_duration > current_idle_timeout:
@@ -12796,23 +12885,13 @@ class TimeTracker:
                         time.sleep(5)
                         continue
 
-                # Resume from idle if activity was detected by pynput
+                # Resume from idle if activity was detected — but NEVER while the
+                # screen is locked (C1). _process_idle_resume() performs the flush
+                # and, when locked, leaves the event set so a real unlock resumes
+                # cleanly and emits a single idle record for the whole locked span.
                 if self.idle_resume_event.is_set():  # B-3: Use Event
-                    resume_time = datetime.now(timezone.utc)
-                    print(f"[INFO] Activity detected — resuming from idle")
-                    
-                    # Use state machine instead of direct assignment
-                    if self.resume_from_idle():
-                        # Immediately flush idle records to database
-                        if self._pending_idle_records:
-                            try:
-                                print(f"[IDLE] Flushing {len(self._pending_idle_records)} idle record(s)...")
-                                self.upload_activity_batch()
-                            except Exception as e:
-                                print(f"[WARN] Idle record flush failed: {e}")
-                    
-                    # Clear the event regardless of whether resume succeeded
-                    self.idle_resume_event.clear()  # B-3: Clear event
+                    if self._process_idle_resume():
+                        print(f"[INFO] Activity detected — resumed from idle")
 
                 # Guard: if screen is locked (e.g., PC woke briefly from sleep but user
                 # hasn't unlocked), re-enter idle mode instead of tracking LockApp.exe.
