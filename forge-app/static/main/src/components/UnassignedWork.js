@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { invoke } from '@forge/bridge';
-import { AssignmentModal, BulkEditModal, GroupAccordion, SelectionBar } from './unassigned';
+import { AssignmentModal, BulkEditModal, GroupAccordion, SelectionBar, SyncConfirmModal } from './unassigned';
 import { formatTime } from '../utils';
 import './UnassignedWork.css';
 
@@ -39,6 +39,7 @@ function UnassignedWork() {
   const [syncCounts, setSyncCounts] = useState(null);
   const [syncCountsLoading, setSyncCountsLoading] = useState(false);
   const [syncJobResult, setSyncJobResult] = useState(null);
+  const [submittingMappings, setSubmittingMappings] = useState(false);
 
   // Date range filter state
   const [dateFrom] = useState('');
@@ -697,7 +698,7 @@ This will permanently dismiss these sessions from clustering. They won't appear 
         syncJobIdRef.current = null;
         setSyncingWithJira(false);
         setSyncJobResult(status);
-        await loadUnassignedWork();
+        setShowSyncConfirmModal(true);
         return;
       }
 
@@ -726,27 +727,9 @@ This will permanently dismiss these sessions from clustering. They won't appear 
     }
   };
 
-  const initiateSyncWithJira = async () => {
-    const timeframe = syncTimeframe || 'yesterday';
-    setSyncCountsLoading(true);
-    setShowSyncConfirmModal(true);
-    setSyncCounts(null);
-    setSyncJobResult(null);
-    try {
-      const result = await invoke('getUnassignedSyncCounts', { timeframe });
-      if (result.success) {
-        setSyncCounts({ groupCount: result.groupCount, memberCount: result.memberCount });
-      } else {
-        setSyncCounts({ error: result.error || 'Failed to fetch counts' });
-      }
-    } catch (err) {
-      setSyncCounts({ error: err.message || 'Failed to fetch counts' });
-    } finally {
-      setSyncCountsLoading(false);
-    }
-  };
+  // initiateSyncWithJira was removed, we start dry-run sync directly now.
 
-  const confirmSyncWithJira = async () => {
+  const startDryRunSync = async () => {
     const timeframe = syncTimeframe || 'yesterday';
     setSyncingWithJira(true);
     setSyncBanner(null);
@@ -755,23 +738,25 @@ This will permanently dismiss these sessions from clustering. They won't appear 
     syncJobIdRef.current = null;
 
     try {
-      const startResult = await invoke('startUnassignedSyncWithJiraJob', { timeframe });
+      const startResult = await invoke('startUnassignedSyncWithJiraJob', { timeframe, dryRun: true });
       if (!startResult?.success) {
         setSyncJobResult({ error: startResult?.error || 'Sync failed to start' });
         setSyncingWithJira(false);
+        setShowSyncConfirmModal(true);
         return;
       }
 
       if (startResult.status === 'completed') {
         setSyncingWithJira(false);
         setSyncJobResult(startResult);
-        await loadUnassignedWork();
+        setShowSyncConfirmModal(true);
         return;
       }
 
       if (!startResult.jobId) {
         setSyncingWithJira(false);
         setSyncJobResult({ error: 'Sync job did not return a valid job id' });
+        setShowSyncConfirmModal(true);
         return;
       }
 
@@ -780,6 +765,25 @@ This will permanently dismiss these sessions from clustering. They won't appear 
     } catch (err) {
       setSyncJobResult({ error: err?.message || 'Sync failed' });
       setSyncingWithJira(false);
+      setShowSyncConfirmModal(true);
+    }
+  };
+
+  const handleSyncConfirm = async (finalMappings) => {
+    setSubmittingMappings(true);
+    try {
+      const result = await invoke('submitUnassignedSyncMappings', { mappings: finalMappings });
+      if (result?.success) {
+        setShowSyncConfirmModal(false);
+        setSyncJobResult(null);
+        await loadUnassignedWork();
+      } else {
+        setSyncJobResult(prev => ({ ...prev, error: result?.error || 'Failed to submit mappings' }));
+      }
+    } catch (err) {
+      setSyncJobResult(prev => ({ ...prev, error: err.message || 'Error submitting mappings' }));
+    } finally {
+      setSubmittingMappings(false);
     }
   };
 
@@ -886,8 +890,8 @@ This will permanently dismiss these sessions from clustering. They won't appear 
           </select>
           <button
             className="sync-with-jira-btn"
-            onClick={initiateSyncWithJira}
-            disabled={syncingWithJira || syncCountsLoading}
+            onClick={startDryRunSync}
+            disabled={syncingWithJira}
             title="Match unassigned work to your in-progress Jira tickets"
           >
             {syncingWithJira ? (
@@ -1020,86 +1024,13 @@ This will permanently dismiss these sessions from clustering. They won't appear 
       />
 
       {/* Sync Confirm Modal */}
-      {showSyncConfirmModal && (
-        <div className="sync-confirm-modal-overlay">
-          <div className="sync-confirm-modal" style={syncJobResult ? { maxWidth: '600px' } : {}}>
-            <div className="sync-confirm-modal-header">
-              <h3>{syncJobResult ? 'Jira Sync Results' : 'Confirm Sync Mappings'}</h3>
-              <button 
-                className="sync-confirm-modal-close" 
-                onClick={() => setShowSyncConfirmModal(false)}
-                aria-label="Close modal"
-              >
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <line x1="18" y1="6" x2="6" y2="18"></line>
-                  <line x1="6" y1="6" x2="18" y2="18"></line>
-                </svg>
-              </button>
-            </div>
-            <div className="sync-confirm-content">
-              {syncJobResult ? (
-                syncJobResult.error ? (
-                  <p className="sync-confirm-error">Error: {syncJobResult.error}</p>
-                ) : (
-                  <div>
-                    <p className="sync-success-summary" style={{ fontWeight: '600', marginBottom: '12px' }}>
-                      {buildSyncCompletedMessage(syncJobResult)}
-                    </p>
-                    {syncJobResult.matchedSessions && syncJobResult.matchedSessions.length > 0 && (
-                      <div className="sync-matched-sessions" style={{ textAlign: 'left', background: '#F4F5F7', padding: '12px', borderRadius: '4px' }}>
-                        <h4 style={{ marginTop: '0', marginBottom: '8px', fontSize: '14px' }}>Assigned Sessions:</h4>
-                        <ul style={{ maxHeight: '200px', overflowY: 'auto', paddingLeft: '20px', margin: 0, fontSize: '13px' }}>
-                          {syncJobResult.matchedSessions.map((session, idx) => (
-                            <li key={idx} style={{ marginBottom: '8px' }}>
-                              <strong>{session.issueKey}</strong> - {session.windowTitle || session.applicationName} 
-                              <span style={{ color: '#6B778C', marginLeft: '8px' }}>({formatTime(session.durationSeconds)})</span>
-                            </li>
-                          ))}
-                        </ul>
-                      </div>
-                    )}
-                  </div>
-                )
-              ) : (
-                syncCountsLoading ? (
-                  <p>Calculating sessions to sync...</p>
-                ) : syncCounts?.error ? (
-                  <p className="sync-confirm-error">Error: {syncCounts.error}</p>
-                ) : (
-                  <p>Are you sure you want to sync <strong>{syncCounts?.memberCount || 0} unassigned</strong> sessions across <strong>{syncCounts?.groupCount || 0} groups</strong> for the selected timeframe?</p>
-                )
-              )}
-            </div>
-            <div className="sync-confirm-actions">
-              {syncJobResult ? (
-                <button 
-                  className="sync-confirm-btn" 
-                  onClick={() => setShowSyncConfirmModal(false)}
-                >
-                  Close
-                </button>
-              ) : (
-                <>
-                  <button 
-                    className="sync-cancel-btn" 
-                    onClick={() => setShowSyncConfirmModal(false)}
-                    disabled={syncingWithJira}
-                  >
-                    Cancel
-                  </button>
-                  <button 
-                    className="sync-confirm-btn" 
-                    onClick={confirmSyncWithJira}
-                    disabled={syncingWithJira || syncCountsLoading || !!syncCounts?.error}
-                  >
-                    {syncingWithJira ? 'Syncing...' : 'Continue Sync'}
-                  </button>
-                </>
-              )}
-            </div>
-          </div>
-        </div>
-      )}
+      <SyncConfirmModal
+        isOpen={showSyncConfirmModal}
+        syncJobResult={syncJobResult}
+        isSubmitting={submittingMappings}
+        onClose={() => setShowSyncConfirmModal(false)}
+        onConfirm={handleSyncConfirm}
+      />
     </div>
   );
 }
