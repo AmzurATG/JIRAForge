@@ -1,10 +1,11 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { invoke } from '@forge/bridge';
 import { useApp } from '../../context';
 import { IssueTypeIcon, StatusDropdown } from '../common';
 import { navigateToIssue, formatTime } from '../../utils';
 import { parseUTC } from '../tabs/time-analytics/dateUtils';
 import QualityCell from './QualityCell';
+import UnassignedWork from '../UnassignedWork';
 import './DashboardTab.css';
 
 
@@ -20,12 +21,17 @@ function DashboardTab({ onOpenReassignModal }) {
 
   const [issueFilter, setIssueFilter] = useState('all');
   const [statusFilter, setStatusFilter] = useState('all');
-  const [timeFilter, setTimeFilter] = useState('all');
+  const [projectFilter, setProjectFilter] = useState('all');
   const [searchQuery, setSearchQuery] = useState('');
   const [currentPage, setCurrentPage] = useState(1);
   const [approvingSessionId, setApprovingSessionId] = useState(null);
   const [approvingIssueKey, setApprovingIssueKey] = useState(null);
   const itemsPerPage = 10;
+
+  const projectKeys = useMemo(() => {
+    const keys = activeIssues.map(issue => issue.projectKey || issue.key.split('-')[0]).filter(Boolean);
+    return ['all', ...new Set(keys)];
+  }, [activeIssues]);
 
   // Description Quality states
   const [qualityScores, setQualityScores] = useState({});
@@ -229,14 +235,6 @@ function DashboardTab({ onOpenReassignModal }) {
   }
 
 
-  const matchesTimeFilter = (issue) => {
-    const trackedSeconds = Number(issue.timeTracked) || 0;
-    if (timeFilter === 'all') return true;
-    if (timeFilter === 'with-time') return trackedSeconds > 0;
-    if (timeFilter === 'without-time') return trackedSeconds <= 0;
-    return true;
-  };
-
   const getFilterDescription = () => {
     const parts = [];
 
@@ -246,11 +244,8 @@ function DashboardTab({ onOpenReassignModal }) {
     if (statusFilter !== 'all') {
       parts.push(statusFilter === 'in-progress' ? 'in progress' : 'done');
     }
-    if (timeFilter === 'with-time') {
-      parts.push('with time tracked');
-    }
-    if (timeFilter === 'without-time') {
-      parts.push('without time logged');
+    if (projectFilter !== 'all') {
+      parts.push(`project ${projectFilter}`);
     }
 
     if (parts.length === 0) {
@@ -263,7 +258,7 @@ function DashboardTab({ onOpenReassignModal }) {
   // Reset to page 1 when filters change
   useEffect(() => {
     setCurrentPage(1);
-  }, [issueFilter, searchQuery, timeFilter, statusFilter]);
+  }, [issueFilter, searchQuery, statusFilter, projectFilter]);
 
 
   const filteredIssues = activeIssues.filter(issue => {
@@ -281,8 +276,12 @@ function DashboardTab({ onOpenReassignModal }) {
       statusMatch = issue.statusCategory === 'done';
     }
 
-    // Filter by time tracked
-    let timeMatch = matchesTimeFilter(issue);
+    // Filter by project dropdown
+    let projectMatch = true;
+    if (projectFilter !== 'all') {
+      const issueProj = issue.projectKey || issue.key.split('-')[0];
+      projectMatch = issueProj.toUpperCase() === projectFilter.toUpperCase();
+    }
 
     // Filter by search query
     let searchMatch = true;
@@ -295,7 +294,7 @@ function DashboardTab({ onOpenReassignModal }) {
         issue.priority.toLowerCase().includes(query);
     }
 
-    return tabMatch && statusMatch && timeMatch && searchMatch;
+    return tabMatch && statusMatch && projectMatch && searchMatch;
   });
 
   // Apply sorting
@@ -387,95 +386,95 @@ function DashboardTab({ onOpenReassignModal }) {
               className={issueFilter === 'all' ? 'active' : ''}
               onClick={() => setIssueFilter('all')}
             >
-              All Issues
+              My Work
             </button>
             <button
               className={issueFilter === 'pending-review' ? 'active' : ''}
               onClick={() => setIssueFilter('pending-review')}
               title="AI-assigned time waiting for your approval"
             >
-              Pending Review
+              <strong>Approve</strong> assigned-time
               {pendingReviewCount > 0 && (
                 <span className="focus-tab-badge">{pendingReviewCount}</span>
               )}
             </button>
-          </div>
-
-          <div className="focus-controls">
-            <div className="focus-status-filter" aria-label="Filter issues by status category">
-              <label className="focus-status-filter-label" htmlFor="my-focus-status-filter">Status:</label>
-              <select
-                id="my-focus-status-filter"
-                className="focus-status-filter-select"
-                value={statusFilter}
-                onChange={(e) => setStatusFilter(e.target.value)}
-              >
-                <option value="all">All</option>
-                <option value="in-progress">In Progress</option>
-                <option value="done">Done</option>
-              </select>
-            </div>
-            <div className="focus-time-filter" aria-label="Filter issues by time status">
-              <label className="focus-time-filter-label" htmlFor="my-focus-time-filter">Time:</label>
-              <select
-                id="my-focus-time-filter"
-                className="focus-time-filter-select"
-                value={timeFilter}
-                onChange={(e) => setTimeFilter(e.target.value)}
-              >
-                <option value="all">All</option>
-                <option value="with-time">With Time</option>
-                <option value="without-time">No Time</option>
-              </select>
-            </div>
-            <div className="focus-actions">
-              <div className="focus-search">
-                <svg className="search-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <circle cx="11" cy="11" r="8"></circle>
-                  <path d="m21 21-4.35-4.35"></path>
-                </svg>
-                <input
-                  type="text"
-                  className="search-input"
-                  placeholder="Search tasks..."
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                />
-                {searchQuery && (
-                  <button
-                    className="clear-search"
-                    onClick={() => setSearchQuery('')}
-                    title="Clear search"
-                  >
-                    ×
-                  </button>
-                )}
-              </div>
-              <button className="filter-button" title="Filter options">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <line x1="4" y1="21" x2="4" y2="14"></line>
-                  <line x1="4" y1="10" x2="4" y2="3"></line>
-                  <line x1="12" y1="21" x2="12" y2="12"></line>
-                  <line x1="12" y1="8" x2="12" y2="3"></line>
-                  <line x1="20" y1="21" x2="20" y2="16"></line>
-                  <line x1="20" y1="12" x2="20" y2="3"></line>
-                  <line x1="1" y1="14" x2="7" y2="14"></line>
-                  <line x1="9" y1="8" x2="15" y2="8"></line>
-                  <line x1="17" y1="16" x2="23" y2="16"></line>
-                </svg>
-                <span>Filter</span>
-              </button>
-            </div>
+            <button
+              className={issueFilter === 'unassigned-time' ? 'active' : ''}
+              onClick={() => setIssueFilter('unassigned-time')}
+            >
+              <strong>Assign</strong> Unassigned-Time
+            </button>
           </div>
         </div>
 
-        {issuesLoading && activeIssues.length === 0 ? (
-          // Only show the full-page loader on the FIRST load. Subsequent
-          // refetches (after Approve all, Reassign, status change, etc.) keep
-          // the table visible so the user doesn't lose expanded rows or
-          // scroll position. A subtle inline indicator covers in-flight state.
-          <p className="loading-text">Loading issues...</p>
+        {issueFilter === 'unassigned-time' ? (
+          <UnassignedWork />
         ) : (
+          <>
+            {issueFilter === 'all' && (
+              <div className="focus-controls" style={{ marginBottom: '16px' }}>
+                <div className="focus-status-filter" aria-label="Filter issues by project">
+                  <label className="focus-status-filter-label" htmlFor="my-focus-project-filter">Project:</label>
+                  <select
+                    id="my-focus-project-filter"
+                    className="focus-status-filter-select"
+                    value={projectFilter}
+                    onChange={(e) => setProjectFilter(e.target.value)}
+                  >
+                    {projectKeys.map(key => (
+                      <option key={key} value={key}>
+                        {key === 'all' ? 'All' : key}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div className="focus-status-filter" aria-label="Filter issues by status category">
+                  <label className="focus-status-filter-label" htmlFor="my-focus-status-filter">Status:</label>
+                  <select
+                    id="my-focus-status-filter"
+                    className="focus-status-filter-select"
+                    value={statusFilter}
+                    onChange={(e) => setStatusFilter(e.target.value)}
+                  >
+                    <option value="all">All</option>
+                    <option value="in-progress">In Progress</option>
+                    <option value="done">Done</option>
+                  </select>
+                </div>
+                <div className="focus-actions">
+                  <div className="focus-search">
+                    <svg className="search-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <circle cx="11" cy="11" r="8"></circle>
+                      <path d="m21 21-4.35-4.35"></path>
+                    </svg>
+                    <input
+                      type="text"
+                      className="search-input"
+                      placeholder="Search tasks..."
+                      value={searchQuery}
+                      onChange={(e) => setSearchQuery(e.target.value)}
+                    />
+                    {searchQuery && (
+                      <button
+                        className="clear-search"
+                        onClick={() => setSearchQuery('')}
+                        title="Clear search"
+                      >
+                        ×
+                      </button>
+                    )}
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {issuesLoading && activeIssues.length === 0 ? (
+              // Only show the full-page loader on the FIRST load. Subsequent
+              // refetches (after Approve all, Reassign, status change, etc.) keep
+              // the table visible so the user doesn't lose expanded rows or
+              // scroll position. A subtle inline indicator covers in-flight state.
+              <p className="loading-text">Loading issues...</p>
+            ) : (
           <>
             {issuesLoading && (
               <div className="refresh-indicator" aria-live="polite">
@@ -495,16 +494,17 @@ function DashboardTab({ onOpenReassignModal }) {
                       <th>ID</th>
                       <th>Title</th>
                       <th>Status</th>
-                      <th>Priority</th>
                       <th 
                         className={`sortable-header ${qualitySortOrder ? 'sorted' : ''}`}
                         onClick={handleToggleQualitySort}
-                        style={{ cursor: 'pointer', textAlign: 'right', paddingRight: '16px' }}
+                        style={{ cursor: 'pointer', textAlign: 'center' }}
                         title="Sort by description quality"
                       >
                         Description Quality {qualitySortOrder === 'asc' ? '▲' : qualitySortOrder === 'desc' ? '▼' : ''}
                       </th>
-                      <th>Time Tracked</th>
+                      <th style={{ textAlign: 'center' }}>
+                        {issueFilter === 'pending-review' ? 'Assigned Time' : 'Time Tracked'}
+                      </th>
                     </tr>
                   </thead>
                   <tbody>
@@ -561,11 +561,7 @@ function DashboardTab({ onOpenReassignModal }) {
                               onLoadTransitions={loadTransitionsForIssue}
                             />
                           </td>
-                          <td className="issue-priority">
-                            <span className={`priority-badge priority-${issue.priority.toLowerCase()}`}>
-                              {issue.priority}
-                            </span>
-                          </td>
+
                           <td className="issue-quality-cell">
                             <QualityCell
                               issueKey={issue.key}
@@ -579,10 +575,13 @@ function DashboardTab({ onOpenReassignModal }) {
                           <td className={`issue-time ${showPendingCell ? 'pending-cell' : (hasTrackedTime ? 'has-time' : 'no-time')}`}>
                             {showPendingCell ? (
                               <div className="pending-approval-cell">
-                                <div className="pending-approval-meta">
-                                  <span className="pending-approval-amount">{formatTime(pendingSeconds)}</span>
-                                  <span className="pending-approval-label">
-                                    awaiting approval · {pendingSessionCount} {pendingSessionCount === 1 ? 'session' : 'sessions'}
+                                <div className="pending-approval-time">
+                                  {formatTime(pendingSeconds)}
+                                </div>
+                                <div className="pending-approval-meta-row">
+                                  <span className="pending-approval-badge">Pending approval</span>
+                                  <span className="pending-approval-sessions-count">
+                                    {pendingSessionCount} {pendingSessionCount === 1 ? 'Session' : 'Sessions'}
                                   </span>
                                 </div>
                                 <div className="pending-approval-actions">
@@ -634,9 +633,17 @@ function DashboardTab({ onOpenReassignModal }) {
                         </tr>
                         {issue.sessions?.length > 0 && (
                           <tr className="details-row">
-                            <td colSpan="6">
+                            <td colSpan="5">
                               <div className="session-details">
-                                <h4>Work Sessions ({issue.sessions.length})</h4>
+                                <h4>
+                                  Work Sessions ({issue.sessions.length}){' '}
+                                  <span 
+                                    className="info-icon-work-sessions" 
+                                    title="Work sessions are automatically captured and categorized by activity. Pending review sessions require manual approval before syncing to Jira."
+                                  >
+                                    ⓘ
+                                  </span>
+                                </h4>
                                 <div className="sessions-by-date">
                                   {Object.keys(groupSessionsByDate(issue.sessions))
                                     .sort((a, b) => new Date(b) - new Date(a))
@@ -657,7 +664,7 @@ function DashboardTab({ onOpenReassignModal }) {
                                               })}
                                             </span>
                                             <span className="date-total">
-                                              Total: {formatTime(totalDuration)}
+                                              Total Time: <span className="issue-time-value">{formatTime(totalDuration)}</span>
                                             </span>
                                           </div>
                                           <div className="sessions-list">
@@ -668,36 +675,7 @@ function DashboardTab({ onOpenReassignModal }) {
                                               // Not timestamp span which includes idle gaps
                                               const sessionDuration = session.duration || 0;
 
-                                              // Get unique apps from screenshots or activity records
-                                              let uniqueApps = [];
-                                              if (session.screenshots && session.screenshots.length > 0) {
-                                                uniqueApps = [...new Set(session.screenshots.map(s => s.applicationName).filter(Boolean))];
-                                              } else if (session.applicationName) {
-                                                // For activity-record-based sessions without screenshots
-                                                uniqueApps = [session.applicationName];
-                                              }
-                                              const visibleApps = uniqueApps.slice(0, 3);
-                                              const remainingApps = uniqueApps.slice(3);
 
-                                              // DEPRECATED: Simple heuristic for app classification
-                                              // TODO: Replace with database lookup from application_classifications table
-                                              // These hardcoded lists do not reflect actual classifications used by the tracker
-                                              const productiveApps = ['code', 'visual studio', 'vscode', 'intellij', 'webstorm', 'pycharm', 'sublime', 'atom', 'notepad++', 'postman', 'terminal', 'cmd', 'powershell', 'git', 'jira', 'confluence', 'slack', 'teams', 'zoom', 'figma', 'sketch', 'excel', 'word', 'outlook', 'notion', 'trello', 'asana'];
-                                              const nonProductiveApps = ['netflix', 'youtube', 'spotify', 'facebook', 'instagram', 'twitter', 'tiktok', 'reddit', 'discord', 'twitch', 'game', 'steam'];
-
-                                              const getAppType = (appName) => {
-                                                const lowerApp = appName.toLowerCase();
-                                                if (productiveApps.some(p => lowerApp.includes(p))) return 'productive';
-                                                if (nonProductiveApps.some(n => lowerApp.includes(n))) return 'non-productive';
-                                                return 'neutral';
-                                              };
-
-                                              const getAppTypeLabel = (appName) => {
-                                                const type = getAppType(appName);
-                                                if (type === 'productive') return 'Productive App';
-                                                if (type === 'non-productive') return 'Non-Productive App';
-                                                return 'Other App';
-                                              };
 
                                               const isPendingReview = session.approvalStatus === 'pending_approval';
                                               const sessionKey = (session.activityRecordIds || []).join(',');
@@ -705,59 +683,33 @@ function DashboardTab({ onOpenReassignModal }) {
 
                                               return (
                                                 <div key={sessionIdx} className={`session-item ${isPendingReview ? 'session-item--pending-review' : ''}`}>
-                                                  <span className="session-time">
-                                                    {start.toLocaleTimeString('en-US', {
-                                                      hour: '2-digit',
-                                                      minute: '2-digit',
-                                                      hour12: true
-                                                    })}
-                                                    {' → '}
-                                                    {end.toLocaleTimeString('en-US', {
-                                                      hour: '2-digit',
-                                                      minute: '2-digit',
-                                                      hour12: true
-                                                    })}
-                                                  </span>
-                                                  {isPendingReview && (
-                                                    <span className="pending-review-chip" title="AI-assigned — won't sync to Jira until you approve">
-                                                      Pending review
-                                                    </span>
-                                                  )}
-                                                  {uniqueApps.length > 0 && (
-                                                    <div className="session-apps">
-                                                      {visibleApps.map((app, appIdx) => (
-                                                        <span
-                                                          key={appIdx}
-                                                          className={`session-app-chip ${getAppType(app)}`}
-                                                        >
-                                                          {app.length > 12 ? app.substring(0, 10) + '...' : app}
-                                                          <span className="chip-tooltip">{app} • {getAppTypeLabel(app)}</span>
-                                                        </span>
-                                                      ))}
-                                                      {remainingApps.length > 0 && (
-                                                        <span className="session-apps-more">
-                                                          +{remainingApps.length}
-                                                          <span className="session-apps-tooltip">
-                                                            {remainingApps.map((app, i) => (
-                                                              <span key={i}>{app}{i < remainingApps.length - 1 ? ', ' : ''}</span>
-                                                            ))}
-                                                          </span>
-                                                        </span>
-                                                      )}
-                                                    </div>
-                                                  )}
-                                                  <div className="session-right">
-                                                    <span className="stat-icon">
-                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                        <circle cx="12" cy="12" r="10"></circle>
-                        <polyline points="12 6 12 12 16 14"></polyline>
-                      </svg>
-                    </span>
-                                                    <span className="session-duration">
-                                                      {formatTime(sessionDuration)}
+                                                  <div className="session-time-col">
+                                                    <span className="session-time">
+                                                      {start.toLocaleTimeString('en-US', {
+                                                        hour: '2-digit',
+                                                        minute: '2-digit',
+                                                        hour12: true
+                                                      })}
+                                                      {' - '}
+                                                      {end.toLocaleTimeString('en-US', {
+                                                        hour: '2-digit',
+                                                        minute: '2-digit',
+                                                        hour12: true
+                                                      })}
                                                     </span>
                                                   </div>
-                                                  <div className="session-actions">
+                                                  <div className="session-status-col">
+                                                    {isPendingReview ? (
+                                                      <span className="pending-review-chip" title="AI-assigned — won't sync to Jira until you approve">
+                                                        Pending review
+                                                      </span>
+                                                    ) : (
+                                                      <span className="approved-chip">
+                                                        Approved
+                                                      </span>
+                                                    )}
+                                                  </div>
+                                                  <div className="session-actions-col">
                                                     {isPendingReview && (
                                                       <>
                                                         <button
@@ -769,7 +721,16 @@ function DashboardTab({ onOpenReassignModal }) {
                                                           disabled={isApprovingThisSession}
                                                           title="Approve — time will sync to Jira on the next hourly sync"
                                                         >
-                                                          {isApprovingThisSession ? 'Approving…' : 'Approve'}
+                                                          {isApprovingThisSession ? (
+                                                            'Approving…'
+                                                          ) : (
+                                                            <>
+                                                              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" style={{ marginRight: '4px', display: 'inline-block', verticalAlign: 'middle' }}>
+                                                                <polyline points="20 6 9 17 4 12"></polyline>
+                                                              </svg>
+                                                              <span style={{ display: 'inline-block', verticalAlign: 'middle' }}>Approve</span>
+                                                            </>
+                                                          )}
                                                         </button>
                                                         <button
                                                           className="reassign-text-button"
@@ -780,31 +741,18 @@ function DashboardTab({ onOpenReassignModal }) {
                                                           disabled={isApprovingThisSession}
                                                           title="Wrong issue? Move this session's time to a different issue"
                                                         >
-                                                          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                                                            <polyline points="17 1 21 5 17 9"></polyline>
-                                                            <path d="M3 11V9a4 4 0 0 1 4-4h14"></path>
-                                                            <polyline points="7 23 3 19 7 15"></polyline>
-                                                            <path d="M21 13v2a4 4 0 0 1-4 4H3"></path>
+                                                          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" style={{ marginRight: '4px', display: 'inline-block', verticalAlign: 'middle' }}>
+                                                            <path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/>
                                                           </svg>
-                                                          <span>Reassign</span>
+                                                          <span style={{ display: 'inline-block', verticalAlign: 'middle' }}>Reassign</span>
                                                         </button>
                                                       </>
                                                     )}
-                                                    {!isPendingReview && session.analysisResultIds?.length > 0 && (
-                                                      <button
-                                                        className="reassign-button"
-                                                        onClick={(e) => {
-                                                          e.stopPropagation();
-                                                          onOpenReassignModal(session, issue.key);
-                                                        }}
-                                                        title="Reassign this session to a different issue"
-                                                      >
-                                                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                                                          <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path>
-                                                          <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path>
-                                                        </svg>
-                                                      </button>
-                                                    )}
+                                                  </div>
+                                                  <div className="session-duration-col">
+                                                    <span className="session-duration issue-time-value">
+                                                      {formatTime(sessionDuration)}
+                                                    </span>
                                                   </div>
                                                 </div>
                                               );
@@ -883,6 +831,9 @@ function DashboardTab({ onOpenReassignModal }) {
             )}
           </>
         )}
+      </>
+    )
+  }
       </div>
     </div>
   );

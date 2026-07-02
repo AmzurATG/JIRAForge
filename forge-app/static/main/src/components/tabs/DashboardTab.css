@@ -85,6 +85,7 @@
   align-items: center;
   gap: 12px;
   flex-wrap: wrap;
+  flex: 1;
 }
 
 .focus-tabs button {
@@ -119,6 +120,7 @@
   display: flex;
   align-items: center;
   gap: 8px;
+  margin-left: auto;
 }
 
 /* Focus Search */
@@ -394,13 +396,9 @@
 }
 
 .issues-table th:nth-child(3),
-.issues-table th:nth-child(4) {
-  text-align: center;
-}
-
+.issues-table th:nth-child(4),
 .issues-table th:nth-child(5) {
-  text-align: right;
-  padding-right: 16px;
+  text-align: center;
 }
 
 .issues-table tbody tr {
@@ -424,8 +422,7 @@
 }
 
 .issues-table td:nth-child(5) {
-  text-align: right;
-  padding-right: 16px;
+  text-align: center;
 }
 
 .issue-key {
@@ -498,11 +495,10 @@
 }
 
 .issue-time {
-  text-align: right !important;
+  text-align: center !important;
   font-weight: 700;
   color: #42526E;
   min-width: 80px;
-  padding-right: 16px !important;
   font-size: 15px;
 }
 
@@ -565,6 +561,7 @@
 
   .focus-actions {
     width: 100%;
+    margin-left: 0;
   }
 }
 
@@ -682,7 +679,7 @@
 /* Details Row (hidden by default) */
 .details-row {
   display: none;
-  background: var(--ds-background-neutral);
+  background: #f4f5f7;
 }
 
 .details-row.show {
@@ -711,43 +708,62 @@
 }
 
 .session-details h4 {
-  margin: 0 0 var(--ds-space-200) 0;
-  color: var(--ds-text);
+  margin: 0 0 16px 0;
+  color: #172b4d;
   font-size: 14px;
   font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.info-icon-work-sessions {
+  cursor: pointer;
+  color: #8993a4;
+  font-size: 14px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: color 0.15s ease;
+}
+
+.info-icon-work-sessions:hover {
+  color: #4c566a;
 }
 
 /* Sessions grouped by date */
 .sessions-by-date {
   display: flex;
   flex-direction: column;
-  gap: var(--ds-space-300);
+  gap: 12px;
 }
 
 .date-group {
-    padding: 16px;
-    background: #fff;
-    border-radius: 8px;
-    border: 1px solid var(--ds-border);
+    padding: 0;
+    background: transparent;
+    border: none;
+    margin-bottom: 0;
 }
 
 .date-header {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin-bottom: var(--ds-space-150);
-  padding-bottom: var(--ds-space-100);
-  border-bottom: 1px solid var(--ds-border);
+  margin-bottom: 8px;
+  padding: 10px 16px;
+  background: #edf2fa;
+  border: 1px solid #e1e6ef;
+  border-radius: 4px;
 }
 
 .date-label {
-  color: var(--ds-text);
+  color: #172b4d;
   font-weight: 600;
   font-size: 14px;
 }
 
 .date-total {
-  color: var(--ds-text-subtle);
+  color: #5e6c84;
   font-weight: 600;
   font-size: 13px;
 }
@@ -755,40 +771,64 @@
 .sessions-list {
   display: flex;
   flex-direction: column;
-  gap: var(--ds-space-100);
+  gap: 8px;
 }
 
 .session-item {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  padding: var(--ds-space-150);
-  background: var(--ds-background-default);
+  padding: 12px 16px;
+  background: #ffffff;
   border-radius: 4px;
-  border: 1px solid var(--ds-border);
+  border: 1px solid #e5e9f0;
   font-size: 13px;
   transition: all 0.2s;
-  gap: 6px;
+  gap: 8px;
 }
 
 .session-item:hover {
-  border-color: var(--ds-border-focused);
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+  background: #ffffff;
+  border-color: #c1c7d0;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
 }
 
 .session-time {
-  color: var(--ds-text);
+  color: #172b4d;
   font-size: 13px;
-  flex-shrink: 0;
 }
 
 .session-duration {
-  color: var(--ds-text-subtle);
-  font-weight: 600;
-  min-width: 24px;
+  font-weight: 700;
   text-align: right;
   font-size: 14px;
+}
+
+/* Align columns inside session items tabularly */
+.session-time-col {
+  width: 150px;
   flex-shrink: 0;
+  display: flex;
+  align-items: center;
+}
+
+.session-status-col {
+  width: 140px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+}
+
+.session-actions-col {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.session-duration-col {
+  text-align: right;
+  flex-shrink: 0;
+  margin-left: 16px;
 }
 
 /* App Chips in Sessions */
@@ -976,18 +1016,30 @@
 .pending-review-chip {
   display: inline-flex;
   align-items: center;
-  padding: 2px 8px;
-  margin-left: 8px;
-  border-radius: 10px;
-  background: var(--ds-background-warning, #fff7d6);
-  color: var(--ds-text-warning, #974f0c);
-  font-size: 11px;
+  padding: 4px 10px;
+  border-radius: 4px;
+  background: #FFF3E0;
+  color: #E65100;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+/* Approved chip inline in a session row */
+.approved-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 10px;
+  border-radius: 4px;
+  background: #E8F5E9;
+  color: #2E7D32;
+  font-size: 12px;
   font-weight: 600;
   white-space: nowrap;
 }
 
 .session-item--pending-review {
-  border-left: 3px solid var(--ds-background-warning-bold, #ff8b00);
+  border-left: 3px solid #ff8b00;
 }
 
 /* Subtle "Refreshing…" indicator shown during background refetches so the
@@ -1011,47 +1063,55 @@
   50%      { opacity: 1; }
 }
 
-/* Pending Review row: pending-only time + bulk Approve action */
 .issue-time.pending-cell {
-  text-align: right !important;
-  padding-right: 16px !important;
+  text-align: left !important;
+  padding-left: 16px !important;
 }
 
 .pending-approval-cell {
-  display: inline-flex;
-  align-items: center;
-  gap: 12px;
-  justify-content: flex-end;
-}
-
-.pending-approval-meta {
   display: flex;
   flex-direction: column;
-  align-items: flex-end;
-  line-height: 1.2;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 8px 0;
 }
 
-.pending-approval-amount {
-  color: #974f0c;
-  font-weight: 700;
-  font-size: 15px;
+.pending-approval-time {
+  color: #5243AA;
+  font-weight: 600;
+  font-size: 17px;
   font-variant-numeric: tabular-nums;
+  line-height: 1;
 }
 
-.pending-approval-label {
-  color: #8993A4;
+.pending-approval-meta-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  line-height: 1;
+}
+
+.pending-approval-badge {
+  background-color: var(--ds-background-warning, #fff7d6);
+  color: var(--ds-text-warning, #974f0c);
+  padding: 3px 8px;
+  border-radius: 4px;
   font-size: 11px;
-  font-weight: 500;
+  font-weight: 700;
   text-transform: none;
-  letter-spacing: 0;
-  margin-top: 2px;
+}
+
+.pending-approval-sessions-count {
+  color: #8993A4;
+  font-size: 12px;
+  font-weight: 500;
 }
 
 .pending-approval-actions {
-  display: inline-flex;
+  display: flex;
   align-items: center;
-  gap: 6px;
-  flex-wrap: nowrap;
+  gap: 8px;
+  margin-top: 4px;
 }
 
 .approve-all-button {
@@ -1158,10 +1218,10 @@
 
 /* Approve-session button */
 .approve-button {
-  background: var(--ds-background-success-bold, #22a06b);
+  background: #10B981;
   color: #fff;
   border: none;
-  padding: 4px 12px;
+  padding: 5px 12px;
   border-radius: 4px;
   font-size: 12px;
   font-weight: 600;
@@ -1171,7 +1231,7 @@
 }
 
 .approve-button:hover:not(:disabled) {
-  background: var(--ds-background-success-bold-hovered, #1f845a);
+  background: #059669;
 }
 
 .approve-button:disabled {
@@ -1331,7 +1391,6 @@
 }
 
 .issue-quality-cell {
-  text-align: right;
-  padding-right: 16px;
+  text-align: center;
 }
 
