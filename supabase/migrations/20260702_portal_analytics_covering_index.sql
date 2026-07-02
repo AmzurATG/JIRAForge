@@ -1,0 +1,89 @@
+-- ============================================================================
+-- Migration: Portal analytics — covering index for index-only aggregation
+-- Date: 2026-07-02
+--
+-- Problem: The portal's 30-day views (Employees, Dashboard, Reports) time out
+-- with HTTP 500 "canceling statement due to statement timeout". The aggregate
+-- RPCs (portal_employee_summary / portal_dashboard_summary /
+-- portal_app_usage_summary) scan ~half of activity_records for a 30-day range
+-- (~225k of ~463k rows) and do a random HEAP FETCH per matched row to read
+-- duration_seconds / classification / is_idle / start_time / application_name —
+-- none of which are in any existing index.
+--
+-- Measured on prod (bzdoztgfozxkhkvctvdk, 2026-07-02, EXPLAIN ANALYZE of the
+-- verbatim portal_employee_summary body):
+--   30-day range: 13.3 s  (153k buffer accesses, 67k cold disk reads)
+--    7-day range:  5.6 s  (50k buffer accesses, 21k cold reads)
+--
+-- The effective timeout for portal RPC traffic is **8 seconds**, NOT the 2-min
+-- session default: PostgREST logs in as `authenticator`, whose role config is
+-- `statement_timeout=8s` (verified in pg_roles.rolconfig); `service_role` sets
+-- no override of its own, so the 8s login-role value applies to every
+-- supabase-js rpc() call. 13.3s > 8s → the 30-day aggregate is killed on every
+-- attempt (confirmed: matching "canceling statement due to statement timeout"
+-- ERROR events in prod postgres logs); 7 days at 5.6s sits just under the
+-- limit, which is why shorter ranges still load.
+--
+-- Fix: A covering index keyed on (work_date, user_id) with the aggregated
+-- columns as INCLUDE payload. The table is 100% all-visible (verified via
+-- pg_class.relallvisible), so Postgres can satisfy these aggregates with an
+-- INDEX-ONLY SCAN — no heap access — turning multi-second scans into sub-second.
+-- Empirical anchor: an index-only aggregation over the SAME 30-day range via an
+-- existing index (count grouped by work_date on idx_activity_work_date_issue)
+-- ran in 279 ms — vs 13.3 s for the heap-fetching plan — even while paying
+-- ~20k heap fetches for rows inserted since the last vacuum.
+--
+--   Leading key   work_date  -> serves the BETWEEN p_from/p_to range predicate
+--   Second key    user_id    -> grouping key + count(distinct user_id)
+--   INCLUDE       the payload the aggregates read, so the scan stays index-only:
+--                   duration_seconds  (sum)
+--                   classification    (productive / non_productive filters)
+--                   is_idle           (is_idle <> true filter)
+--                   start_time        (max last_activity — employee_summary)
+--                   application_name  (group key — app_usage_summary / Reports)
+--
+-- Safe, purely additive: no table/column/function change, no data change.
+--
+-- !! HOW TO APPLY — CONCURRENTLY is used on purpose (activity_records takes
+--    constant INSERTs from the desktop fleet; a plain CREATE INDEX would hold a
+--    write-blocking lock for the whole build), but it has TWO traps:
+--
+--    TRAP 1 — SQLSTATE 25001 "cannot run inside a transaction block".
+--      The Supabase Dashboard SQL Editor sends a multi-statement paste as ONE
+--      implicit transaction, so pasting this whole file there fails with
+--      exactly that error. Same for transaction-wrapped migration runners
+--      (older Supabase CLI wrapped every migration; see supabase/cli#2898).
+--
+--    TRAP 2 — statement_timeout during the build.
+--      The dashboard runs as the `postgres` role (2-min cap). A concurrent
+--      build on this 2.2 GB table can exceed that; a canceled build leaves an
+--      INVALID index behind.
+--
+--    RECOMMENDED — psql, using the DIRECT or SESSION-pooler connection string
+--    (Dashboard → Connect; avoid the transaction-mode pooler, port 6543):
+--
+--      psql "$DATABASE_URL" -f 20260702_portal_analytics_covering_index.sql
+--
+--    psql executes each statement in autocommit (no transaction wrapping), and
+--    the SET below lifts the timeout for the session, so this file works as-is.
+--
+--    DASHBOARD FALLBACK — run each statement below ONE AT A TIME (a single
+--    statement per run avoids the implicit transaction). If the build is
+--    canceled by the 2-min cap, clean up and switch to psql:
+--      DROP INDEX CONCURRENTLY IF EXISTS idx_activity_portal_analytics;
+--      (run that alone too — DROP ... CONCURRENTLY has the same no-transaction rule)
+--
+--    LOCAL DEV — if `supabase db reset` chokes on this file, swap CONCURRENTLY
+--    for a plain CREATE INDEX locally (fine on an empty DB); keep CONCURRENTLY
+--    for prod/dev remotes.
+-- ============================================================================
+
+-- Session-only; lets the concurrent build outlive the role's default timeout.
+SET statement_timeout = 0;
+
+CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_activity_portal_analytics
+ON public.activity_records (work_date, user_id)
+INCLUDE (duration_seconds, classification, is_idle, start_time, application_name);
+
+-- After the build completes, refresh planner stats so it picks the new index:
+ANALYZE public.activity_records;
