@@ -322,47 +322,7 @@
   letter-spacing: -0.3px;
 }
 
-.cumulative-card .stat-value--drilldown {
-  border: none;
-  background: transparent;
-  padding: 0;
-  margin: 0;
-  font-size: 1.5rem;;
-  color: #172B4D;
-  cursor: default;
-  display: inline-flex;
-  align-items: center;
-  justify-content: space-between;
-  width: 100%;
-  gap: 8px;
-}
 
-.cumulative-card .stat-value--drilldown::after {
-  content: 'View';
-  font-size: 13px;
-  font-weight: 600;
-  color: #0052CC;
-  cursor: pointer;
-  text-decoration: underline;
-  margin-left: auto;
-  padding: 0;
-  background: none;
-  border-radius: 0;
-  letter-spacing: 0;
-  text-transform: none;
-}
-
-.cumulative-card .stat-value--drilldown:hover,
-.cumulative-card .stat-value--drilldown:focus-visible {
-  color: #172B4D;
-  background: transparent;
-}
-
-.cumulative-card .stat-value--drilldown:hover::after {
-  color: #0747A6;
-  text-decoration: underline;
-  background: none;
-}
 
 .cumulative-card .cumulative-stat {
   padding: 0;
@@ -829,7 +789,7 @@
 .member-timeline {
   flex: 1;
   min-width: 400px;
-  height: 24px;
+  height: 46px; /* Increased from 24px to accommodate 3 tracks */
   display: flex;
   align-items: center;
 }
@@ -921,13 +881,17 @@
 
 .timeline-block {
   position: absolute;
-  top: 2px;
-  bottom: 2px;
-  background: #36B37E;
+  height: 10px; /* Specific height instead of top/bottom */
   border-radius: 2px;
   pointer-events: auto;
   transition: background-color 0.15s ease;
   min-width: 2px;
+}
+
+/* Active Work Track - Top */
+.timeline-block.active {
+  top: 4px;
+  background: #36B37E;
 }
 
 /* Hover info strip — appears below timeline on block hover */
@@ -996,6 +960,7 @@
 }
 
 .timeline-block.idle {
+  top: 32px; /* Idle Track - Bottom */
   background: repeating-linear-gradient(
     45deg,
     #FF991F,
@@ -1060,6 +1025,7 @@
 
 /* Unassigned work blocks - dotted pattern */
 .timeline-block.unassigned {
+  top: 18px; /* Unassigned Track - Middle */
   background: repeating-linear-gradient(
     90deg,
     #0052CC,

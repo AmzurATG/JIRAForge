@@ -449,12 +449,15 @@ function toJobResponse(jobRow) {
   const issues = Array.isArray(payload.issues) ? payload.issues : [];
   const matchedSessions = (progress.assignments || jobRow?.result?.assignments || []).map(a => {
     const session = sessions.find(s => s.sessionId === a.sessionId) || {};
+    const issue = issues.find(i => i.key === a.issueKey) || {};
     return {
       sessionId: a.sessionId,
       issueKey: a.issueKey,
+      issueSummary: issue.fields?.summary || issue.summary || '',
       windowTitle: session.windowTitle || '',
       applicationName: session.applicationName || '',
-      durationSeconds: session.durationSeconds || 0
+      durationSeconds: session.durationSeconds || 0,
+      insight: a.reason || a.insight || a.explanation || ''
     };
   });
 
@@ -628,19 +631,23 @@ async function processSyncJobWithinBudget({
         body: { issues, sessions: sessionChunk }
       });
       const assignments = Array.isArray(matchData?.assignments) ? matchData.assignments : [];
-      const byIssue = groupAssignmentsByIssue(assignments);
-
-      for (const [issueKey, sessionIds] of byIssue.entries()) {
-        matchedCount += await assignMatchedSessions({
-          supabaseConfig,
-          userId,
-          organizationId,
-          accountId,
-          cloudId,
-          issueKey,
-          sessionIds,
-          autoSyncEnabledOverride: autoSyncEnabled
-        });
+      
+      if (payload.dryRun) {
+        matchedCount += assignments.length;
+      } else {
+        const byIssue = groupAssignmentsByIssue(assignments);
+        for (const [issueKey, sessionIds] of byIssue.entries()) {
+          matchedCount += await assignMatchedSessions({
+            supabaseConfig,
+            userId,
+            organizationId,
+            accountId,
+            cloudId,
+            issueKey,
+            sessionIds,
+            autoSyncEnabledOverride: autoSyncEnabled
+          });
+        }
       }
 
       const allAssignments = [...(progress.assignments || []), ...assignments];
@@ -1513,7 +1520,8 @@ export function registerDescriptionResolvers(resolver) {
           issues,
           cursor: 0,
           totalSessions,
-          totalIssues
+          totalIssues,
+          dryRun: req.payload?.dryRun === true
         },
         progress: {
           cursor: 0,
@@ -1576,6 +1584,38 @@ export function registerDescriptionResolvers(resolver) {
     } catch (err) {
       console.error('[descriptionResolvers] getUnassignedSyncWithJiraJobStatus failed:', err.message);
       return handleResolverError(err, 'getting async unassigned sync job status');
+    }
+  });
+
+  resolver.define('submitUnassignedSyncMappings', async (req) => {
+    try {
+      const ctx = await initializeRequestContext(req);
+      if (!ctx.success) return ctx;
+
+      const { config: supabaseConfig, organization, userId, accountId, cloudId } = ctx;
+      const { mappings = [] } = req.payload || {};
+      
+      const autoSyncEnabled = await isAutoSyncEnabled(accountId, cloudId);
+      const byIssue = groupAssignmentsByIssue(mappings);
+      
+      let totalAssigned = 0;
+      for (const [issueKey, sessionIds] of byIssue.entries()) {
+        totalAssigned += await assignMatchedSessions({
+          supabaseConfig,
+          userId,
+          organizationId,
+          accountId,
+          cloudId,
+          issueKey,
+          sessionIds,
+          autoSyncEnabledOverride: autoSyncEnabled
+        });
+      }
+
+      return { success: true, matchedCount: totalAssigned };
+    } catch (err) {
+      console.error('[descriptionResolvers] submitUnassignedSyncMappings failed:', err.message);
+      return handleResolverError(err, 'submitting unassigned sync mappings');
     }
   });
 

@@ -64,10 +64,19 @@ function SummaryCards({ loading, timeData, activeView, onViewChange, reconciledT
     <div className="analytics-summary-cards">
       <div 
         className={`analytics-card cumulative-card clickable ${activeView === 'day' ? 'active' : ''}`}
-        onClick={() => onViewChange && onViewChange('day')}
+        onClick={() => {
+          if (onViewChange) onViewChange('day');
+          if (onDrillDown) onDrillDown('today');
+        }}
         role="button"
         tabIndex={0}
-        onKeyDown={(e) => e.key === 'Enter' && onViewChange && onViewChange('day')}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') {
+            if (onViewChange) onViewChange('day');
+            if (onDrillDown) onDrillDown('today');
+          }
+        }}
+        title="Click to view issue breakdown"
       >
         <div className="card-icon" style={{ background: '#667eea' }}>
           <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -81,16 +90,9 @@ function SummaryCards({ loading, timeData, activeView, onViewChange, reconciledT
             <p>Loading...</p>
           ) : (
             <div className="cumulative-stat">
-              <button
-                className="stat-value stat-value--drilldown"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  if (onDrillDown) onDrillDown('today');
-                }}
-                title="Click to view issue breakdown"
-              >
+              <span className="stat-value">
                 {formatTime(reconciledTodayTotal != null ? reconciledTodayTotal : rawTodayTotal)}
-              </button>
+              </span>
             </div>
           )}
         </div>
@@ -98,10 +100,19 @@ function SummaryCards({ loading, timeData, activeView, onViewChange, reconciledT
 
       <div 
         className={`analytics-card cumulative-card clickable ${activeView === 'week' ? 'active' : ''}`}
-        onClick={() => onViewChange && onViewChange('week')}
+        onClick={() => {
+          if (onViewChange) onViewChange('week');
+          if (onDrillDown) onDrillDown('week');
+        }}
         role="button"
         tabIndex={0}
-        onKeyDown={(e) => e.key === 'Enter' && onViewChange && onViewChange('week')}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') {
+            if (onViewChange) onViewChange('week');
+            if (onDrillDown) onDrillDown('week');
+          }
+        }}
+        title="Click to view issue breakdown"
       >
         <div className="card-icon" style={{ background: '#f5576c' }}>
           <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -117,16 +128,9 @@ function SummaryCards({ loading, timeData, activeView, onViewChange, reconciledT
             <p>Loading...</p>
           ) : (
             <div className="cumulative-stat">
-              <button
-                className="stat-value stat-value--drilldown"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  if (onDrillDown) onDrillDown('week');
-                }}
-                title="Click to view issue breakdown"
-              >
+              <span className="stat-value">
                 {formatTime(calculateWeekTotal())}
-              </button>
+              </span>
             </div>
           )}
         </div>
@@ -134,10 +138,19 @@ function SummaryCards({ loading, timeData, activeView, onViewChange, reconciledT
 
       <div 
         className={`analytics-card cumulative-card clickable ${activeView === 'month' ? 'active' : ''}`}
-        onClick={() => onViewChange && onViewChange('month')}
+        onClick={() => {
+          if (onViewChange) onViewChange('month');
+          if (onDrillDown) onDrillDown('month');
+        }}
         role="button"
         tabIndex={0}
-        onKeyDown={(e) => e.key === 'Enter' && onViewChange && onViewChange('month')}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') {
+            if (onViewChange) onViewChange('month');
+            if (onDrillDown) onDrillDown('month');
+          }
+        }}
+        title="Click to view issue breakdown"
       >
         <div className="card-icon" style={{ background: '#4facfe' }}>
           <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -155,16 +168,9 @@ function SummaryCards({ loading, timeData, activeView, onViewChange, reconciledT
             <p>Loading...</p>
           ) : (
             <div className="cumulative-stat">
-              <button
-                className="stat-value stat-value--drilldown"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  if (onDrillDown) onDrillDown('month');
-                }}
-                title="Click to view issue breakdown"
-              >
+              <span className="stat-value">
                 {formatTime(calculateMonthTotal())}
-              </button>
+              </span>
             </div>
           )}
         </div>

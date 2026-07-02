@@ -1,6 +1,8 @@
 import React, { useEffect, useState } from 'react';
 import { invoke } from '@forge/bridge';
 import { formatTime } from '../../../utils';
+import { IssueList } from '../../common'; // Import the new IssueList component
+import './DayIssueDrilldown.css'; // Assuming styles are defined here or inherited
 
 function formatDisplayDate(dateStr) {
   if (!dateStr) return '';
@@ -89,32 +91,12 @@ function DayIssueDrilldown({ selectedDate, onClose }) {
           </div>
 
           {details?.issues?.length ? (
-            <div className="day-drilldown-list">
-              {details.issues.map((issue, idx) => {
-                const pct = (details.totalSeconds || 0) > 0
-                  ? Math.round((issue.totalSeconds / details.totalSeconds) * 100)
-                  : 0;
-
-                return (
-                  <div key={`${issue.issueKey}-${idx}`} className="day-drilldown-item">
-                    <div className="day-drilldown-item-top">
-                      <div className="day-drilldown-issue-meta">
-                        <span className="day-drilldown-issue-key">{issue.issueKey}</span>
-                        {issue.summary && (
-                          <span className="day-drilldown-issue-summary">{issue.summary}</span>
-                        )}
-                      </div>
-                      <div className="day-drilldown-time">
-                        {formatTime(issue.totalSeconds)}
-                        <span className="day-drilldown-pct">({pct}%)</span>
-                      </div>
-                    </div>
-                    <div className="day-drilldown-bar-track">
-                      <div className="day-drilldown-bar-fill" style={{ width: `${pct}%` }} />
-                    </div>
-                  </div>
-                );
-              })}
+            <div className="day-drilldown-list-container">
+               <IssueList 
+                 issues={details.issues}
+                 // We aren't passing handleStatusChange or other actions right now
+                 // as it's a drilldown view. We just display the table.
+               />
             </div>
           ) : (
             <div className="day-drilldown-state">

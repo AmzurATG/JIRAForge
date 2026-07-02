@@ -6,6 +6,7 @@ import { navigateToIssue, formatTime } from '../../utils';
 import { parseUTC } from '../tabs/time-analytics/dateUtils';
 import QualityCell from './QualityCell';
 import UnassignedWork from '../UnassignedWork';
+import { IssueList } from '../common';
 import './DashboardTab.css';
 
 
@@ -487,342 +488,29 @@ function DashboardTab({ onOpenReassignModal }) {
               </div>
             )}
             {filteredIssues.length > 0 ? (
-              <div className="issues-table-container">
-                <table className="issues-table">
-                  <thead>
-                    <tr>
-                      <th>ID</th>
-                      <th>Title</th>
-                      <th>Status</th>
-                      <th 
-                        className={`sortable-header ${qualitySortOrder ? 'sorted' : ''}`}
-                        onClick={handleToggleQualitySort}
-                        style={{ cursor: 'pointer', textAlign: 'center' }}
-                        title="Sort by description quality"
-                      >
-                        Description Quality {qualitySortOrder === 'asc' ? '▲' : qualitySortOrder === 'desc' ? '▼' : ''}
-                      </th>
-                      <th style={{ textAlign: 'center' }}>
-                        {issueFilter === 'pending-review' ? 'Assigned Time' : 'Time Tracked'}
-                      </th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {paginatedIssues.map((issue, idx) => {
-                      const trackedSeconds = Number(issue.timeTracked) || 0;
-                      const pendingSeconds = Number(issue.pendingApprovalSeconds) || 0;
-                      // pendingApprovalCount is record-count from the backend
-                      // (one per activity_record row).  pendingSessionCount is
-                      // the count of UI-aggregated sessions (multiple records
-                      // collapse into one session within a 10-min gap).  They
-                      // measure different things and are NOT interchangeable —
-                      // we display the session count because that matches what
-                      // the user sees when expanding the row.
-                      const pendingCount = Number(issue.pendingApprovalCount) || 0;
-                      const pendingSessionCount = (issue.sessions || []).filter(
-                        (s) => s.approvalStatus === 'pending_approval'
-                      ).length;
-                      const hasTrackedTime = trackedSeconds > 0;
-                      const showPendingCell = isPendingReviewView && pendingCount > 0;
-                      const isApprovingThisIssue = approvingIssueKey === issue.key;
-
-                      return (
-                      <React.Fragment key={idx}>
-                        <tr className={issue.sessions?.length > 0 ? 'expandable-row' : ''}>
-                          <td className="issue-key">
-                            {issue.sessions?.length > 0 ? (
-                              <button className="expand-button" onClick={handleExpandClick}>
-                                ›
-                              </button>
-                            ) : (
-                              <span className="expand-placeholder"></span>
-                            )}
-                            <IssueTypeIcon
-                              issueType={issue.issueType}
-                              iconUrl={issue.issueTypeIconUrl}
-                            />
-                            <a
-                              href={`/browse/${issue.key}`}
-                              onClick={(e) => {
-                                e.preventDefault();
-                                navigateToIssue(issue.key);
-                              }}
-                              style={{ cursor: 'pointer' }}
-                            >
-                              {issue.key}
-                            </a>
-                          </td>
-                          <td className="issue-title">{issue.summary}</td>
-                          <td className="issue-status">
-                            <StatusDropdown
-                              issue={issue}
-                              onStatusChange={handleStatusChange}
-                              isUpdating={statusUpdating === issue.key}
-                              onLoadTransitions={loadTransitionsForIssue}
-                            />
-                          </td>
-
-                          <td className="issue-quality-cell">
-                            <QualityCell
-                              issueKey={issue.key}
-                              score={qualityScores[issue.key]?.score}
-                              status={qualityScores[issue.key]?.status}
-                              error={qualityScores[issue.key]?.error}
-                              cachedAt={qualityScores[issue.key]?.cachedAt}
-                              onRetry={handleRetryQuality}
-                            />
-                          </td>
-                          <td className={`issue-time ${showPendingCell ? 'pending-cell' : (hasTrackedTime ? 'has-time' : 'no-time')}`}>
-                            {showPendingCell ? (
-                              <div className="pending-approval-cell">
-                                <div className="pending-approval-time">
-                                  {formatTime(pendingSeconds)}
-                                </div>
-                                <div className="pending-approval-meta-row">
-                                  <span className="pending-approval-badge">Pending approval</span>
-                                  <span className="pending-approval-sessions-count">
-                                    {pendingSessionCount} {pendingSessionCount === 1 ? 'Session' : 'Sessions'}
-                                  </span>
-                                </div>
-                                <div className="pending-approval-actions">
-                                  <button
-                                    className="approve-all-button"
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      handleApproveAllForIssue(issue);
-                                    }}
-                                    disabled={isApprovingThisIssue || !!approvingIssueKey}
-                                    title={`Approve all ${pendingSessionCount} pending ${pendingSessionCount === 1 ? 'session' : 'sessions'} for ${issue.key}`}
-                                  >
-                                    {isApprovingThisIssue ? (
-                                      'Approving…'
-                                    ) : (
-                                      <>
-                                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                                          <polyline points="20 6 9 17 4 12"></polyline>
-                                        </svg>
-                                        <span>Approve all</span>
-                                      </>
-                                    )}
-                                  </button>
-                                  <button
-                                    className="reassign-all-button"
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      handleReassignAllForIssue(issue);
-                                    }}
-                                    disabled={isApprovingThisIssue || !!approvingIssueKey}
-                                    title={`Move all pending time on ${issue.key} to a different issue`}
-                                  >
-                                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                                      <polyline points="17 1 21 5 17 9"></polyline>
-                                      <path d="M3 11V9a4 4 0 0 1 4-4h14"></path>
-                                      <polyline points="7 23 3 19 7 15"></polyline>
-                                      <path d="M21 13v2a4 4 0 0 1-4 4H3"></path>
-                                    </svg>
-                                    <span>Reassign all</span>
-                                  </button>
-                                </div>
-                              </div>
-                            ) : hasTrackedTime ? (
-                              <span className="issue-time-value">{formatTime(trackedSeconds)}</span>
-                            ) : (
-                              <span className="no-time-indicator">No time logged</span>
-                            )}
-                          </td>
-                        </tr>
-                        {issue.sessions?.length > 0 && (
-                          <tr className="details-row">
-                            <td colSpan="5">
-                              <div className="session-details">
-                                <h4>
-                                  Work Sessions ({issue.sessions.length}){' '}
-                                  <span 
-                                    className="info-icon-work-sessions" 
-                                    title="Work sessions are automatically captured and categorized by activity. Pending review sessions require manual approval before syncing to Jira."
-                                  >
-                                    ⓘ
-                                  </span>
-                                </h4>
-                                <div className="sessions-by-date">
-                                  {Object.keys(groupSessionsByDate(issue.sessions))
-                                    .sort((a, b) => new Date(b) - new Date(a))
-                                    .map((dateKey, dateIdx) => {
-                                      const dateSessions = groupSessionsByDate(issue.sessions)[dateKey];
-                                      const displayDate = new Date(dateKey + 'T00:00:00');
-                                      const totalDuration = calculateTotalDuration(dateSessions);
-
-                                      return (
-                                        <div key={dateIdx} className="date-group">
-                                          <div className="date-header">
-                                            <span className="date-label">
-                                              {displayDate.toLocaleDateString('en-US', {
-                                                weekday: 'short',
-                                                month: 'short',
-                                                day: 'numeric',
-                                                year: 'numeric'
-                                              })}
-                                            </span>
-                                            <span className="date-total">
-                                              Total Time: <span className="issue-time-value">{formatTime(totalDuration)}</span>
-                                            </span>
-                                          </div>
-                                          <div className="sessions-list">
-                                            {dateSessions.map((session, sessionIdx) => {
-                                              const start = parseUTC(session.startTime) || new Date(session.startTime);
-                                              const end = parseUTC(session.endTime) || new Date(session.endTime);
-                                              // Use actual duration from backend (accumulated work time)
-                                              // Not timestamp span which includes idle gaps
-                                              const sessionDuration = session.duration || 0;
-
-
-
-                                              const isPendingReview = session.approvalStatus === 'pending_approval';
-                                              const sessionKey = (session.activityRecordIds || []).join(',');
-                                              const isApprovingThisSession = approvingSessionId === sessionKey;
-
-                                              return (
-                                                <div key={sessionIdx} className={`session-item ${isPendingReview ? 'session-item--pending-review' : ''}`}>
-                                                  <div className="session-time-col">
-                                                    <span className="session-time">
-                                                      {start.toLocaleTimeString('en-US', {
-                                                        hour: '2-digit',
-                                                        minute: '2-digit',
-                                                        hour12: true
-                                                      })}
-                                                      {' - '}
-                                                      {end.toLocaleTimeString('en-US', {
-                                                        hour: '2-digit',
-                                                        minute: '2-digit',
-                                                        hour12: true
-                                                      })}
-                                                    </span>
-                                                  </div>
-                                                  <div className="session-status-col">
-                                                    {isPendingReview ? (
-                                                      <span className="pending-review-chip" title="AI-assigned — won't sync to Jira until you approve">
-                                                        Pending review
-                                                      </span>
-                                                    ) : (
-                                                      <span className="approved-chip">
-                                                        Approved
-                                                      </span>
-                                                    )}
-                                                  </div>
-                                                  <div className="session-actions-col">
-                                                    {isPendingReview && (
-                                                      <>
-                                                        <button
-                                                          className="approve-button"
-                                                          onClick={(e) => {
-                                                            e.stopPropagation();
-                                                            handleApproveSession(session);
-                                                          }}
-                                                          disabled={isApprovingThisSession}
-                                                          title="Approve — time will sync to Jira on the next hourly sync"
-                                                        >
-                                                          {isApprovingThisSession ? (
-                                                            'Approving…'
-                                                          ) : (
-                                                            <>
-                                                              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" style={{ marginRight: '4px', display: 'inline-block', verticalAlign: 'middle' }}>
-                                                                <polyline points="20 6 9 17 4 12"></polyline>
-                                                              </svg>
-                                                              <span style={{ display: 'inline-block', verticalAlign: 'middle' }}>Approve</span>
-                                                            </>
-                                                          )}
-                                                        </button>
-                                                        <button
-                                                          className="reassign-text-button"
-                                                          onClick={(e) => {
-                                                            e.stopPropagation();
-                                                            onOpenReassignModal(session, issue.key);
-                                                          }}
-                                                          disabled={isApprovingThisSession}
-                                                          title="Wrong issue? Move this session's time to a different issue"
-                                                        >
-                                                          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" style={{ marginRight: '4px', display: 'inline-block', verticalAlign: 'middle' }}>
-                                                            <path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/>
-                                                          </svg>
-                                                          <span style={{ display: 'inline-block', verticalAlign: 'middle' }}>Reassign</span>
-                                                        </button>
-                                                      </>
-                                                    )}
-                                                  </div>
-                                                  <div className="session-duration-col">
-                                                    <span className="session-duration issue-time-value">
-                                                      {formatTime(sessionDuration)}
-                                                    </span>
-                                                  </div>
-                                                </div>
-                                              );
-                                            })}
-                                          </div>
-                                        </div>
-                                      );
-                                    })}
-                                </div>
-                              </div>
-                            </td>
-                          </tr>
-                        )}
-                      </React.Fragment>
-                      );
-                    })}
-                  </tbody>
-                </table>
-
-                {/* Pagination Controls */}
-                {totalPages > 1 && (
-                  <div className="pagination">
-                    <button
-                      className="pagination-btn"
-                      onClick={() => handlePageChange(currentPage - 1)}
-                      disabled={currentPage === 1}
-                      title="Previous page"
-                    >
-                      ‹
-                    </button>
-
-                    <div className="pagination-pages">
-                      {Array.from({ length: totalPages }, (_, i) => i + 1).map(page => {
-                        // Show first page, last page, current page, and pages around current
-                        if (
-                          page === 1 ||
-                          page === totalPages ||
-                          (page >= currentPage - 1 && page <= currentPage + 1)
-                        ) {
-                          return (
-                            <button
-                              key={page}
-                              className={`pagination-page ${page === currentPage ? 'active' : ''}`}
-                              onClick={() => handlePageChange(page)}
-                            >
-                              {page}
-                            </button>
-                          );
-                        } else if (page === currentPage - 2 || page === currentPage + 2) {
-                          return <span key={page} className="pagination-ellipsis">...</span>;
-                        }
-                        return null;
-                      })}
-                    </div>
-
-                    <button
-                      className="pagination-btn"
-                      onClick={() => handlePageChange(currentPage + 1)}
-                      disabled={currentPage === totalPages}
-                      title="Next page"
-                    >
-                      ›
-                    </button>
-
-                    <span className="pagination-info">
-                      {startIndex + 1}-{Math.min(endIndex, filteredIssues.length)} of {filteredIssues.length}
-                    </span>
-                  </div>
-                )}
-              </div>
+              <IssueList
+                issues={paginatedIssues}
+                isPendingReviewView={isPendingReviewView}
+                approvingIssueKey={approvingIssueKey}
+                approvingSessionId={approvingSessionId}
+                handleApproveAllForIssue={handleApproveAllForIssue}
+                handleReassignAllForIssue={handleReassignAllForIssue}
+                handleApproveSession={handleApproveSession}
+                onOpenReassignModal={onOpenReassignModal}
+                handleStatusChange={handleStatusChange}
+                statusUpdating={statusUpdating}
+                loadTransitionsForIssue={loadTransitionsForIssue}
+                qualityScores={qualityScores}
+                qualitySortOrder={qualitySortOrder}
+                handleToggleQualitySort={handleToggleQualitySort}
+                handleRetryQuality={handleRetryQuality}
+                currentPage={currentPage}
+                handlePageChange={handlePageChange}
+                totalPages={totalPages}
+                startIndex={startIndex}
+                endIndex={endIndex}
+                totalItems={filteredIssues.length}
+              />
             ) : (
               <p className="empty-state">
                 No issues match {getFilterDescription()}.
