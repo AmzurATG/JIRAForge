@@ -1,0 +1,11 @@
+# Development / test-only dependencies.
+# These are NOT bundled into the PyInstaller build (see requirements.txt for
+# the shipped runtime deps). Install them only in your dev/test environment:
+#
+#   pip install -r requirements-dev.txt
+#
+# Run the test suite:
+#   python -m pytest tests/ -v
+#   (or use run_pytest.bat / run_pytest.sh)
+
+pytest>=8.0
