@@ -18,6 +18,7 @@ import { registerAdminUserStatusResolvers } from './resolvers/adminUserStatusRes
 import { registerApprovalResolvers } from './resolvers/approval/approvalResolvers.js';
 import { registerAccuracyDashboardResolvers } from './resolvers/accuracyDashboardResolvers.js';
 import { registerDescriptionResolvers } from './resolvers/descriptionResolvers.js';
+import { registerDescriptionScoresResolvers } from './resolvers/descriptionScoresResolvers.js';
 import { registerDqNudgePreferenceResolvers } from './resolvers/dqNudgePreferenceResolvers.js';
 import { runScheduledWorklogSync } from './services/scheduledWorklogSync.js';
 import { runDescriptionQualityNudge, analyzeIssue } from './services/descriptionQualityNudge.js';
@@ -44,6 +45,7 @@ registerAdminUserStatusResolvers(resolver);
 registerApprovalResolvers(resolver);
 registerAccuracyDashboardResolvers(resolver);
 registerDescriptionResolvers(resolver);
+registerDescriptionScoresResolvers(resolver);
 registerDqNudgePreferenceResolvers(resolver);
 
 // Export handler for Forge

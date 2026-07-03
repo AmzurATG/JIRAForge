@@ -536,6 +536,24 @@ async function analyzeDescription(params) {
   const getClientFn = deps.getClient;
   const runLLM = deps.runLLM || runLLMAnalysis;
 
+  // Cache lookup check (only when requestImprovement is false and issueKey is not DRAFT)
+  const contentHash = generateContentHash(title, description, issueType);
+  if (!requestImprovement && issueKey !== 'DRAFT' && orgId) {
+    const cachedResult = await readCache({ orgId, issueKey, contentHash, getClientFn });
+    if (cachedResult) {
+      return {
+        score: cachedResult.score,
+        source: cachedResult.source,
+        cached: true,
+        issues: cachedResult.issues,
+        suggestions: cachedResult.suggestions,
+        improved_title: cachedResult.improved_title,
+        improved_description: cachedResult.improved_description,
+        cachedAt: cachedResult.updated_at
+      };
+    }
+  }
+
   // Deterministic pass
   const det = scoreDeterministic({ title, description, issueType });
 
@@ -614,6 +632,18 @@ async function analyzeDescription(params) {
     }
   }
 
+  // Cache write path (only when issueKey is not DRAFT and orgId is provided)
+  if (issueKey !== 'DRAFT' && orgId) {
+    await writeCache({
+      orgId,
+      issueKey,
+      contentHash,
+      issueType,
+      result,
+      getClientFn
+    });
+  }
+
   // Best-effort analytics event
   recordEvent({
     orgId,
@@ -627,6 +657,72 @@ async function analyzeDescription(params) {
   });
 
   return result;
+}
+
+/**
+ * Run batch analysis for multiple issues with a concurrency limit of 5.
+ */
+async function batchAnalyzeDescriptions({ issues, orgId, accountId, deps = {} }) {
+  const scores = {};
+  const stats = { cacheHits: 0, filled: 0, errors: 0 };
+
+  if (!Array.isArray(issues) || issues.length === 0) {
+    return { scores, stats };
+  }
+
+  const limit = 5;
+  const executing = [];
+  const results = [];
+
+  const tasks = issues.map((issue) => async () => {
+    try {
+      const result = await analyzeDescription({
+        issueKey: issue.issueKey,
+        title: issue.title,
+        description: issue.description,
+        issueType: issue.issueType || 'Task',
+        projectKey: issue.projectKey,
+        requestImprovement: false,
+        orgId,
+        accountId,
+        parentContext: issue.parentContext,
+        attachments: issue.attachments,
+        documents: issue.documents,
+        linkedIssues: issue.linkedIssues,
+        deps
+      });
+
+      scores[issue.issueKey] = {
+        score: result.score,
+        source: result.source,
+        cached: !!result.cached,
+        cachedAt: result.cachedAt || new Date().toISOString()
+      };
+
+      if (result.cached) {
+        stats.cacheHits++;
+      } else {
+        stats.filled++;
+      }
+    } catch (err) {
+      logger.error('[DescQuality] Batch analysis failed for %s: %s', issue.issueKey, err.message);
+      scores[issue.issueKey] = { error: 'analysis_failed', message: err.message };
+      stats.errors++;
+    }
+  });
+
+  for (const task of tasks) {
+    const p = Promise.resolve().then(() => task());
+    results.push(p);
+    const e = p.then(() => executing.splice(executing.indexOf(e), 1));
+    executing.push(e);
+    if (executing.length >= limit) {
+      await Promise.race(executing);
+    }
+  }
+  await Promise.all(results);
+
+  return { scores, stats };
 }
 
 // ---------------------------------------------------------------------------
@@ -825,6 +921,7 @@ async function syncAllUnassigned({ issues, sessions, deps = {} }) {
 module.exports = {
   // Public
   analyzeDescription,
+  batchAnalyzeDescriptions,
   recordEvent,
   syncIssueUnassigned,
   syncAllUnassigned,

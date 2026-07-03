@@ -450,20 +450,19 @@
   gap: 8px;
   padding: 8px 14px;
   height: 36px;
-  background: linear-gradient(135deg, #6656fc 0%, #7b6cff 100%);
-  border: 1px solid #5a4de0;
-  border-radius: 8px;
+  background: #a399ff;
+  border: none;
+  border-radius: 6px;
   cursor: pointer;
   color: #fff;
   font-size: 13px;
   font-weight: 600;
   transition: all 0.2s ease;
-  box-shadow: 0 2px 6px rgba(102, 86, 252, 0.25);
 }
 
 .sync-with-jira-btn:hover:not(:disabled) {
+  background: #9084ff;
   transform: translateY(-1px);
-  box-shadow: 0 4px 10px rgba(102, 86, 252, 0.35);
 }
 
 .sync-with-jira-btn:disabled {
@@ -693,8 +692,9 @@
   bottom: 0;
   background: rgba(9, 30, 66, 0.54);
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: center;
+  padding-top: 100px;
   z-index: 9000;
   animation: uw-fade-in 0.2s ease;
 }
@@ -703,24 +703,51 @@
   background: #fff;
   border-radius: 8px;
   width: 100%;
-  max-width: 420px;
-  padding: 24px;
+  max-width: 540px;
+  padding: 0;
   box-shadow: 0 8px 16px -4px rgba(9, 30, 66, 0.25);
   animation: uw-slide-up 0.2s ease;
+  overflow: hidden;
 }
 
-.sync-confirm-modal h3 {
-  margin: 0 0 16px 0;
-  font-size: 20px;
-  color: var(--ds-text, #172b4d);
+.sync-confirm-modal-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  background: #6656fc;
+  padding: 16px 24px;
+}
+
+.sync-confirm-modal-header h3 {
+  margin: 0;
+  font-size: 18px;
   font-weight: 600;
+  color: #fff;
+}
+
+.sync-confirm-modal-close {
+  background: none;
+  border: none;
+  color: rgba(255, 255, 255, 0.85);
+  cursor: pointer;
+  padding: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+  transition: all 0.2s;
+}
+
+.sync-confirm-modal-close:hover {
+  color: #fff;
+  background: rgba(255, 255, 255, 0.1);
 }
 
 .sync-confirm-content {
-  font-size: 14px;
-  color: var(--ds-text-subtle, #42526e);
+  font-size: 15px;
+  color: #172b4d;
   line-height: 1.5;
-  margin-bottom: 24px;
+  padding: 24px 24px 16px 24px;
   min-height: 42px;
 }
 
@@ -737,22 +764,25 @@
   display: flex;
   justify-content: flex-end;
   gap: 12px;
+  padding: 0 24px 24px 24px;
 }
 
 .sync-cancel-btn {
-  background: none;
-  border: none;
-  color: var(--ds-text-subtle, #42526e);
-  font-weight: 500;
+  background: #fff;
+  border: 1px solid #6656fc;
+  color: #6656fc;
+  font-weight: 600;
   font-size: 14px;
   cursor: pointer;
-  padding: 8px 12px;
-  border-radius: 4px;
-  transition: background 0.2s;
+  padding: 10px 24px;
+  border-radius: 6px;
+  transition: all 0.2s ease;
 }
 
 .sync-cancel-btn:hover:not(:disabled) {
-  background: rgba(9, 30, 66, 0.08);
+  background: rgba(102, 86, 252, 0.05);
+  border-color: #5b4bf0;
+  color: #5b4bf0;
 }
 
 .sync-cancel-btn:disabled {
@@ -764,8 +794,8 @@
   background: #6656fc;
   color: #fff;
   border: none;
-  border-radius: 4px;
-  padding: 8px 16px;
+  border-radius: 6px;
+  padding: 10px 24px;
   font-size: 14px;
   font-weight: 600;
   cursor: pointer;
@@ -774,7 +804,7 @@
 
 .sync-confirm-btn:hover:not(:disabled) {
   background: #5b4bf0;
-  box-shadow: 0 2px 4px rgba(102, 86, 252, 0.3);
+  box-shadow: 0 2px 6px rgba(102, 86, 252, 0.25);
 }
 
 .sync-confirm-btn:disabled {

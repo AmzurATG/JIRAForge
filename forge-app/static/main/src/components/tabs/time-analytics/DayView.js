@@ -25,8 +25,7 @@ function DayView({ loading, timeData, onTodayTotalReconciled, onOpenWorklogReass
   // Empty object constant — the expand-user feature below is gated behind `false &&`
   // and cannot mutate this. When the feature is re-enabled, restore useState.
   const expandedUsers = {};
-  const [showIdleHelp, setShowIdleHelp] = useState(true);
-  const [hoveredBlock, setHoveredBlock] = useState(null); // { text, type }
+
   const [selectedDate, setSelectedDate] = useState(null);
   const popoverRef = useRef(null);
   // Helper function to get user initials
@@ -242,31 +241,6 @@ function DayView({ loading, timeData, onTodayTotalReconciled, onOpenWorklogReass
     const minutesFromStart = (hoursFromMidnight - TIMELINE_START_HOUR) * 60;
     return Math.max(0, Math.min(100, (minutesFromStart / TIMELINE_TOTAL_MINUTES) * 100));
   };
-
-  // Work hours boundary lines
-  const getWorkHourBoundaries = () => {
-    const wh = (timeData?.canViewAllUsers ? timelineData?.workHours : myTimelineData?.workHours) || null;
-    if (!wh) return [];
-    const todayMidnight = new Date(today);
-    todayMidnight.setHours(0, 0, 0, 0);
-    const parseHM = (str) => {
-      const parts = (str || '').split(':').map(Number);
-      return { h: parts[0] || 0, m: parts[1] || 0 };
-    };
-    const boundaries = [];
-    const start = parseHM(wh.workHoursStart);
-    const end = parseHM(wh.workHoursEnd);
-    const startDate = new Date(todayMidnight);
-    startDate.setHours(start.h, start.m, 0, 0);
-    const endDate = new Date(todayMidnight);
-    endDate.setHours(end.h, end.m, 0, 0);
-    const sp = timeToPercent(startDate);
-    const ep = timeToPercent(endDate);
-    if (sp > 0 && sp < 100) boundaries.push({ percent: sp, label: wh.workHoursStart });
-    if (ep > 0 && ep < 100) boundaries.push({ percent: ep, label: wh.workHoursEnd });
-    return boundaries;
-  };
-  const workHourBoundaries = getWorkHourBoundaries();
 
   // Get user's sessions as time blocks for timeline rendering
   const getUserTimeBlocks = (userId) => {
@@ -888,9 +862,6 @@ function DayView({ loading, timeData, onTodayTotalReconciled, onOpenWorklogReass
                   <div className="day-timeline-header">
                     <div className="timeline-header-name">
                       Name
-                      {!showIdleHelp && (
-                        <button className="idle-guide-reopen-btn" onClick={() => setShowIdleHelp(true)}>Guide</button>
-                      )}
                     </div>
                     <div className="timeline-header-hours">
                       {timelineHours.map(hour => (
@@ -903,28 +874,7 @@ function DayView({ loading, timeData, onTodayTotalReconciled, onOpenWorklogReass
                   </div>
                 )}
 
-                {/* Idle time & unassigned work guide banner — open by default */}
-                {hasTimelineData() && showIdleHelp && (
-                  <div className="idle-guide-banner">
-                    <div className="idle-guide-content">
-                      <div className="idle-guide-legend">
-                        <span className="legend-item"><span className="legend-swatch active"></span>Active work</span>
-                        <span className="legend-item"><span className="legend-swatch idle"></span>Idle (untracked)</span>
-                        <span className="legend-item"><span className="legend-swatch unassigned"></span>Unassigned work</span>
-                        <span className="legend-item"><span className="legend-swatch converted"></span>Converted</span>
-                      </div>
-                      <div className="idle-guide-text">
-                        <strong>Orange striped blocks</strong> are idle periods where no activity was detected.
-                        <strong>Blue striped blocks</strong> are work sessions not yet assigned to a Jira issue.
-                        Hover over either type and click the <strong>+</strong> button to convert into a worklog — assign it to an existing issue or create a new one.
-                        <span className="idle-guide-hint">To see this again, click the <strong>Guide</strong> button next to NAME.</span>
-                      </div>
-                    </div>
-                    <button className="idle-guide-dismiss" onClick={() => setShowIdleHelp(false)}>
-                      ✕
-                    </button>
-                  </div>
-                )}
+
 
                 {users.map((user, idx) => {
                   const timeBlocks = getUserTimeBlocks(user.userId);
@@ -935,6 +885,9 @@ function DayView({ loading, timeData, onTodayTotalReconciled, onOpenWorklogReass
                   const hasActivity = user.totalSeconds > 0;
                   const showTimeline = hasTimelineData();
                   const isOwnUser = !timeData?.canViewAllUsers || (timeData?.userId === user.userId) || (myTimelineData && myTimelineData.userId === user.userId);
+                  const activeDurationSec = timeBlocks.reduce((sum, b) => sum + (b.durationSeconds || 0), 0);
+                  const idleDurationSec = idleBlocks.reduce((sum, b) => sum + (b.durationSeconds || 0), 0);
+                  const unassignedDurationSec = unassignedBlocks.reduce((sum, b) => sum + (b.durationSeconds || 0), 0);
 
                   return (
                     <div key={idx} className={`team-member-card ${showTimeline ? 'with-timeline' : ''}`}>
@@ -966,28 +919,15 @@ function DayView({ loading, timeData, onTodayTotalReconciled, onOpenWorklogReass
                             </span>
                           )}
                         </div>
+                      </div>
 
-                        {/* Timeline visualization - shows actual work periods */}
-                        {showTimeline && (
+                      {/* Timeline visualization - shows actual work periods */}
+                      {showTimeline && (
+                        <div className="member-timeline-wrapper">
                           <div className="member-timeline">
                             <div className="timeline-container">
-                              {/* Hour grid lines for visual reference */}
-                              <div className="timeline-grid">
-                                {timelineHours.map(hour => (
-                                  <div key={hour} className="timeline-grid-cell"></div>
-                                ))}
-                              </div>
                               {/* Actual time blocks positioned based on start_time and end_time */}
                               <div className="timeline-blocks">
-                                {/* Work hours boundary lines */}
-                                {workHourBoundaries.map((b, i) => (
-                                  <div
-                                    key={`wh-${i}`}
-                                    className="work-hour-boundary"
-                                    style={{ left: `${b.percent}%` }}
-                                    title={`Work hours: ${b.label}`}
-                                  />
-                                ))}
                                 {timeBlocks.map((block, blockIdx) => (
                                   <div
                                     key={`work-${blockIdx}`}
@@ -996,9 +936,10 @@ function DayView({ loading, timeData, onTodayTotalReconciled, onOpenWorklogReass
                                       left: `${block.left}%`,
                                       width: `${block.width}%`
                                     }}
-                                    onMouseEnter={() => setHoveredBlock({ text: getBlockTooltip(block), type: 'active' })}
-                                    onMouseLeave={() => setHoveredBlock(null)}
-                                  ></div>
+                                    title={getBlockTooltip(block)}
+                                  >
+                                    <div className="block-tooltip">{getBlockTooltip(block)}</div>
+                                  </div>
                                 ))}
                                 {/* Idle blocks with striped pattern */}
                                 {idleBlocks.map((block, blockIdx) => (
@@ -1009,9 +950,9 @@ function DayView({ loading, timeData, onTodayTotalReconciled, onOpenWorklogReass
                                       left: `${block.left}%`,
                                       width: `${block.width}%`
                                     }}
-                                    onMouseEnter={() => setHoveredBlock({ text: getIdleBlockTooltip(block), type: block.converted ? 'converted' : 'idle' })}
-                                    onMouseLeave={() => setHoveredBlock(null)}
+                                    title={getIdleBlockTooltip(block)}
                                   >
+                                    <div className="block-tooltip">{getIdleBlockTooltip(block)}</div>
                                     {/* Show + button on hover for own unconverted idle blocks */}
                                     {isOwnUser && !block.converted && (
                                       <button
@@ -1029,7 +970,12 @@ function DayView({ loading, timeData, onTodayTotalReconciled, onOpenWorklogReass
                                   </div>
                                 ))}
                                 {/* Unassigned work blocks with dotted pattern */}
-                                {unassignedBlocks.map((block, blockIdx) => (
+                                {unassignedBlocks.map((block, blockIdx) => {
+                                  const mins = Math.round(block.durationSeconds / 60);
+                                  const time = block.startTime.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true });
+                                  const end = block.endTime.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true });
+                                  const titleText = `Unassigned · ${time} – ${end} (${mins}m)`;
+                                  return (
                                   <div
                                     key={`unassigned-${blockIdx}`}
                                     className={`timeline-block unassigned${block.width < 1 ? ' thin' : ''}`}
@@ -1037,6 +983,7 @@ function DayView({ loading, timeData, onTodayTotalReconciled, onOpenWorklogReass
                                       left: `${block.left}%`,
                                       width: `${block.width}%`
                                     }}
+                                    title={titleText}
                                     onClick={() => {
                                       if (!isOwnUser) return;
                                       setConvertStatus(null);
@@ -1044,65 +991,64 @@ function DayView({ loading, timeData, onTodayTotalReconciled, onOpenWorklogReass
                                       setConvertForm({ issueKey: '', reason: '', mode: 'existing', projectKey: '' });
                                       setIssueSearch('');
                                     }}
-                                    onMouseEnter={() => {
-                                      const mins = Math.round(block.durationSeconds / 60);
-                                      const time = block.startTime.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true });
-                                      const end = block.endTime.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true });
-                                      setHoveredBlock({ text: `Unassigned · ${time} – ${end} (${mins}m)`, type: 'unassigned' });
-                                    }}
-                                    onMouseLeave={() => setHoveredBlock(null)}
                                   >
-                                    {/* Show + button on hover for own unassigned blocks */}
-                                    {isOwnUser && (
-                                      <button
-                                        className="unassigned-convert-btn"
-                                        onClick={(e) => {
-                                          e.stopPropagation();
-                                          setConvertStatus(null);
-                                          setConvertingUnassigned(block);
-                                          setConvertForm({ issueKey: '', reason: '', mode: 'existing', projectKey: '' });
-                                          setIssueSearch('');
-                                        }}
-                                        title="Assign or create issue for unassigned work"
-                                      >+</button>
-                                    )}
+                                      <div className="block-tooltip">{titleText}</div>
+                                      {/* Show + button on hover for own unassigned blocks */}
+                                      {isOwnUser && (
+                                        <button
+                                          className="unassigned-convert-btn"
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            setConvertStatus(null);
+                                            setConvertingUnassigned(block);
+                                            setConvertForm({ issueKey: '', reason: '', mode: 'existing', projectKey: '' });
+                                            setIssueSearch('');
+                                          }}
+                                          title="Assign or create issue for unassigned work"
+                                        >+</button>
+                                      )}
+                                    </div>
+                                  );
+                                })}
+
+                              </div>
+                            </div>
+
+                            <div className="timeline-legend-bar">
+                              <div className="timeline-legend-items">
+                                {activeDurationSec > 0 && (
+                                  <div className="legend-item-group">
+                                    <span className="legend-color-box active"></span>
+                                    <span className="legend-label">Active Work ({formatTime(activeDurationSec)})</span>
                                   </div>
-                                ))}
+                                )}
+                                {idleDurationSec > 0 && (
+                                  <div className="legend-item-group">
+                                    <span className="legend-color-box idle"></span>
+                                    <span className="legend-label">Idle Time ({formatTime(idleDurationSec)})</span>
+                                  </div>
+                                )}
+                                {unassignedDurationSec > 0 && (
+                                  <div className="legend-item-group">
+                                    <span className="legend-color-box unassigned"></span>
+                                    <span className="legend-label">Unassigned Work ({formatTime(unassignedDurationSec)})</span>
+                                  </div>
+                                )}
+                                {activeDurationSec === 0 && idleDurationSec === 0 && unassignedDurationSec === 0 && (
+                                  <div className="legend-item-group">
+                                    <span className="legend-color-box no-activity"></span>
+                                    <span className="legend-label">No Activity</span>
+                                  </div>
+                                )}
+                              </div>
+                              <div className="timeline-total-tracked">
+                                <span className="total-time">{formatTime(user.totalSeconds)}</span>
+                                <span className="total-label">Total Tracked</span>
                               </div>
                             </div>
                           </div>
-                        )}
-
-                        {/* Convert idle popover — moved to fixed overlay outside timeline */}
-
-                        {/* Time total */}
-                        <div className="member-total-section">
-                          <span className="member-total">{formatTime(user.totalSeconds)}</span>
-                          {(() => {
-                            const unassignedSecs = unassignedBlocks.reduce(
-                              (sum, b) => sum + (b.durationSeconds || 0),
-                              0
-                            );
-                            if (unassignedSecs >= 60) {
-                              return (
-                                <span className="member-unassigned-hint" title="Time tracked without an issue selected">
-                                  {formatTime(unassignedSecs)} unassigned
-                                </span>
-                              );
-                            }
-                            return null;
-                          })()}
-                        </div>
-                      </div>
-
-                      {/* Hover info strip — shows block details on hover */}
-                      {hoveredBlock && (
-                        <div className={`timeline-hover-strip ${hoveredBlock.type}`}>
-                          <span className={`hover-strip-dot ${hoveredBlock.type}`}></span>
-                          <span className="hover-strip-text">{hoveredBlock.text}</span>
                         </div>
                       )}
-
                       {/* Expandable issue breakdown with worklog reassignment — temporarily disabled */}
                       {false && isOwnUser && expandedUsers[user.userId] && user.tasks && user.tasks.length > 0 && (
                         <div className="issue-breakdown">

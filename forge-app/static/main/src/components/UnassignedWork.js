@@ -1,15 +1,14 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { invoke } from '@forge/bridge';
-import { AssignmentModal, BulkEditModal, GroupAccordion, SelectionBar } from './unassigned';
-import { AiDisclaimer } from './common/AiDisclaimer';
+import { AssignmentModal, BulkEditModal, GroupAccordion, SelectionBar, SyncConfirmModal } from './unassigned';
 import { formatTime } from '../utils';
 import './UnassignedWork.css';
 
 function UnassignedWork() {
   const [sessions, setSessions] = useState([]);
   const [groups, setGroups] = useState([]);
-  const [groupTypeTab, setGroupTypeTab] = useState('all');
-  const [quickFilter, setQuickFilter] = useState('all');
+  const [groupTypeTab] = useState('all');
+  const [quickFilter] = useState('all');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [userIssues, setUserIssues] = useState([]);
@@ -27,9 +26,6 @@ function UnassignedWork() {
   const [selectedGroup, setSelectedGroup] = useState(null);
   const [showBulkEditModal, setShowBulkEditModal] = useState(false);
 
-  // Notification settings state
-  const [notificationsEnabled, setNotificationsEnabled] = useState(true);
-  const [savingNotificationSettings, setSavingNotificationSettings] = useState(false);
   const [syncingWithJira, setSyncingWithJira] = useState(false);
   const [syncBanner, setSyncBanner] = useState(null);
   const syncPollTimerRef = useRef(null);
@@ -38,15 +34,16 @@ function UnassignedWork() {
   const unassignedRequestIdRef = useRef(0);
 
   // Sync timeframe and confirmation state
-  const [syncTimeframe, setSyncTimeframe] = useState('yesterday');
+  const [syncTimeframe, setSyncTimeframe] = useState('');
   const [showSyncConfirmModal, setShowSyncConfirmModal] = useState(false);
   const [syncCounts, setSyncCounts] = useState(null);
   const [syncCountsLoading, setSyncCountsLoading] = useState(false);
   const [syncJobResult, setSyncJobResult] = useState(null);
+  const [submittingMappings, setSubmittingMappings] = useState(false);
 
   // Date range filter state
-  const [dateFrom, setDateFrom] = useState('');
-  const [dateTo, setDateTo] = useState('');
+  const [dateFrom] = useState('');
+  const [dateTo] = useState('');
   // How many activity records actually fall in the selected date range
   // (null = no filter active; number = count returned by the resolver)
 
@@ -354,7 +351,6 @@ function UnassignedWork() {
     loadUnassignedWork();
     loadUserIssues();
     loadUserProjects();
-    loadNotificationSettings();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -368,38 +364,6 @@ function UnassignedWork() {
     loadUnassignedWork(false, 0, { dateFrom, dateTo });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dateFrom, dateTo]);
-
-  const loadNotificationSettings = async () => {
-    try {
-      const result = await invoke('getUnassignedNotificationSettings');
-      if (result.success && result.settings) {
-        setNotificationsEnabled(result.settings.unassignedWorkNotificationsEnabled ?? true);
-      }
-    } catch (err) {
-      console.error('[UnassignedWork] Error loading notification settings:', err);
-    }
-  };
-
-  const handleToggleNotifications = async () => {
-    const newValue = !notificationsEnabled;
-    setSavingNotificationSettings(true);
-
-    try {
-      const result = await invoke('saveUnassignedNotificationSettings', {
-        settings: {
-          unassignedWorkNotificationsEnabled: newValue
-        }
-      });
-
-      if (result.success) {
-        setNotificationsEnabled(newValue);
-      }
-    } catch (err) {
-      console.error('[UnassignedWork] Error saving notification settings:', err);
-    } finally {
-      setSavingNotificationSettings(false);
-    }
-  };
 
   const loadUnassignedWork = async (append = false, retryCount = 0, dateOverrides = null) => {
     const MAX_RETRIES = 5;
@@ -734,7 +698,7 @@ This will permanently dismiss these sessions from clustering. They won't appear 
         syncJobIdRef.current = null;
         setSyncingWithJira(false);
         setSyncJobResult(status);
-        await loadUnassignedWork();
+        setShowSyncConfirmModal(true);
         return;
       }
 
@@ -763,26 +727,10 @@ This will permanently dismiss these sessions from clustering. They won't appear 
     }
   };
 
-  const initiateSyncWithJira = async () => {
-    setSyncCountsLoading(true);
-    setShowSyncConfirmModal(true);
-    setSyncCounts(null);
-    setSyncJobResult(null);
-    try {
-      const result = await invoke('getUnassignedSyncCounts', { timeframe: syncTimeframe });
-      if (result.success) {
-        setSyncCounts({ groupCount: result.groupCount, memberCount: result.memberCount });
-      } else {
-        setSyncCounts({ error: result.error || 'Failed to fetch counts' });
-      }
-    } catch (err) {
-      setSyncCounts({ error: err.message || 'Failed to fetch counts' });
-    } finally {
-      setSyncCountsLoading(false);
-    }
-  };
+  // initiateSyncWithJira was removed, we start dry-run sync directly now.
 
-  const confirmSyncWithJira = async () => {
+  const startDryRunSync = async () => {
+    const timeframe = syncTimeframe || 'yesterday';
     setSyncingWithJira(true);
     setSyncBanner(null);
     setSyncJobResult(null);
@@ -790,23 +738,25 @@ This will permanently dismiss these sessions from clustering. They won't appear 
     syncJobIdRef.current = null;
 
     try {
-      const startResult = await invoke('startUnassignedSyncWithJiraJob', { timeframe: syncTimeframe });
+      const startResult = await invoke('startUnassignedSyncWithJiraJob', { timeframe, dryRun: true });
       if (!startResult?.success) {
         setSyncJobResult({ error: startResult?.error || 'Sync failed to start' });
         setSyncingWithJira(false);
+        setShowSyncConfirmModal(true);
         return;
       }
 
       if (startResult.status === 'completed') {
         setSyncingWithJira(false);
         setSyncJobResult(startResult);
-        await loadUnassignedWork();
+        setShowSyncConfirmModal(true);
         return;
       }
 
       if (!startResult.jobId) {
         setSyncingWithJira(false);
         setSyncJobResult({ error: 'Sync job did not return a valid job id' });
+        setShowSyncConfirmModal(true);
         return;
       }
 
@@ -815,6 +765,25 @@ This will permanently dismiss these sessions from clustering. They won't appear 
     } catch (err) {
       setSyncJobResult({ error: err?.message || 'Sync failed' });
       setSyncingWithJira(false);
+      setShowSyncConfirmModal(true);
+    }
+  };
+
+  const handleSyncConfirm = async (finalMappings) => {
+    setSubmittingMappings(true);
+    try {
+      const result = await invoke('submitUnassignedSyncMappings', { mappings: finalMappings });
+      if (result?.success) {
+        setShowSyncConfirmModal(false);
+        setSyncJobResult(null);
+        await loadUnassignedWork();
+      } else {
+        setSyncJobResult(prev => ({ ...prev, error: result?.error || 'Failed to submit mappings' }));
+      }
+    } catch (err) {
+      setSyncJobResult(prev => ({ ...prev, error: err.message || 'Error submitting mappings' }));
+    } finally {
+      setSubmittingMappings(false);
     }
   };
 
@@ -905,147 +874,43 @@ This will permanently dismiss these sessions from clustering. They won't appear 
 
   return (
     <div className="unassigned-work-container">
-      <div className="unassigned-work-header">
-        <div className="header-top-row">
-          <h2>Unassigned Work</h2>
-          <div className="header-buttons-row">
-            <select
-              className="sync-timeframe-dropdown"
-              value={syncTimeframe}
-              onChange={(e) => setSyncTimeframe(e.target.value)}
-              disabled={syncingWithJira || syncCountsLoading}
-              aria-label="Select timeframe for Jira sync"
-            >
-              <option value="yesterday">Yesterday</option>
-              <option value="last_3_days">Last 3 days</option>
-              <option value="last_one_week">Last 1 week</option>
-            </select>
-            <button
-              className="sync-with-jira-btn"
-              onClick={initiateSyncWithJira}
-              disabled={syncingWithJira || syncCountsLoading}
-              title="Match unassigned work to your in-progress Jira tickets"
-            >
-              {syncingWithJira ? (
-                <span className="sync-with-jira-spinner" aria-hidden="true" />
-              ) : (
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <polyline points="23 4 23 10 17 10" />
-                  <polyline points="1 20 1 14 7 14" />
-                  <path d="M3.51 9a9 9 0 0 1 14.13-3.36L23 10M1 14l5.36 5.36A9 9 0 0 0 20.49 15" />
-                </svg>
-              )}
-              {syncingWithJira ? 'Syncing…' : 'Sync with Jira'}
-            </button>
-            <button
-              className="bulk-time-edit-btn"
-              onClick={() => setShowBulkEditModal(true)}
-              title="Bulk reassign activities by time interval"
-            >
+      <div className="unassigned-work-header" style={{ marginBottom: '20px' }}>
+        <div className="header-buttons-row" style={{ display: 'flex', gap: '12px', alignItems: 'center' }}>
+          <select
+            className="sync-timeframe-dropdown"
+            value={syncTimeframe}
+            onChange={(e) => setSyncTimeframe(e.target.value)}
+            disabled={syncingWithJira || syncCountsLoading}
+            aria-label="Select timeframe for Jira sync"
+          >
+            <option value="" disabled hidden>Select Range</option>
+            <option value="yesterday">Yesterday</option>
+            <option value="last_3_days">Last 3 days</option>
+            <option value="last_one_week">Last 7 days</option>
+          </select>
+          <button
+            className="sync-with-jira-btn"
+            onClick={startDryRunSync}
+            disabled={syncingWithJira}
+            title="Match unassigned work to your in-progress Jira tickets"
+          >
+            {syncingWithJira ? (
+              <span className="sync-with-jira-spinner" aria-hidden="true" />
+            ) : (
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <circle cx="12" cy="12" r="10"></circle>
-                <polyline points="12 6 12 12 16 14"></polyline>
+                <polyline points="23 4 23 10 17 10" />
+                <polyline points="1 20 1 14 7 14" />
+                <path d="M3.51 9a9 9 0 0 1 14.13-3.36L23 10M1 14l5.36 5.36A9 9 0 0 0 20.49 15" />
               </svg>
-              Bulk Time Edit
-            </button>
-          </div>
+            )}
+            {syncingWithJira ? 'Syncing…' : 'Sync Mappings'}
+          </button>
         </div>
         {syncBanner && (
-          <div className={`sync-banner sync-banner--${syncBanner.type}`} role="status">
+          <div className={`sync-banner sync-banner--${syncBanner.type}`} role="status" style={{ marginTop: '12px' }}>
             {syncBanner.message}
           </div>
         )}
-
-        <div className="unassigned-work-summary">
-          <span className="summary-item">
-            {/* When a date filter is active, show the count of sessions that actually
-                fall in the chosen date range (from the resolver's matched_activity_count).
-                Without a filter, show the sum of session_count across displayed groups. */}
-            <strong>{getTotalSessions(displayedGroups)}</strong>{' '}sessions
-          </span>
-          <span className="summary-divider">•</span>
-          <span className="summary-item">
-            <strong>{totalGroups > 0 ? totalGroups : displayedGroups.length}</strong> groups
-          </span>
-          <span className="summary-divider">•</span>
-          <span className="summary-item">
-            <strong>{formatTime(getTotalTime(displayedGroups))}</strong> total time
-          </span>
-          {(dateFrom || dateTo) && (
-            <span className="summary-filter-note">· filtered by date</span>
-          )}
-        </div>
-
-        <div className="date-filter-row">
-          <label className="date-filter-label" htmlFor="uw-date-from">From</label>
-          <input
-            id="uw-date-from"
-            type="date"
-            className="date-filter-input"
-            value={dateFrom}
-            max={dateTo || undefined}
-            onChange={(e) => setDateFrom(e.target.value)}
-            aria-label="Filter from date"
-          />
-          <label className="date-filter-label" htmlFor="uw-date-to">To</label>
-          <input
-            id="uw-date-to"
-            type="date"
-            className="date-filter-input"
-            value={dateTo}
-            min={dateFrom || undefined}
-            onChange={(e) => setDateTo(e.target.value)}
-            aria-label="Filter to date"
-          />
-          {(dateFrom || dateTo) && (
-            <button
-              type="button"
-              className="date-filter-clear-btn"
-              onClick={() => { setDateFrom(''); setDateTo(''); }}
-              aria-label="Clear date filter"
-            >
-              ✕ Clear
-            </button>
-          )}
-        </div>
-
-        <div className="quick-filter-row" role="group" aria-label="Quick filters">
-          <button
-            type="button"
-            className={`group-type-tab${groupTypeTab === 'all' ? ' active' : ''}`}
-            onClick={() => { setGroupTypeTab('all'); setQuickFilter('all'); }}
-          >
-            All ({groupTypeCounts.all})
-          </button>
-          <button
-            type="button"
-            className={`quick-filter-btn${quickFilter === 'recommended' ? ' active' : ''}`}
-            onClick={() => setQuickFilter('recommended')}
-          >
-            AI Recommended
-          </button>
-          <button
-            type="button"
-            className={`quick-filter-btn${quickFilter === 'review' ? ' active' : ''}`}
-            onClick={() => setQuickFilter('review')}
-          >
-            Needs Review
-          </button>
-          <button
-            type="button"
-            className={`group-type-tab${groupTypeTab === 'work' ? ' active' : ''}`}
-            onClick={() => { setGroupTypeTab('work'); setQuickFilter('all'); }}
-          >
-            Unassigned Work ({groupTypeCounts.work})
-          </button>
-          <button
-            type="button"
-            className={`group-type-tab${groupTypeTab === 'idle' ? ' active' : ''}`}
-            onClick={() => { setGroupTypeTab('idle'); setQuickFilter('all'); }}
-          >
-            Idle Sessions ({groupTypeCounts.idle})
-          </button>
-        </div>
       </div>
 
       {/* Inline loading indicator — shown when re-fetching after a filter change */}
@@ -1078,13 +943,7 @@ This will permanently dismiss these sessions from clustering. They won't appear 
         </div>
       )}
 
-      {!loading && displayedGroups.length > 0 && (
-        <AiDisclaimer 
-          notificationsEnabled={notificationsEnabled}
-          onToggleNotifications={handleToggleNotifications}
-          savingNotificationSettings={savingNotificationSettings}
-        />
-      )}
+
 
       {!loading && displayedGroups.length === 0 && groups.length > 0 && (
         <div className="no-groups-message">
@@ -1165,74 +1024,13 @@ This will permanently dismiss these sessions from clustering. They won't appear 
       />
 
       {/* Sync Confirm Modal */}
-      {showSyncConfirmModal && (
-        <div className="sync-confirm-modal-overlay">
-          <div className="sync-confirm-modal" style={syncJobResult ? { maxWidth: '600px' } : {}}>
-            <h3>{syncJobResult ? 'Jira Sync Results' : 'Confirm Jira Sync'}</h3>
-            <div className="sync-confirm-content">
-              {syncJobResult ? (
-                syncJobResult.error ? (
-                  <p className="sync-confirm-error">Error: {syncJobResult.error}</p>
-                ) : (
-                  <div>
-                    <p className="sync-success-summary" style={{ fontWeight: '600', marginBottom: '12px' }}>
-                      {buildSyncCompletedMessage(syncJobResult)}
-                    </p>
-                    {syncJobResult.matchedSessions && syncJobResult.matchedSessions.length > 0 && (
-                      <div className="sync-matched-sessions" style={{ textAlign: 'left', background: '#F4F5F7', padding: '12px', borderRadius: '4px' }}>
-                        <h4 style={{ marginTop: '0', marginBottom: '8px', fontSize: '14px' }}>Assigned Sessions:</h4>
-                        <ul style={{ maxHeight: '200px', overflowY: 'auto', paddingLeft: '20px', margin: 0, fontSize: '13px' }}>
-                          {syncJobResult.matchedSessions.map((session, idx) => (
-                            <li key={idx} style={{ marginBottom: '8px' }}>
-                              <strong>{session.issueKey}</strong> - {session.windowTitle || session.applicationName} 
-                              <span style={{ color: '#6B778C', marginLeft: '8px' }}>({formatTime(session.durationSeconds)})</span>
-                            </li>
-                          ))}
-                        </ul>
-                      </div>
-                    )}
-                  </div>
-                )
-              ) : (
-                syncCountsLoading ? (
-                  <p>Calculating sessions to sync...</p>
-                ) : syncCounts?.error ? (
-                  <p className="sync-confirm-error">Error: {syncCounts.error}</p>
-                ) : (
-                  <p>Are you sure you want to sync <strong>{syncCounts?.memberCount || 0}</strong> unassigned sessions across <strong>{syncCounts?.groupCount || 0}</strong> groups for the selected timeframe?</p>
-                )
-              )}
-            </div>
-            <div className="sync-confirm-actions">
-              {syncJobResult ? (
-                <button 
-                  className="sync-confirm-btn" 
-                  onClick={() => setShowSyncConfirmModal(false)}
-                >
-                  Close
-                </button>
-              ) : (
-                <>
-                  <button 
-                    className="sync-cancel-btn" 
-                    onClick={() => setShowSyncConfirmModal(false)}
-                    disabled={syncingWithJira}
-                  >
-                    Cancel
-                  </button>
-                  <button 
-                    className="sync-confirm-btn" 
-                    onClick={confirmSyncWithJira}
-                    disabled={syncingWithJira || syncCountsLoading || !!syncCounts?.error}
-                  >
-                    {syncingWithJira ? 'Syncing...' : 'Confirm Sync'}
-                  </button>
-                </>
-              )}
-            </div>
-          </div>
-        </div>
-      )}
+      <SyncConfirmModal
+        isOpen={showSyncConfirmModal}
+        syncJobResult={syncJobResult}
+        isSubmitting={submittingMappings}
+        onClose={() => setShowSyncConfirmModal(false)}
+        onConfirm={handleSyncConfirm}
+      />
     </div>
   );
 }

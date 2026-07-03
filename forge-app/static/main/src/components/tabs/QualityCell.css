@@ -1,0 +1,118 @@
+/* Quality Cell Styles */
+
+.quality-cell {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  justify-content: center; /* Center-align contents */
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+  min-height: 32px;
+}
+
+/* Badges */
+.quality-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 10px;
+  font-size: 12px;
+  font-weight: 700;
+  border-radius: 9999px;
+  white-space: nowrap;
+}
+
+.badge-green {
+  background-color: #e3fcef;
+  color: #006644;
+  border: 1px solid #abf5d1;
+}
+
+.badge-yellow {
+  background-color: #fffae6;
+  color: #b36b00;
+  border: 1px solid #ffe380;
+}
+
+.badge-red {
+  background-color: #ffebe6;
+  color: #bf2600;
+  border: 1px solid #ffbdad;
+}
+
+/* Spinner */
+.quality-spinner {
+  width: 14px;
+  height: 14px;
+  border: 2px solid rgba(102, 86, 252, 0.2);
+  border-top-color: #6656fc;
+  border-radius: 50%;
+  animation: quality-spin 0.8s linear infinite;
+}
+
+.quality-status-text {
+  font-size: 12px;
+  color: #6b778c;
+  font-style: italic;
+}
+
+@keyframes quality-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* Improve button */
+.quality-improve-button {
+  background: transparent;
+  border: 1px solid #6656fc;
+  color: #6656fc;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 3px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  white-space: nowrap;
+}
+
+.quality-improve-button:hover {
+  background: #6656fc;
+  color: #ffffff;
+  box-shadow: 0 2px 4px rgba(102, 86, 252, 0.2);
+}
+
+/* Error and empty states */
+.quality-error-text {
+  color: #a5adba;
+  font-weight: bold;
+}
+
+.quality-retry-button {
+  background: transparent;
+  border: none;
+  color: #6b778c;
+  cursor: pointer;
+  padding: 4px;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s ease;
+}
+
+.quality-retry-button:hover {
+  color: #6656fc;
+  background: rgba(102, 86, 252, 0.08);
+}
+
+.quality-retry-button svg {
+  transition: transform 0.2s ease;
+}
+
+.quality-retry-button:active svg {
+  transform: rotate(90deg);
+}
+
+.quality-cell.empty {
+  color: #dfe1e6;
+  font-weight: bold;
+}
