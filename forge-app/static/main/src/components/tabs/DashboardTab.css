@@ -18,7 +18,7 @@
 }
 
 /* My Focus Widget */
-.my-focus-widget {
+/* .my-focus-widget {
   margin-top: 16px;
   padding: 20px;
   background: linear-gradient(135deg, #f8f9ff 0%, #ffffff 100%);
@@ -26,14 +26,14 @@
   box-shadow: 0 2px 8px rgba(102, 86, 252, 0.08), 0 1px 3px rgba(0, 0, 0, 0.04);
   border: 1px solid rgba(102, 86, 252, 0.1);
   transition: all 0.3s ease;
-}
+} */
 
-.my-focus-widget:hover {
+/* .my-focus-widget:hover {
   box-shadow: 0 4px 12px rgba(102, 86, 252, 0.12), 0 2px 6px rgba(0, 0, 0, 0.06);
   transform: translateY(-1px);
-}
+} */
 
-.my-focus-widget h2 {
+/* .my-focus-widget h2 {
   font-size: 20px;
   font-weight: 700;
   color: #172b4d;
@@ -43,7 +43,7 @@
   display: flex;
   align-items: center;
   gap: 8px;
-}
+} */
 
 /* .my-focus-widget h2::before {
   content: '🎯';
@@ -60,16 +60,16 @@
 
 /* Focus Header (Tabs + Search) */
 .focus-header {
-  display: flex;
-  justify-content: space-between;
   align-items: center;
-  gap: 16px;
-  background: rgba(102, 86, 252, 0.03);
-  padding: 12px 16px;
-  border-radius: 8px;
-  flex-wrap: wrap;
-  border: 1px solid rgba(102, 86, 252, 0.08);
-  margin-bottom: 20px;
+    background: #6656fc08;
+    border-bottom: 1px solid #E9EBF7;
+    border-radius: 0;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 16px;
+    justify-content: space-between;
+    margin-bottom: 0;
+    padding: 12px 0px;
 }
 
 /* Focus Tabs */
