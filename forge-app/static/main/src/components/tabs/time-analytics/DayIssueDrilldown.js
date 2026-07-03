@@ -2,7 +2,6 @@ import React, { useEffect, useState } from 'react';
 import { invoke } from '@forge/bridge';
 import { formatTime } from '../../../utils';
 import { IssueList } from '../../common'; // Import the new IssueList component
-import './DayIssueDrilldown.css'; // Assuming styles are defined here or inherited
 
 function formatDisplayDate(dateStr) {
   if (!dateStr) return '';

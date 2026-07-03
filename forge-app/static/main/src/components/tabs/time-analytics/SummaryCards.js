@@ -13,7 +13,7 @@ function SummaryCards({ loading, timeData, activeView, onViewChange, reconciledT
   const rawTodayTotal = (() => {
     const today = new Date();
     const todayStr = formatLocalDate(today);
-    return timeData?.dailySummary?.filter(day => {
+    return (timeData?.dailySummary || []).filter(day => {
       const workDateStr = normalizeDate(day.work_date);
       return workDateStr === todayStr;
     }).reduce((sum, day) => sum + (day.total_seconds || 0), 0) || 0;
@@ -41,7 +41,7 @@ function SummaryCards({ loading, timeData, activeView, onViewChange, reconciledT
       return formatLocalDate(weekDate);
     }).filter(dateStr => dateStr <= todayStr);
 
-    const rawTotal = timeData?.dailySummary?.filter(day => {
+    const rawTotal = (timeData?.dailySummary || []).filter(day => {
       const workDateStr = normalizeDate(day.work_date);
       return weekDates.includes(workDateStr);
     }).reduce((sum, day) => sum + (day.total_seconds || 0), 0) || 0;
@@ -52,7 +52,7 @@ function SummaryCards({ loading, timeData, activeView, onViewChange, reconciledT
   const calculateMonthTotal = () => {
     const currentMonth = getMonthStr();
 
-    const rawTotal = timeData?.dailySummary?.filter(day => {
+    const rawTotal = (timeData?.dailySummary || []).filter(day => {
       const workDateStr = normalizeDate(day.work_date);
       return workDateStr.startsWith(currentMonth);
     }).reduce((sum, day) => sum + (day.total_seconds || 0), 0) || 0;
@@ -78,7 +78,7 @@ function SummaryCards({ loading, timeData, activeView, onViewChange, reconciledT
         }}
         title="Click to view issue breakdown"
       >
-        <div className="card-icon" style={{ background: '#667eea' }}>
+        <div className="card-icon">
           <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
             <circle cx="12" cy="12" r="10"></circle>
             <polyline points="12 6 12 12 16 14"></polyline>
@@ -114,7 +114,7 @@ function SummaryCards({ loading, timeData, activeView, onViewChange, reconciledT
         }}
         title="Click to view issue breakdown"
       >
-        <div className="card-icon" style={{ background: '#f5576c' }}>
+        <div className="card-icon">
           <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
             <rect x="3" y="4" width="18" height="18" rx="2" ry="2"></rect>
             <line x1="16" y1="2" x2="16" y2="6"></line>
@@ -152,7 +152,7 @@ function SummaryCards({ loading, timeData, activeView, onViewChange, reconciledT
         }}
         title="Click to view issue breakdown"
       >
-        <div className="card-icon" style={{ background: '#4facfe' }}>
+        <div className="card-icon">
           <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
             <rect x="3" y="4" width="18" height="18" rx="2" ry="2"></rect>
             <line x1="16" y1="2" x2="16" y2="6"></line>
