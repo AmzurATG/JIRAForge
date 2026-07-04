@@ -370,11 +370,13 @@ async function findOrCreateGoogleUser({ googleSub, email, displayName, organizat
   const supabase = getClient();
   if (!supabase) throw new Error('Supabase client not initialized');
 
-  // Look up by stable google_sub (NOT email — email has no unique constraint).
+  // Look up by stable google_sub — deliberately NOT filtered on auth_provider:
+  // an Atlassian-provisioned user whose Google identity was linked (below, or by
+  // the duplicate-merge repair) keeps auth_provider='atlassian' (google provider
+  // = "non-Jira user" semantics in clustering/AI) but must still be found here.
   const { data: existing, error: findErr } = await supabase
     .from('users')
     .select('*')
-    .eq('auth_provider', 'google')
     .eq('google_sub', googleSub)
     .maybeSingle();
 
@@ -415,6 +417,51 @@ async function findOrCreateGoogleUser({ googleSub, email, displayName, organizat
     return existing;
   }
 
+  // Cross-provider link (spec 2026-07-03 google-login-duplicate-users, AC1/AC2):
+  // the same human may already exist in this org from the Atlassian flow
+  // (google_sub NULL). Creating a second row would split their tracking history
+  // across two identities (observed in prod). Exactly one same-email row in the
+  // resolved org → attach the Google identity to it; ambiguous (2+) or none →
+  // fall through to create. auth_provider is intentionally left untouched.
+  if (email) {
+    // Escape ilike wildcards so a literal email can't widen the match.
+    const emailPattern = email.replace(/([%_\\])/g, '\\$1');
+    const { data: sameEmail, error: emailErr } = await supabase
+      .from('users')
+      .select('*')
+      .eq('organization_id', organizationId)
+      .eq('is_active', true)
+      .ilike('email', emailPattern)
+      .limit(2);
+
+    if (emailErr) {
+      logger.error('[UserDB] findOrCreateGoogleUser email-link lookup failed', { error: emailErr.message });
+      throw emailErr;
+    }
+
+    if (sameEmail && sameEmail.length === 1) {
+      const match = sameEmail[0];
+      const updates = { google_sub: googleSub };
+      if (match.supabase_user_id !== match.id) updates.supabase_user_id = match.id;
+      if (displayName && match.display_name !== displayName) updates.display_name = displayName;
+
+      const { error: linkUpdErr } = await supabase.from('users').update(updates).eq('id', match.id);
+      if (linkUpdErr) {
+        logger.error('[UserDB] Failed to link google identity to existing user', { userId: match.id, error: linkUpdErr.message });
+        throw linkUpdErr;
+      }
+      Object.assign(match, updates);
+      await ensureGoogleUserMembership(supabase, match.id, match.organization_id);
+      logger.info('[UserDB] Linked google identity to existing same-email user', { userId: match.id, organizationId });
+      return match;
+    }
+    if (sameEmail && sameEmail.length > 1) {
+      logger.warn('[UserDB] Multiple same-email users in org — cannot auto-link google identity, creating new user', {
+        organizationId, matches: sameEmail.map((u) => u.id)
+      });
+    }
+  }
+
   const { data: created, error: createErr } = await supabase
     .from('users')
     .insert({
@@ -437,7 +484,6 @@ async function findOrCreateGoogleUser({ googleSub, email, displayName, organizat
       const { data: raced } = await supabase
         .from('users')
         .select('*')
-        .eq('auth_provider', 'google')
         .eq('google_sub', googleSub)
         .maybeSingle();
       if (raced) {
