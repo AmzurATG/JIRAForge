@@ -391,7 +391,7 @@ if not getattr(sys, 'frozen', False):
 
 # Application version - IMPORTANT: Update this when releasing new versions
 # This is used for update checking and notifications
-APP_VERSION = "1.4.10"
+APP_VERSION = "1.4.11"
 
 # Hard-disable screenshot monitoring/storage in desktop app.
 # OCR text extraction for activity records still runs via event-based flow.
@@ -5783,9 +5783,53 @@ class ActiveSessionManager:
                 conn.rollback()
                 print(f"[ERROR] stop_current_timer failed: {e}")
     
+    def trim_sessions_after(self, cutoff_iso):
+        """C5: reconcile pending sessions against an idle anchor (last real input).
+
+        Everything past the cutoff is input-less wall time that the idle record
+        (spanning anchor → resume) will own — sessions must not also claim it:
+          - sessions with first_seen >= cutoff were born inside the no-input
+            window (auto-focus flips) — pure phantom, deleted;
+          - sessions extended past the cutoff keep only their pre-cutoff time
+            (last_seen = cutoff, total reduced by the post-cutoff span, floor 0).
+
+        ISO-8601 UTC strings compare lexicographically — the same convention the
+        table already relies on. Spec:
+        plan/2026-07-03_python-desktop-app_idle-activity-overlap-c5.md
+        """
+        with self._lock:
+            conn = self.db_manager.get_connection()
+            cursor = conn.cursor()
+            try:
+                cursor.execute('DELETE FROM active_sessions WHERE first_seen >= ?', (cutoff_iso,))
+                deleted = cursor.rowcount
+                cursor.execute(
+                    'SELECT id, total_time_seconds, last_seen FROM active_sessions WHERE last_seen > ?',
+                    (cutoff_iso,)
+                )
+                stragglers = cursor.fetchall()
+                cutoff_dt = datetime.fromisoformat(cutoff_iso)
+                for session_id, total, last_seen in stragglers:
+                    try:
+                        over = (datetime.fromisoformat(last_seen) - cutoff_dt).total_seconds()
+                    except Exception:
+                        over = 0
+                    new_total = max(0, (total or 0) - max(0, over))
+                    cursor.execute(
+                        'UPDATE active_sessions SET total_time_seconds = ?, last_seen = ?, timer_started_at = NULL WHERE id = ?',
+                        (new_total, cutoff_iso, session_id)
+                    )
+                conn.commit()
+                if deleted or stragglers:
+                    print(f"[IDLE] Trimmed sessions to idle anchor {cutoff_iso}: "
+                          f"{deleted} phantom deleted, {len(stragglers)} trimmed")
+            except Exception as e:
+                conn.rollback()
+                print(f"[ERROR] trim_sessions_after failed: {e}")
+
     def emergency_save(self):
         """B-10: Emergency save on system shutdown or crash.
-        
+
         Stops current timer, commits all pending changes, and checkpoints WAL.
         Called from WM_ENDSESSION handler or atexit.
         """
@@ -11818,12 +11862,29 @@ class TimeTracker:
             
             # Only finalize session if we were actively tracking
             if self.state == TrackingState.ACTIVE:
+                # C5: resolve the idle anchor FIRST. An already-open anchor (lock
+                # flap that briefly flipped ACTIVE — C2) wins; otherwise backdate
+                # to the last real input. The whole [anchor → now] stretch belongs
+                # to the idle record — sessions must not also claim it.
+                if self.idle_start_time is not None:
+                    anchor_dt = self.idle_start_time
+                else:
+                    anchor_dt = datetime.fromtimestamp(self.last_activity_time, tz=timezone.utc)
+                anchor_iso = anchor_dt.isoformat()
+
                 # Finalize current work session
                 self._finalize_active_session(reason)
-                
-                # Stop SQLite activity timer so idle time isn't counted in activity_records
-                self.session_manager.stop_current_timer()
-                
+
+                # C5: stop the SQLite activity timer AT THE ANCHOR (last real
+                # input), not at the detection moment ~idle_timeout later — the
+                # same end_time override the suspend path already uses. Otherwise
+                # the final segment banks up to 5 min of input-less wall time that
+                # the idle record also covers (the idle-vs-activity overlap).
+                self.session_manager.stop_current_timer(end_time=anchor_iso)
+                # C5: drop sessions born inside the no-input window (auto-focus
+                # flips with zero input) and trim stragglers back to the anchor.
+                self.session_manager.trim_sessions_after(anchor_iso)
+
                 # C2: never re-anchor an already-open idle period. idle_start_time
                 # is cleared only on a genuine resume, so a non-null value here means
                 # an idle stretch is still open (e.g. a lock flap that briefly flipped
@@ -11831,7 +11892,7 @@ class TimeTracker:
                 # what let one locked period be re-emitted as many cumulative rows.
                 if self.idle_start_time is None:
                     # Record when idle started (backdate to last activity)
-                    self.idle_start_time = datetime.fromtimestamp(self.last_activity_time, tz=timezone.utc)
+                    self.idle_start_time = anchor_dt
                     # Store the project key at idle entry — this is the project the user
                     # was actually working on, not whatever project is active when they resume
                     self.idle_project_key = self.current_project_key
