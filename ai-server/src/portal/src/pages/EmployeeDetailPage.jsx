@@ -4,9 +4,9 @@
  * Shows detailed employee metrics, daily trend, and activity logs.
  */
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { ArrowLeft, Clock, TrendingUp, Activity, BarChart3, Building2, Briefcase, Moon, CircleDashed } from 'lucide-react';
+import { ArrowLeft, Clock, TrendingUp, Activity, BarChart3, Building2, Briefcase, Moon, CircleDashed, ChevronLeft, ChevronRight } from 'lucide-react';
 import { employeesApi } from '../api/employees';
 import KPICard from '../components/common/KPICard';
 import CategoryBadge from '../components/common/CategoryBadge';
@@ -36,7 +36,10 @@ function EmployeeDetailPage() {
   const [logsView, setLogsView] = useState('timeline');
   const [timelineLogs, setTimelineLogs] = useState([]);
   const [timelineLoading, setTimelineLoading] = useState(false);
-  
+  // Timeline pager (spec 2026-07-03 timeline revamp): 0 = newest chunk.
+  const [timelinePage, setTimelinePage] = useState(0);
+  const [timelineTruncated, setTimelineTruncated] = useState(false);
+
   // Default to today (shown as the "Today" preset in the picker)
   const [dateRange, setDateRange] = useState(() => {
     const today = formatDate(new Date());
@@ -53,18 +56,56 @@ function EmployeeDetailPage() {
     loadEmployeeLogs();
   }, [userId, activeTab, logsPage, dateRange, logsView]);
 
-  // Timeline: full-day fetch (all categories incl. idle), not the 10-row page.
+  // 'YYYY-MM-DD' ± n days, formatted with the same local-date rules as formatDate.
+  const addDays = (dateStr, n) => {
+    const d = new Date(`${dateStr}T00:00:00`);
+    d.setDate(d.getDate() + n);
+    return formatDate(d);
+  };
+
+  // Timeline pager index: the detail response has one dailyTrend entry per
+  // work_date with data, so its dates are the exact set of renderable days.
+  // Newest first, TIMELINE_DAYS_PER_PAGE per chunk; ≤1 chunk → no pager.
+  const TIMELINE_DAYS_PER_PAGE = 7;
+  const timelineChunks = useMemo(() => {
+    const dates = (employeeDetail?.dailyTrend || []).map((d) => d.date).sort().reverse();
+    const chunks = [];
+    for (let i = 0; i < dates.length; i += TIMELINE_DAYS_PER_PAGE) {
+      const slice = dates.slice(i, i + TIMELINE_DAYS_PER_PAGE);
+      chunks.push({ dates: slice, from: slice[slice.length - 1], to: slice[0] });
+    }
+    return chunks;
+  }, [employeeDetail]);
+  const timelineTotalDays = timelineChunks.reduce((n, c) => n + c.dates.length, 0);
+  const currentChunk = timelineChunks[Math.min(timelinePage, Math.max(0, timelineChunks.length - 1))] || null;
+
+  useEffect(() => {
+    setTimelinePage(0);
+  }, [userId, dateRange]);
+
+  // Timeline: fetch ONLY the visible chunk of tracked days (all categories incl.
+  // idle). ±1 day of padding captures runs spilling over local midnight; the
+  // chunk's own dates trim the spill tracks in DayTimeline. A week of one user
+  // is a few hundred rows — no silent 5000-row truncation like the old
+  // whole-range fetch (defensive banner below if it ever happens).
   // Initial/explicit loads show a one-off "Loading…"; background polls are silent.
   const loadTimeline = async ({ silent = false } = {}) => {
+    if (!currentChunk) {
+      setTimelineLogs([]);
+      setTimelineTruncated(false);
+      return;
+    }
     if (!silent) setTimelineLoading(true);
     try {
+      const limit = 5000;
       const response = await employeesApi.getLogs(userId, {
-        from: dateRange.from,
-        to: dateRange.to,
-        limit: 5000,
+        from: addDays(currentChunk.from, -1),
+        to: addDays(currentChunk.to, 1),
+        limit,
         includeIdle: true,
       });
       setTimelineLogs(response.data || []);
+      setTimelineTruncated((response.data || []).length >= limit);
     } catch (err) {
       console.error('Failed to load timeline:', err);
     } finally {
@@ -73,16 +114,19 @@ function EmployeeDetailPage() {
   };
 
   useEffect(() => {
-    if (logsView !== 'timeline') return;
+    // Wait for the detail response: timelineChunks derive from it, so fetching
+    // while it loads would use the PREVIOUS range's day chunks (stale flash +
+    // wasted request). The effect re-fires when `loading` flips false.
+    if (logsView !== 'timeline' || loading) return;
     loadTimeline({ silent: false });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [userId, dateRange, logsView]);
+  }, [userId, dateRange, logsView, timelinePage, timelineChunks, loading]);
 
-  // Silent live refresh: while viewing the timeline and the range includes today,
-  // re-fetch every 60s WITHOUT a loading state (the bar just extends). Paused when
-  // the tab is hidden; off for past-only ranges.
+  // Silent live refresh: while viewing the NEWEST timeline page and the range
+  // includes today, re-fetch every 60s WITHOUT a loading state (the bar just
+  // extends). Paused when the tab is hidden; off for past-only ranges/pages.
   useEffect(() => {
-    if (logsView !== 'timeline') return undefined;
+    if (logsView !== 'timeline' || timelinePage !== 0) return undefined;
     const today = formatDate(new Date());
     const includesToday = dateRange.from <= today && today <= dateRange.to;
     if (!includesToday) return undefined;
@@ -91,7 +135,7 @@ function EmployeeDetailPage() {
     }, 60000);
     return () => clearInterval(id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [userId, dateRange, logsView]);
+  }, [userId, dateRange, logsView, timelinePage, timelineChunks]);
 
   const loadEmployeeDetail = async () => {
     setLoading(true);
@@ -327,7 +371,39 @@ function EmployeeDetailPage() {
         </div>
 
         {logsView === 'timeline' ? (
-          <DayTimeline records={timelineLogs} loading={timelineLoading} />
+          <>
+            {timelineTruncated && (
+              <div className="mb-3 px-3 py-2 rounded-lg bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 text-xs text-amber-800 dark:text-amber-300">
+                This view hit the fetch limit — some records in this period may not be shown. Narrow the date range for complete detail.
+              </div>
+            )}
+            <DayTimeline
+              records={timelineLogs}
+              loading={timelineLoading || loading}
+              visibleDates={currentChunk ? new Set(currentChunk.dates) : null}
+            />
+            {timelineChunks.length > 1 && (
+              <div className="mt-4 flex items-center justify-center gap-3 text-sm">
+                <button
+                  onClick={() => setTimelinePage((p) => Math.max(0, p - 1))}
+                  disabled={timelinePage === 0}
+                  className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg border border-gray-200 dark:border-gray-700 disabled:opacity-40 disabled:cursor-not-allowed hover:bg-gray-50 dark:hover:bg-gray-800"
+                >
+                  <ChevronLeft className="w-4 h-4" /> Newer
+                </button>
+                <span className="text-xs text-gray-500 dark:text-gray-400 whitespace-nowrap">
+                  Days {timelinePage * TIMELINE_DAYS_PER_PAGE + 1}–{Math.min((timelinePage + 1) * TIMELINE_DAYS_PER_PAGE, timelineTotalDays)} of {timelineTotalDays} tracked days
+                </span>
+                <button
+                  onClick={() => setTimelinePage((p) => Math.min(timelineChunks.length - 1, p + 1))}
+                  disabled={timelinePage >= timelineChunks.length - 1}
+                  className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg border border-gray-200 dark:border-gray-700 disabled:opacity-40 disabled:cursor-not-allowed hover:bg-gray-50 dark:hover:bg-gray-800"
+                >
+                  Older <ChevronRight className="w-4 h-4" />
+                </button>
+              </div>
+            )}
+          </>
         ) : (
         <>
         {/* Tabs */}

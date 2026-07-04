@@ -226,14 +226,14 @@ class PortalService {
     const supabase = getClient();
     if (!supabase) throw new Error('Supabase client not initialized');
 
-    let { search, productivityRange, from, to, locationId } = filters;
+    let { search, productivityRange, from, to, locationId, today, activityStatus, includePresence } = filters;
     const { page = 1, limit = 20 } = pagination;
 
     // visibleUserIds: array → restrict to those employees (LOB scope); null/undefined → all.
     if (Array.isArray(visibleUserIds) && visibleUserIds.length === 0) {
       return { data: [], pagination: { page, limit, totalCount: 0 } };
     }
-    
+
     // Default to last 30 days if no date range provided (prevent full table scan)
     if (!from || !to) {
       const toDate = new Date();
@@ -242,20 +242,53 @@ class PortalService {
       from = from || formatDate(fromDate);
       to = to || formatDate(toDate);
     }
-    
+
+    const userIdsParam = Array.isArray(visibleUserIds) ? visibleUserIds : null;
+
     // Aggregate per-employee server-side via RPC. Summing raw rows in Node hit
     // the PostgREST 1000-row cap and undercounted; the function joins users so a
     // second (also cap-prone) lookup is not needed.
     // p_user_ids: array → LOB scope; null → all employees.
-    const { data: rows, error } = await supabase.rpc('portal_employee_summary', {
-      p_from: from,
-      p_to: to,
-      p_user_ids: Array.isArray(visibleUserIds) ? visibleUserIds : null
-    });
+    //
+    // When includePresence is set (the Employees page endpoint), also fetch
+    // live presence (portal_employee_presence) in parallel: one row per active
+    // user account — including users with NO activity, whom the summary's
+    // HAVING clause drops — keyed to the viewer's local date. `today` comes
+    // from the client; work_date is the user-local date, so the server's own
+    // date is only a fallback. Callers that reuse this method for range
+    // aggregates (the Employee Summary report) leave the flag off and get the
+    // exact pre-presence row set.
+    const [summaryRes, presenceRes] = await Promise.all([
+      supabase.rpc('portal_employee_summary', {
+        p_from: from,
+        p_to: to,
+        p_user_ids: userIdsParam
+      }),
+      includePresence
+        ? supabase.rpc('portal_employee_presence', {
+            p_today: today || formatDate(new Date()),
+            p_user_ids: userIdsParam
+          })
+        : Promise.resolve(null)
+    ]);
 
+    const { data: rows, error } = summaryRes;
     if (error) {
       logger.error('[PortalService] Employee summary RPC failed', { orgId, from, to, error });
       throw error;
+    }
+
+    // Presence is additive: if its RPC fails (e.g. migration not applied yet),
+    // the page must still render — degrade to the summary-only list.
+    let presenceMap = null;
+    if (presenceRes) {
+      if (presenceRes.error) {
+        logger.warn('[PortalService] Employee presence RPC failed — activity status degraded', {
+          orgId, error: presenceRes.error
+        });
+      } else {
+        presenceMap = new Map((presenceRes.data || []).map((p) => [p.user_id, p]));
+      }
     }
 
     let employees = (rows || []).map(row => {
@@ -280,6 +313,55 @@ class PortalService {
       };
     });
 
+    // Users with metrics in the selected range — presence-only rows (added
+    // below) are excluded from productivity filtering, which ranks range
+    // metrics they don't have.
+    const summaryUserIds = new Set(employees.map((e) => e.userId));
+
+    // Merge live presence: overwrite lastActivityAt with the live timestamp
+    // (the column is presence now, not range-scoped) and append zero-hour rows
+    // for users the summary dropped — that is the feature: inactive employees
+    // become visible.
+    if (presenceMap) {
+      for (const emp of employees) {
+        const p = presenceMap.get(emp.userId);
+        if (p) {
+          emp.lastActivityAt = p.last_active_at;
+          emp.activeToday = p.active_today;
+          emp.everTracked = p.ever_tracked;
+        } else {
+          // In summary but not presence (e.g. deactivated account): unknown.
+          emp.activeToday = null;
+          emp.everTracked = null;
+        }
+      }
+      for (const p of presenceMap.values()) {
+        if (!summaryUserIds.has(p.user_id)) {
+          employees.push({
+            userId: p.user_id,
+            name: p.name || p.email || 'Unknown User',
+            email: p.email,
+            productiveHours: 0,
+            nonProductiveHours: 0,
+            neutralHours: 0,
+            idleHours: 0,
+            productivityPercentage: 0,
+            lastActivityAt: p.last_active_at,
+            activeToday: p.active_today,
+            everTracked: p.ever_tracked
+          });
+        }
+      }
+    } else if (includePresence) {
+      // Presence requested but unavailable (degraded): null fields tell the UI
+      // to fall back to date-only rendering. Without the flag the response
+      // stays byte-identical to the pre-presence shape.
+      for (const emp of employees) {
+        emp.activeToday = null;
+        emp.everTracked = null;
+      }
+    }
+
     // Search by name/email — applied in Node since the function returns the full
     // (already LOB-scoped) employee set.
     if (search) {
@@ -290,14 +372,38 @@ class PortalService {
       );
     }
 
-    // Filter by productivity range (aligned with frontend: high >=70%, medium 50-70%, low <50%)
+    // Filter by productivity range (aligned with frontend: high >=70%, medium 50-70%, low <50%).
+    // Presence-only rows (no range metrics) never match — preserves the
+    // pre-presence semantics of this filter.
     if (productivityRange && productivityRange !== 'all') {
       employees = employees.filter(emp => {
+        if (!summaryUserIds.has(emp.userId)) return false;
         const pct = emp.productivityPercentage;
         if (productivityRange === 'high') return pct >= 70;
         if (productivityRange === 'medium') return pct >= 50 && pct < 70;
         if (productivityRange === 'low') return pct < 50;
         return true;
+      });
+    }
+
+    // Live activity-status filter (spec AC3). Buckets, minutes since last
+    // non-idle activity: active < 15 ≤ away < 120 ≤ inactive2h; 180 ≤ inactive3h;
+    // no activity in the presence window (null) counts as inactive.
+    if (activityStatus && activityStatus !== 'all' && presenceMap) {
+      const now = Date.now();
+      employees = employees.filter(emp => {
+        const mins = emp.lastActivityAt
+          ? (now - new Date(emp.lastActivityAt).getTime()) / 60000
+          : Infinity;
+        switch (activityStatus) {
+          case 'active': return mins < 15;
+          case 'away': return mins >= 15 && mins < 120;
+          case 'inactive2h': return mins >= 120;
+          case 'inactive3h': return mins >= 180;
+          case 'nottoday': return emp.activeToday === false;
+          case 'never': return emp.everTracked === false;
+          default: return true;
+        }
       });
     }
 
@@ -592,6 +698,8 @@ class PortalService {
         start_time,
         end_time,
         duration_seconds,
+        work_date,
+        user_timezone,
         ocr_confidence,
         users!activity_records_user_id_fkey!inner(display_name, email)
       `, { count: 'estimated' });  // Use estimated count instead of exact to avoid timeout
@@ -700,6 +808,10 @@ class PortalService {
         startTime: record.start_time,
         endTime: record.end_time,
         durationSeconds: record.duration_seconds,
+        // Day identity for the timeline: the employee's local day + timezone,
+        // so grouping/midnight-splits match work_date instead of the viewer's TZ.
+        workDate: record.work_date,
+        userTimezone: record.user_timezone,
         confidenceScore: record.ocr_confidence || 0,
         employeeName: userName,
         activitySummary: windowTitle,
