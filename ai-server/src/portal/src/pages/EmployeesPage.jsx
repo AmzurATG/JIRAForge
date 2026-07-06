@@ -15,8 +15,63 @@ import DateRangePicker from '../components/common/DateRangePicker';
 import LobFilter from '../components/common/LobFilter';
 import ErrorBanner from '../components/common/ErrorBanner';
 import SuccessBanner from '../components/common/SuccessBanner';
-import { formatDate } from '../utils/formatters';
+import { formatDate, timeAgo } from '../utils/formatters';
 import { useDebounce } from '../hooks/useDebounce';
+
+// Live activity-status buckets (spec 2026-07-02_portal_employee-activity-status):
+// minutes since last non-idle activity — active < 15 ≤ away < 120 ≤ inactive.
+// Presence data is ~5 min behind real time (desktop batch upload interval).
+const ACTIVITY_STATUS_OPTIONS = [
+  { value: '', label: 'All' },
+  { value: 'active', label: 'Active now' },
+  { value: 'away', label: 'Away (15m–2h)' },
+  { value: 'inactive2h', label: 'Inactive > 2 hrs' },
+  { value: 'inactive3h', label: 'Inactive > 3 hrs' },
+  { value: 'nottoday', label: 'Not active today' },
+  { value: 'never', label: 'Never tracked' },
+];
+
+/**
+ * Status dot + relative-time label from the live presence fields.
+ * Falls back to the old date-only rendering when presence is unavailable
+ * (presence RPC degraded → activeToday/everTracked are null).
+ */
+function ActivityStatusCell({ lastActivityAt, activeToday, everTracked }) {
+  if (activeToday == null && everTracked == null) {
+    return <span>{lastActivityAt ? new Date(lastActivityAt).toLocaleDateString() : 'N/A'}</span>;
+  }
+
+  let dotClass; let label; let title;
+  if (everTracked === false) {
+    dotClass = 'bg-gray-400';
+    label = 'Never tracked';
+    title = 'No desktop-app activity has ever been recorded for this user';
+  } else if (!lastActivityAt) {
+    dotClass = 'bg-red-500';
+    label = 'Inactive 7+ days';
+    title = 'No activity in the last 7 days';
+  } else {
+    const mins = (Date.now() - new Date(lastActivityAt).getTime()) / 60000;
+    if (mins < 15) {
+      dotClass = 'bg-emerald-500';
+      label = `Active · ${timeAgo(lastActivityAt)}`;
+    } else if (mins < 120) {
+      dotClass = 'bg-amber-500';
+      label = `Away · ${timeAgo(lastActivityAt)}`;
+    } else {
+      dotClass = 'bg-red-500';
+      label = activeToday === false ? 'Not active today' : `Inactive · ${timeAgo(lastActivityAt)}`;
+    }
+    title = new Date(lastActivityAt).toLocaleString();
+  }
+
+  return (
+    <span className="inline-flex items-center gap-1.5 text-xs whitespace-nowrap" title={title}>
+      <span className={`w-2 h-2 rounded-full flex-shrink-0 ${dotClass}`}></span>
+      {label}
+    </span>
+  );
+}
 
 function EmployeesPage() {
   const navigate = useNavigate();
@@ -30,6 +85,7 @@ function EmployeesPage() {
   const [search, setSearch] = useState('');
   const debouncedSearch = useDebounce(search, 500);
   const [productivityRange, setProductivityRange] = useState('');
+  const [activityStatus, setActivityStatus] = useState('');
   const [lobId, setLobId] = useState('');
 
   // Locations (WS-B): filter dropdown for everyone, edit modal for superadmin.
@@ -104,7 +160,7 @@ function EmployeesPage() {
 
   useEffect(() => {
     loadEmployees();
-  }, [page, debouncedSearch, productivityRange, dateRange, lobId, locationId]);
+  }, [page, debouncedSearch, productivityRange, activityStatus, dateRange, lobId, locationId]);
 
   const loadEmployees = async () => {
     setLoading(true);
@@ -114,10 +170,14 @@ function EmployeesPage() {
       const response = await employeesApi.getList({
         search: debouncedSearch,
         productivityRange: productivityRange || undefined,
+        activityStatus: activityStatus || undefined,
         lobId: lobId || undefined,
         locationId: locationId || undefined,
         from: dateRange.from,
         to: dateRange.to,
+        // Live presence is bucketed against the viewer's local calendar day —
+        // work_date in the DB is the user-local date, not UTC.
+        today: formatDate(new Date()),
         page,
         limit: 10,
       });
@@ -262,7 +322,13 @@ function EmployeesPage() {
       key: 'lastActivityAt',
       label: 'Last Activity',
       sortable: true,
-      render: (value) => value ? new Date(value).toLocaleDateString() : 'N/A',
+      render: (value, row) => (
+        <ActivityStatusCell
+          lastActivityAt={value}
+          activeToday={row.activeToday ?? null}
+          everTracked={row.everTracked ?? null}
+        />
+      ),
     },
     ...(isSuperadmin ? [{
       key: 'actions',
@@ -371,8 +437,8 @@ function EmployeesPage() {
           </div>
         </div>
 
-        {/* Date Range + LOB + Location */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+        {/* Date Range + Activity Status + LOB + Location */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
           <div>
             <label className="filter-label">Date Range</label>
             <DateRangePicker
@@ -380,6 +446,18 @@ function EmployeesPage() {
               to={dateRange.to}
               onChange={handleDateRangeChange}
             />
+          </div>
+          <div>
+            <label className="filter-label">Activity Status</label>
+            <select
+              value={activityStatus}
+              onChange={(e) => { setActivityStatus(e.target.value); setPage(1); }}
+              className="select-field"
+            >
+              {ACTIVITY_STATUS_OPTIONS.map((opt) => (
+                <option key={opt.value} value={opt.value}>{opt.label}</option>
+              ))}
+            </select>
           </div>
           <LobFilter value={lobId} onChange={(v) => { setLobId(v); setPage(1); }} />
           {locations.length > 0 && (

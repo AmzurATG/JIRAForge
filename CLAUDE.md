@@ -13,8 +13,8 @@ Five components. Four live in their own top-level subdirectory; the Portal is a 
 ### forge-app/ — Jira Forge Application (Node.js 22.x runtime)
 The Jira-embedded UI and backend logic. Uses Atlassian Forge platform (not a standard Express app).
 - **Backend**: `src/index.js` registers resolvers (Forge's RPC-like pattern) and exports handlers for scheduled triggers, issue update events, lifecycle hooks, and personal-data callbacks. Resolvers live in `src/resolvers/`, business logic in `src/services/`, helpers in `src/utils/`.
-- **Frontend**: Two React apps under `static/main/` (project page + issue panel) and `static/settings/` (admin page). Built with `react-scripts`, communicate with backend via `@forge/bridge`. `npm run build` at the forge-app root must succeed before `forge deploy`.
-- **Manifest**: `manifest.yml` declares modules (`jira:projectPage`, `jira:issuePanel`, `jira:adminPage`), scheduled triggers (hourly worklog sync), event triggers (`avi:jira:updated:issue`), and lifecycle handlers.
+- **Frontend**: Three build targets under `static/`. `main/` (project page + issue panel) and `settings/` (admin page) are React apps built with `react-scripts`; `uim/` is the `jira:uiModifications` resource bundled with **esbuild** (no React). All communicate with the backend via `@forge/bridge`. `npm run build` at the forge-app root builds all three (`build:main && build:settings && build:uim`) and must succeed before `forge deploy`.
+- **Manifest**: `manifest.yml` declares UI modules (`jira:projectPage`, `jira:issuePanel`, `jira:issueGlance`, `jira:issueAction`, `jira:adminPage`, `jira:uiModifications`), scheduled triggers (hourly worklog sync), event triggers (`avi:jira:updated:issue`), and lifecycle handlers.
 - **Forge Remote (critical)**: The Forge app **cannot make arbitrary HTTP calls**. All forge-app → ai-server traffic goes through the remote keyed `ai-server` (baseUrl `https://forgesync.amzur.com`), routed via `src/utils/remote.js`. Never use `fetch()` or `axios` directly in forge-app backend code to call the AI server.
 
 ### ai-server/ — AI Analysis Server (Node.js >=20, Express)
@@ -53,9 +53,10 @@ A large single-file app (`desktop_app.py`, ~563KB) with supporting modules. Runs
 ```bash
 # forge-app
 cd forge-app && npm install
-npm run build              # Builds both React UIs (main + settings) — required before deploy
-npm run build:main         # Build only main UI
-npm run build:settings     # Build only settings UI
+npm run build              # Builds all three forge UIs (main + settings + uim) — required before deploy
+npm run build:main         # Build only main UI (react-scripts)
+npm run build:settings     # Build only settings UI (react-scripts)
+npm run build:uim          # Build only uiModifications UI (esbuild)
 npm test                   # Jest
 npm run test:coverage      # Jest + coverage (lcov)
 forge deploy               # Deploy (requires Forge CLI + auth)
@@ -64,7 +65,7 @@ forge tunnel               # Local dev tunnel
 # ai-server
 cd ai-server && npm install
 cp .env.example .env
-npm run dev                # nodemon, port 3001
+npm run dev                # nodemon, default port 3001 (set PORT=8080 to match the portal dev proxy)
 npm start                  # production
 npm test                   # Jest
 npm run build:dashboard    # Build admin dashboard sub-app

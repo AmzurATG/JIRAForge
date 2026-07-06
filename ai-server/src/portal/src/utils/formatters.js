@@ -61,12 +61,29 @@ export function formatDate(date) {
 
 /**
  * Format timestamp to human-readable.
- * 
- * @param {string} timestamp 
+ *
+ * @param {string} timestamp
  * @returns {string}
  */
 export function formatDateTime(timestamp) {
   if (!timestamp) return '';
   const date = new Date(timestamp);
   return date.toLocaleString();
+}
+
+/**
+ * Relative "time ago" label for live activity status.
+ *
+ * @param {string} timestamp
+ * @returns {string} "just now" | "5m ago" | "3h ago" | "2d ago"
+ */
+export function timeAgo(timestamp) {
+  if (!timestamp) return '';
+  const diffMs = Date.now() - new Date(timestamp).getTime();
+  const mins = Math.floor(diffMs / 60000);
+  if (mins < 1) return 'just now';
+  if (mins < 60) return `${mins}m ago`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours}h ago`;
+  return `${Math.floor(hours / 24)}d ago`;
 }

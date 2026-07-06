@@ -120,9 +120,12 @@ async function getEmployees(req, res) {
   const startTime = Date.now();
   try {
     const { orgId } = req.portalUser;
-    const { search, productivityRange, from, to, locationId, page = 1, limit = 20 } = req.query;
+    const { search, productivityRange, from, to, locationId, today, activityStatus, page = 1, limit = 20 } = req.query;
 
-    const filters = { search, productivityRange, from, to, locationId };
+    // includePresence: this endpoint serves the Employees page, which shows the
+    // live activity status; internal callers (Employee Summary report) call the
+    // service without the flag and keep the summary-only row set.
+    const filters = { search, productivityRange, from, to, locationId, today, activityStatus, includePresence: true };
     const pagination = { page: parseInt(page), limit: parseInt(limit) };
     
     logger.info('[Portal] getEmployees called', { orgId, filters, pagination });

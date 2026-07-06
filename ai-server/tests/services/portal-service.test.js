@@ -20,6 +20,21 @@ beforeEach(() => {
   profileService.getLocationMapForUsers.mockResolvedValue({});
 });
 
+/**
+ * `.from` stub for the detected-location page merge (user_location_log):
+ * getEmployees awaits from().select().in().order().limit() for every
+ * non-empty page, so rpc-only client mocks crash without it.
+ */
+function detectedLocationFrom(rows = []) {
+  const chain = {
+    select: jest.fn(function () { return this; }),
+    in: jest.fn(function () { return this; }),
+    order: jest.fn(function () { return this; }),
+    limit: jest.fn(async () => ({ data: rows, error: null })),
+  };
+  return jest.fn(() => chain);
+}
+
 describe('getDashboardData — RPC aggregation + LOB scoping', () => {
   test('passes visibleUserIds as p_user_ids and aggregates the per-day rows', async () => {
     const rpc = jest.fn().mockResolvedValue({
@@ -31,7 +46,7 @@ describe('getDashboardData — RPC aggregation + LOB scoping', () => {
       },
       error: null,
     });
-    getClient.mockReturnValue({ rpc });
+    getClient.mockReturnValue({ rpc, from: detectedLocationFrom() });
 
     const result = await portalService.getDashboardData('org', '2026-06-01', '2026-06-02', ['u1', 'u2']);
 
@@ -49,7 +64,7 @@ describe('getDashboardData — RPC aggregation + LOB scoping', () => {
 
   test('passes p_user_ids: null when visibleUserIds is null (superadmin / flag off)', async () => {
     const rpc = jest.fn().mockResolvedValue({ data: { employeeCount: 0, daily: [] }, error: null });
-    getClient.mockReturnValue({ rpc });
+    getClient.mockReturnValue({ rpc, from: detectedLocationFrom() });
 
     await portalService.getDashboardData('org', '2026-06-01', '2026-06-02', null);
 
@@ -60,7 +75,7 @@ describe('getDashboardData — RPC aggregation + LOB scoping', () => {
 
   test('throws when the RPC returns an error', async () => {
     const rpc = jest.fn().mockResolvedValue({ data: null, error: { message: 'boom' } });
-    getClient.mockReturnValue({ rpc });
+    getClient.mockReturnValue({ rpc, from: detectedLocationFrom() });
 
     await expect(portalService.getDashboardData('org', '2026-06-01', '2026-06-02', null))
       .rejects.toMatchObject({ message: 'boom' });
@@ -76,7 +91,7 @@ describe('getEmployees — RPC aggregation', () => {
       ],
       error: null,
     });
-    getClient.mockReturnValue({ rpc });
+    getClient.mockReturnValue({ rpc, from: detectedLocationFrom() });
 
     const res = await portalService.getEmployees('org', { from: '2026-06-01', to: '2026-06-02' }, { page: 1, limit: 10 }, ['u1', 'u2']);
 
@@ -99,7 +114,7 @@ describe('getEmployees — RPC aggregation', () => {
       ],
       error: null,
     });
-    getClient.mockReturnValue({ rpc });
+    getClient.mockReturnValue({ rpc, from: detectedLocationFrom() });
 
     const res = await portalService.getEmployees('org', { productivityRange: 'high' }, { page: 1, limit: 10 }, null);
 
@@ -115,7 +130,7 @@ describe('getEmployees — RPC aggregation', () => {
       ],
       error: null,
     });
-    getClient.mockReturnValue({ rpc });
+    getClient.mockReturnValue({ rpc, from: detectedLocationFrom() });
 
     const res = await portalService.getEmployees('org', { search: 'BOB' }, { page: 1, limit: 10 }, null);
 
@@ -131,7 +146,7 @@ describe('getEmployees — RPC aggregation', () => {
       ],
       error: null,
     });
-    getClient.mockReturnValue({ rpc });
+    getClient.mockReturnValue({ rpc, from: detectedLocationFrom() });
     profileService.getLocationMapForUsers.mockResolvedValue({
       u1: { id: 'loc1', name: 'Hyderabad' },
     });
@@ -152,7 +167,7 @@ describe('getEmployees — RPC aggregation', () => {
       ],
       error: null,
     });
-    getClient.mockReturnValue({ rpc });
+    getClient.mockReturnValue({ rpc, from: detectedLocationFrom() });
     profileService.getLocationMapForUsers.mockResolvedValue({
       u1: { id: 'loc1', name: 'Hyderabad' },
       u2: { id: 'loc2', name: 'Tampa' },
@@ -174,7 +189,7 @@ describe('getApplicationUsage — RPC aggregation', () => {
       ],
       error: null,
     });
-    getClient.mockReturnValue({ rpc });
+    getClient.mockReturnValue({ rpc, from: detectedLocationFrom() });
 
     const res = await portalService.getApplicationUsage(
       'org',
@@ -192,7 +207,7 @@ describe('getApplicationUsage — RPC aggregation', () => {
 
   test('employee outside the caller scope → empty result, no RPC call', async () => {
     const rpc = jest.fn();
-    getClient.mockReturnValue({ rpc });
+    getClient.mockReturnValue({ rpc, from: detectedLocationFrom() });
 
     const res = await portalService.getApplicationUsage('org', { employee: 'outsider' }, ['u1']);
 
@@ -212,7 +227,7 @@ describe('getDashboardData — neutral/idle category breakdown (WS-C)', () => {
       },
       error: null,
     });
-    getClient.mockReturnValue({ rpc });
+    getClient.mockReturnValue({ rpc, from: detectedLocationFrom() });
 
     const result = await portalService.getDashboardData('org', '2026-06-01', '2026-06-02', null);
 
@@ -234,7 +249,7 @@ describe('getDashboardData — neutral/idle category breakdown (WS-C)', () => {
       },
       error: null,
     });
-    getClient.mockReturnValue({ rpc });
+    getClient.mockReturnValue({ rpc, from: detectedLocationFrom() });
 
     const result = await portalService.getDashboardData('org', '2026-06-01', '2026-06-02', null);
 
@@ -342,6 +357,23 @@ describe('getTimeLogs — category filters and field (WS-C)', () => {
 
     expect(chain.neq).not.toHaveBeenCalledWith('is_idle', true);
     expect(chain.not).toHaveBeenCalledWith('is_idle', 'is', null);
+  });
+
+  // Timeline revamp AC1 (plan/2026-07-03_portal_employee-timeline-revamp.md):
+  // day identity must ride along so the timeline can group/split by the
+  // employee's local day instead of the viewer's.
+  test('rows expose workDate and userTimezone (timeline revamp AC1)', async () => {
+    const rows = [
+      { id: 1, classification: 'productive', is_idle: false, work_date: '2026-07-02',
+        user_timezone: 'Asia/Calcutta', users: { display_name: 'A', email: 'a@x' } },
+    ];
+    const { from } = buildLogsClient(rows);
+    getClient.mockReturnValue({ from });
+
+    const res = await portalService.getTimeLogs('org', { from: '2026-07-01', to: '2026-07-03' }, { page: 1, limit: 20 }, null);
+
+    expect(res.data[0].workDate).toBe('2026-07-02');
+    expect(res.data[0].userTimezone).toBe('Asia/Calcutta');
   });
 
   test('rows expose the canonical category field (AC-C3)', async () => {
