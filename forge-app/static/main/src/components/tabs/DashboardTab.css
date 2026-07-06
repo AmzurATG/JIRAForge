@@ -2,19 +2,18 @@
 
 /* Dashboard Container */
 .dashboard {
-  background: #f4f5f7;
-  padding: 16px;
+  background: #fff;
   border-radius: 0;  
  
 }
 
 .dashboard h2 {
-  font-size: 18px;
+  font-size: 16px;
   font-weight: 700;
-  color: #262728;
-  margin: 0;
-  letter-spacing: -0.2px;
-  margin-top: 6px;
+  color: #1e1e1e;
+  margin: 0 0 10px 0;
+  padding: 1.2rem;
+  border-bottom: 1px solid #E9EBF7;
 }
 
 /* My Focus Widget */
@@ -61,7 +60,7 @@
 /* Focus Header (Tabs + Search) */
 .focus-header {
   align-items: center;
-    background: #6656fc08;
+    background:transparent;
     border-bottom: 1px solid #E9EBF7;
     border-radius: 0;
     display: flex;
@@ -69,7 +68,7 @@
     gap: 16px;
     justify-content: space-between;
     margin-bottom: 0;
-    padding: 12px 0px;
+    padding: 0px;
 }
 
 /* Focus Tabs */
@@ -86,11 +85,12 @@
   gap: 12px;
   flex-wrap: wrap;
   flex: 1;
+  margin: 8px 16px;
 }
 
 .focus-tabs button {
   border: none;
-  border-radius: 6px;
+  border-radius: 0px;
   cursor: pointer;
   font-size: 14px;
   font-weight: 600;
@@ -98,7 +98,7 @@
   transition: all 0.25s ease;
   color: #5E6C84;
   background: #ffffff;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+  /* box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05); */
 }
 
 .focus-tabs button:hover {
@@ -109,10 +109,11 @@
 }
 
 .focus-tabs button.active {
-  background: #6656fc;
-  color: #FFFFFF;
+  background: transparent;
+  color: #6656fc;
   font-weight: 700;
-  box-shadow: 0 2px 8px rgba(102, 86, 252, 0.3);
+  box-shadow: none;
+  border-bottom: 2px solid #6656fc;
 }
 
 /* Focus Actions Container */
@@ -370,7 +371,8 @@
   margin-top: var(--ds-space-100);
   border: 1px solid #DFE1E6;
   border-radius: 6px;
-  background: #ffffff;
+  background: #fff;
+  margin: 16px;
 }
 
 .issues-table {
@@ -1361,7 +1363,7 @@
   display: flex;
   align-items: center;
   gap: 6px;
-  margin-bottom: 12px;
+  margin:6px 12px;
   font-size: 12px;
   color: #5e6c84;
 }
