@@ -8,18 +8,21 @@
  * @param {number} seconds - Time in seconds
  * @returns {string} Formatted time string (e.g., "2m 30s", "1h 8m 2s")
  */
-export const formatTime = (seconds) => {
+export const formatTime = (seconds, compact = false) => {
   if (!seconds || seconds < 0) return '0s';
 
   const hours = Math.floor(seconds / 3600);
   const minutes = Math.floor((seconds % 3600) / 60);
   const secs = Math.floor(seconds % 60);
 
-  // Build parts array — always include non-zero components for consistency
+  // Build parts array
   const parts = [];
   if (hours > 0) parts.push(`${hours}h`);
   if (minutes > 0) parts.push(`${minutes}m`);
-  if (secs > 0) parts.push(`${secs}s`);
+  
+  if (!compact || (hours === 0 && minutes === 0)) {
+    if (secs > 0) parts.push(`${secs}s`);
+  }
 
   return parts.length > 0 ? parts.join(' ') : '0s';
 };

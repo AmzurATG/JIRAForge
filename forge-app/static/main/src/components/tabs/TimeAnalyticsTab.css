@@ -213,14 +213,14 @@
 .cumulative-card {
   background: white;
   border-radius: 12px;
-  padding: 24px 20px;
+  padding: 16px 20px;
   box-shadow: rgba(0, 0, 0, 0.02) 0px 2px 8px 0px;
   transition: transform 0.2s ease, box-shadow 0.2s ease;
   display: flex;
   align-items: center;
   gap: 16px;
   border: none;
-  min-height: 100px;
+  min-height: 80px;
 }
 
 /* Clickable card styles */
@@ -250,8 +250,8 @@
 
 /* Card Icon */
 .card-icon {
-  width: 54px;
-  height: 54px;
+  width: 44px;
+  height: 44px;
   border-radius: 12px;
   display: flex;
   align-items: center;
@@ -307,7 +307,7 @@
 }
 
 .cumulative-card .stat-value {
-  font-size: 2.2rem;
+  font-size: 1.8rem;
   font-weight: 700;
   color: #172B4D;
   line-height: 1.1;
@@ -786,9 +786,10 @@
 .member-timeline {
   flex: 1;
   min-width: 400px;
-  height: 46px; /* Accommodate 3 tracks */
+  height: auto;
   display: flex;
-  align-items: stretch;
+  flex-direction: column;
+  justify-content: center;
 }
 
 .timeline-bars {
@@ -842,7 +843,7 @@
 .timeline-container {
   position: relative;
   width: 100%;
-  height: 20px; /* Decreased height */
+  height: 32px;
   background: #F4F5F7;
   border-radius: 6px;
   overflow: visible;
@@ -1643,10 +1644,9 @@
 }
 
 .month-right-column {
-  width: 360px;
-  min-width: 320px;
-  max-width: 360px;
-  flex-shrink: 0;
+  flex: 1.2;
+  min-width: 500px;
+  max-width: 100%;
   display: flex;
   flex-direction: column;
   gap: 12px;
@@ -1654,7 +1654,8 @@
 
 /* Calendar Card */
 .month-calendar-card {
-  flex: 1;
+  flex: 0.8;
+  min-width: 400px;
   background: var(--ds-background-default);
   border: 1px solid var(--ds-border);
   border-radius: 8px;
@@ -1708,11 +1709,10 @@
 
 /* Calendar Cells */
 .calendar-cell {
-  padding: 8px;
+  padding: 4px;
   height: 100%;
-  
   flex-direction: column;
-  gap: 4px;
+  gap: 2px;
   transition: background-color 0.2s ease;
 }
 
@@ -1767,10 +1767,12 @@
 }
 
 .cell-time {
-  font-size: 11px;
+  font-size: 9.5px;
   font-weight: 600;
   color: #00875A;
-  line-height: 1.2;
+  line-height: 1.1;
+  white-space: nowrap;
+  letter-spacing: -0.3px;
 }
 
 .cell-time-drilldown {
@@ -1778,12 +1780,17 @@
   background: rgba(255, 255, 255, 0.72);
   font: inherit;
   color: #0747A6;
-  padding: 2px 6px;
-  border-radius: 6px;
+  padding: 1px 2px;
+  border-radius: 4px;
   border: 1px solid rgba(76, 154, 255, 0.35);
   cursor: pointer;
+  width: 100%;
+  box-sizing: border-box;
   text-align: left;
   transition: color 0.15s ease, background 0.15s ease, border-color 0.15s ease;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: clip;
 }
 
 .cell-time-drilldown:hover,
@@ -2187,6 +2194,7 @@
 }
 
 .day-drilldown-list-container {
+  overflow-x: auto;
   /* Inherit IssueList styles seamlessly */
 }
 
@@ -2236,11 +2244,19 @@
   flex: 1;
 }
 
-.timeline-legend-bar {
+.timeline-total-container {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  margin-left: 16px;
+}
+
+.timeline-legend-bottom {
   display: flex;
   justify-content: space-between;
-  align-items: center;
   margin-top: 16px;
+  width: 100%;
+  align-items: flex-end;
 }
 
 .timeline-legend-items {
