@@ -390,27 +390,6 @@
   pointer-events: none;
 }
 
-.lv2-secure-note {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  font-size: 12px;
-  color: rgba(255, 255, 255, 0.45);
-  margin-top: 16px;
-  white-space: nowrap;
-}
-
-.lv2-restrict-note {
-  position: relative;
-  z-index: 1;
-  margin-top: 22px;
-  font-size: 13px;
-  color: rgba(255, 255, 255, 0.55);
-  text-align: center;
-  animation: lv2-fade 0.5s ease 0.7s both;
-}
-
 /* feature chips */
 .lv2-chips {
   position: relative;
@@ -433,6 +412,10 @@
   font-weight: 600;
   color: rgba(255, 255, 255, 0.75);
   animation: lv2-rise-sm 0.5s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+.lv2-chip-icon {
+  flex-shrink: 0;
+  color: rgba(255, 255, 255, 0.55);
 }
 
 /* footer */

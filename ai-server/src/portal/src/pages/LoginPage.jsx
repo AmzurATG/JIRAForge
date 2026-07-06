@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { BarChart3, Clock, Sparkles } from 'lucide-react';
 import ErrorBanner from '../components/common/ErrorBanner';
 import apiClient from '../api/client';
 import './LoginPage.css';
@@ -35,9 +36,9 @@ const BARS = [
 ];
 
 const CHIPS = [
-  { icon: '🕐', label: 'Automatic Time Capture', delay: '0.55s' },
-  { icon: '💡', label: 'AI-Powered Matching', delay: '0.67s' },
-  { icon: '📊', label: 'Analytics & Reports', delay: '0.79s' },
+  { Icon: Clock, label: 'Automatic Time Capture', delay: '0.55s' },
+  { Icon: Sparkles, label: 'AI-Powered Matching', delay: '0.67s' },
+  { Icon: BarChart3, label: 'Analytics & Reports', delay: '0.79s' },
 ];
 
 /** Typewriter effect cycling through PHRASES; static text under reduced motion. */
@@ -224,22 +225,14 @@ function LoginPage() {
             )}
             <span>{googleLoading ? 'Redirecting to Google…' : 'Sign in with Google'}</span>
           </button>
-
-          <div className="lv2-secure-note">
-            <span style={{ fontSize: 11 }}>🔒</span>
-            <span>Secured by Google OAuth 2.0 · No password stored</span>
-          </div>
         </div>
       </div>
-
-      {/* restriction note */}
-      <div className="lv2-restrict-note">Access is restricted to authorised team members only.</div>
 
       {/* feature chips */}
       <div className="lv2-chips">
         {CHIPS.map((chip) => (
           <div key={chip.label} className="lv2-chip" style={{ animationDelay: chip.delay }}>
-            <span>{chip.icon}</span>
+            <chip.Icon className="lv2-chip-icon" size={15} strokeWidth={2} aria-hidden="true" />
             <span>{chip.label}</span>
           </div>
         ))}
@@ -247,7 +240,7 @@ function LoginPage() {
 
       {/* footer */}
       <div className="lv2-footer">
-        © {new Date().getFullYear()} Amzur Technologies · Secure · Private · GDPR-ready
+        © {new Date().getFullYear()} Amzur Technologies
       </div>
     </div>
   );
