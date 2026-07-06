@@ -1,40 +1,92 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import ErrorBanner from '../components/common/ErrorBanner';
 import apiClient from '../api/client';
+import './LoginPage.css';
 
-const features = [
-  {
-    icon: (
-      <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
-      </svg>
-    ),
-    title: 'Automatic Time Capture',
-    desc: 'Screenshots and activity are captured seamlessly in the background.',
-  },
-  {
-    icon: (
-      <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
-      </svg>
-    ),
-    title: 'AI-Powered Matching',
-    desc: 'Work is intelligently categorized using AI analysis.',
-  },
-  {
-    icon: (
-      <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
-      </svg>
-    ),
-    title: 'Analytics & Reports',
-    desc: 'Rich dashboards give full visibility into team productivity.',
-  },
+const PHRASES = [
+  "Your team's day, at a glance.",
+  'Productivity, in real time.',
+  'Your workday, on autopilot.',
 ];
+
+const STARS = [
+  { top: '18%', left: '22%', size: 3, duration: '4s', delay: '0s' },
+  { top: '32%', left: '70%', size: 2, duration: '5.5s', delay: '1s' },
+  { top: '68%', left: '16%', size: 2, duration: '6s', delay: '2s' },
+  { top: '76%', left: '78%', size: 3, duration: '4.6s', delay: '0.5s' },
+  { top: '12%', left: '52%', size: 2, duration: '5s', delay: '1.6s' },
+];
+
+const KEYS = [
+  { label: 'W', delay: '0s' },
+  { label: 'O', delay: '0.18s' },
+  { label: 'R', delay: '0.36s' },
+  { label: 'K', delay: '0.54s' },
+  { label: '⏎', delay: '0.72s', wide: true },
+];
+
+const BARS = [
+  { duration: '1.9s', delay: '0s' },
+  { duration: '2.3s', delay: '0.3s' },
+  { duration: '1.7s', delay: '0.6s', variant: 'lv2-bar-cyan' },
+  { duration: '2.1s', delay: '0.15s' },
+  { duration: '2.5s', delay: '0.45s', variant: 'lv2-bar-violet' },
+  { duration: '1.8s', delay: '0.75s' },
+];
+
+const CHIPS = [
+  { icon: '🕐', label: 'Automatic Time Capture', delay: '0.55s' },
+  { icon: '💡', label: 'AI-Powered Matching', delay: '0.67s' },
+  { icon: '📊', label: 'Analytics & Reports', delay: '0.79s' },
+];
+
+/** Typewriter effect cycling through PHRASES; static text under reduced motion. */
+function useTypewriter() {
+  const [typed, setTyped] = useState('');
+
+  useEffect(() => {
+    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+      setTyped(PHRASES[0]);
+      return undefined;
+    }
+    let p = 0;
+    let i = 0;
+    let deleting = false;
+    let timer;
+    const tick = () => {
+      const phrase = PHRASES[p];
+      if (!deleting) {
+        i += 1;
+        setTyped(phrase.slice(0, i));
+        if (i === phrase.length) {
+          deleting = true;
+          timer = setTimeout(tick, 2200);
+          return;
+        }
+        timer = setTimeout(tick, 55 + Math.random() * 45);
+      } else {
+        i -= 1;
+        setTyped(phrase.slice(0, i));
+        if (i === 0) {
+          deleting = false;
+          p = (p + 1) % PHRASES.length;
+          timer = setTimeout(tick, 500);
+          return;
+        }
+        timer = setTimeout(tick, 24);
+      }
+    };
+    timer = setTimeout(tick, 700);
+    return () => clearTimeout(timer);
+  }, []);
+
+  return typed;
+}
 
 function LoginPage() {
   const [googleLoading, setGoogleLoading] = useState(false);
   const [error, setError] = useState('');
+  const typed = useTypewriter();
 
   const handleGoogleLogin = async () => {
     setError('');
@@ -52,134 +104,150 @@ function LoginPage() {
   };
 
   return (
-    <div className="min-h-screen flex">
-      {/* ── Left branding panel ── */}
-      <div className="hidden lg:flex lg:w-1/2 relative overflow-hidden bg-gradient-to-br from-primary-700 via-primary-600 to-primary-800 flex-col justify-between p-12">
-        {/* Decorative blobs */}
-        <div className="absolute -top-24 -left-24 w-96 h-96 bg-white/5 rounded-full blur-3xl" />
-        <div className="absolute -bottom-32 -right-16 w-80 h-80 bg-white/10 rounded-full blur-3xl" />
-        <div className="absolute top-1/2 left-1/3 w-48 h-48 bg-primary-400/20 rounded-full blur-2xl" />
+    <div className="lv2-screen">
+      {/* ambient background layers */}
+      <div className="lv2-blob-a" aria-hidden="true" />
+      <div className="lv2-blob-b" aria-hidden="true" />
+      <div className="lv2-blob-c" aria-hidden="true" />
+      <div className="lv2-ring" aria-hidden="true" />
+      {STARS.map((s) => (
+        <div
+          key={`${s.top}-${s.left}`}
+          className="lv2-star"
+          aria-hidden="true"
+          style={{
+            top: s.top,
+            left: s.left,
+            width: s.size,
+            height: s.size,
+            animationDuration: s.duration,
+            animationDelay: s.delay,
+          }}
+        />
+      ))}
 
-        {/* Logo */}
-        <div className="relative z-10 flex items-center gap-3">
-          <div className="w-10 h-10 bg-white/15 backdrop-blur-sm rounded-xl flex items-center justify-center border border-white/20 shadow-lg">
-            <svg className="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
-            </svg>
-          </div>
-          <div>
-            <p className="text-white font-bold text-lg leading-tight">MyWorkMate</p>
-          </div>
-        </div>
+      {/* brand */}
+      <div className="lv2-brand">MyWorkMate</div>
 
-        {/* Hero text */}
-        <div className="relative z-10 space-y-6">
-          <div>
-            <h2 className="text-4xl font-extrabold text-white leading-tight">
-              Track work.<br />
-              <span className="text-primary-200">See the full picture.</span><br />
-              Ship faster.
-            </h2>
-            <p className="mt-4 text-primary-100 text-base leading-relaxed max-w-sm">
-              Automatic time capture powered by AI — no manual timesheets, no guesswork.
-            </p>
-          </div>
+      {/* typewriter headline */}
+      <h1 className="lv2-headline" aria-label={PHRASES[0]}>
+        <span aria-hidden="true">{typed}</span>
+        <span className="lv2-caret" aria-hidden="true" />
+      </h1>
 
-          {/* Feature list */}
-          <div className="space-y-4">
-            {features.map((f) => (
-              <div key={f.title} className="flex items-start gap-3">
-                <div className="flex-shrink-0 w-9 h-9 bg-white/10 backdrop-blur-sm rounded-lg flex items-center justify-center text-primary-100 border border-white/10">
-                  {f.icon}
-                </div>
-                <div>
-                  <p className="text-white text-sm font-semibold">{f.title}</p>
-                  <p className="text-primary-200 text-xs leading-relaxed">{f.desc}</p>
-                </div>
+      {/* ambient mini-cards: docked to screen sides on wide viewports */}
+      <div className="lv2-side-wrap" aria-hidden="true">
+        <div className="lv2-mini lv2-mini-activity">
+          <div className="lv2-mini-head" style={{ gap: 6 }}>
+            <div className="lv2-mini-dot" style={{ background: 'rgba(255,255,255,0.25)' }} />
+            <div className="lv2-mini-dot" style={{ background: 'rgba(255,255,255,0.18)' }} />
+            <div className="lv2-mini-dot" style={{ background: 'rgba(255,255,255,0.12)' }} />
+            <div className="lv2-mini-label" style={{ marginLeft: 'auto' }}>ACTIVITY</div>
+          </div>
+          <div className="lv2-type-lines">
+            <div
+              className="lv2-type-line"
+              style={{ background: 'linear-gradient(90deg, rgba(96,165,250,0.5), rgba(6,182,212,0.35))' }}
+            />
+            <div
+              className="lv2-type-line"
+              style={{ background: 'rgba(255,255,255,0.16)', animationDelay: '0.5s' }}
+            />
+            <div
+              className="lv2-type-line"
+              style={{ background: 'rgba(255,255,255,0.10)', animationDelay: '1s' }}
+            />
+          </div>
+          <div className="lv2-keys">
+            {KEYS.map((k) => (
+              <div
+                key={k.label}
+                className={`lv2-key${k.wide ? ' lv2-key-wide' : ''}`}
+                style={{ animationDelay: k.delay }}
+              >
+                {k.label}
               </div>
             ))}
           </div>
         </div>
 
-        {/* Footer note */}
-        <p className="relative z-10 text-primary-300 text-xs">
-          © {new Date().getFullYear()} Amzur Technologies · Secure · Private · GDPR-ready
-        </p>
+        <div className="lv2-mini lv2-mini-pulse">
+          <div className="lv2-mini-head" style={{ gap: 7, marginBottom: 14 }}>
+            <div className="lv2-rec-dot" />
+            <div className="lv2-mini-label">TEAM PULSE · LIVE</div>
+          </div>
+          <div className="lv2-bars">
+            {BARS.map((b, idx) => (
+              <div
+                // static list — index key is fine
+                key={idx}
+                className={`lv2-bar${b.variant ? ` ${b.variant}` : ''}`}
+                style={{ animationDuration: b.duration, animationDelay: b.delay }}
+              />
+            ))}
+          </div>
+          <div className="lv2-pulse-stat">▲ 12% productivity this week</div>
+        </div>
       </div>
 
-      {/* ── Right sign-in panel ── */}
-      <div className="flex-1 flex items-center justify-center bg-gray-50 dark:bg-gray-900 px-6 py-12">
-        <div className="w-full max-w-md animate-fade-in">
-          {/* Mobile-only logo */}
-          <div className="lg:hidden mb-8">
-            {/* JPG has a white background (no alpha) — show it on a rounded
-                white chip instead of the old invert filter, which would
-                render a solid white box in dark mode. */}
-            <img
-              src="/amzur-logo.jpg"
-              alt="Amzur Technologies"
-              className="h-9 w-auto rounded-md"
-            />
-          </div>
+      {/* sign-in card */}
+      <div className="lv2-card-rise">
+        <div className="lv2-card">
+          <img src="/amzur-logo-white.png" alt="Amzur Technologies" className="lv2-card-logo" />
+          <div className="lv2-card-sub">Sign in to continue to MyWorkMate</div>
 
-          {/* Card */}
-          <div className="bg-white dark:bg-gray-800 rounded-2xl shadow-xl border border-gray-100 dark:border-gray-700/50 p-8">
-            {/* Header */}
-            <div className="mb-8 flex justify-center">
-              <img
-                src="/amzur-logo.jpg"
-                alt="Amzur Technologies"
-                className="h-10 w-auto rounded-md"
-              />
+          {error && (
+            <div className="w-full mb-4">
+              <ErrorBanner message={error} onClose={() => setError('')} />
             </div>
+          )}
 
-            {error && (
-              <div className="mb-4">
-                <ErrorBanner message={error} onClose={() => setError('')} />
-              </div>
-            )}
-
-            {/* Google Sign-In Button */}
-            <button
-              onClick={handleGoogleLogin}
-              disabled={googleLoading}
-              className="w-full flex items-center justify-center gap-3 px-5 py-3.5 bg-white dark:bg-gray-700 border border-gray-300 dark:border-gray-600 rounded-xl
-                hover:bg-gray-50 dark:hover:bg-gray-600 hover:border-gray-400 dark:hover:border-gray-500
-                hover:shadow-md transition-all duration-200 shadow-sm
-                disabled:opacity-50 disabled:cursor-not-allowed group"
-            >
-              {googleLoading ? (
-                <svg className="w-5 h-5 animate-spin text-gray-500" fill="none" viewBox="0 0 24 24">
-                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-                </svg>
-              ) : (
-                <svg className="w-5 h-5 flex-shrink-0" viewBox="0 0 24 24">
-                  <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/>
-                  <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/>
-                  <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z"/>
-                  <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"/>
-                </svg>
-              )}
-              <span className="font-semibold text-sm text-gray-700 dark:text-gray-200 group-hover:text-gray-900 dark:group-hover:text-white transition-colors">
-                {googleLoading ? 'Redirecting to Google…' : 'Sign in with Google'}
-              </span>
-            </button>
-
-            {/* Security note */}
-            <div className="mt-6 flex items-center justify-center gap-1.5 text-xs text-gray-400 dark:text-gray-500">
-              <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
+          <button
+            type="button"
+            className="lv2-google"
+            onClick={handleGoogleLogin}
+            disabled={googleLoading}
+          >
+            <span className="lv2-google-shine" aria-hidden="true" />
+            {googleLoading ? (
+              <svg className="w-5 h-5 animate-spin text-gray-500" fill="none" viewBox="0 0 24 24">
+                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
               </svg>
-              <span>Secured by Google OAuth 2.0 · No password stored</span>
-            </div>
-          </div>
+            ) : (
+              <svg width="19" height="19" viewBox="0 0 18 18" aria-hidden="true">
+                <path fill="#4285F4" d="M17.64 9.2c0-.64-.06-1.25-.16-1.84H9v3.48h4.84a4.14 4.14 0 0 1-1.8 2.72v2.26h2.92c1.7-1.57 2.68-3.88 2.68-6.62z" />
+                <path fill="#34A853" d="M9 18c2.43 0 4.47-.8 5.96-2.18l-2.92-2.26c-.8.54-1.84.86-3.04.86-2.34 0-4.32-1.58-5.03-3.7H.96v2.33A9 9 0 0 0 9 18z" />
+                <path fill="#FBBC05" d="M3.97 10.72a5.4 5.4 0 0 1 0-3.44V4.95H.96a9 9 0 0 0 0 8.1l3-2.33z" />
+                <path fill="#EA4335" d="M9 3.58c1.32 0 2.5.45 3.44 1.35l2.58-2.59A9 9 0 0 0 .96 4.95l3 2.33C4.68 5.16 6.66 3.58 9 3.58z" />
+              </svg>
+            )}
+            <span>{googleLoading ? 'Redirecting to Google…' : 'Sign in with Google'}</span>
+          </button>
 
-          {/* Below-card note */}
-          <p className="mt-6 text-center text-xs text-gray-400 dark:text-gray-600">
-            Access is restricted to authorised team members only.
-          </p>
+          <div className="lv2-secure-note">
+            <span style={{ fontSize: 11 }}>🔒</span>
+            <span>Secured by Google OAuth 2.0 · No password stored</span>
+          </div>
         </div>
+      </div>
+
+      {/* restriction note */}
+      <div className="lv2-restrict-note">Access is restricted to authorised team members only.</div>
+
+      {/* feature chips */}
+      <div className="lv2-chips">
+        {CHIPS.map((chip) => (
+          <div key={chip.label} className="lv2-chip" style={{ animationDelay: chip.delay }}>
+            <span>{chip.icon}</span>
+            <span>{chip.label}</span>
+          </div>
+        ))}
+      </div>
+
+      {/* footer */}
+      <div className="lv2-footer">
+        © {new Date().getFullYear()} Amzur Technologies · Secure · Private · GDPR-ready
       </div>
     </div>
   );
