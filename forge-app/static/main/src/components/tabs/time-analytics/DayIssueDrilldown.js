@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { invoke } from '@forge/bridge';
 import { formatTime } from '../../../utils';
 import { IssueList } from '../../common'; // Import the new IssueList component
+import { useApp } from '../../../context';
 
 function formatDisplayDate(dateStr) {
   if (!dateStr) return '';
@@ -19,6 +20,7 @@ function formatDisplayDate(dateStr) {
  * Shows issue-wise breakdown for the selected date.
  */
 function DayIssueDrilldown({ selectedDate, onClose }) {
+  const { handleStatusChange, statusUpdating, loadTransitionsForIssue } = useApp();
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [details, setDetails] = useState(null);
@@ -93,8 +95,9 @@ function DayIssueDrilldown({ selectedDate, onClose }) {
             <div className="day-drilldown-list-container">
                <IssueList 
                  issues={details.issues}
-                 // We aren't passing handleStatusChange or other actions right now
-                 // as it's a drilldown view. We just display the table.
+                 handleStatusChange={handleStatusChange}
+                 statusUpdating={statusUpdating}
+                 loadTransitionsForIssue={loadTransitionsForIssue}
                />
             </div>
           ) : (

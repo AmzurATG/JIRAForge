@@ -72,20 +72,20 @@ export default function IssueList({
       <table className="issues-table">
         <thead>
           <tr>
-            <th>ID</th>
+            <th style={{ width: '130px' }}>ID</th>
             <th>Title</th>
-            <th>Status</th>
+            <th style={{ width: '130px', textAlign: 'center' }}>Status</th>
             {qualityScores && (
               <th 
                 className={`sortable-header ${qualitySortOrder ? 'sorted' : ''}`}
                 onClick={handleToggleQualitySort}
-                style={{ cursor: 'pointer', textAlign: 'center' }}
+                style={{ cursor: 'pointer', textAlign: 'center', width: '150px' }}
                 title="Sort by description quality"
               >
                 Description Quality {qualitySortOrder === 'asc' ? '▲' : qualitySortOrder === 'desc' ? '▼' : ''}
               </th>
             )}
-            <th style={{ textAlign: 'center' }}>
+            <th style={{ width: '100px', textAlign: 'center' }}>
               {isPendingReviewView ? 'Assigned Time' : 'Time Tracked'}
             </th>
           </tr>
@@ -133,7 +133,9 @@ export default function IssueList({
                   </td>
                   <td className="issue-title">{issue.summary}</td>
                   <td className="issue-status">
-                    {handleStatusChange ? (
+                    {(issue.key === 'Unassigned' || issue.issueKey === 'Unassigned') ? (
+                      <span className="static-status"></span>
+                    ) : handleStatusChange ? (
                       <StatusDropdown
                         issue={issue}
                         onStatusChange={handleStatusChange}

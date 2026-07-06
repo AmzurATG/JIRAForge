@@ -8,6 +8,7 @@ import { checkUserPermissions, getProjectsUserAdmins } from '../../utils/jira.js
 import { MAX_DAILY_SUMMARY_DAYS, MAX_ISSUES_IN_ANALYTICS, DEFAULT_TRACKING_SETTINGS, TEAM_ANALYTICS_CACHE_TTL_MS, MAX_PAGINATED_PAGES } from '../../config/constants.js';
 import { isValidProjectKey } from '../../utils/validators.js';
 import { kvs } from '@forge/kvs';
+import api, { route } from '@forge/api';
 
 // Supabase PostgREST max_rows is 1000 - queries returning more must paginate
 const SUPABASE_PAGE_SIZE = 1000;
@@ -1630,15 +1631,13 @@ export async function getUnassignedConversionRecommendation(accountId, cloudId, 
 async function fetchIssueDetailsBatch(issueKeys) {
   if (!issueKeys || issueKeys.length === 0) return {};
  
-  const { api, route } = await import('@forge/api');
- 
   try {
     const results = {};
    
     // Fetch each issue individually for reliability in Forge
     for (const issueKey of issueKeys) {
       try {
-        const response = await api.asApp().requestJira(
+        const response = await api.asUser().requestJira(
           route`/rest/api/3/issue/${issueKey}?fields=summary,status,priority,issuetype`,
           {
             method: 'GET',
@@ -1653,7 +1652,8 @@ async function fetchIssueDetailsBatch(issueKeys) {
             status: issue.fields?.status?.name || 'Unknown',
             statusCategory: issue.fields?.status?.statusCategory?.key || 'new',
             priority: issue.fields?.priority?.name || 'Medium',
-            issueType: issue.fields?.issuetype?.name || 'Task'
+            issueType: issue.fields?.issuetype?.name || 'Task',
+            issueTypeIconUrl: issue.fields?.issuetype?.iconUrl || ''
           };
         } else {
           console.warn(`[FetchIssueDetails] Failed to fetch ${issueKey}: ${response.status}`);
@@ -1743,6 +1743,7 @@ export async function fetchMyDayIssueBreakdown(accountId, cloudId, date) {
       issue.statusCategory = jiraIssue.statusCategory;
       issue.priority = jiraIssue.priority;
       issue.issueType = jiraIssue.issueType;
+      issue.issueTypeIconUrl = jiraIssue.issueTypeIconUrl;
     }
   });
 

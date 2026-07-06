@@ -11,6 +11,7 @@
   width: 100%;
   border-collapse: collapse;
   background: transparent;
+  table-layout: fixed;
 }
 
 .issues-table thead {
@@ -87,7 +88,6 @@
 }
 
 .issue-title {
-  max-width: 400px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;

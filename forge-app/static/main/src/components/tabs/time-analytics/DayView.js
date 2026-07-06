@@ -923,6 +923,7 @@ function DayView({ loading, timeData, onTodayTotalReconciled, onOpenWorklogReass
 
                       {/* Timeline visualization - shows actual work periods */}
                       {showTimeline && (
+                        <>
                         <div className="member-timeline-wrapper">
                           <div className="member-timeline">
                             <div className="timeline-container">
@@ -1014,40 +1015,42 @@ function DayView({ loading, timeData, onTodayTotalReconciled, onOpenWorklogReass
                               </div>
                             </div>
 
-                            <div className="timeline-legend-bar">
-                              <div className="timeline-legend-items">
-                                {activeDurationSec > 0 && (
-                                  <div className="legend-item-group">
-                                    <span className="legend-color-box active"></span>
-                                    <span className="legend-label">Active Work ({formatTime(activeDurationSec)})</span>
-                                  </div>
-                                )}
-                                {idleDurationSec > 0 && (
-                                  <div className="legend-item-group">
-                                    <span className="legend-color-box idle"></span>
-                                    <span className="legend-label">Idle Time ({formatTime(idleDurationSec)})</span>
-                                  </div>
-                                )}
-                                {unassignedDurationSec > 0 && (
-                                  <div className="legend-item-group">
-                                    <span className="legend-color-box unassigned"></span>
-                                    <span className="legend-label">Unassigned Work ({formatTime(unassignedDurationSec)})</span>
-                                  </div>
-                                )}
-                                {activeDurationSec === 0 && idleDurationSec === 0 && unassignedDurationSec === 0 && (
-                                  <div className="legend-item-group">
-                                    <span className="legend-color-box no-activity"></span>
-                                    <span className="legend-label">No Activity</span>
-                                  </div>
-                                )}
-                              </div>
-                              <div className="timeline-total-tracked">
-                                <span className="total-time">{formatTime(user.totalSeconds)}</span>
-                                <span className="total-label">Total Tracked</span>
-                              </div>
                             </div>
                           </div>
-                        </div>
+                          
+                          <div className="timeline-legend-bottom">
+                            <div className="timeline-legend-items">
+                              {activeDurationSec > 0 && (
+                                <div className="legend-item-group">
+                                  <span className="legend-color-box active"></span>
+                                  <span className="legend-label">Active Work ({formatTime(activeDurationSec)})</span>
+                                </div>
+                              )}
+                              {idleDurationSec > 0 && (
+                                <div className="legend-item-group">
+                                  <span className="legend-color-box idle"></span>
+                                  <span className="legend-label">Idle Time ({formatTime(idleDurationSec)})</span>
+                                </div>
+                              )}
+                              {unassignedDurationSec > 0 && (
+                                <div className="legend-item-group">
+                                  <span className="legend-color-box unassigned"></span>
+                                  <span className="legend-label">Unassigned Work ({formatTime(unassignedDurationSec)})</span>
+                                </div>
+                              )}
+                              {activeDurationSec === 0 && idleDurationSec === 0 && unassignedDurationSec === 0 && (
+                                <div className="legend-item-group">
+                                  <span className="legend-color-box no-activity"></span>
+                                  <span className="legend-label">No Activity</span>
+                                </div>
+                              )}
+                            </div>
+                            <div className="timeline-total-tracked">
+                              <span className="total-time">{formatTime(user.totalSeconds)}</span>
+                              <span className="total-label">Total Tracked</span>
+                            </div>
+                          </div>
+                        </>
                       )}
                       {/* Expandable issue breakdown with worklog reassignment — temporarily disabled */}
                       {false && isOwnUser && expandedUsers[user.userId] && user.tasks && user.tasks.length > 0 && (
