@@ -118,13 +118,12 @@
 
 .sidebar-item:hover {
   background: var(--ds-background-neutral-subtle);
-  color: #6656fc;
+  color: #7564FD;
 }
 
 .sidebar-item.active {
-      background: #6656fc;
-    border-left-color: #6656fc;
-    color: #ffffff;
+    background: #F7F8FA;
+    color: #7564FD;
     font-weight: 600;
 }
 
@@ -143,11 +142,11 @@
 }
 
 .sidebar-item:hover .sidebar-icon svg {
-  color: #6656fc;
+  color: #7564FD;
 }
 
 .sidebar-item.active .sidebar-icon svg {
-  color: #ffffff;
+  color: #7564FD;
 }
 
 .sidebar-label {
@@ -190,7 +189,7 @@
 
 .sidebar-item.active .sidebar-badge--warn {
   background: #ffffff;
-  color: #6656fc;
+  color: #7564FD;
 }
 
 .sidebar-icon--with-badge {
@@ -223,7 +222,7 @@
 
 .sidebar-item.sidebar-feedback:hover {
   background: var(--ds-background-neutral-subtle);
-  color: #6656fc;
+  color: #7564FD;
 }
 
 .sidebar-item.sidebar-feedback .sidebar-icon svg {
@@ -231,7 +230,7 @@
 }
 
 .sidebar-item.sidebar-feedback:hover .sidebar-icon svg {
-  color: #6656fc;
+  color: #7564FD;
 }
 
 /* Sidebar Notification Popover Styles */
@@ -257,7 +256,7 @@
 
 .sidebar-header .notification-clock-btn:hover {
   background: var(--ds-background-neutral-subtle);
-  color: #6656fc;
+  color: #7564FD;
 }
 
 .sidebar-header .notification-popover.sidebar-popover {
@@ -337,7 +336,7 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  color: #6656fc;
+  color: #7564FD;
 }
 
 /* Toggle Switch Styles for Sidebar */
@@ -388,7 +387,7 @@
 }
 
 .notification-popover .toggle-input:checked + .toggle-slider {
-  background-color: #6656fc;
+  background-color: #7564FD;
 }
 
 .notification-popover .toggle-input:checked + .toggle-slider::before {

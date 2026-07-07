@@ -133,7 +133,7 @@
 
 .reassign-search:focus {
   outline: none;
-  border-color: #6656fc;
+  border-color: #7564FD;
   box-shadow: 0 0 0 2px rgba(102, 86, 252, 0.15);
 }
 
@@ -254,7 +254,7 @@
 .new-issue-form textarea:focus,
 .new-issue-form select:focus {
   outline: none;
-  border-color: #6656fc;
+  border-color: #7564FD;
   box-shadow: 0 0 0 2px rgba(102, 86, 252, 0.15);
 }
 
@@ -901,7 +901,7 @@
 .search-input {
   width: 100%;
   padding: 8px 12px;
-  border: 1px solid var(--ds-border, #dfe1e6);
+  border: 1px solid var(--ds-border, #E9EBF7);
   border-radius: 4px;
   font-size: 0.9rem;
   box-sizing: border-box;
@@ -910,7 +910,6 @@
 .search-input:focus {
   outline: none;
   border-color: var(--ds-border-focused, #4c9aff);
-  box-shadow: 0 0 0 2px rgba(76, 154, 255, 0.2);
 }
 
 .feedback-success p {

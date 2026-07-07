@@ -17,7 +17,7 @@
 }
 
 .accordion-item:hover {
-  border-color: #6656fc;
+  border-color: #7564FD;
 }
 
 
@@ -123,7 +123,7 @@
 
 .assign-button-compact {
   padding: 6px 16px;
-  background: #6656fc;
+  background: #7564FD;
   color: white;
   border: none;
   border-radius: 6px;
@@ -224,8 +224,8 @@
 
 .group-recommendation.recommendation-assign_to_existing {
   background: #EDF4FF;
-  border-left: 3px solid #6656fc;
-  color: #6656fc;
+  border-left: 3px solid #7564FD;
+  color: #7564FD;
 }
 
 .group-recommendation.recommendation-create_new_issue {
@@ -254,7 +254,7 @@
   width: 20px;
   height: 20px;
   border: 2px solid var(--ds-border);
-  border-top-color: #6656fc;
+  border-top-color: #7564FD;
   border-radius: 50%;
   animation: spin 0.8s linear infinite;
 }
@@ -314,7 +314,7 @@
 }
 
 .screenshot-card:hover {
-  border-color: #6656fc;
+  border-color: #7564FD;
   box-shadow: 0 4px 8px rgba(9, 30, 66, 0.15);
   transform: translateY(-2px);
 }
@@ -398,7 +398,7 @@
 .screenshot-time {
   font-size: 12px;
   font-weight: 600;
-  color: #6656fc;
+  color: #7564FD;
   margin-bottom: 8px;
 }
 
@@ -438,7 +438,7 @@
 .assign-button-full {
   width: auto;
   padding: 12px;
-  background: #6656fc;
+  background: #7564FD;
   color: white;
   border: none;
   border-radius: 6px;
@@ -474,8 +474,8 @@
   gap: 8px;
   padding: 10px 24px;
   background: white;
-  color: #6656fc;
-  border: 1px solid #6656fc;
+  color: #7564FD;
+  border: 1px solid #7564FD;
   border-radius: 6px;
   cursor: pointer;
   font-size: 14px;
@@ -485,7 +485,7 @@
 }
 
 .load-more-btn:hover:not(:disabled) {
-  background: #6656fc;
+  background: #7564FD;
   color: white;
   transform: translateY(-1px);
   box-shadow: 0 4px 8px rgba(102, 86, 252, 0.3);
@@ -501,7 +501,7 @@
   width: 14px;
   height: 14px;
   border: 2px solid var(--ds-border);
-  border-top-color: #6656fc;
+  border-top-color: #7564FD;
   border-radius: 50%;
   animation: spin 0.8s linear infinite;
 }
@@ -541,7 +541,7 @@
 }
 
 .date-group {
-  border-left: 3px solid #6656fc;
+  border-left: 3px solid #7564FD;
   padding-left: 16px;
 }
 
@@ -551,7 +551,6 @@
   align-items: center;
   margin-bottom: 12px;
   padding-bottom: 8px;
-  border-bottom: 1px solid #EBECF0;
 }
 
 .date-label {
@@ -578,7 +577,6 @@
   gap: 12px;
   padding: 10px 14px;
   background: #F7F8F9;
-  border-radius: 6px;
   transition: all 0.15s ease;
 }
 
@@ -781,7 +779,7 @@
   height: 16px;
   margin: 0;
   cursor: pointer;
-  accent-color: #6656fc;
+  accent-color: #7564FD;
   opacity: 0.45;
   transition: opacity 0.15s ease;
 }
@@ -822,7 +820,7 @@
   width: 14px;
   height: 14px;
   border: 2px solid rgba(102, 86, 252, 0.25);
-  border-top-color: #6656fc;
+  border-top-color: #7564FD;
   border-radius: 50%;
   animation: checkboxSpin 0.7s linear infinite;
   pointer-events: none;
@@ -834,7 +832,7 @@
 
 /* Selected-row highlights */
 .accordion-item--selected {
-  box-shadow: inset 3px 0 0 #6656fc;
+  box-shadow: inset 3px 0 0 #7564FD;
 }
 
 .session-item--selected {

@@ -53,13 +53,13 @@
 }
 
 .group-type-tab:hover {
-  border-color: #6656fc;
+  border-color: #7564FD;
   color: #4f3fe0;
 }
 
 .group-type-tab.active {
-  background: #6656fc;
-  border-color: #6656fc;
+  background: #7564FD;
+  border-color: #7564FD;
   color: #fff;
 }
 
@@ -83,13 +83,13 @@
 }
 
 .quick-filter-btn:hover {
-  border-color: #6656fc;
+  border-color: #7564FD;
   color: #4f3fe0;
 }
 
 .quick-filter-btn.active {
   background: #e9e7ff;
-  border-color: #6656fc;
+  border-color: #7564FD;
   color: #4433d6;
 }
 
@@ -139,12 +139,12 @@
 }
 
 .date-filter-input:hover {
-  border-color: #6656fc;
+  border-color: #7564FD;
 }
 
 .date-filter-input:focus {
   outline: none;
-  border-color: #6656fc;
+  border-color: #7564FD;
   box-shadow: 0 0 0 2px rgba(102, 86, 252, 0.2);
 }
 
@@ -190,7 +190,7 @@
 .no-groups-message button {
   margin-top: 10px;
   padding: 10px 20px;
-  background: #6656fc;
+  background: #7564FD;
   color: white;
   border: none;
   border-radius: 6px;
@@ -259,7 +259,7 @@
 
 .error-retry-btn {
   padding: 8px 20px;
-  background: #6656fc;
+  background: #7564FD;
   color: #fff;
   border: none;
   border-radius: 6px;
@@ -325,7 +325,7 @@
   justify-content: center;
   width: 24px;
   height: 24px;
-  color: #6656fc;
+  color: #7564FD;
 }
 
 .notification-text {
@@ -389,7 +389,7 @@
 }
 
 .notification-toggle-label .toggle-input:checked + .toggle-slider {
-  background-color: #6656fc;
+  background-color: #7564FD;
 }
 
 .notification-toggle-label .toggle-input:checked + .toggle-slider::before {
@@ -514,7 +514,7 @@
   border: 1px solid var(--ds-border);
   border-radius: 8px;
   cursor: pointer;
-  color: #6656fc;
+  color: #7564FD;
   font-size: 13px;
   font-weight: 500;
   transition: all 0.2s ease;
@@ -523,7 +523,7 @@
 
 .bulk-time-edit-btn:hover {
   background: #f4f5f7;
-  border-color: #6656fc;
+  border-color: #7564FD;
   transform: translateY(-1px);
   box-shadow: 0 3px 6px rgba(102, 86, 252, 0.15);
 }
@@ -560,14 +560,14 @@
   border: 1px solid var(--ds-border);
   border-radius: 8px;
   cursor: pointer;
-  color: #6656fc;
+  color: #7564FD;
   transition: all 0.2s ease;
   box-shadow: 0 1px 3px rgba(9, 30, 66, 0.1);
 }
 
 .notification-clock-btn:hover {
   background: #f4f5f7;
-  border-color: #6656fc;
+  border-color: #7564FD;
   transform: translateY(-1px);
   box-shadow: 0 3px 6px rgba(102, 86, 252, 0.15);
 }
@@ -669,11 +669,11 @@
 }
 
 .sync-timeframe-dropdown:hover:not(:disabled) {
-  border-color: #6656fc;
+  border-color: #7564FD;
 }
 
 .sync-timeframe-dropdown:focus {
-  border-color: #6656fc;
+  border-color: #7564FD;
   box-shadow: 0 0 0 2px rgba(102, 86, 252, 0.2);
 }
 
@@ -714,7 +714,7 @@
   display: flex;
   justify-content: space-between;
   align-items: center;
-  background: #6656fc;
+  background: #7564FD;
   padding: 16px 24px;
 }
 
@@ -769,8 +769,8 @@
 
 .sync-cancel-btn {
   background: #fff;
-  border: 1px solid #6656fc;
-  color: #6656fc;
+  border: 1px solid #7564FD;
+  color: #7564FD;
   font-weight: 600;
   font-size: 14px;
   cursor: pointer;
@@ -791,7 +791,7 @@
 }
 
 .sync-confirm-btn {
-  background: #6656fc;
+  background: #7564FD;
   color: #fff;
   border: none;
   border-radius: 6px;

@@ -35,7 +35,7 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  background: #6656fc;
+  background: #7564FD;
   color: #fff;
   border-radius: 100%;
   box-shadow: 0 1px 2px rgba(9, 30, 66, 0.08);
@@ -88,7 +88,7 @@
 }
 
 .classification-section .toggle-switch input:checked + .toggle-slider {
-  background: #6656fc;
+  background: #7564FD;
 }
 
 .classification-section .toggle-switch input:checked + .toggle-slider::before {
@@ -158,7 +158,7 @@
 
 .classification-section .classification-search-input:focus {
   outline: none;
-  border-color: #6656fc;
+  border-color: #7564FD;
   box-shadow: 0 0 0 2px rgba(102, 86, 252, 0.12);
 }
 
@@ -187,13 +187,13 @@
 }
 
 .classification-section .app-chip:hover {
-  border-color: #6656fc;
+  border-color: #7564FD;
   background: #EDF4FF;
 }
 
 .classification-section .app-chip.selected {
-  background: #6656fc;
-  border-color: #6656fc;
+  background: #7564FD;
+  border-color: #7564FD;
   color: #FFFFFF;
 }
 
@@ -232,7 +232,7 @@
 }
 
 .classification-section .load-more-button:hover {
-  border-color: #6656fc;
+  border-color: #7564FD;
   background: #f7f6ff;
 }
 
@@ -268,7 +268,7 @@
 
 .classification-section .input-with-button input:focus {
   outline: none;
-  border-color: #6656fc;
+  border-color: #7564FD;
   background: #FFFFFF;
 }
 
@@ -280,7 +280,7 @@
   justify-content: center;
   font-size: 24px;
   font-weight: 500;
-  background: #6656fc;
+  background: #7564FD;
   color: #FFFFFF;
   border: none;
   border-radius: 4px;
@@ -300,7 +300,7 @@
 }
 
 .classification-section .add-button.non-productive-add {
-  background: #6656fc;
+  background: #7564FD;
 }
 
 .classification-section .add-button.non-productive-add:hover:not(:disabled) {
@@ -314,7 +314,7 @@
 }
 
 .classification-section .add-button.private-add {
-  background: #6656fc;
+  background: #7564FD;
 }
 
 .classification-section .add-button.private-add:hover:not(:disabled) {
