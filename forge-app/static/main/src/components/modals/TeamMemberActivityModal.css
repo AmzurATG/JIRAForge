@@ -382,11 +382,11 @@
 /* Status Badge Styles */
 .status-badge {
   display: inline-block;
-  padding: 2px 8px;
-  border-radius: 3px;
+  padding: 6px 8px;
+  border-radius: 50px;
   font-size: 11px;
   font-weight: 600;
-  text-transform: uppercase;
+  
   letter-spacing: 0.5px;
 }
 
@@ -396,8 +396,9 @@
 }
 
 .status-badge.status-indeterminate {
-  background-color: #DEEBFF;
-  color: #0747A6;
+  background: rgba(217, 119, 6, 0.09);
+  color: #D97706;
+  box-shadow: none;
 }
 
 .status-badge.status-new {

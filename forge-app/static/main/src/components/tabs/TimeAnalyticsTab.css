@@ -153,7 +153,7 @@
   align-items: center;
   justify-content: center;
   padding: 8px 24px;
-  background: #6656fc;
+  background: #7564FD;
   color: white;
   font-size: 14px;
   font-weight: 600;
@@ -166,7 +166,7 @@
 }
 
 .download-button:hover:not(:disabled) {
-  background: #6656fc;
+  background: #7564FD;
   box-shadow: 0 4px 8px rgba(11, 153, 142, 0.3);
 }
 
@@ -353,7 +353,7 @@
 }
 
 .timesheet-tab.active {
-  background: #6656fc;
+  background: #7564FD;
   box-shadow: none;
   color: #fff;
 }
@@ -417,7 +417,7 @@
 
 .month-nav-btn:hover {
   background: var(--ds-background-neutral);
-  border-color: #6656fc;
+  border-color: #7564FD;
   color: var(--ds-text);
 }
 
@@ -452,16 +452,16 @@
   padding: var(--ds-space-100) var(--ds-space-200);
   font-size: 13px;
   font-weight: 500;
-  color: #6656fc;
+  color: #7564FD;
   background: var(--ds-background-default);
-  border: 1px solid #6656fc;
+  border: 1px solid #7564FD;
   border-radius: 6px;
   cursor: pointer;
   transition: all 0.2s ease;
 }
 
 .today-btn:hover {
-  background: #6656fc;
+  background: #7564FD;
   color: #fff;
 }
 
@@ -1531,7 +1531,7 @@
 .task-time {
   font-size: 13px;
   font-weight: 600;
-  color: #6656fc;
+  color: #7564FD;
 }
 
 /* Week View Styles */
@@ -1737,7 +1737,7 @@
   left: 0;
   right: 0;
   height: 4px;
-  background: #6656fc;
+  background: #7564FD;
   border-radius: 0;
 }
 
@@ -1762,7 +1762,7 @@
 }
 
 .calendar-cell.today .cell-day {
-  color: #6656fc;
+  color: #7564FD;
   font-weight: 700;
 }
 

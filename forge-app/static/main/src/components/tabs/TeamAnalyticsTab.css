@@ -499,7 +499,7 @@
 
 .team-activity-trend .trend-bar {
   width: 100%;
-  background: #6656fc;
+  background: #7564FD;
   border-radius: 4px 4px 0 0;
   min-height: 4px;
   transition: background 0.2s ease, transform 0.2s ease;
@@ -944,8 +944,8 @@
 }
 
 .view-toggle-btn.active {
-  background: #6656fc;
-  border-color: #6656fc;
+  background: #7564FD;
+  border-color: #7564FD;
   color: #fff;
 }
 
@@ -1169,8 +1169,8 @@
   font-size: 14px;
   font-weight: 600;
   color: #fff;
-  background: #6656fc;
-  border: 1px solid #6656fc;
+  background: #7564FD;
+  border: 1px solid #7564FD;
   border-radius: 6px;
   cursor: pointer;
   transition: all 0.2s ease;

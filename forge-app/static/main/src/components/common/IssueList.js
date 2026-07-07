@@ -85,7 +85,7 @@ export default function IssueList({
                 Description Quality {qualitySortOrder === 'asc' ? '▲' : qualitySortOrder === 'desc' ? '▼' : ''}
               </th>
             )}
-            <th style={{ width: '100px', textAlign: 'center' }}>
+            <th style={{ width: '100px', textAlign: 'end' }}>
               {isPendingReviewView ? 'Assigned Time' : 'Time Tracked'}
             </th>
           </tr>

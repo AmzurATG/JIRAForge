@@ -85,18 +85,18 @@
 }
 
 .radio-option:hover {
-  border-color: #6656fc;
+  border-color: #7564FD;
   background: #f4f5f7;
 }
 
 .radio-option input[type="radio"] {
   cursor: pointer;
-  accent-color: #6656fc;
+  accent-color: #7564FD;
 }
 
 .radio-option input[type="radio"]:checked + span {
   font-weight: 600;
-  color: #6656fc;
+  color: #7564FD;
 }
 
 .radio-option span {
@@ -138,7 +138,7 @@
 .new-issue-form input:focus,
 .new-issue-form textarea:focus {
   outline: none;
-  border-color: #6656fc;
+  border-color: #7564FD;
   box-shadow: 0 0 0 2px rgba(102, 86, 252, 0.2);
 }
 
@@ -168,7 +168,7 @@
 
 .submit-button {
   padding: 12px;
-  background: #6656fc;
+  background: #7564FD;
   color: white;
   border: none;
   border-radius: 6px;

@@ -395,9 +395,9 @@ function DashboardTab({ onOpenReassignModal }) {
               title="AI-assigned time waiting for your approval"
             >
               <strong>Approve</strong> assigned-time
-              {pendingReviewCount > 0 && (
+              {/* {pendingReviewCount > 0 && (
                 <span className="focus-tab-badge">{pendingReviewCount}</span>
-              )}
+              )} */}
             </button>
             <button
               className={issueFilter === 'unassigned-time' ? 'active' : ''}
@@ -413,7 +413,7 @@ function DashboardTab({ onOpenReassignModal }) {
         ) : (
           <>
             {issueFilter === 'all' && (
-              <div className="focus-controls" style={{ marginBottom: '16px' }}>
+              <div className="focus-controls">
                 <div className="focus-status-filter" aria-label="Filter issues by project">
                   <label className="focus-status-filter-label" htmlFor="my-focus-project-filter">Project:</label>
                   <select
@@ -484,7 +484,7 @@ function DashboardTab({ onOpenReassignModal }) {
             )}
             {lastAnalysedTime && filteredIssues.length > 0 && (
               <div className="quality-recheck-row">
-                <span>Last analysed: {formatLastAnalysed(lastAnalysedTime)}</span>
+                {/* <span>Last analysed: {formatLastAnalysed(lastAnalysedTime)}</span> */}
               </div>
             )}
             {filteredIssues.length > 0 ? (

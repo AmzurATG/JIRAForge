@@ -84,7 +84,7 @@ function QualityCell({ score, status, error, cachedAt, issueKey, onRetry }) {
   return (
     <div className="quality-cell resolved" title={tooltipText}>
       <span className={`quality-badge badge-${badgeClass}`}>
-        {score} · {badgeLabel}
+        <span className='dot'>.</span> {score} {badgeLabel}
       </span>
     </div>
   );
