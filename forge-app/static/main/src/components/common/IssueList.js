@@ -43,14 +43,29 @@ export default function IssueList({
   qualitySortOrder,
   handleToggleQualitySort,
   handleRetryQuality,
-  // Pagination
-  currentPage,
-  handlePageChange,
-  totalPages,
-  startIndex,
-  endIndex,
+  // Lazy loading
+  hasMore,
+  onLoadMore,
   totalItems
 }) {
+
+  const sentinelRef = React.useRef(null);
+
+  React.useEffect(() => {
+    if (!hasMore || !onLoadMore) return;
+    
+    const observer = new IntersectionObserver((entries) => {
+      if (entries[0].isIntersecting) {
+        onLoadMore();
+      }
+    }, { rootMargin: '100px' });
+    
+    if (sentinelRef.current) {
+      observer.observe(sentinelRef.current);
+    }
+    
+    return () => observer.disconnect();
+  }, [hasMore, onLoadMore]);
 
   const handleExpandClick = (e) => {
     const tr = e.target.closest('tr');
@@ -364,55 +379,20 @@ export default function IssueList({
         </tbody>
       </table>
 
-      {/* Pagination Controls */}
-      {totalPages && totalPages > 1 && (
-        <div className="pagination">
-          <button
-            className="pagination-btn"
-            onClick={() => handlePageChange && handlePageChange(currentPage - 1)}
-            disabled={currentPage === 1}
-            title="Previous page"
-          >
-            ‹
-          </button>
+      {/* Lazy Loading Sentinel */}
+      {hasMore && (
+        <div 
+          ref={sentinelRef} 
+          className="lazy-load-sentinel" 
+          style={{ height: '40px', display: 'flex', justifyContent: 'center', alignItems: 'center', margin: '20px 0', color: '#6B778C' }}
+        >
+          <span className="loading-indicator">Loading more...</span>
+        </div>
+      )}
 
-          <div className="pagination-pages">
-            {Array.from({ length: totalPages }, (_, i) => i + 1).map(page => {
-              if (
-                page === 1 ||
-                page === totalPages ||
-                (page >= currentPage - 1 && page <= currentPage + 1)
-              ) {
-                return (
-                  <button
-                    key={page}
-                    className={`pagination-page ${page === currentPage ? 'active' : ''}`}
-                    onClick={() => handlePageChange && handlePageChange(page)}
-                  >
-                    {page}
-                  </button>
-                );
-              } else if (page === currentPage - 2 || page === currentPage + 2) {
-                return <span key={page} className="pagination-ellipsis">...</span>;
-              }
-              return null;
-            })}
-          </div>
-
-          <button
-            className="pagination-btn"
-            onClick={() => handlePageChange && handlePageChange(currentPage + 1)}
-            disabled={currentPage === totalPages}
-            title="Next page"
-          >
-            ›
-          </button>
-
-          {totalItems && (
-            <span className="pagination-info">
-              {startIndex + 1}-{Math.min(endIndex, totalItems)} of {totalItems}
-            </span>
-          )}
+      {!hasMore && totalItems > 0 && (
+        <div style={{ textAlign: 'center', margin: '20px 0', color: '#6B778C', fontSize: '12px' }}>
+          Showing all {totalItems} {totalItems === 1 ? 'issue' : 'issues'}
         </div>
       )}
     </div>
