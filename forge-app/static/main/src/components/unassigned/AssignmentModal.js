@@ -8,7 +8,8 @@ function AssignmentModal({
   userIssues,
   userProjects,
   onClose,
-  onAssignmentComplete
+  onAssignmentComplete,
+  onDeleteSelection
 }) {
   const [assignmentType, setAssignmentType] = useState('existing');
   const [selectedIssueKey, setSelectedIssueKey] = useState('');
@@ -20,6 +21,15 @@ function AssignmentModal({
   const [availableStatuses, setAvailableStatuses] = useState([]);
   const [assignToMe, setAssignToMe] = useState(true);
   const [assigning, setAssigning] = useState(false);
+  const [isIssueDropdownOpen, setIsIssueDropdownOpen] = useState(false);
+  const [issueSearchQuery, setIssueSearchQuery] = useState('');
+
+  // Close dropdown when clicking outside
+  useEffect(() => {
+    const handleClickOutside = () => setIsIssueDropdownOpen(false);
+    document.addEventListener('click', handleClickOutside);
+    return () => document.removeEventListener('click', handleClickOutside);
+  }, []);
 
   // Load statuses when project changes
   useEffect(() => {
@@ -201,57 +211,119 @@ function AssignmentModal({
   if (!isOpen || !selectedGroup) return null;
 
   return (
-    <div className="modal-overlay" onClick={onClose}>
+    <div className="modal-overlay assignment-overlay" onClick={onClose}>
       <div className="modal-content assignment-modal" onClick={(e) => e.stopPropagation()}>
         <div className="modal-header">
-          <h3>Assign "{selectedGroup.label}"</h3>
+          <h3>{isMultiGroup ? `Assign ${selectedGroup.groupIds.length} Selected Work Items` : `Assign "${selectedGroup.label}"`}</h3>
           <button className="modal-close" onClick={onClose}>×</button>
         </div>
 
         <div className="modal-body">
-          <p className="match-tip-banner">
-            <span>Our AI matches sessions to Jira issues using their <strong>summary</strong> and <strong>description</strong>. Use clear, descriptive titles in Jira to improve matching accuracy.</span>
-          </p>
+          {isMultiGroup && (
+            <div className="selection-summary-pill">
+              <span className="pill-item">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <polygon points="12 2 2 7 12 12 22 7 12 2"></polygon>
+                  <polyline points="2 17 12 22 22 17"></polyline>
+                  <polyline points="2 12 12 17 22 12"></polyline>
+                </svg>
+                {selectedGroup.groupIds.length} Group
+              </span>
+              <span className="pill-item text-purple">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <rect x="2" y="3" width="20" height="14" rx="2" ry="2"></rect>
+                  <line x1="8" y1="21" x2="16" y2="21"></line>
+                  <line x1="12" y1="17" x2="12" y2="21"></line>
+                </svg>
+                {selectedGroup.session_count}
+              </span>
+              <span className="pill-item text-blue bg-blue">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <circle cx="12" cy="12" r="10"></circle>
+                  <polyline points="12 6 12 12 16 14"></polyline>
+                </svg>
+                {selectedGroup.total_time_formatted}
+              </span>
+            </div>
+          )}
 
-          <div className="assignment-options">
-            <label className="radio-option">
-              <input
-                type="radio"
-                name="assignment-type"
-                value="existing"
-                checked={assignmentType === 'existing'}
-                onChange={() => setAssignmentType('existing')}
-              />
-              <span>Add to Existing Issue</span>
-            </label>
+          <div className="match-tip-banner">
+            <div>
+              <strong>About your timesheet</strong><br/>
+              Our AI matches sessions to Jira issues using their <strong>summary</strong> and <strong>description</strong>. Use clear, descriptive titles in Jira to improve matching accuracy.
+            </div>
+          </div>
 
-            <label className="radio-option">
-              <input
-                type="radio"
-                name="assignment-type"
-                value="new"
-                checked={assignmentType === 'new'}
-                onChange={() => setAssignmentType('new')}
-              />
-              <span>Create New Issue</span>
-            </label>
+          <div className="assignment-tabs">
+            <button 
+              className={`tab-button ${assignmentType === 'existing' ? 'active' : ''}`}
+              onClick={() => setAssignmentType('existing')}
+            >
+              Existing Issue
+            </button>
+            <button 
+              className={`tab-button ${assignmentType === 'new' ? 'active' : ''}`}
+              onClick={() => setAssignmentType('new')}
+            >
+              Create New
+            </button>
           </div>
 
           {assignmentType === 'existing' && (
             <div className="existing-issue-form">
               <label>
                 Select Jira Issue:
-                <select
-                  value={selectedIssueKey}
-                  onChange={(e) => setSelectedIssueKey(e.target.value)}
+                <div 
+                  className="custom-issue-select" 
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setIsIssueDropdownOpen(!isIssueDropdownOpen);
+                  }}
                 >
-                  <option value="">-- Select Issue --</option>
-                  {userIssues.map(issue => (
-                    <option key={issue.key} value={issue.key}>
-                      {issue.key}: {issue.summary}
-                    </option>
-                  ))}
-                </select>
+                  <div className="custom-issue-select-value">
+                    {selectedIssueKey ? userIssues.find(i => i.key === selectedIssueKey)?.key + ' - ' + userIssues.find(i => i.key === selectedIssueKey)?.summary : '-- Select Issue --'}
+                  </div>
+                  <div className="custom-issue-select-arrow">▼</div>
+                  
+                  {isIssueDropdownOpen && (
+                    <div className="custom-issue-dropdown" onClick={(e) => e.stopPropagation()}>
+                      <div className="custom-issue-search-container">
+                        <input 
+                          type="text" 
+                          className="custom-issue-search-input" 
+                          placeholder="Search issues..."
+                          value={issueSearchQuery}
+                          onChange={(e) => setIssueSearchQuery(e.target.value)}
+                          autoFocus
+                        />
+                      </div>
+                      <div className="custom-issue-dropdown-list">
+                        {userIssues.filter(issue => 
+                          issue.key.toLowerCase().includes(issueSearchQuery.toLowerCase()) || 
+                          issue.summary.toLowerCase().includes(issueSearchQuery.toLowerCase())
+                        ).map(issue => (
+                          <div 
+                            key={issue.key} 
+                            className="custom-issue-dropdown-item"
+                            onClick={() => {
+                              setSelectedIssueKey(issue.key);
+                              setIsIssueDropdownOpen(false);
+                              setIssueSearchQuery('');
+                            }}
+                          >
+                            <strong>{issue.key}</strong> - {issue.summary}
+                          </div>
+                        ))}
+                        {userIssues.filter(issue => 
+                          issue.key.toLowerCase().includes(issueSearchQuery.toLowerCase()) || 
+                          issue.summary.toLowerCase().includes(issueSearchQuery.toLowerCase())
+                        ).length === 0 && (
+                          <div className="custom-issue-dropdown-empty">No matching issues found</div>
+                        )}
+                      </div>
+                    </div>
+                  )}
+                </div>
               </label>
               <div className="time-preview">
                 Time to log: <strong>{selectedGroup.total_time_formatted}</strong>
@@ -274,84 +346,34 @@ function AssignmentModal({
           {assignmentType === 'new' && (
             <div className="new-issue-form">
               <label>
-                Issue Summary: *
+                What were you working on?
                 <input
                   type="text"
+                  className="custom-issue-search-input"
+                  style={{marginTop: '6px', fontSize: '14px', padding: '10px'}}
                   value={newIssueSummary}
                   onChange={(e) => setNewIssueSummary(e.target.value)}
-                  placeholder="Enter issue title"
+                  placeholder="e.g. Code review, standup meeting"
                   required
                 />
               </label>
 
               <label>
-                Description:
-                <textarea
-                  value={newIssueDescription}
-                  onChange={(e) => setNewIssueDescription(e.target.value)}
-                  placeholder="Describe the work performed..."
-                  rows={4}
-                />
-              </label>
-
-              <label>
-                Project: *
+                Select project
                 <select
+                  className="custom-issue-search-input"
+                  style={{marginTop: '6px', fontSize: '14px', padding: '10px'}}
                   value={selectedProject}
                   onChange={(e) => setSelectedProject(e.target.value)}
                   required
                 >
+                  <option value="">— Select a project —</option>
                   {userProjects.map(project => (
                     <option key={project.key} value={project.key}>
                       {project.name} ({project.key})
                     </option>
                   ))}
                 </select>
-              </label>
-
-              <label>
-                Issue Type:
-                <select
-                  value={issueType}
-                  onChange={(e) => setIssueType(e.target.value)}
-                >
-                  <option value="Task">Task</option>
-                  <option value="Bug">Bug</option>
-                  <option value="Story">Story</option>
-                </select>
-              </label>
-
-              <label>
-                Status: *
-                <select
-                  value={selectedStatus}
-                  onChange={(e) => setSelectedStatus(e.target.value)}
-                  required
-                >
-                  {availableStatuses.length > 0 ? (
-                    availableStatuses.map(status => (
-                      <option key={status.id || status.name} value={status.name}>
-                        {status.name}
-                      </option>
-                    ))
-                  ) : (
-                    <>
-                      <option value="To Do">To Do</option>
-                      <option value="In Progress">In Progress</option>
-                      <option value="Done">Done</option>
-                    </>
-                  )}
-                </select>
-                <small>Selecting a status prevents the issue from going to backlog</small>
-              </label>
-
-              <label>
-                <input
-                  type="checkbox"
-                  checked={assignToMe}
-                  onChange={(e) => setAssignToMe(e.target.checked)}
-                />
-                Assign to me (current user)
               </label>
 
               <div className="time-preview">

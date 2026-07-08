@@ -194,7 +194,7 @@ function GroupAccordion({
                   </div>
                 </div>
                 <div className="accordion-header-right">
-                  <div className="stat-compact">
+                  <div className="stat-compact stat-sessions">
                     <span className="stat-icon">
                       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                         <rect x="2" y="3" width="20" height="14" rx="2" ry="2"></rect>
@@ -208,7 +208,7 @@ function GroupAccordion({
                         : (details?.session_count || group.session_count)}
                     </span>
                   </div>
-                  <div className="stat-compact">
+                  <div className="stat-compact stat-time">
                     <span className="stat-icon">
                       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                         <circle cx="12" cy="12" r="10"></circle>
@@ -288,26 +288,32 @@ function GroupAccordion({
                   {/* Show details when loaded */}
                   {!isLoadingGroupDetails && details && (
                     <div className="work-sessions-section">
-                      {isLoadingWorkSessionsForGroup && (
-                        <div className="loading-sessions">Loading work sessions...</div>
-                      )}
+                      <h4 className="work-sessions-title">
+                        Work Sessions ({hasDateFilter && group.filtered_session_count !== null ? group.filtered_session_count : (details?.session_count || group.session_count || 0)})
+                      </h4>
+                      
+                      <div className="work-sessions-box">
+                        {isLoadingWorkSessionsForGroup && (
+                          <div className="loading-sessions">Loading work sessions...</div>
+                        )}
 
-                      {!isLoadingWorkSessionsForGroup && dateGroups.length === 0 && (
-                        <div className="no-sessions">No work sessions available</div>
-                      )}
+                        {!isLoadingWorkSessionsForGroup && dateGroups.length === 0 && (
+                          <div className="no-sessions">No work sessions available</div>
+                        )}
 
-                      {!isLoadingWorkSessionsForGroup && dateGroups.length > 0 && (
-                        <div className="sessions-by-date">
-                          {dateGroups.map((dateGroup, dateIdx) => (
-                            <div key={dateIdx} className="date-group">
-                              <div className="date-header">
-                                <span className="date-label">
-                                  {formatDate(dateGroup.date)}
-                                </span>
-                                <span className="date-total">
-                                  Total: {formatTime(dateGroup.totalSeconds)}
-                                </span>
-                              </div>
+                        {!isLoadingWorkSessionsForGroup && dateGroups.length > 0 && (
+                          <div className="sessions-by-date">
+                            {dateGroups.map((dateGroup, dateIdx) => (
+                              <div key={dateIdx} className="date-group">
+                                <div className="date-header">
+                                  <span className="date-label">
+                                    {formatDate(dateGroup.date)}
+                                  </span>
+                                  <span className="date-total">
+                                    <span className="date-total-label">Total Time : </span>
+                                    <span className="date-total-value">{formatTime(dateGroup.totalSeconds)}</span>
+                                  </span>
+                                </div>
                               <div className="sessions-list">
                                 {dateGroup.sessions.map((session, sessionIdx) => {
                                   const sessionDuration = getSessionDuration(session);
@@ -364,28 +370,19 @@ function GroupAccordion({
                             </div>
                           ))}
                         </div>
-                      )}
-                    </div>
-                  )}
-
-                  {/* Action buttons — always visible once group is expanded.
-                      handleAssignClick loads group details on-demand if not yet cached,
-                      so these buttons work correctly even when details haven't loaded yet. */}
-                  {!isLoadingGroupDetails && (
-                    <div className="accordion-actions">
-                      <button
-                        className="assign-button-full"
-                        onClick={(e) => handleAssignClick(group, e)}
-                      >
-                        Assign This Group
-                      </button>
-                      <button
-                        className="dismiss-button-full"
-                        onClick={(e) => handleConfirmDismiss(group.id, e)}
-                        disabled={dismissingGroup[group.id]}
-                      >
-                        {dismissingGroup[group.id] ? 'Deleting…' : 'Delete Group'}
-                      </button>
+                        )}
+                        
+                        {!isLoadingGroupDetails && (
+                          <div className="work-sessions-box-footer">
+                            <button
+                              className="assign-button-full"
+                              onClick={(e) => handleAssignClick(group, e)}
+                            >
+                              Assign This Group
+                            </button>
+                          </div>
+                        )}
+                      </div>
                     </div>
                   )}
                 </div>

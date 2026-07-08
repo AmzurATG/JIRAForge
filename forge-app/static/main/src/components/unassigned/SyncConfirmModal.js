@@ -1,11 +1,29 @@
 import React, { useState, useEffect } from 'react';
 import './SyncConfirmModal.css';
 import { formatTime } from '../../utils';
-
+import { invoke } from '@forge/bridge';
 export default function SyncConfirmModal({ isOpen, onClose, onConfirm, syncJobResult, isSubmitting }) {
   const [selectedSessions, setSelectedSessions] = useState(new Set());
   const [manualAssignments, setManualAssignments] = useState({}); // { sessionId: issueKey }
   const [sessions, setSessions] = useState([]);
+  const [availableIssues, setAvailableIssues] = useState([]);
+  const [openDropdownId, setOpenDropdownId] = useState(null);
+
+  useEffect(() => {
+    if (isOpen) {
+      invoke('getAllUserAssignedIssues').then(res => {
+        if (res?.success && res.issues) {
+          setAvailableIssues(res.issues);
+        }
+      });
+    }
+  }, [isOpen]);
+
+  useEffect(() => {
+    const handleClickOutside = () => setOpenDropdownId(null);
+    document.addEventListener('click', handleClickOutside);
+    return () => document.removeEventListener('click', handleClickOutside);
+  }, []);
 
   useEffect(() => {
     if (isOpen && syncJobResult?.matchedSessions) {
@@ -60,7 +78,7 @@ export default function SyncConfirmModal({ isOpen, onClose, onConfirm, syncJobRe
         </div>
 
         <div className="sync-confirm-modal-subheader">
-          <strong>{selectedCount} Sessions matched</strong> · {formatTime(totalTime)} total Time
+          <strong>{selectedCount} Sessions</strong> matched - {formatTime(totalTime)} total Time
         </div>
 
         <div className="sync-confirm-modal-content">
@@ -79,6 +97,7 @@ export default function SyncConfirmModal({ isOpen, onClose, onConfirm, syncJobRe
                     <div className="sync-confirm-item-checkbox">
                       <input 
                         type="checkbox" 
+                        className="sync-custom-checkbox"
                         checked={isSelected}
                         onChange={() => toggleSelection(session.sessionId)}
                       />
@@ -94,20 +113,54 @@ export default function SyncConfirmModal({ isOpen, onClose, onConfirm, syncJobRe
                       </div>
                       
                       <div className="sync-confirm-item-title-row">
-                        <span className="sync-confirm-item-title">{session.windowTitle || session.applicationName}</span>
+                        <span className="sync-confirm-item-title">{session.issueSummary || session.windowTitle || session.applicationName}</span>
                         <span className="sync-confirm-item-chip">{assignedIssueKey}</span>
                       </div>
                       
-                      {session.insight && (
-                        <div className="sync-confirm-item-insight">
-                          ✦ AI says: "{session.insight}"
-                        </div>
-                      )}
+                      <div className="sync-confirm-item-insight">
+                        ✦ Context: {session.windowTitle || session.applicationName}
+                        {session.insight && (
+                          <>
+                            <br />
+                            ✦ AI says: "{session.insight}"
+                          </>
+                        )}
+                      </div>
                     </div>
                     
                     <div className="sync-confirm-item-actions">
-                      <button className="sync-confirm-review-btn">Review &amp; Assign</button>
-                      <button className="sync-confirm-manual-btn">Choose ticket manually...</button>
+                      <button 
+                        className="sync-confirm-manual-btn"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setOpenDropdownId(openDropdownId === session.sessionId ? null : session.sessionId);
+                        }}
+                      >
+                        Choose ticket manually...
+                      </button>
+                      {openDropdownId === session.sessionId && (
+                        <div className="sync-confirm-manual-dropdown" onClick={e => e.stopPropagation()}>
+                          {availableIssues.length === 0 ? (
+                            <div className="sync-confirm-dropdown-item">
+                              <div className="sync-confirm-dropdown-item-summary">No issues found</div>
+                            </div>
+                          ) : (
+                            availableIssues.map(issue => (
+                              <div 
+                                key={issue.key} 
+                                className="sync-confirm-dropdown-item"
+                                onClick={() => {
+                                  setManualAssignments(prev => ({ ...prev, [session.sessionId]: issue.key }));
+                                  setOpenDropdownId(null);
+                                }}
+                              >
+                                <div className="sync-confirm-dropdown-item-key">{issue.key} -</div>
+                                <div className="sync-confirm-dropdown-item-summary">{issue.summary}</div>
+                              </div>
+                            ))
+                          )}
+                        </div>
+                      )}
                     </div>
                   </div>
                 );

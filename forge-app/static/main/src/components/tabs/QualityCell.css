@@ -110,3 +110,31 @@
   color: #dfe1e6;
   font-weight: bold;
 }
+
+/* Quality Indicator */
+.quality-indicator {
+  display: flex;
+  align-items: center;
+}
+
+.quality-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  display: inline-block;
+  margin-right: 6px;
+}
+
+.quality-dot.green {
+  background-color: #2ecc71; /* Bright green as in screenshot */
+}
+
+.quality-dot.red {
+  background-color: #ff4757; /* Bright red as in screenshot */
+}
+
+.quality-text {
+  color: #172b4d;
+  font-weight: 400;
+  font-size: 13px;
+}

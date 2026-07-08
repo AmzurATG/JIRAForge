@@ -64,28 +64,21 @@ function QualityCell({ score, status, error, cachedAt, issueKey, onRetry }) {
 
   let badgeClass = 'green';
   let badgeLabel = 'Good';
-  let showImprove = false;
 
-  if (score < 50) {
+  if (score <= 80) {
     badgeClass = 'red';
-    badgeLabel = 'Poor';
-    showImprove = true;
-  } else if (score < 80) {
-    badgeClass = 'yellow';
-    badgeLabel = 'Needs work';
-    showImprove = true;
+    badgeLabel = 'Bad';
   }
 
   const relativeTime = formatRelativeTime(cachedAt);
-  const tooltipText = showImprove 
-    ? "Click Improve to enhance with AI" 
-    : (relativeTime ? `Last analysed ${relativeTime}` : 'Good description quality');
+  const tooltipText = relativeTime ? `Last analysed ${relativeTime}` : 'Description quality';
 
   return (
     <div className="quality-cell resolved" title={tooltipText}>
-      <span className={`quality-badge badge-${badgeClass}`}>
-        <span className='dot'>.</span> {score} {badgeLabel}
-      </span>
+      <div className="quality-indicator">
+        <span className={`quality-dot ${badgeClass}`}></span>
+        <span className="quality-text">{badgeLabel} ({score}%)</span>
+      </div>
     </div>
   );
 }

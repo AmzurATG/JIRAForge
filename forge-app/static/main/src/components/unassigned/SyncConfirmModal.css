@@ -13,7 +13,7 @@
 
 .sync-confirm-modal-container {
   background: white;
-  width: 680px;
+  width: 560px;
   max-width: 90vw;
   max-height: 85vh;
   border-radius: 8px;
@@ -24,7 +24,7 @@
 }
 
 .sync-confirm-modal-header {
-  background: #6554C0;
+  background: #8A7BFE;
   color: white;
   padding: 16px 24px;
   display: flex;
@@ -34,7 +34,7 @@
 
 .sync-confirm-modal-header h3 {
   margin: 0;
-  font-size: 20px;
+  font-size: 14px;
   font-weight: 500;
 }
 
@@ -64,27 +64,33 @@
 }
 
 .sync-confirm-modal-content {
-  padding: 16px 24px;
+  padding: 0;
   overflow-y: auto;
   flex: 1;
-  background: #FAFBFC;
+  background: white;
 }
 
 .sync-confirm-list {
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: 0;
 }
 
 .sync-confirm-item {
   background: white;
-  border: 1px solid #DFE1E6;
-  border-radius: 4px;
-  padding: 16px;
+  border: none;
+  border-bottom: 1px solid #DFE1E6;
+  border-radius: 0;
+  padding: 16px 24px;
   display: flex;
+  align-items: flex-start;
   gap: 16px;
-  box-shadow: 0 1px 1px rgba(9, 30, 66, 0.08);
+  box-shadow: none;
   transition: opacity 0.2s;
+}
+
+.sync-confirm-item:last-child {
+  border-bottom: none;
 }
 
 .sync-confirm-item.unselected {
@@ -93,12 +99,35 @@
 
 .sync-confirm-item-checkbox {
   padding-top: 2px;
+  flex-shrink: 0;
 }
 
-.sync-confirm-item-checkbox input[type="checkbox"] {
+.sync-custom-checkbox {
+  appearance: none;
+  background-color: white;
+  margin: 0;
   width: 16px;
   height: 16px;
+  border: 1.5px solid #8A7BFE;
+  border-radius: 3px;
+  display: grid;
+  place-content: center;
   cursor: pointer;
+}
+
+.sync-custom-checkbox::before {
+  content: "";
+  width: 10px;
+  height: 10px;
+  transform: scale(0);
+  transition: 120ms transform ease-in-out;
+  box-shadow: inset 1em 1em #8A7BFE;
+  background-color: #8A7BFE;
+  clip-path: polygon(14% 44%, 0 65%, 50% 100%, 100% 16%, 80% 0%, 43% 62%);
+}
+
+.sync-custom-checkbox:checked::before {
+  transform: scale(1);
 }
 
 .sync-confirm-item-details {
@@ -106,6 +135,7 @@
   display: flex;
   flex-direction: column;
   gap: 8px;
+  min-width: 0;
 }
 
 .sync-confirm-item-time {
@@ -121,12 +151,19 @@
   display: flex;
   align-items: center;
   gap: 12px;
+  overflow: hidden;
 }
 
 .sync-confirm-item-title {
-  font-size: 16px;
-  font-weight: 500;
+  font-size: 14px;
+  font-weight: 600;
   color: #172B4D;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: block;
+  flex: 1;
+  min-width: 0;
 }
 
 .sync-confirm-item-chip {
@@ -138,11 +175,12 @@
   font-size: 11px;
   font-weight: 600;
   letter-spacing: 0.5px;
+  flex-shrink: 0;
 }
 
 .sync-confirm-item-insight {
-  background: #EAE6FF;
-  color: #403294;
+  background: #E6FCFF;
+  color: #42526E;
   padding: 10px 14px;
   border-radius: 4px;
   font-size: 13px;
@@ -157,10 +195,58 @@
   gap: 8px;
   justify-content: flex-start;
   align-items: flex-end;
+  width: 180px;
+  flex-shrink: 0;
+  position: relative;
+}
+
+.sync-confirm-manual-dropdown {
+  position: absolute;
+  top: 100%;
+  margin-top: 4px;
+  right: 0;
+  width: 260px;
+  max-height: 200px;
+  overflow-y: auto;
+  background: white;
+  border: 1px solid #DFE1E6;
+  border-radius: 4px;
+  box-shadow: 0 4px 8px rgba(9, 30, 66, 0.25);
+  z-index: 10;
+  text-align: left;
+}
+
+.sync-confirm-dropdown-item {
+  padding: 8px 12px;
+  border-bottom: 1px solid #F4F5F7;
+  cursor: pointer;
+}
+
+.sync-confirm-dropdown-item:last-child {
+  border-bottom: none;
+}
+
+.sync-confirm-dropdown-item:hover {
+  background: #F4F5F7;
+}
+
+.sync-confirm-dropdown-item-key {
+  color: #4B96FF;
+  font-size: 13px;
+  font-weight: 500;
+  margin-bottom: 2px;
+}
+
+.sync-confirm-dropdown-item-summary {
+  color: #5E6C84;
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .sync-confirm-review-btn {
-  background: #6554C0;
+  background: #8A7BFE;
   color: white;
   border: none;
   border-radius: 4px;
@@ -172,7 +258,7 @@
 }
 
 .sync-confirm-review-btn:hover {
-  background: #5243AA;
+  background: #7364D9;
 }
 
 .sync-confirm-manual-btn {
@@ -229,8 +315,8 @@
 
 .sync-cancel-btn {
   background: white;
-  color: #6554C0;
-  border: 1px solid #6554C0;
+  color: #8A7BFE;
+  border: 1px solid #8A7BFE;
   border-radius: 4px;
   padding: 8px 16px;
   font-size: 14px;
@@ -239,7 +325,7 @@
 }
 
 .sync-cancel-btn:hover {
-  background: rgba(101, 84, 192, 0.08);
+  background: rgba(138, 123, 254, 0.08);
 }
 
 .sync-cancel-btn:disabled {
@@ -248,7 +334,7 @@
 }
 
 .sync-submit-btn {
-  background: #6554C0;
+  background: #8A7BFE;
   color: white;
   border: none;
   border-radius: 4px;
@@ -259,7 +345,7 @@
 }
 
 .sync-submit-btn:hover:not(:disabled) {
-  background: #5243AA;
+  background: #7364D9;
 }
 
 .sync-submit-btn:disabled {

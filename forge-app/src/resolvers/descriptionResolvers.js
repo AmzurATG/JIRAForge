@@ -431,7 +431,7 @@ function computeDynamicChunkSize({ issuesCount, remainingSessions, elapsedMs, bu
   // Keep issue x session complexity bounded per AI call.
   // Lower target complexity = smaller chunks = more processing iterations per invocation budget.
   // Conservative starting point to ensure first poll completes well under 25s Forge limit.
-  const targetComplexity = 60;
+  const targetComplexity = 150;
   let chunkSize = Math.floor(targetComplexity / safeIssues);
   chunkSize = Math.max(MIN_SESSIONS_PER_LLM_CALL, Math.min(MAX_SESSIONS_PER_LLM_CALL, chunkSize));
 
