@@ -1643,6 +1643,11 @@
   align-items: flex-start;
 }
 
+.month-layout.horizontal-mode {
+  flex-direction: column;
+  align-items: stretch;
+}
+
 .month-right-column {
   flex: 1.2;
   min-width: 500px;
@@ -2293,4 +2298,106 @@
 .timeline-total-tracked .total-label {
   font-size: 11px;
   color: #5E6C84;
+}
+
+/* Horizontal Calendar Styles */
+.expand-calendar-btn {
+  background: var(--ds-background-neutral, #DFE1E6);
+  border: none;
+  border-radius: 3px;
+  padding: 4px 8px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--ds-text, #172B4D);
+  cursor: pointer;
+  transition: background 0.1s ease;
+}
+
+.expand-calendar-btn:hover {
+  background: var(--ds-background-neutral-hovered, #C1C7D0);
+}
+
+.horizontal-calendar-container {
+  display: flex;
+  overflow-x: auto;
+  gap: 12px;
+  padding: 16px;
+  background: var(--ds-background-default, #FFFFFF);
+}
+
+.horizontal-calendar-container::-webkit-scrollbar {
+  height: 8px;
+}
+.horizontal-calendar-container::-webkit-scrollbar-track {
+  background: var(--ds-background-neutral-subtle, #EBECF0);
+  border-radius: 4px;
+}
+.horizontal-calendar-container::-webkit-scrollbar-thumb {
+  background: var(--ds-background-neutral-hovered, #C1C7D0);
+  border-radius: 4px;
+}
+
+.horizontal-day-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: space-between;
+  min-width: 60px;
+  padding: 12px 8px;
+  border: 1px solid var(--ds-border, #DFE1E6);
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  background: var(--ds-background-default, #FFFFFF);
+}
+
+.horizontal-day-card:hover {
+  background: var(--ds-background-neutral-subtle, #EBECF0);
+  transform: translateY(-2px);
+  box-shadow: 0 4px 8px rgba(9, 30, 66, 0.1);
+}
+
+.horizontal-day-card.active {
+  border-color: #4C9AFF;
+  background: #DEEBFF;
+  box-shadow: 0 0 0 1px #4C9AFF;
+}
+
+.horizontal-day-card.today {
+  border-color: #0052CC;
+  background: rgba(0, 82, 204, 0.04);
+}
+
+.horizontal-day-card.weekend .day-name {
+  color: #DE350B;
+}
+
+.day-name {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ds-text-subtle, #5E6C84);
+  text-transform: uppercase;
+  margin-bottom: 4px;
+}
+
+.day-number {
+  font-size: 20px;
+  font-weight: 700;
+  color: var(--ds-text, #172B4D);
+  margin-bottom: 8px;
+}
+
+.day-time {
+  font-size: 13px;
+  font-weight: 600;
+  color: #0052CC;
+  background: rgba(0, 82, 204, 0.1);
+  padding: 4px 8px;
+  border-radius: 4px;
+}
+
+.day-time.empty {
+  color: var(--ds-text-subtle, #5E6C84);
+  background: transparent;
+  padding: 0;
 }

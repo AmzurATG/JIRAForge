@@ -24,7 +24,7 @@ function DashboardTab({ onOpenReassignModal }) {
   const [statusFilter, setStatusFilter] = useState('all');
   const [projectFilter, setProjectFilter] = useState('all');
   const [searchQuery, setSearchQuery] = useState('');
-  const [currentPage, setCurrentPage] = useState(1);
+  const [visibleCount, setVisibleCount] = useState(10);
   const [approvingSessionId, setApprovingSessionId] = useState(null);
   const [approvingIssueKey, setApprovingIssueKey] = useState(null);
   const itemsPerPage = 10;
@@ -258,7 +258,7 @@ function DashboardTab({ onOpenReassignModal }) {
 
   // Reset to page 1 when filters change
   useEffect(() => {
-    setCurrentPage(1);
+    setVisibleCount(10);
   }, [issueFilter, searchQuery, statusFilter, projectFilter]);
 
 
@@ -318,16 +318,18 @@ function DashboardTab({ onOpenReassignModal }) {
   }
 
 
-  // Pagination calculations
-  const totalPages = Math.ceil(filteredIssues.length / itemsPerPage);
-  const startIndex = (currentPage - 1) * itemsPerPage;
-  const endIndex = startIndex + itemsPerPage;
-  const paginatedIssues = filteredIssues.slice(startIndex, endIndex);
+  // Lazy Loading calculations
+  const visibleIssues = filteredIssues.slice(0, visibleCount);
+  const hasMore = visibleCount < filteredIssues.length;
+
+  const handleLoadMore = useCallback(() => {
+    setVisibleCount(prev => prev + 10);
+  }, []);
 
   // Fetch quality scores for currently visible issues on mount/paginate/filter
   useEffect(() => {
-    if (paginatedIssues.length > 0) {
-      const needsLoading = paginatedIssues.filter(i => {
+    if (visibleIssues.length > 0) {
+      const needsLoading = visibleIssues.filter(i => {
         const state = qualityScores[i.key];
         return !state;
       });
@@ -335,13 +337,7 @@ function DashboardTab({ onOpenReassignModal }) {
         fetchQualityScoresForIssues(needsLoading);
       }
     }
-  }, [paginatedIssues, fetchQualityScoresForIssues, qualityScores]);
-
-  const handlePageChange = (page) => {
-    if (page >= 1 && page <= totalPages) {
-      setCurrentPage(page);
-    }
-  };
+  }, [visibleIssues, fetchQualityScoresForIssues, qualityScores]);
 
   const handleExpandClick = (e) => {
     e.preventDefault();
@@ -489,7 +485,7 @@ function DashboardTab({ onOpenReassignModal }) {
             )}
             {filteredIssues.length > 0 ? (
               <IssueList
-                issues={paginatedIssues}
+                issues={visibleIssues}
                 isPendingReviewView={isPendingReviewView}
                 approvingIssueKey={approvingIssueKey}
                 approvingSessionId={approvingSessionId}
@@ -504,11 +500,8 @@ function DashboardTab({ onOpenReassignModal }) {
                 qualitySortOrder={qualitySortOrder}
                 handleToggleQualitySort={handleToggleQualitySort}
                 handleRetryQuality={handleRetryQuality}
-                currentPage={currentPage}
-                handlePageChange={handlePageChange}
-                totalPages={totalPages}
-                startIndex={startIndex}
-                endIndex={endIndex}
+                hasMore={hasMore}
+                onLoadMore={handleLoadMore}
                 totalItems={filteredIssues.length}
               />
             ) : (

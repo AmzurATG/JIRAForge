@@ -37,9 +37,29 @@ function UnassignedWork() {
   const [syncTimeframe, setSyncTimeframe] = useState('');
   const [showSyncConfirmModal, setShowSyncConfirmModal] = useState(false);
   const [syncCounts, setSyncCounts] = useState(null);
-  const [syncCountsLoading, setSyncCountsLoading] = useState(false);
+  const [fetchingSyncCounts, setFetchingSyncCounts] = useState(false);
   const [syncJobResult, setSyncJobResult] = useState(null);
+  const [syncProgress, setSyncProgress] = useState(null);
   const [submittingMappings, setSubmittingMappings] = useState(false);
+  const [showPreSyncConfirm, setShowPreSyncConfirm] = useState(false);
+
+  const handlePreSyncClick = async () => {
+    setFetchingSyncCounts(true);
+    setSyncBanner(null);
+    try {
+      const result = await invoke('getUnassignedSyncCounts', { timeframe: syncTimeframe || 'yesterday' });
+      if (result?.success) {
+        setSyncCounts({ groups: result.groupCount, sessions: result.memberCount });
+        setShowPreSyncConfirm(true);
+      } else {
+        setSyncBanner({ type: 'error', message: result?.error || 'Failed to fetch sync counts' });
+      }
+    } catch (err) {
+      setSyncBanner({ type: 'error', message: err.message || 'Error fetching sync counts' });
+    } finally {
+      setFetchingSyncCounts(false);
+    }
+  };
 
   // Date range filter state
   const [dateFrom] = useState('');
@@ -348,6 +368,33 @@ function UnassignedWork() {
   };
 
   useEffect(() => {
+    if (selectionSummary.sessionCount > 0) {
+      const payload = buildSelectionPayload();
+      if (payload.sessionIds.length > 0) {
+        const singleGroup = payload.groupIds.length === 1
+          ? groups.find(g => g.id === payload.groupIds[0])
+          : null;
+        
+        setSelectedGroup({
+          id: null,
+          groupIds: payload.groupIds,
+          session_ids: payload.sessionIds,
+          session_count: payload.sessionCount,
+          total_seconds: payload.totalSeconds,
+          total_time_formatted: formatTime(payload.totalSeconds),
+          label: singleGroup?.label || `${payload.groupIds.length} groups selected`,
+          description: singleGroup?.description || null,
+          recommendation: singleGroup?.recommendation || null
+        });
+        setShowAssignModal(true);
+      }
+    } else {
+      setShowAssignModal(false);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectionSummary.sessionCount, selectionSummary.totalSeconds, fullySelectedGroups, selectedIntervalsByGroup]);
+
+  useEffect(() => {
     loadUnassignedWork();
     loadUserIssues();
     loadUserProjects();
@@ -648,7 +695,7 @@ This will permanently dismiss these sessions from clustering. They won't appear 
     }
   };
 
-  const scheduleNextSyncPoll = (delayMs = 2500) => {
+  const scheduleNextSyncPoll = (delayMs = 500) => {
     clearSyncPolling();
     if (!syncJobIdRef.current) {
       return;
@@ -710,8 +757,8 @@ This will permanently dismiss these sessions from clustering. They won't appear 
         return;
       }
 
-      // In-progress: just schedule next poll. We removed banner spam here
-      // since the button loader handles the "syncing in progress" state.
+      // In-progress: update progress and schedule next poll.
+      setSyncProgress(status);
       scheduleNextSyncPoll();
     } catch (err) {
       if (isSyncTimeoutError(err) && syncJobIdRef.current) {
@@ -732,6 +779,7 @@ This will permanently dismiss these sessions from clustering. They won't appear 
   const startDryRunSync = async () => {
     const timeframe = syncTimeframe || 'yesterday';
     setSyncingWithJira(true);
+    setSyncProgress(null);
     setSyncBanner(null);
     setSyncJobResult(null);
     clearSyncPolling();
@@ -880,7 +928,7 @@ This will permanently dismiss these sessions from clustering. They won't appear 
             className="sync-timeframe-dropdown"
             value={syncTimeframe}
             onChange={(e) => setSyncTimeframe(e.target.value)}
-            disabled={syncingWithJira || syncCountsLoading}
+            disabled={syncingWithJira}
             aria-label="Select timeframe for Jira sync"
           >
             <option value="" disabled hidden>Select Range</option>
@@ -890,11 +938,11 @@ This will permanently dismiss these sessions from clustering. They won't appear 
           </select>
           <button
             className="sync-with-jira-btn"
-            onClick={startDryRunSync}
-            disabled={syncingWithJira}
+            onClick={handlePreSyncClick}
+            disabled={syncingWithJira || fetchingSyncCounts || !syncTimeframe}
             title="Match unassigned work to your in-progress Jira tickets"
           >
-            {syncingWithJira ? (
+            {syncingWithJira || fetchingSyncCounts ? (
               <span className="sync-with-jira-spinner" aria-hidden="true" />
             ) : (
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -903,7 +951,13 @@ This will permanently dismiss these sessions from clustering. They won't appear 
                 <path d="M3.51 9a9 9 0 0 1 14.13-3.36L23 10M1 14l5.36 5.36A9 9 0 0 0 20.49 15" />
               </svg>
             )}
-            {syncingWithJira ? 'Syncing…' : 'Sync Mappings'}
+            {syncingWithJira 
+              ? (syncProgress && syncProgress.sessionsScanned > 0 
+                  ? `Syncing (${syncProgress.sessionsProcessed}/${syncProgress.sessionsScanned})…` 
+                  : 'Syncing…') 
+              : fetchingSyncCounts 
+                ? 'Preparing…'
+                : 'Sync Mappings'}
           </button>
         </div>
         {syncBanner && (
@@ -996,14 +1050,7 @@ This will permanently dismiss these sessions from clustering. They won't appear 
         hasAnySelection={selectionSummary.groupCount > 0}
       />}
 
-      <SelectionBar
-        groupCount={selectionSummary.groupCount}
-        sessionCount={selectionSummary.sessionCount}
-        totalSeconds={selectionSummary.totalSeconds}
-        onClear={clearSelection}
-        onAssign={handleAssignSelection}
-        onDelete={handleDeleteSelection}
-      />
+      {/* SelectionBar removed in favor of auto-opening side panel */}
 
       {/* Assignment Modal */}
       <AssignmentModal
@@ -1011,8 +1058,12 @@ This will permanently dismiss these sessions from clustering. They won't appear 
         selectedGroup={selectedGroup}
         userIssues={userIssues}
         userProjects={userProjects}
-        onClose={() => setShowAssignModal(false)}
+        onClose={() => {
+          setShowAssignModal(false);
+          clearSelection();
+        }}
         onAssignmentComplete={handleAssignmentComplete}
+        onDeleteSelection={handleDeleteSelection}
       />
 
       {/* Bulk Time Edit Modal */}
@@ -1023,7 +1074,52 @@ This will permanently dismiss these sessions from clustering. They won't appear 
         onSuccess={handleBulkEditSuccess}
       />
 
-      {/* Sync Confirm Modal */}
+      {showPreSyncConfirm && (
+        <div className="sync-confirm-modal-overlay">
+          <div className="sync-confirm-modal-container" >
+            <div className="sync-confirm-modal-header">
+              <h3 style={{margin: 0, fontSize: '16px', fontWeight: 600}}>Confirm Sync Mappings</h3>
+              <button 
+                className="sync-confirm-modal-close" 
+                onClick={() => setShowPreSyncConfirm(false)} 
+                aria-label="Close modal"
+                style={{background: 'none', border: 'none', color: 'white', cursor: 'pointer'}}
+              >
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <line x1="18" y1="6" x2="6" y2="18"></line>
+                  <line x1="6" y1="6" x2="18" y2="18"></line>
+                </svg>
+              </button>
+            </div>
+            
+            <div className="sync-confirm-modal-content" style={{padding: '24px 24px', fontSize: '15px', color: '#42526E', lineHeight: '1.5'}}>
+              Are you sure you want to sync <strong>{syncCounts?.sessions || 0} unassigned</strong> sessions across <strong>{syncCounts?.groups || 0} groups</strong> for the selected timeframe?
+            </div>
+            
+            <div className="sync-confirm-modal-footer" style={{justifyContent: 'flex-end', gap: '12px', padding: '16px 24px'}}>
+              <button 
+                className="sync-cancel-btn" 
+                onClick={() => setShowPreSyncConfirm(false)}
+                style={{padding: '8px 16px', borderRadius: '4px', border: '1px solid #7564FD', background: 'white', color: '#7564FD', fontWeight: 600, cursor: 'pointer', fontSize: '14px'}}
+              >
+                Cancel
+              </button>
+              <button 
+                className="sync-submit-btn" 
+                onClick={() => {
+                  setShowPreSyncConfirm(false);
+                  startDryRunSync();
+                }}
+                style={{padding: '8px 16px', borderRadius: '4px', border: 'none', background: '#7564FD', color: 'white', fontWeight: 600, cursor: 'pointer', fontSize: '14px'}}
+              >
+                Continue Sync
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Existing SyncConfirmModal triggered after dry run */}
       <SyncConfirmModal
         isOpen={showSyncConfirmModal}
         syncJobResult={syncJobResult}
