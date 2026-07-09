@@ -9,7 +9,7 @@ import DayIssueDrilldown from './DayIssueDrilldown';
  */
 function MonthView({ loading, timeData, selectedMonth, setSelectedMonth, userPermissions, summaryDrillDate }) {
   const [selectedDate, setSelectedDate] = useState(null);
-  const [isExpanded, setIsExpanded] = useState(false);
+  const [isExpanded, setIsExpanded] = useState(true);
 
   const today = new Date();
   const year = selectedMonth.getFullYear();
@@ -83,7 +83,11 @@ function MonthView({ loading, timeData, selectedMonth, setSelectedMonth, userPer
               {timeTracked > 0 && (
                 <button
                   className={`cell-time cell-time-drilldown ${selectedDate === clickedDateStr ? 'active' : ''}`}
-                  onClick={() => setSelectedDate(selectedDate === clickedDateStr ? null : clickedDateStr)}
+                  onClick={() => {
+                    const newDate = selectedDate === clickedDateStr ? null : clickedDateStr;
+                    setSelectedDate(newDate);
+                    if (newDate) setIsExpanded(false);
+                  }}
                   title="Click for issue breakdown"
                 >
                   {formatTime(timeTracked)}
@@ -171,7 +175,7 @@ function MonthView({ loading, timeData, selectedMonth, setSelectedMonth, userPer
         </div>
       ) : (
         <div className={`month-layout ${!isExpanded ? 'horizontal-mode' : ''}`}>
-          <div className="month-calendar-card">
+          <div className="month-calendar-card" style={isExpanded ? { flex: 1, minWidth: '100%' } : {}}>
             <div className="calendar-card-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
               <h4>Calendar View</h4>
               <button 
@@ -201,19 +205,24 @@ function MonthView({ loading, timeData, selectedMonth, setSelectedMonth, userPer
             )}
           </div>
 
-          <div className="month-right-column">
-            {selectedDate ? (
-              <DayIssueDrilldown
-                selectedDate={selectedDate}
-                onClose={() => setSelectedDate(null)}
-              />
-            ) : (
-              <div className="drilldown-placeholder">
-                <h4>Issue Breakdown</h4>
-                <p>Click any day hour value to see issue-level details.</p>
-              </div>
-            )}
-          </div>
+          {!isExpanded && (
+            <div className="month-right-column">
+              {selectedDate ? (
+                <DayIssueDrilldown
+                  selectedDate={selectedDate}
+                  onClose={() => {
+                    setSelectedDate(null);
+                    setIsExpanded(true);
+                  }}
+                />
+              ) : (
+                <div className="drilldown-placeholder">
+                  <h4>Issue Breakdown</h4>
+                  <p>Click any day hour value to see issue-level details.</p>
+                </div>
+              )}
+            </div>
+          )}
         </div>
       )}
     </div>

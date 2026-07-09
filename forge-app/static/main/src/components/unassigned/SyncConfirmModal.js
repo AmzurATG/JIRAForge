@@ -118,7 +118,7 @@ export default function SyncConfirmModal({ isOpen, onClose, onConfirm, syncJobRe
                       </div>
                       
                       <div className="sync-confirm-item-insight">
-                        ✦ Context: {session.groupDescription || session.windowTitle || session.applicationName}
+                        ✦ {session.groupDescription ? 'Group Context' : 'Context'}: {session.groupDescription || session.windowTitle || session.applicationName}
                         {session.insight && (
                           <>
                             <br />

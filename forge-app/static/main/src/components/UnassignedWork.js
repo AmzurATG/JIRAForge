@@ -1076,7 +1076,7 @@ This will permanently dismiss these sessions from clustering. They won't appear 
 
       {showPreSyncConfirm && (
         <div className="sync-confirm-modal-overlay">
-          <div className="sync-confirm-modal-container" style={{maxWidth: '550px'}}>
+          <div className="sync-confirm-modal-container" >
             <div className="sync-confirm-modal-header">
               <h3 style={{margin: 0, fontSize: '16px', fontWeight: 600}}>Confirm Sync Mappings</h3>
               <button 
