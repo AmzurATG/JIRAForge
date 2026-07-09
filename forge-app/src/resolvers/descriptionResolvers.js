@@ -456,6 +456,7 @@ function toJobResponse(jobRow) {
       issueSummary: issue.fields?.summary || issue.summary || '',
       windowTitle: session.windowTitle || '',
       applicationName: session.applicationName || '',
+      groupDescription: session.groupDescription || '',
       durationSeconds: session.durationSeconds || 0,
       insight: a.reason || a.insight || a.explanation || ''
     };
@@ -833,12 +834,13 @@ async function fetchPreviousDayUnassignedSessions(supabaseConfig, userId, organi
     const rows = await supabaseRequest(
       supabaseConfig,
       `unassigned_work_groups?id=in.(${chunk.join(',')})&user_id=eq.${userId}&organization_id=eq.${organizationId}` +
-      `&is_assigned=eq.false&is_dismissed=eq.false&select=id`
+      `&is_assigned=eq.false&is_dismissed=eq.false&select=id,group_description`
     );
     validGroups.push(...ensureArray(rows));
   }
 
   const validGroupIds = new Set(validGroups.map(g => g.id));
+  const validGroupDescriptions = new Map(validGroups.map(g => [g.id, g.group_description]));
 
   // 4. Build ID to Group ID map (only for valid groups)
   const idToGroupId = new Map();
@@ -854,9 +856,11 @@ async function fetchPreviousDayUnassignedSessions(supabaseConfig, userId, organi
 
   for (const record of activityRows) {
     if (!record?.id || !idToGroupId.has(record.id)) continue;
+    const groupId = idToGroupId.get(record.id);
     sessions.push({
       sessionId: record.id,
-      groupId: idToGroupId.get(record.id),
+      groupId: groupId,
+      groupDescription: validGroupDescriptions.get(groupId) || '',
       applicationName: record.application_name || '',
       windowTitle: record.window_title || '',
       screenText: (record.ocr_text || '').slice(0, 500),
@@ -868,9 +872,11 @@ async function fetchPreviousDayUnassignedSessions(supabaseConfig, userId, organi
 
   for (const record of legacyRows) {
     if (!record?.id || !idToGroupId.has(record.id)) continue;
+    const groupId = idToGroupId.get(record.id);
     sessions.push({
       sessionId: record.id,
-      groupId: idToGroupId.get(record.id),
+      groupId: groupId,
+      groupDescription: validGroupDescriptions.get(groupId) || '',
       applicationName: record.application_name || '',
       windowTitle: record.window_title || '',
       screenText: (record.extracted_text || '').slice(0, 500),

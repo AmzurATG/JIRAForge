@@ -37,10 +37,29 @@ function UnassignedWork() {
   const [syncTimeframe, setSyncTimeframe] = useState('');
   const [showSyncConfirmModal, setShowSyncConfirmModal] = useState(false);
   const [syncCounts, setSyncCounts] = useState(null);
+  const [fetchingSyncCounts, setFetchingSyncCounts] = useState(false);
   const [syncJobResult, setSyncJobResult] = useState(null);
   const [syncProgress, setSyncProgress] = useState(null);
   const [submittingMappings, setSubmittingMappings] = useState(false);
   const [showPreSyncConfirm, setShowPreSyncConfirm] = useState(false);
+
+  const handlePreSyncClick = async () => {
+    setFetchingSyncCounts(true);
+    setSyncBanner(null);
+    try {
+      const result = await invoke('getUnassignedSyncCounts', { timeframe: syncTimeframe || 'yesterday' });
+      if (result?.success) {
+        setSyncCounts({ groups: result.groupCount, sessions: result.memberCount });
+        setShowPreSyncConfirm(true);
+      } else {
+        setSyncBanner({ type: 'error', message: result?.error || 'Failed to fetch sync counts' });
+      }
+    } catch (err) {
+      setSyncBanner({ type: 'error', message: err.message || 'Error fetching sync counts' });
+    } finally {
+      setFetchingSyncCounts(false);
+    }
+  };
 
   // Date range filter state
   const [dateFrom] = useState('');
@@ -919,11 +938,11 @@ This will permanently dismiss these sessions from clustering. They won't appear 
           </select>
           <button
             className="sync-with-jira-btn"
-            onClick={() => setShowPreSyncConfirm(true)}
-            disabled={syncingWithJira || !syncTimeframe}
+            onClick={handlePreSyncClick}
+            disabled={syncingWithJira || fetchingSyncCounts || !syncTimeframe}
             title="Match unassigned work to your in-progress Jira tickets"
           >
-            {syncingWithJira ? (
+            {syncingWithJira || fetchingSyncCounts ? (
               <span className="sync-with-jira-spinner" aria-hidden="true" />
             ) : (
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -936,7 +955,9 @@ This will permanently dismiss these sessions from clustering. They won't appear 
               ? (syncProgress && syncProgress.sessionsScanned > 0 
                   ? `Syncing (${syncProgress.sessionsProcessed}/${syncProgress.sessionsScanned})…` 
                   : 'Syncing…') 
-              : 'Sync Mappings'}
+              : fetchingSyncCounts 
+                ? 'Preparing…'
+                : 'Sync Mappings'}
           </button>
         </div>
         {syncBanner && (
@@ -1072,7 +1093,7 @@ This will permanently dismiss these sessions from clustering. They won't appear 
             </div>
             
             <div className="sync-confirm-modal-content" style={{padding: '24px 24px', fontSize: '15px', color: '#42526E', lineHeight: '1.5'}}>
-              Are you sure you want to sync <strong>unassigned sessions</strong> for the selected timeframe?
+              Are you sure you want to sync <strong>{syncCounts?.sessions || 0} unassigned</strong> sessions across <strong>{syncCounts?.groups || 0} groups</strong> for the selected timeframe?
             </div>
             
             <div className="sync-confirm-modal-footer" style={{justifyContent: 'flex-end', gap: '12px', padding: '16px 24px'}}>

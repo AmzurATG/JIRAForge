@@ -9,6 +9,7 @@ import DayIssueDrilldown from './DayIssueDrilldown';
  */
 function MonthView({ loading, timeData, selectedMonth, setSelectedMonth, userPermissions, summaryDrillDate }) {
   const [selectedDate, setSelectedDate] = useState(null);
+  const [isExpanded, setIsExpanded] = useState(false);
 
   const today = new Date();
   const year = selectedMonth.getFullYear();
@@ -99,6 +100,46 @@ function MonthView({ loading, timeData, selectedMonth, setSelectedMonth, userPer
     return rows;
   };
 
+  const renderHorizontalCalendar = () => {
+    const daysInMonth = new Date(year, month + 1, 0).getDate();
+    const timeByDate = getTimeByDate();
+    const days = [];
+    const dayNames = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+
+    for (let day = 1; day <= daysInMonth; day++) {
+      const date = new Date(year, month, day);
+      const weekDay = date.getDay();
+      const isToday = day === today.getDate() && month === today.getMonth() && year === today.getFullYear();
+      const isWeekend = weekDay === 0 || weekDay === 6;
+      const timeTracked = timeByDate[day] || 0;
+      const clickedDateStr = `${selectedMonthStr}-${String(day).padStart(2, '0')}`;
+
+      days.push(
+        <div
+          key={day}
+          className={`horizontal-day-card ${isToday ? 'today' : ''} ${isWeekend ? 'weekend' : ''} ${selectedDate === clickedDateStr ? 'active' : ''}`}
+          onClick={() => timeTracked > 0 && setSelectedDate(selectedDate === clickedDateStr ? null : clickedDateStr)}
+        >
+          <div className="day-name">{dayNames[weekDay]}</div>
+          <div className="day-number">{day}</div>
+          {timeTracked > 0 ? (
+            <div className="day-time" title="Click for issue breakdown">
+              {formatTime(timeTracked)}
+            </div>
+          ) : (
+            <div className="day-time empty">-</div>
+          )}
+        </div>
+      );
+    }
+
+    return (
+      <div className="horizontal-calendar-container">
+        {days}
+      </div>
+    );
+  };
+
   return (
     <div className="timesheet-month-view">
       <div className="month-header-container">
@@ -129,25 +170,35 @@ function MonthView({ loading, timeData, selectedMonth, setSelectedMonth, userPer
           <p>Loading timesheet...</p>
         </div>
       ) : (
-        <div className="month-layout">
+        <div className={`month-layout ${!isExpanded ? 'horizontal-mode' : ''}`}>
           <div className="month-calendar-card">
-            <div className="calendar-card-header">
+            <div className="calendar-card-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
               <h4>Calendar View</h4>
+              <button 
+                className="expand-calendar-btn"
+                onClick={() => setIsExpanded(!isExpanded)}
+              >
+                {isExpanded ? 'Collapse' : 'Expand'}
+              </button>
             </div>
-            <table className="calendar-table">
-              <thead>
-                <tr>
-                  <th>Mon</th>
-                  <th>Tue</th>
-                  <th>Wed</th>
-                  <th>Thu</th>
-                  <th>Fri</th>
-                  <th className="weekend">Sat</th>
-                  <th className="weekend">Sun</th>
-                </tr>
-              </thead>
-              <tbody>{renderCalendar()}</tbody>
-            </table>
+            {isExpanded ? (
+              <table className="calendar-table">
+                <thead>
+                  <tr>
+                    <th>Mon</th>
+                    <th>Tue</th>
+                    <th>Wed</th>
+                    <th>Thu</th>
+                    <th>Fri</th>
+                    <th className="weekend">Sat</th>
+                    <th className="weekend">Sun</th>
+                  </tr>
+                </thead>
+                <tbody>{renderCalendar()}</tbody>
+              </table>
+            ) : (
+              renderHorizontalCalendar()
+            )}
           </div>
 
           <div className="month-right-column">
