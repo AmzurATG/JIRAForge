@@ -33,6 +33,8 @@ const atlassianAuthMiddleware = require('./middleware/atlassian-auth');
 const desktopAuthMiddleware = require('./middleware/desktop-auth');
 const portalAuthMiddleware = require('./middleware/portal-auth');
 const logger = require('./utils/logger');
+const { getAssetRoot } = require('./utils/asset-root');
+const assetRoot = getAssetRoot();
 const clusteringPollingService = require('./services/clustering-polling-service');
 const notificationPollingService = require('./services/notifications/notification-polling');
 const aiService = require('./services/ai');
@@ -67,10 +69,12 @@ const allowedOrigins = [
   // Development
   'http://localhost:3000',
   'http://localhost:3001',
-  'http://localhost:3002', // Portal frontend
+  'http://localhost:3002', // Portal frontend (Vite dev)
+  'http://localhost:8080', // Docker / Cloud Run local
   'http://127.0.0.1:3000',
   'http://127.0.0.1:3001',
-  'http://127.0.0.1:3002', // Portal frontend
+  'http://127.0.0.1:3002', // Portal frontend (Vite dev)
+  'http://127.0.0.1:8080',
 ].filter(Boolean); // Remove undefined/empty values
 
 const corsOptions = {
@@ -97,9 +101,11 @@ app.use(helmet({
   contentSecurityPolicy: {
     directives: {
       defaultSrc: ["'self'"],
-      scriptSrc: ["'self'", "'unsafe-inline'"], // Allow inline scripts for admin dashboard
-      styleSrc: ["'self'", "'unsafe-inline'"],   // Allow inline styles
-      imgSrc: ["'self'", "data:", "https:"],
+      scriptSrc: ["'self'", "'unsafe-inline'"], // Allow inline scripts for admin dashboard / portal theme
+      styleSrc: ["'self'", "'unsafe-inline'", 'https://fonts.googleapis.com'],
+      fontSrc: ["'self'", 'https://fonts.gstatic.com'],
+      imgSrc: ["'self'", 'data:', 'https:'],
+      connectSrc: ["'self'"],
     }
   }
 }));
@@ -273,7 +279,7 @@ app.get('/health', publicLimiter, (req, res) => {
 
 // Serve the dashboard HTML page (public — login happens client-side)
 app.get('/admin-dashboard', publicLimiter, (req, res) => {
-  res.sendFile(path.join(__dirname, 'dashboard', 'admin-dashboard.html'));
+  res.sendFile(path.join(assetRoot, 'dashboard', 'admin-dashboard.html'));
 });
 
 // Dashboard login — validates password, returns session token
@@ -306,7 +312,7 @@ app.get('/api/forge/accuracy/recent-mistakes', accuracyDashboardLimiter, forgeAu
 // =============================================================================
 
 function renderLegalPage(title, pageTitle, contentFile) {
-  const legalDir = path.join(__dirname, 'legal');
+  const legalDir = path.join(assetRoot, 'legal');
   const layout = fs.readFileSync(path.join(legalDir, 'layout.html'), 'utf8');
   const content = fs.readFileSync(path.join(legalDir, contentFile), 'utf8');
   return layout
@@ -328,7 +334,7 @@ app.get('/legal/terms', publicLimiter, (req, res) => {
 // Legal page styles (shared by Terms and Privacy pages)
 app.get('/legal/styles.css', publicLimiter, (req, res) => {
   res.type('text/css');
-  res.sendFile(path.join(__dirname, 'legal', 'styles.css'));
+  res.sendFile(path.join(assetRoot, 'legal', 'styles.css'));
 });
 
 // Redirect shortcuts
@@ -416,7 +422,7 @@ app.get('/api/feedback/form', feedbackController.getFeedbackPage);
 // Serve feedback form JavaScript (public static file)
 app.get('/api/feedback/feedback-form.js', (req, res) => {
   res.setHeader('Content-Type', 'application/javascript');
-  res.sendFile(path.join(__dirname, 'feedback', 'feedback-form.js'));
+  res.sendFile(path.join(assetRoot, 'feedback', 'feedback-form.js'));
 });
 
 // Submit feedback (session-authenticated via body)
@@ -854,6 +860,11 @@ app.post('/api/portal/app-catalog/bulk-import', portalAuthMiddleware.verifyPorta
 app.put('/api/portal/app-catalog/:id', portalAuthMiddleware.verifyPortalToken, portalAppCatalogController.updateApp);
 app.delete('/api/portal/app-catalog/:id', portalAuthMiddleware.verifyPortalToken, portalAppCatalogController.deleteApp);
 
+const portalBuildDir = path.join(assetRoot, 'portal', 'build');
+if (fs.existsSync(path.join(portalBuildDir, 'index.html'))) {
+  app.use(express.static(portalBuildDir, { index: false, maxAge: '1h' }));
+}
+
 // Error handling middleware
 app.use((err, req, res, next) => {
   logger.error('Unhandled error:', err);
@@ -865,8 +876,16 @@ app.use((err, req, res, next) => {
   });
 });
 
-// 404 handler
+// 404 handler — SPA fallback for the built portal when it is present
 app.use((req, res) => {
+  const isApiLike = req.path.startsWith('/api')
+    || req.path.startsWith('/admin-dashboard')
+    || req.path.startsWith('/legal')
+    || req.path === '/health';
+  const portalIndex = path.join(portalBuildDir, 'index.html');
+  if (!isApiLike && req.method === 'GET' && fs.existsSync(portalIndex)) {
+    return res.sendFile(portalIndex);
+  }
   res.status(404).json({
     success: false,
     error: 'Endpoint not found'

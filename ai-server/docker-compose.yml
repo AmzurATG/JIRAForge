@@ -1,0 +1,22 @@
+services:
+  ai-server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: jiraforge-ai-server:local
+    ports:
+      - "8080:8080"
+    env_file:
+      - .env
+    environment:
+      NODE_ENV: production
+      PORT: "8080"
+      ASSET_ROOT: /app/assets
+      START_SERVER: "true"
+      LOG_TO_CONSOLE: "true"
+    volumes:
+      - ai-server-logs:/app/logs
+    restart: unless-stopped
+
+volumes:
+  ai-server-logs:

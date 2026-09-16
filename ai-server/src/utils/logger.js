@@ -33,7 +33,7 @@ if (process.env.NODE_ENV !== 'test') {
 }
 
 // If we're not in production, log to the console as well
-if (process.env.NODE_ENV !== 'production') {
+if (process.env.NODE_ENV !== 'production' || process.env.LOG_TO_CONSOLE === 'true') {
   logger.add(new winston.transports.Console({
     format: winston.format.combine(
       winston.format.colorize(),

@@ -5,8 +5,11 @@
   "main": "src/index.js",
   "scripts": {
     "start": "node src/index.js",
+    "start:bundled": "node dist/server.js",
     "dev": "nodemon src/index.js",
     "build:dashboard": "cd src/dashboard && npm install && npm run build",
+    "build:portal": "npm --prefix src/portal ci && npm --prefix src/portal run build -- --sourcemap false",
+    "build:server": "node scripts/bundle-server.js",
     "test": "jest"
   },
   "keywords": [

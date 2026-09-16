@@ -12,6 +12,7 @@
 const axios = require('axios');
 const path = require('node:path');
 const logger = require('../utils/logger');
+const { getAssetRoot } = require('../utils/asset-root');
 const sessionStore = require('../services/feedback-session-store');
 const { createFeedback, getFeedbackById } = require('../services/db/feedback-db-service');
 const { uploadFile } = require('../services/db/storage-service');
@@ -243,7 +244,7 @@ exports.getFeedbackPage = (req, res) => {
     return res.status(401).send(getErrorPage('Invalid or expired session. Please use the "Send Feedback" option from the desktop app to get a new session.'));
   }
 
-  res.sendFile(path.join(__dirname, '..', 'feedback', 'feedback-form.html'));
+  res.sendFile(path.join(getAssetRoot(), 'feedback', 'feedback-form.html'));
 };
 
 /**
