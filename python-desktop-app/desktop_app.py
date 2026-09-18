@@ -305,7 +305,7 @@ def acquire_single_instance_lock():
         last_error = ctypes.windll.kernel32.GetLastError()
 
         if last_error == winerror.ERROR_ALREADY_EXISTS:
-            print("[WARN] Another instance of MyWorkMate is already running!")
+            print("[WARN] Another instance of TimeTracker is already running!")
             return False
 
         print("[OK] Single instance lock acquired")
@@ -391,7 +391,7 @@ if not getattr(sys, 'frozen', False):
 
 # Application version - IMPORTANT: Update this when releasing new versions
 # This is used for update checking and notifications
-APP_VERSION = "1.4.11"
+APP_VERSION = "1.4.12"
 
 # Hard-disable screenshot monitoring/storage in desktop app.
 # OCR text extraction for activity records still runs via event-based flow.
@@ -400,16 +400,16 @@ SCREENSHOT_MONITORING_HARD_DISABLED = True
 # Embedded credentials (for production builds - no .env file needed)
 # SECURITY: All sensitive keys moved to AI Server - fetched at runtime after authentication
 EMBEDDED_CONFIG = {
-    'ATLASSIAN_CLIENT_ID': 'Q8HT4Jn205AuTiAarj088oWNDrOqwvM5',  # DEV Atlassian OAuth client ID
+    'ATLASSIAN_CLIENT_ID': 'q0sTWPEY6aCKGApbUpkLvKl8wKWEiC33',  # DEV Atlassian OAuth client ID
     # Google OAuth (non-Jira users). PUBLIC client ID only — the client SECRET
     # stays on the AI Server, never in the desktop build. Same handling as
     # ATLASSIAN_CLIENT_ID above. Must match GOOGLE_DESKTOP_CLIENT_ID on the AI server.
     'GOOGLE_DESKTOP_CLIENT_ID': '508843846019-glrru7r3m622vt75e215lmf5ih1bcgju.apps.googleusercontent.com',
     # REMOVED: ATLASSIAN_CLIENT_SECRET - now on AI Server only (security fix)
     # REMOVED: SUPABASE_URL, SUPABASE_ANON_KEY, SUPABASE_SERVICE_ROLE_KEY - fetched from AI Server
-    'AI_SERVER_URL': 'https://forgesync.amzur.com',  # DEV AI Server (forgesync) - secure token exchange & config
+    'AI_SERVER_URL': 'https://timetracker-qa.amzur.com',  # DEV AI Server (forgesync) - secure token exchange & config
     'CAPTURE_INTERVAL': '300',
-    'WEB_PORT': '51777',
+    'WEB_PORT': '51778',
 }
 
 # Runtime Supabase config (fetched from AI server after authentication)
@@ -800,7 +800,7 @@ def show_update_notification(update_info, callback=None, state='available', web_
             title = "Update Required" if is_mandatory else "Update Available"
         
         notification = Notification(
-            app_id="MyWorkMate",
+            app_id="TimeTracker",
             title=f"{title}: v{latest_version}",
             msg=release_notes,
             duration="long" if is_mandatory else "short"
@@ -1140,7 +1140,7 @@ def install_application():
         print("  UPDATE DETECTED")
         print("=" * 50)
         print("")
-        print(f"  Updating MyWorkMate...")
+        print(f"  Updating TimeTracker...")
         print(f"  From: {current_exe}")
         print(f"  To:   {installed_exe}")
         print("")
@@ -1173,7 +1173,7 @@ def install_application():
                 # Step 3: Terminate old version (graceful first, then force)
                 if not terminate_old_version(running_processes, timeout=10):
                     print("[ERROR] Could not close old version")
-                    print("[INFO] Please close MyWorkMate manually and try again")
+                    print("[INFO] Please close TimeTracker manually and try again")
                     input("Press Enter to exit...")
                     return False
 
@@ -1244,7 +1244,7 @@ def install_application():
     except PermissionError as e:
         print(f"[ERROR] Permission denied: {e}")
         print("[INFO] The old version may still be running or locked")
-        print("[INFO] Please close MyWorkMate and try again")
+        print("[INFO] Please close TimeTracker and try again")
         import traceback
         traceback.print_exc()
         input("Press Enter to exit...")
@@ -1581,7 +1581,7 @@ class UpdateManager:
                 try:
                     error_msg = str(e)[:100]  # Truncate to 100 chars
                     notification = Notification(
-                        app_id="MyWorkMate",
+                        app_id="TimeTracker",
                         title="Update Download Failed",
                         msg=f"Failed to download update: {error_msg}\n\nWill retry automatically.",
                         duration="long"
@@ -1730,17 +1730,17 @@ def _generate_uninstaller_at_path(uninstall_path, install_dir):
 
     uninstall_script = f'''@echo off
 REM ============================================================================
-REM MyWorkMate - Uninstall Script
+REM TimeTracker - Uninstall Script
 REM Removes the application and all associated data
 REM ============================================================================
 
 echo.
 echo ============================================
-echo  MyWorkMate - Uninstaller
+echo  TimeTracker - Uninstaller
 echo ============================================
 echo.
 
-echo This will remove MyWorkMate and all associated data.
+echo This will remove TimeTracker and all associated data.
 echo.
 echo The following will be deleted:
 echo   - Application executable
@@ -1809,7 +1809,7 @@ echo ============================================
 echo  Uninstall Complete!
 echo ============================================
 echo.
-echo MyWorkMate has been removed from your system.
+echo TimeTracker has been removed from your system.
 echo.
 echo This window will close and the uninstaller will
 echo delete itself along with the application folder.
@@ -2086,7 +2086,7 @@ class AtlassianAuthManager:
         self.google_authorization_url = 'https://accounts.google.com/o/oauth2/v2/auth'
         self.google_redirect_uri = f'http://127.0.0.1:{web_port}/auth/google/callback'
         # Token exchange now goes through AI Server
-        self.ai_server_url = get_env_var('AI_SERVER_URL', 'https://forgesync.amzur.com')
+        self.ai_server_url = get_env_var('AI_SERVER_URL', 'https://timetracker-qa.amzur.com')
         self.store_path = store_path or os.path.join(get_app_data_dir(), 'time_tracker_auth.json')
         self.metadata_path = os.path.join(get_app_data_dir(), 'auth_metadata.json')  # For non-sensitive data
 
@@ -3481,7 +3481,7 @@ class AtlassianAuthManager:
             print("[ERROR] No valid Atlassian token - cannot fetch OCR config")
             return False
 
-        ai_server_url = get_env_var('AI_SERVER_URL', 'https://forgesync.amzur.com')
+        ai_server_url = get_env_var('AI_SERVER_URL', 'https://timetracker-qa.amzur.com')
         
         try:
             print("[INFO] Fetching OCR config from AI Server...")
@@ -4478,7 +4478,7 @@ class PausePopupWindow:
             # This ensures no extra empty "tk" window appears
             self.window = tk.Tk()
             self.window.withdraw()  # Hide immediately to prevent flash
-            self.window.title("MyWorkMate - Paused")
+            self.window.title("TimeTracker - Paused")
 
             # Window configuration
             self.window.overrideredirect(True)  # Remove window decorations
@@ -6358,7 +6358,7 @@ class TimeTracker:
     """Main application class"""
 
     def __init__(self):
-        print("[INFO] Initializing MyWorkMate...")
+        print("[INFO] Initializing TimeTracker...")
         
         # Get logger instance
         if APP_LOGGER_AVAILABLE:
@@ -6842,7 +6842,7 @@ class TimeTracker:
                 return
             
             notification = Notification(
-                app_id="MyWorkMate",
+                app_id="TimeTracker",
                 title=title,
                 msg=msg,
                 duration=duration
@@ -6896,8 +6896,8 @@ class TimeTracker:
                 if WINOTIFY_AVAILABLE:
                     try:
                         notification = Notification(
-                            app_id="MyWorkMate",
-                            title="Updating MyWorkMate",
+                            app_id="TimeTracker",
+                            title="Updating TimeTracker",
                             msg=f"Installing v{latest}. The app will restart shortly.",
                             duration="short"
                         )
@@ -6920,8 +6920,8 @@ class TimeTracker:
                            if triggered else
                            f"Update v{latest} found. It will install automatically shortly.")
                     notification = Notification(
-                        app_id="MyWorkMate",
-                        title="Updating MyWorkMate",
+                        app_id="TimeTracker",
+                        title="Updating TimeTracker",
                         msg=msg,
                         duration="short"
                     )
@@ -10198,7 +10198,7 @@ class TimeTracker:
                 time_str = f"{summary['total_minutes']}m"
 
             notification = Notification(
-                app_id="MyWorkMate",
+                app_id="TimeTracker",
                 title="📋 Unassigned Work Reminder",
                 msg=f"You have {summary['pending_groups']} work session(s) ({time_str}) that need to be assigned to Jira issues.",
                 duration="long"
@@ -10252,10 +10252,10 @@ class TimeTracker:
                 msg = "We could not refresh your session right now. Sync will retry automatically."
             else:
                 title = "Authentication Expired"
-                msg = "Your session has expired. Please open MyWorkMate and log in again to continue syncing with Jira."
+                msg = "Your session has expired. Please open TimeTracker and log in again to continue syncing with Jira."
 
             notification = Notification(
-                app_id="MyWorkMate",
+                app_id="TimeTracker",
                 title=title,
                 msg=msg,
                 duration="long"
@@ -10294,8 +10294,8 @@ class TimeTracker:
 
         try:
             notification = Notification(
-                app_id="MyWorkMate",
-                title="MyWorkMate - Not Logged In",
+                app_id="TimeTracker",
+                title="TimeTracker - Not Logged In",
                 msg="You are not logged in. Please log in to start tracking your work time.",
                 duration="long"
             )
@@ -10326,7 +10326,7 @@ class TimeTracker:
                 time_str = f"{hours}h {mins}m"
 
             notification = Notification(
-                app_id="MyWorkMate",
+                app_id="TimeTracker",
                 title="Tracking Paused",
                 msg=f"You've been paused for {time_str}. If you're doing productive work, resume from the system tray.",
                 duration="long"
@@ -13511,7 +13511,7 @@ class TimeTracker:
             from winotify import Notification, audio
 
             notification = Notification(
-                app_id="MyWorkMate",
+                app_id="TimeTracker",
                 title="Tracking Resumed",
                 msg="Your timed pause has ended. Time tracking is now active.",
                 duration="short"
@@ -13652,7 +13652,7 @@ class TimeTracker:
                 new_icon = self.create_tray_icon(state, show_update_badge=show_badge)
                 self.tray.icon = new_icon
                 
-                self.tray.title = "MyWorkMate"
+                self.tray.title = "TimeTracker"
                     
             except Exception as e:
                 print(f"[WARN] Failed to update tray icon: {e}")
@@ -13677,7 +13677,7 @@ class TimeTracker:
                 if WINOTIFY_AVAILABLE:
                     try:
                         notification = Notification(
-                            app_id="MyWorkMate",
+                            app_id="TimeTracker",
                             title="Installing Update",
                             msg=f"Installing v{latest}. The app will restart shortly.",
                             duration="short"
@@ -13697,7 +13697,7 @@ class TimeTracker:
                 if WINOTIFY_AVAILABLE:
                     try:
                         notification = Notification(
-                            app_id="MyWorkMate",
+                            app_id="TimeTracker",
                             title="Checking for Updates",
                             msg="Checking for available updates...",
                             duration="short"
@@ -13728,7 +13728,7 @@ class TimeTracker:
                                     # is handled by _on_update_manager_state_changed; no extra toast needed.
                                     return
                                 notification = Notification(
-                                    app_id="MyWorkMate",
+                                    app_id="TimeTracker",
                                     title=title,
                                     msg=msg,
                                     duration="short"
@@ -13948,9 +13948,9 @@ class TimeTracker:
             # Create menu using helper method
             menu = self._build_tray_menu()
 
-            self.tray = pystray.Icon("MyWorkMate", icon_image, menu=menu)
+            self.tray = pystray.Icon("TimeTracker", icon_image, menu=menu)
             
-            self.tray.title = "MyWorkMate"
+            self.tray.title = "TimeTracker"
 
             # Use pystray's setup callback to start periodic icon updates
             # AFTER the tray is visible. Without this, the update thread exits
@@ -13991,7 +13991,7 @@ class TimeTracker:
                 # Use the same menu helper for fallback
                 menu = self._build_tray_menu()
 
-                self.tray = pystray.Icon("MyWorkMate", icon_image, menu=menu)
+                self.tray = pystray.Icon("TimeTracker", icon_image, menu=menu)
                 self.tray.run()
             except Exception as e2:
                 print(f"[ERROR] System tray fallback also failed: {e2}")
@@ -14171,7 +14171,7 @@ class TimeTracker:
     
     def run(self):
         """Main application entry point"""
-        print("[OK] Starting MyWorkMate...")
+        print("[OK] Starting TimeTracker...")
 
         # Self-install on first run (copies exe to %LOCALAPPDATA%\TimeTracker\)
         if not install_application():
@@ -14479,7 +14479,7 @@ class TimeTracker:
         html = f'''<!DOCTYPE html>
 <html>
 <head>
-    <title>MyWorkMate</title>
+    <title>TimeTracker</title>
     <style>
         * {{ box-sizing: border-box; margin: 0; padding: 0; }}
         body {{
@@ -14593,7 +14593,7 @@ class TimeTracker:
                 <polyline points="12 6 12 12 16 14"/>
             </svg>
         </div>
-        <h1>MyWorkMate</h1>
+        <h1>TimeTracker</h1>
         <p class="subtitle">Sign in with your Atlassian account to start tracking time on this computer.</p>
 
         <div class="divider"></div>
@@ -14823,7 +14823,7 @@ class TimeTracker:
 </head>
 <body>
 <nav>
-    <span class="brand">&#x23F1; MyWorkMate</span>
+    <span class="brand">&#x23F1; TimeTracker</span>
     <a href="/">Dashboard</a>
     <a href="/admin">Admin</a>
     <a href="/classifications" style="color:#6366f1">App Rules</a>
@@ -15216,7 +15216,7 @@ loadData();
         html = f'''<!DOCTYPE html>
 <html>
 <head>
-    <title>MyWorkMate - Consent Required</title>
+    <title>TimeTracker - Consent Required</title>
     <style>
         * {{ box-sizing: border-box; margin: 0; padding: 0; }}
         body {{
@@ -15522,7 +15522,7 @@ loadData();
         html = '''<!DOCTYPE html>
 <html>
 <head>
-    <title>MyWorkMate - Consent Required</title>
+    <title>TimeTracker - Consent Required</title>
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; }
         body {
@@ -15642,7 +15642,7 @@ loadData();
         html = '''<!DOCTYPE html>
 <html>
 <head>
-    <title>Admin Panel Locked - MyWorkMate</title>
+    <title>Admin Panel Locked - TimeTracker</title>
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; }
         body {
@@ -15683,7 +15683,7 @@ loadData();
         html = f'''<!DOCTYPE html>
 <html>
 <head>
-    <title>Admin Login - MyWorkMate</title>
+    <title>Admin Login - TimeTracker</title>
     <style>
         * {{ box-sizing: border-box; margin: 0; padding: 0; }}
         body {{
@@ -15819,7 +15819,7 @@ loadData();
         html = '''<!DOCTYPE html>
 <html>
 <head>
-    <title>Settings - MyWorkMate</title>
+    <title>Settings - TimeTracker</title>
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; }
         body {
@@ -16027,7 +16027,7 @@ loadData();
         <div class="card">
             <div class="card-header">
                 <h1>&#9881; Settings</h1>
-                <p>Configure your MyWorkMate preferences</p>
+                <p>Configure your TimeTracker preferences</p>
             </div>
             <div class="card-body">
                 <!-- NOTE: Pause feature is disabled (not a confirmed feature yet)
@@ -16112,7 +16112,7 @@ loadData();
                 <div id="status-message" class="status-message"></div>
             </div>
         </div>
-        <a href="/" class="back-link">&#8592; Back to MyWorkMate</a>
+        <a href="/" class="back-link">&#8592; Back to TimeTracker</a>
     </div>
 
     <script>
@@ -16201,7 +16201,7 @@ loadData();
         html = '''<!DOCTYPE html>
 <html>
 <head>
-    <title>Admin Dashboard - MyWorkMate</title>
+    <title>Admin Dashboard - TimeTracker</title>
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; }
         body {

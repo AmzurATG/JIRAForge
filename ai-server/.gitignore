@@ -40,6 +40,9 @@ Thumbs.db
 dist/
 build/
 
+# Docker image archives (too large for GitHub; load with docker load)
+*.tar
+
 # Temporary files
 tmp/
 temp/

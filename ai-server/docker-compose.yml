@@ -1,11 +1,14 @@
 services:
   ai-server:
+    # Lower-env / CI builds the image. On the server, load or pull this image
+    # and start with: docker compose up -d --no-build
+    # (no application source is required on the host.)
+    image: ${AI_SERVER_IMAGE:-jiraforge-ai-server:local}
     build:
       context: .
       dockerfile: Dockerfile
-    image: jiraforge-ai-server:local
     ports:
-      - "8080:8080"
+      - "127.0.0.1:18081:8080"
     env_file:
       - .env
     environment:
@@ -16,6 +19,12 @@ services:
       LOG_TO_CONSOLE: "true"
     volumes:
       - ai-server-logs:/app/logs
+    tmpfs:
+      - /tmp:mode=1777
+    read_only: true
+    privileged: false
+    cap_drop:
+      - ALL
     restart: unless-stopped
 
 volumes:

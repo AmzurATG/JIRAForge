@@ -1,11 +1,11 @@
 app:
-  id: ari:cloud:ecosystem::app/c8bab1dc-ae32-4e6f-9dbd-eb242cc6c14a
+  id: ari:cloud:ecosystem::app/4503d45c-bc00-4730-be67-fbfc1fa484ba
   runtime:
     name: nodejs22.x
 
 remotes:
   - key: ai-server
-    baseUrl: https://forgesync.amzur.com
+    baseUrl: https://timetracker-qa.amzur.com
     operations:
       - compute
 

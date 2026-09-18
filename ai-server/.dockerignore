@@ -3,23 +3,48 @@ node_modules/
 src/portal/node_modules/
 src/portal/build/
 npm-debug.log
+yarn-error.log
+.npm/
+.cache/
 
-# Environment files (inject via compose env_file / Cloud Run, never bake in)
+# Environment files and secrets (inject via compose env_file / runtime, never bake in)
 .env
 .env.*
 !.env.example
 src/portal/.env
 src/portal/.env.*
+*.pem
+*.key
+*.p12
+*.pfx
+id_rsa
+id_rsa.*
+secrets/
+credentials.json
+service-account*.json
 
-# Logs and build output
+# Logs, coverage, and build output
 logs/
 dist/
 *.log
+coverage/
+.nyc_output/
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+*.temp
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
 
 # Development files
 .git
 .gitignore
 .vscode/
+.idea/
 *.md
 
 # Tests and local harnesses
@@ -27,7 +52,6 @@ tests/
 __tests__/
 *.test.js
 *.spec.js
-coverage/
 test-*.js
 
 # Docker files (not needed inside the image)

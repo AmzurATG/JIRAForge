@@ -54,6 +54,9 @@ dist/
 build/
 out/
 
+# Docker image archives (exceed GitHub's 100 MB file limit)
+*.tar
+
 # Electron
 *.asar
 

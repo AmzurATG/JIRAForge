@@ -3,7 +3,7 @@
 # ---------------------------------------------------------------------------
 # Builder: has source, compiles portal, bundles the Node server, then is discarded
 # ---------------------------------------------------------------------------
-FROM node:20.18-slim AS builder
+FROM node:20.20.2-slim AS builder
 
 RUN apt-get update \
   && apt-get install -y --no-install-recommends python3 make g++ \
@@ -35,7 +35,7 @@ RUN node scripts/bundle-server.js \
 # ---------------------------------------------------------------------------
 # Runtime: production node_modules + bundled server + static assets only
 # ---------------------------------------------------------------------------
-FROM node:20.18-slim AS runtime
+FROM node:20.20.2-slim AS runtime
 
 WORKDIR /app
 
