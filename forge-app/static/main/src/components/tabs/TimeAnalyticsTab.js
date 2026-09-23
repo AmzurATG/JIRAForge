@@ -6,7 +6,6 @@ import './TimeAnalyticsTab.css';
 
 // Fallback download URL (used if API doesn't return one)
 const FALLBACK_DOWNLOAD_URL = 'https://jvijitdewbypqbatfboi.supabase.co/storage/v1/object/public/desktop%20app/TimeTracker.exe';
-const FALLBACK_LINUX_DOWNLOAD_URL = 'https://jvijitdewbypqbatfboi.supabase.co/storage/v1/object/public/releases/linux/timetracker_1.0.4_amd64.deb';
 
 /**
  * Time Analytics Tab Component
@@ -22,7 +21,6 @@ function TimeAnalyticsTab({ onOpenWorklogReassignModal, refreshKey }) {
   const [summaryDrillDate, setSummaryDrillDate] = useState(null);
   const [selectedMonth, setSelectedMonth] = useState(new Date());
   const [downloadUrl, setDownloadUrl] = useState(FALLBACK_DOWNLOAD_URL);
-  const [linuxDownloadUrl, setLinuxDownloadUrl] = useState(FALLBACK_LINUX_DOWNLOAD_URL);
   const [reconciledTodayTotal, setReconciledTodayTotal] = useState(null);
   const latestRequestIdRef = useRef(0);
 
@@ -85,10 +83,6 @@ function TimeAnalyticsTab({ onOpenWorklogReassignModal, refreshKey }) {
         if (result.downloadUrl) {
           setDownloadUrl(result.downloadUrl);
         }
-        // Update Linux download URL if available
-        if (result.linuxDownloadUrl) {
-          setLinuxDownloadUrl(result.linuxDownloadUrl);
-        }
       }
     } catch (err) {
       console.warn('Could not fetch download URL, using fallback:', err);
@@ -98,10 +92,6 @@ function TimeAnalyticsTab({ onOpenWorklogReassignModal, refreshKey }) {
   // Handle download button click using Forge router (required for sandbox)
   const handleDownloadClick = () => {
     router.open(downloadUrl);
-  };
-
-  const handleLinuxDownloadClick = () => {
-    router.open(linuxDownloadUrl);
   };
 
   const handleSummaryDrillDown = (type) => {
@@ -139,15 +129,6 @@ function TimeAnalyticsTab({ onOpenWorklogReassignModal, refreshKey }) {
               <button
                 className="download-button"
                 onClick={handleDownloadClick}
-              >
-                Download
-              </button>
-            </div>
-            <div className="platform-option">
-              <span className="platform-label">Linux</span>
-              <button
-                className="download-button"
-                onClick={handleLinuxDownloadClick}
               >
                 Download
               </button>
