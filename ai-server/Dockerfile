@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 
 # ---------------------------------------------------------------------------
-# Builder: has source, compiles portal, bundles the Node server, then is discarded
+# Builder: has source, bundles the Node server, then is discarded
 # ---------------------------------------------------------------------------
 FROM node:20.20.2-slim AS builder
 
@@ -18,17 +18,12 @@ RUN npm ci \
 
 COPY src ./src
 
-WORKDIR /app/src/portal
-RUN npm ci \
-  && npm run build -- --sourcemap false
-
 WORKDIR /app
 RUN node scripts/bundle-server.js \
-  && mkdir -p assets/dashboard assets/legal assets/feedback assets/portal \
+  && mkdir -p assets/dashboard assets/legal assets/feedback \
   && cp src/dashboard/admin-dashboard.html assets/dashboard/ \
   && cp -a src/legal/. assets/legal/ \
   && cp src/feedback/feedback-form.html src/feedback/feedback-form.js assets/feedback/ \
-  && cp -a src/portal/build assets/portal/build \
   && npm prune --omit=dev \
   && rm -rf src scripts
 

@@ -2,7 +2,6 @@ const express = require('express');
 const cors = require('cors');
 const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
-const jwt = require('jsonwebtoken');
 const path = require('node:path');
 const fs = require('node:fs');
 require('dotenv').config({ path: path.join(__dirname, '..', '.env') });
@@ -14,24 +13,12 @@ const appVersionController = require('./controllers/app-version-controller');
 const feedbackController = require('./controllers/feedback-controller');
 const notificationController = require('./controllers/notification-controller');
 const userDataController = require('./controllers/user-data-controller');
-const portalAuthController = require('./controllers/portal-auth-controller');
-const portalController = require('./controllers/portal-controller');
-const portalReportsController = require('./controllers/portal-reports-controller');
-const portalAdminUsersController = require('./controllers/portal-admin-users-controller');
-const portalAppClassificationsController = require('./controllers/portal-app-classifications-controller');
-const portalLobController = require('./controllers/portal-lob-controller');
-const portalLobRosterController = require('./controllers/portal-lob-roster-controller');
-const portalAppCatalogController = require('./controllers/portal-app-catalog-controller');
-const portalLobAppClassificationsController = require('./controllers/portal-lob-app-classifications-controller');
-const portalEmployeeProfileController = require('./controllers/portal-employee-profile-controller');
-const portalHolidayController = require('./controllers/portal-holiday-controller');
 const desktopDqNudgesController = require('./controllers/desktop-dq-nudges-controller');
 const desktopDqPreferencesController = require('./controllers/desktop-dq-preferences-controller');
 const authMiddleware = require('./middleware/auth');
 const forgeAuthMiddleware = require('./middleware/forge-auth');
 const atlassianAuthMiddleware = require('./middleware/atlassian-auth');
 const desktopAuthMiddleware = require('./middleware/desktop-auth');
-const portalAuthMiddleware = require('./middleware/portal-auth');
 const logger = require('./utils/logger');
 const { getAssetRoot } = require('./utils/asset-root');
 const assetRoot = getAssetRoot();
@@ -56,10 +43,7 @@ const PORT = process.env.PORT || 3001;
 app.set('trust proxy', 1);
 
 // CORS configuration - whitelist trusted origins.
-// CORS_ALLOWED_ORIGIN accepts a single origin OR a comma-separated list, so the
-// separately-deployed portal frontend (Vercel) plus any preview/custom domains
-// can all be whitelisted via env without a code change. Example:
-//   CORS_ALLOWED_ORIGIN=https://myworkmate.amzur.com
+// CORS_ALLOWED_ORIGIN accepts a single origin OR a comma-separated list.
 const allowedOrigins = [
   // Production domains (set via env)
   process.env.AI_SERVER_URL,
@@ -69,11 +53,9 @@ const allowedOrigins = [
   // Development
   'http://localhost:3000',
   'http://localhost:3001',
-  'http://localhost:3002', // Portal frontend (Vite dev)
   'http://localhost:8080', // Docker / Cloud Run local
   'http://127.0.0.1:3000',
   'http://127.0.0.1:3001',
-  'http://127.0.0.1:3002', // Portal frontend (Vite dev)
   'http://127.0.0.1:8080',
 ].filter(Boolean); // Remove undefined/empty values
 
@@ -101,7 +83,7 @@ app.use(helmet({
   contentSecurityPolicy: {
     directives: {
       defaultSrc: ["'self'"],
-      scriptSrc: ["'self'", "'unsafe-inline'"], // Allow inline scripts for admin dashboard / portal theme
+      scriptSrc: ["'self'", "'unsafe-inline'"], // Allow inline scripts for admin dashboard
       styleSrc: ["'self'", "'unsafe-inline'", 'https://fonts.googleapis.com'],
       fontSrc: ["'self'", 'https://fonts.gstatic.com'],
       imgSrc: ["'self'", 'data:', 'https:'],
@@ -134,38 +116,7 @@ const limiter = rateLimit({
 app.use('/api/', (req, res, next) => {
   if (req.path.startsWith('/forge/')) return next();
   if (req.path.startsWith('/auth/')) return next();
-  // Portal data routes have their own (per-user) limiter below — keep them out of
-  // this strict IP-keyed bucket so a shared office/NAT IP can't starve all users.
-  if (req.path.startsWith('/portal/')) return next();
   return limiter(req, res, next);
-});
-
-// Portal API limiter — generous and keyed by the authenticated portal USER (from
-// the JWT) rather than IP, so multiple portal users behind one shared office/NAT
-// IP don't drain a single bucket (the cause of intermittent 429s on the portal).
-// Portal /auth/* routes are excluded here and keep their stricter login limiters.
-const portalApiLimiter = rateLimit({
-  windowMs: 10 * 60 * 1000, // 10 minutes
-  max: 300,                 // per portal user per window (the UI fires several calls per page)
-  message: 'Too many requests, please slow down and try again shortly.',
-  standardHeaders: true,
-  legacyHeaders: false,
-  keyGenerator: (req) => {
-    const auth = req.headers.authorization;
-    if (auth && auth.startsWith('Bearer ')) {
-      try {
-        // decode only (no verify) — purely to bucket by user; the route still
-        // enforces real auth via verifyPortalToken.
-        const decoded = jwt.decode(auth.slice(7));
-        if (decoded && decoded.userId) return `puser:${decoded.userId}`;
-      } catch (_) { /* fall through to IP */ }
-    }
-    return req.ip || req.headers['x-forwarded-for'] || 'unknown';
-  }
-});
-app.use('/api/portal/', (req, res, next) => {
-  if (req.path.startsWith('/auth/')) return next(); // login/forgot/reset keep their auth limiters
-  return portalApiLimiter(req, res, next);
 });
 
 // Rate limiter for public/health endpoints — prevents abuse during DDoS
@@ -720,151 +671,6 @@ app.post('/api/cluster-unassigned-work', authMiddleware, async (req, res, next) 
   }
 });
 
-// =============================================================================
-// WEB PRODUCTIVITY PORTAL ROUTES (JWT-authenticated)
-// Standalone portal for HR/management to view employee analytics
-// No Jira integration — uses email/password auth
-// =============================================================================
-
-// Debug middleware to log ALL portal requests
-app.use('/api/portal', (req, res, next) => {
-  logger.info('[Portal Request]', {
-    method: req.method,
-    path: req.path,
-    url: req.url,
-    origin: req.headers.origin,
-    hasAuth: !!req.headers.authorization
-  });
-  next();
-});
-
-// Portal authentication (public - no auth required)
-app.post('/api/portal/auth/login', authLimiter, portalAuthController.login);
-app.post('/api/portal/auth/logout', portalAuthController.logout);
-app.post('/api/portal/auth/forgot-password', authLimiter, portalAuthController.requestPasswordReset);
-app.post('/api/portal/auth/reset-password', authLimiter, portalAuthController.resetPassword);
-
-// Google OAuth for Portal SSO
-app.get('/api/portal/auth/google/url', oauthLimiter, portalAuthController.getGoogleAuthUrl);
-app.post('/api/portal/auth/google/callback', oauthLimiter, portalAuthController.googleCallback);
-
-// Portal password management (authenticated)
-app.post('/api/portal/auth/change-password', portalAuthMiddleware.verifyPortalToken, portalAuthController.changePassword);
-app.post('/api/portal/auth/admin-reset-password', portalAuthMiddleware.verifyPortalToken, portalAuthController.adminResetPassword);
-
-// Portal analytics endpoints (authenticated)
-app.get('/api/portal/dashboard', portalAuthMiddleware.verifyPortalToken, portalController.getDashboard);
-app.get('/api/portal/employees/list', portalAuthMiddleware.verifyPortalToken, portalController.getEmployeesList);
-app.get('/api/portal/employees', portalAuthMiddleware.verifyPortalToken, portalController.getEmployees);
-app.get('/api/portal/employees/:userId', portalAuthMiddleware.verifyPortalToken, portalController.getEmployeeDetail);
-app.get('/api/portal/employees/:userId/logs', portalAuthMiddleware.verifyPortalToken, portalController.getEmployeeLogs);
-app.get('/api/portal/time-logs', portalAuthMiddleware.verifyPortalToken, portalController.getTimeLogs);
-
-// Employee locations (WS-B) — list: any portal user; manage: superadmin only
-app.get('/api/portal/locations', portalAuthMiddleware.verifyPortalToken, portalEmployeeProfileController.getLocations);
-app.post('/api/portal/locations', portalAuthMiddleware.verifyPortalToken, portalEmployeeProfileController.createLocation);
-app.put('/api/portal/locations/:id', portalAuthMiddleware.verifyPortalToken, portalEmployeeProfileController.updateLocation);
-app.delete('/api/portal/locations/:id', portalAuthMiddleware.verifyPortalToken, portalEmployeeProfileController.deleteLocation);
-// Per-employee portal profile (location assignment) — superadmin only
-app.put('/api/portal/employees/:userId/profile', portalAuthMiddleware.verifyPortalToken, portalEmployeeProfileController.setEmployeeProfile);
-// Bulk location assignment (Employees action bar + Locations members picker) — superadmin only
-app.put('/api/portal/employees/profiles', portalAuthMiddleware.verifyPortalToken, portalEmployeeProfileController.bulkSetEmployeeProfiles);
-
-// Company holidays — list: any portal user (needed for legal-hours); manage: superadmin only
-app.get('/api/portal/holidays', portalAuthMiddleware.verifyPortalToken, portalHolidayController.getHolidays);
-app.post('/api/portal/holidays', portalAuthMiddleware.verifyPortalToken, portalHolidayController.createHoliday);
-app.put('/api/portal/holidays/:id', portalAuthMiddleware.verifyPortalToken, portalHolidayController.updateHoliday);
-app.delete('/api/portal/holidays/:id', portalAuthMiddleware.verifyPortalToken, portalHolidayController.deleteHoliday);
-
-// Portal reports endpoints (authenticated)
-app.get('/api/portal/reports/data', portalAuthMiddleware.verifyPortalToken, portalReportsController.getReportData);
-app.get('/api/portal/reports/export/csv', portalAuthMiddleware.verifyPortalToken, portalReportsController.exportCSV);
-app.get('/api/portal/reports/export/excel', portalAuthMiddleware.verifyPortalToken, portalReportsController.exportExcel);
-app.get('/api/portal/reports/export/pdf', portalAuthMiddleware.verifyPortalToken, portalReportsController.exportPDF);
-
-// Portal admin users endpoints (authenticated - superadmin only)
-app.get('/api/portal/admin-users', portalAuthMiddleware.verifyPortalToken, portalAdminUsersController.getAdminUsers);
-app.post('/api/portal/admin-users', portalAuthMiddleware.verifyPortalToken, portalAdminUsersController.createAdminUser);
-app.put('/api/portal/admin-users/:userId', portalAuthMiddleware.verifyPortalToken, portalAdminUsersController.updateAdminUser);
-app.delete('/api/portal/admin-users/:userId', portalAuthMiddleware.verifyPortalToken, portalAdminUsersController.deleteAdminUser);
-
-// Portal application classifications endpoints (authenticated - admin/superadmin)
-app.get('/api/portal/app-classifications', portalAuthMiddleware.verifyPortalToken, portalAppClassificationsController.getAppClassifications);
-app.post('/api/portal/app-classifications', portalAuthMiddleware.verifyPortalToken, portalAppClassificationsController.createAppClassification);
-app.post('/api/portal/app-classifications/bulk-import', portalAuthMiddleware.verifyPortalToken, portalAppClassificationsController.bulkImportAppClassifications);
-app.put('/api/portal/app-classifications/:id', portalAuthMiddleware.verifyPortalToken, portalAppClassificationsController.updateAppClassification);
-app.delete('/api/portal/app-classifications/:id', portalAuthMiddleware.verifyPortalToken, portalAppClassificationsController.deleteAppClassification);
-
-// =============================================================================
-// LOB SEGMENTATION & RBAC (Phase 1) — all authenticated; role/scope enforced in
-// controllers. Analytics scoping itself is gated by PORTAL_LOB_ENFORCEMENT.
-// =============================================================================
-
-// LOB management (create/update/delete: superadmin; list: superadmin or head)
-app.get('/api/portal/lobs', portalAuthMiddleware.verifyPortalToken, portalLobController.getLobs);
-app.post('/api/portal/lobs', portalAuthMiddleware.verifyPortalToken, portalLobController.createLob);
-app.put('/api/portal/lobs/:lobId', portalAuthMiddleware.verifyPortalToken, portalLobController.updateLob);
-app.delete('/api/portal/lobs/:lobId', portalAuthMiddleware.verifyPortalToken, portalLobController.deleteLob);
-
-// LOB members (employees) — manage: superadmin; list: superadmin or head of LOB
-app.get('/api/portal/lobs/:lobId/members', portalAuthMiddleware.verifyPortalToken, portalLobController.getMembers);
-app.post('/api/portal/lobs/:lobId/members', portalAuthMiddleware.verifyPortalToken, portalLobController.addMembers);
-app.delete('/api/portal/lobs/:lobId/members/:userId', portalAuthMiddleware.verifyPortalToken, portalLobController.removeMember);
-
-// LOB expected-member roster (adoption tracking) — import/delete: superadmin; read: superadmin or head
-app.post('/api/portal/lobs/:lobId/roster/import', portalAuthMiddleware.verifyPortalToken, portalLobRosterController.importRoster);
-app.get('/api/portal/lobs/:lobId/roster', portalAuthMiddleware.verifyPortalToken, portalLobRosterController.getRoster);
-app.delete('/api/portal/lobs/:lobId/roster/:id', portalAuthMiddleware.verifyPortalToken, portalLobRosterController.removeRosterEntry);
-
-// LOB heads — superadmin only
-app.get('/api/portal/lobs/:lobId/heads', portalAuthMiddleware.verifyPortalToken, portalLobController.getHeads);
-app.post('/api/portal/lobs/:lobId/heads', portalAuthMiddleware.verifyPortalToken, portalLobController.addHeads);
-app.delete('/api/portal/lobs/:lobId/heads/:adminId', portalAuthMiddleware.verifyPortalToken, portalLobController.removeHead);
-
-// Per-LOB app classifications — superadmin or head of the LOB
-app.get('/api/portal/lobs/:lobId/app-classifications', portalAuthMiddleware.verifyPortalToken, portalLobAppClassificationsController.getClassifications);
-// Apps used by this LOB but not yet in the catalog (discovery)
-app.get('/api/portal/lobs/:lobId/unlisted-apps', portalAuthMiddleware.verifyPortalToken, portalLobAppClassificationsController.getUnlistedApps);
-// Add a new application to this LOB (find-or-create catalog entry + classify)
-app.post('/api/portal/lobs/:lobId/apps', portalAuthMiddleware.verifyPortalToken, portalLobAppClassificationsController.addApp);
-app.put('/api/portal/lobs/:lobId/app-classifications', portalAuthMiddleware.verifyPortalToken, portalLobAppClassificationsController.setClassification);
-app.post('/api/portal/lobs/:lobId/app-classifications/bulk', portalAuthMiddleware.verifyPortalToken, portalLobAppClassificationsController.bulkSet);
-app.delete('/api/portal/lobs/:lobId/app-classifications/:appId', portalAuthMiddleware.verifyPortalToken, portalLobAppClassificationsController.deleteClassification);
-
-// Shared application catalog — read: any portal user; write: superadmin
-// AI app-suggest is LLM-backed (cost) — tighter per-user budget on top of the
-// general portal limiter. Keyed by the authenticated portal user (JWT), not IP.
-const aiSuggestLimiter = rateLimit({
-  windowMs: 60 * 1000, // 1 minute
-  max: 15,             // 15 AI suggestions/min per portal user
-  message: 'Too many AI suggestions, please slow down and try again shortly.',
-  standardHeaders: true,
-  legacyHeaders: false,
-  keyGenerator: (req) => {
-    const auth = req.headers.authorization;
-    if (auth && auth.startsWith('Bearer ')) {
-      try {
-        const decoded = jwt.decode(auth.slice(7));
-        if (decoded && decoded.userId) return `puser:${decoded.userId}`;
-      } catch (_) { /* fall through to IP */ }
-    }
-    return req.ip || 'unknown';
-  }
-});
-
-app.get('/api/portal/app-catalog', portalAuthMiddleware.verifyPortalToken, portalAppCatalogController.getCatalog);
-// AI-assisted suggestion for the Add Application modal (any portal user; gated by PORTAL_AI_APP_SUGGEST)
-app.post('/api/portal/app-catalog/ai-suggest', portalAuthMiddleware.verifyPortalToken, aiSuggestLimiter, portalAppCatalogController.aiSuggest);
-app.post('/api/portal/app-catalog', portalAuthMiddleware.verifyPortalToken, portalAppCatalogController.createApp);
-app.post('/api/portal/app-catalog/bulk-import', portalAuthMiddleware.verifyPortalToken, portalAppCatalogController.bulkImport);
-app.put('/api/portal/app-catalog/:id', portalAuthMiddleware.verifyPortalToken, portalAppCatalogController.updateApp);
-app.delete('/api/portal/app-catalog/:id', portalAuthMiddleware.verifyPortalToken, portalAppCatalogController.deleteApp);
-
-const portalBuildDir = path.join(assetRoot, 'portal', 'build');
-if (fs.existsSync(path.join(portalBuildDir, 'index.html'))) {
-  app.use(express.static(portalBuildDir, { index: false, maxAge: '1h' }));
-}
-
 // Error handling middleware
 app.use((err, req, res, next) => {
   logger.error('Unhandled error:', err);
@@ -876,16 +682,8 @@ app.use((err, req, res, next) => {
   });
 });
 
-// 404 handler — SPA fallback for the built portal when it is present
+// 404 handler
 app.use((req, res) => {
-  const isApiLike = req.path.startsWith('/api')
-    || req.path.startsWith('/admin-dashboard')
-    || req.path.startsWith('/legal')
-    || req.path === '/health';
-  const portalIndex = path.join(portalBuildDir, 'index.html');
-  if (!isApiLike && req.method === 'GET' && fs.existsSync(portalIndex)) {
-    return res.sendFile(portalIndex);
-  }
   res.status(404).json({
     success: false,
     error: 'Endpoint not found'

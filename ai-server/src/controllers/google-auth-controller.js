@@ -30,7 +30,7 @@ const GOOGLE_TOKEN_URL = 'https://oauth2.googleapis.com/token';
 const GOOGLE_USERINFO_URL = 'https://www.googleapis.com/oauth2/v2/userinfo';
 
 function getGoogleCredentials() {
-  // Prefer a dedicated desktop client; fall back to the portal's client.
+  // Prefer a dedicated desktop client; fall back to the shared Google client.
   return {
     clientId: process.env.GOOGLE_DESKTOP_CLIENT_ID || process.env.GOOGLE_CLIENT_ID,
     clientSecret: process.env.GOOGLE_DESKTOP_CLIENT_SECRET || process.env.GOOGLE_CLIENT_SECRET
@@ -91,7 +91,7 @@ async function postGoogleToken(body) {
  * token (authoritative — the token was just issued to OUR client via the code/
  * refresh exchange using our client_id+secret), rather than locally verifying
  * the id_token signature. The caller then enforces `verified_email === true`
- * and the org email-domain allowlist. This mirrors the existing portal Google flow.
+ * and the org email-domain allowlist.
  */
 async function fetchGoogleUser(accessToken) {
   const resp = await fetch(GOOGLE_USERINFO_URL, {

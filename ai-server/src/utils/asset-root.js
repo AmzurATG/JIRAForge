@@ -1,8 +1,8 @@
 const path = require('node:path');
 
 /**
- * Root directory for static assets (dashboard HTML, legal pages, feedback form,
- * built portal). Local `node src/index.js` uses `src/`. The Docker runtime
+ * Root directory for static assets (dashboard HTML, legal pages, feedback form).
+ * Local `node src/index.js` uses `src/`. The Docker runtime
  * image sets ASSET_ROOT=/app/assets so bundled server.js does not need `src/`.
  */
 function getAssetRoot() {
