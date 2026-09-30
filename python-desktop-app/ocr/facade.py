@@ -9,6 +9,7 @@ Maintains backward compatibility with existing extract_text_from_image() functio
 """
 import logging
 import re
+import threading
 import time
 from typing import Dict, Any, Optional, List
 import numpy as np
@@ -21,6 +22,17 @@ from .image_processor import preprocess_image, preprocess_screenshot, resize_if_
 from .tabular_enricher import TabularContextEnricher
 
 logger = logging.getLogger(__name__)
+
+# One inference at a time per engine: the OCR worker and the batch backfill
+# share engine instances, and RapidOCR's pipeline is not documented as
+# thread-safe (O-4).
+_engine_locks: Dict[str, threading.Lock] = {}
+_engine_locks_guard = threading.Lock()
+
+
+def _engine_lock(engine_name: str) -> threading.Lock:
+    with _engine_locks_guard:
+        return _engine_locks.setdefault(engine_name, threading.Lock())
 
 
 class OCRFacade:
@@ -549,7 +561,8 @@ class OCRFacade:
                 
                 try:
                     infer_start = time.perf_counter()
-                    result = engine.extract_text(img_array)
+                    with _engine_lock(engine_name):
+                        result = engine.extract_text(img_array)
                     infer_ms = (time.perf_counter() - infer_start) * 1000.0
                     
                     if result.get('success') and result.get('confidence', 0) >= min_confidence:
@@ -615,6 +628,18 @@ class OCRFacade:
                             'line_count': line_count,
                             'boxes': result.get('boxes')
                         }
+                    elif not result.get('success') and result.get('error'):
+                        # A real engine failure, not a low-confidence read (O-3).
+                        fail_reason = f"Engine error: {result.get('error')}"
+                        logger.warning(f"{engine_name}: {fail_reason}")
+                        engine_failures[engine_name] = fail_reason
+                        self._engine_failure_counts[engine_name] = \
+                            self._engine_failure_counts.get(engine_name, 0) + 1
+                    elif result.get('success') and not (result.get('text') or '').strip():
+                        # Nothing readable on screen (wallpaper, video, blank app).
+                        fail_reason = "No text found"
+                        logger.debug(f"{engine_name}: {fail_reason}")
+                        engine_failures[engine_name] = fail_reason
                     else:
                         conf = result.get('confidence', 0)
                         fail_reason = f"Confidence too low ({conf:.2f} < {min_confidence} threshold)"
@@ -762,6 +787,7 @@ class OCRFacade:
 
 # Global facade instance (lazy initialization)
 _facade_instance: Optional[OCRFacade] = None
+_facade_lock = threading.RLock()
 
 
 def reset_facade() -> None:
@@ -773,8 +799,9 @@ def reset_facade() -> None:
     up the new configuration instead of reusing the stale startup singleton.
     """
     global _facade_instance
-    _facade_instance = None
-    EngineFactory.clear_cache()
+    with _facade_lock:
+        _facade_instance = None
+        EngineFactory.clear_cache()
     logger.info("OCR facade and engine cache reset — will reinitialise on next OCR call")
 
 
@@ -789,13 +816,13 @@ def get_facade(config: Optional[OCRConfig] = None) -> OCRFacade:
         OCRFacade singleton instance
     """
     global _facade_instance
-    
-    if _facade_instance is None or config is not None:
-        _facade_instance = OCRFacade(config)
-        # Log diagnostics on first initialization to help debug OCR issues
-        _facade_instance.log_diagnostics()
-    
-    return _facade_instance
+
+    with _facade_lock:      # two threads must never build two facades (O-4)
+        if _facade_instance is None or config is not None:
+            _facade_instance = OCRFacade(config)
+            # Log diagnostics on first initialization to help debug OCR issues
+            _facade_instance.log_diagnostics()
+        return _facade_instance
 
 
 def extract_text_from_image(

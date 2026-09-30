@@ -22,6 +22,8 @@ import platform
 import time
 import keyring
 
+import platform_hooks
+
 try:
     from sqlcipher3 import dbapi2 as sqlcipher
     SQLCIPHER_AVAILABLE = True
@@ -40,6 +42,22 @@ def _db_log(level: str, message: str) -> None:
     print(message, flush=True)
     if _DB_LOGGER:
         getattr(_DB_LOGGER, level.lower(), _DB_LOGGER.info)(message)
+
+
+def _machine_key_salt_source():
+    """Machine identity used to derive the fallback DB key.
+
+    A platform provider supplies stable material (Linux: account name +
+    /etc/machine-id). Otherwise the original login@hostname derivation is used.
+    """
+    provider = platform_hooks.get()
+    if provider is not None and hasattr(provider, 'machine_key_material'):
+        return provider.machine_key_material()
+    try:
+        username = os.getlogin()
+    except OSError:
+        username = os.environ.get('USERNAME', 'default')
+    return f"{username}@{platform.node()}"
 
 
 class DatabaseConnectionManager:
@@ -112,11 +130,7 @@ class DatabaseConnectionManager:
         from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
         from cryptography.hazmat.primitives import hashes
 
-        try:
-            username = os.getlogin()
-        except OSError:
-            username = os.environ.get('USERNAME', 'default')
-        machine_id = f"{username}@{platform.node()}"
+        machine_id = _machine_key_salt_source()
         salt = machine_id.encode('utf-8')
         kdf = PBKDF2HMAC(
             algorithm=hashes.SHA256(),
@@ -594,11 +608,7 @@ class DatabaseConnectionManager:
         try:
             from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
             from cryptography.hazmat.primitives import hashes
-            try:
-                username = os.getlogin()
-            except OSError:
-                username = os.environ.get('USERNAME', 'default')
-            machine_id = f"{username}@{platform.node()}"
+            machine_id = _machine_key_salt_source()
             salt = machine_id.encode('utf-8')
             kdf = PBKDF2HMAC(
                 algorithm=hashes.SHA256(),

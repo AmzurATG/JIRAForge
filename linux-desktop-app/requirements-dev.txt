@@ -1,0 +1,7 @@
+# Linux platform layer: development and test dependencies.
+# Runtime dependencies are listed in requirements-linux.txt (added with the build, phase 2).
+pytest>=7.0
+Pillow>=10.1.0
+jeepney>=0.8
+numpy==1.26.4
+opencv-python-headless==4.10.0.84   # imported by the shared ocr package

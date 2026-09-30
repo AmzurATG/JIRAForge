@@ -73,6 +73,10 @@ import fnmatch
 # OCR for text extraction
 from ocr import extract_text_from_image
 
+# Platform provider registry (non-Windows builds register one before import;
+# see linux-desktop-app/). None on Windows, where the Win32 code paths run.
+import platform_hooks
+
 # Multi-monitor focused capture (addresses multi-display OCR mismatch)
 from monitor_capture import (
     capture_focused_monitor,
@@ -288,6 +292,10 @@ def acquire_single_instance_lock():
     """
     global _instance_mutex
 
+    provider = platform_hooks.get()
+    if provider is not None and hasattr(provider, 'acquire_single_instance'):
+        return provider.acquire_single_instance()
+
     if not WIN32_AVAILABLE:
         # On non-Windows, use a lock file approach
         return _acquire_lock_file()
@@ -350,6 +358,11 @@ def _acquire_lock_file():
 def release_single_instance_lock():
     """Release the single instance lock"""
     global _instance_mutex
+
+    provider = platform_hooks.get()
+    if provider is not None and hasattr(provider, 'release_single_instance'):
+        provider.release_single_instance()
+        return
 
     if _instance_mutex:
         try:
@@ -647,7 +660,9 @@ def check_for_updates(ai_server_url=None):
         print("[WARN] AI Server URL not configured, skipping update check")
         return None
     
-    url = f"{server_url}/api/app-version/check?platform=windows&current={APP_VERSION}"
+    provider = platform_hooks.get()
+    update_platform = getattr(provider, 'update_platform', None) or 'windows'
+    url = f"{server_url}/api/app-version/check?platform={update_platform}&current={APP_VERSION}"
     
     # Retry logic with exponential backoff for transient network failures
     max_attempts = 3
@@ -1107,6 +1122,11 @@ def install_application():
     Returns:
         bool: True if app should continue running, False if it should exit (restart from new location)
     """
+    provider = platform_hooks.get()
+    if provider is not None and hasattr(provider, 'install_application'):
+        # The platform package manager owns install/uninstall.
+        return provider.install_application()
+
     if not getattr(sys, 'frozen', False):
         # Running as script (development mode) - skip installation
         print("[INFO] Running in development mode - skipping self-installation")
@@ -1833,6 +1853,10 @@ REGISTRY_PATH = r"Software\Microsoft\Windows\CurrentVersion\Run"
 
 def add_to_startup():
     """Add application to Windows startup via registry"""
+    provider = platform_hooks.get()
+    if provider is not None and hasattr(provider, 'autostart_enable'):
+        return provider.autostart_enable()
+
     if sys.platform != 'win32':
         print("[INFO] Auto-start only supported on Windows")
         return False
@@ -1878,6 +1902,10 @@ def add_to_startup():
 
 def remove_from_startup():
     """Remove application from Windows startup"""
+    provider = platform_hooks.get()
+    if provider is not None and hasattr(provider, 'autostart_disable'):
+        return provider.autostart_disable()
+
     if sys.platform != 'win32':
         return False
 
@@ -1906,6 +1934,10 @@ def remove_from_startup():
 
 def is_in_startup():
     """Check if application is in Windows startup"""
+    provider = platform_hooks.get()
+    if provider is not None and hasattr(provider, 'autostart_is_enabled'):
+        return provider.autostart_is_enabled()
+
     if sys.platform != 'win32':
         return False
 
@@ -3654,7 +3686,14 @@ def send_login_diagnostics(auth_manager, status: str, step: str, error: str = No
             'hostname': platform.node(),
         }
     }
-    
+
+    provider = platform_hooks.get()
+    if provider is not None and hasattr(provider, 'diagnostics'):
+        try:
+            diagnostics['system_info']['platform_details'] = provider.diagnostics()
+        except Exception as e:
+            diagnostics['system_info']['platform_details'] = {'error': str(e)}
+
     if error:
         diagnostics['error'] = error
     if error_details:
@@ -5089,6 +5128,27 @@ BROWSER_PROCESS_NORMALIZED_KEYS = {
 }
 
 
+def merge_process_tables(tables, browser_processes, redacted_body_processes,
+                         process_identifier_aliases, browser_process_normalized_keys):
+    """Add a platform provider's process names to the tables above.
+
+    Entries are only added; existing (Windows) entries and aliases are kept.
+    """
+    browser_processes.update(tables.get('browser_processes', ()))
+    redacted_body_processes.update(tables.get('redacted_body_processes', ()))
+    browser_process_normalized_keys.update(tables.get('browser_process_normalized_keys', ()))
+    for alias, canonical in tables.get('process_identifier_aliases', {}).items():
+        process_identifier_aliases.setdefault(alias, canonical)
+
+
+_table_provider = platform_hooks.get()
+if _table_provider is not None and hasattr(_table_provider, 'process_tables'):
+    merge_process_tables(_table_provider.process_tables(), BROWSER_PROCESSES,
+                         REDACTED_BODY_PROCESSES, PROCESS_IDENTIFIER_ALIASES,
+                         BROWSER_PROCESS_NORMALIZED_KEYS)
+del _table_provider
+
+
 # ============================================================================
 # LOCATION DETECTION
 # ============================================================================
@@ -5196,6 +5256,13 @@ class LocationDetector:
 
     def _get_current_ssid(self):
         """Return the connected WiFi SSID (Windows), or None on any failure."""
+        provider = platform_hooks.get()
+        if provider is not None and hasattr(provider, 'get_wifi_ssid'):
+            try:
+                return provider.get_wifi_ssid()
+            except Exception as e:
+                print(f"[DEBUG] platform SSID lookup failed: {e}")
+                return None
         try:
             result = subprocess.run(
                 ['netsh', 'wlan', 'show', 'interfaces'],
@@ -5217,6 +5284,13 @@ class LocationDetector:
 
     def _get_local_ip(self):
         """Return the machine's local IPv4 address, or None on any failure."""
+        provider = platform_hooks.get()
+        if provider is not None and hasattr(provider, 'get_local_ip'):
+            try:
+                return provider.get_local_ip()
+            except Exception as e:
+                print(f"[DEBUG] platform local IP lookup failed: {e}")
+                return None
         try:
             return socket.gethostbyname(socket.gethostname())
         except Exception as e:
@@ -5634,7 +5708,10 @@ class ActiveSessionManager:
                     (title, app_name)
                 )
                 row = cursor.fetchone()
-                if row and not row[1]:
+                # Fill an empty result, or replace a failed one (metadata/error)
+                # with a real one; never overwrite a successful result (O-2).
+                replaces_failure = row and row[1] in ('metadata', 'error') and ocr_result.get('text')
+                if row and (not row[1] or replaces_failure):
                     ocr_text = ocr_result.get('text')
                     ocr_method = ocr_result.get('method')
                     ocr_confidence = ocr_result.get('confidence')
@@ -6003,8 +6080,11 @@ class LocalOCRProcessor:
 
         # Async OCR worker infrastructure
         self._ocr_queue = queue.Queue(maxsize=1)
-        self._ocr_done_event = threading.Event()
-        self._ocr_done_event.set()  # No job in-flight initially
+        # Jobs queued or running. A single shared Event let a finishing job
+        # report "idle" while another was still queued, and the batch then
+        # harvested sessions before that result landed (O-2).
+        self._inflight = 0
+        self._inflight_cv = threading.Condition()
         self._ocr_worker_thread = threading.Thread(
             target=self._ocr_worker, daemon=True, name="OCR-Worker"
         )
@@ -6029,6 +6109,13 @@ class LocalOCRProcessor:
                 print("[OCR] Worker thread set to BACKGROUND mode + BELOW_NORMAL priority")
             except Exception as e:
                 print(f"[OCR] Could not lower worker thread priority: {e}")
+        else:
+            provider = platform_hooks.get()
+            if provider is not None and hasattr(provider, 'lower_current_thread_priority'):
+                try:
+                    provider.lower_current_thread_priority()
+                except Exception as e:
+                    print(f"[OCR] Could not lower worker thread priority: {e}")
 
         while True:
             job = self._ocr_queue.get()
@@ -6094,7 +6181,10 @@ class LocalOCRProcessor:
                     pass
             finally:
                 del screenshot
-                self._ocr_done_event.set()
+                with self._inflight_cv:
+                    self._inflight = max(0, self._inflight - 1)
+                    if self._inflight == 0:
+                        self._inflight_cv.notify_all()
 
         print("[OCR] Worker thread exiting")
 
@@ -6109,21 +6199,27 @@ class LocalOCRProcessor:
             bool: True if job was submitted, False if queue was full (caller should
                   save the screenshot for batch backfill instead of losing it).
         """
-        self._ocr_done_event.clear()
+        # Count before queueing so the worker can never finish first.
+        with self._inflight_cv:
+            self._inflight += 1
         try:
             self._ocr_queue.put_nowait((screenshot, callback))
             return True
         except queue.Full:
             print("[OCR-ASYNC] Queue full — previous OCR still running, saving for batch backfill")
-            self._ocr_done_event.set()
+            with self._inflight_cv:
+                self._inflight -= 1
+                if self._inflight == 0:
+                    self._inflight_cv.notify_all()
             return False
 
     def wait_for_ocr(self, timeout=5.0):
-        """Block until any in-flight async OCR job finishes.
+        """Block until every queued or running async OCR job has finished.
 
         Returns True if OCR completed (or no job was running), False on timeout.
         """
-        return self._ocr_done_event.wait(timeout=timeout)
+        with self._inflight_cv:
+            return self._inflight_cv.wait_for(lambda: self._inflight == 0, timeout=timeout)
 
     def capture_screenshot_only(self, force=False):
         """Capture screenshot without running OCR (for async dispatch).
@@ -6147,7 +6243,7 @@ class LocalOCRProcessor:
             self._ocr_queue.put_nowait(None)
         except queue.Full:
             # Queue is full with a real job; wait for it, then re-send sentinel
-            self._ocr_done_event.wait(timeout=30)
+            self.wait_for_ocr(timeout=30)
             try:
                 self._ocr_queue.put_nowait(None)
             except queue.Full:
@@ -7029,7 +7125,13 @@ class TimeTracker:
                     if self._last_notified_update_version != latest_version:
                         self.update_notification_shown = False
 
-                    self.update_manager.check_and_download(update_info)
+                    provider = platform_hooks.get()
+                    if provider is not None and hasattr(provider, 'handle_update_available') \
+                            and provider.handle_update_available(self, update_info):
+                        # Installed by the platform package manager, not the Windows downloader.
+                        pass
+                    else:
+                        self.update_manager.check_and_download(update_info)
                     self.update_notification_shown = True
 
                     # If mandatory, log a warning
@@ -8273,7 +8375,16 @@ class TimeTracker:
                         'success': False,
                         'error': 'search_term must be at least 2 characters'
                     }), 400
-                
+
+                provider = platform_hooks.get()
+                if provider is not None and hasattr(provider, 'search_running_apps'):
+                    matches = provider.search_running_apps(search_term)
+                    if matches:
+                        return jsonify({'success': True, 'found': True,
+                                        'matches': matches[:5], 'best_match': matches[0]})
+                    return jsonify({'success': True, 'found': False, 'matches': [],
+                                    'message': f'No running process found matching "{search_term}"'})
+
                 # System processes to skip
                 SYSTEM_PROCESSES = {
                     'svchost.exe', 'conhost.exe', 'csrss.exe', 'dwm.exe',
@@ -8383,6 +8494,31 @@ class TimeTracker:
         def settings_page():
             """User settings page - accessible to all users"""
             return self.render_settings_page()
+
+        # --- Platform provider actions (Linux). Local pages only: CORS is open
+        # app-wide, so require the browser-set Origin of our own UI. ---
+        def _platform_action_allowed():
+            provider = platform_hooks.get()
+            return provider is not None and hasattr(provider, 'is_local_origin') and \
+                provider.is_local_origin(request.headers.get('Origin', ''), self.web_port)
+
+        @self.app.route('/api/platform/allow-screen-access', methods=['POST'])
+        def platform_allow_screen_access():
+            if not _platform_action_allowed():
+                return jsonify({'success': False, 'message': 'Not allowed'}), 403
+            message = platform_hooks.get().request_screen_access()
+            return jsonify({'success': True, 'message': message})
+
+        @self.app.route('/api/platform/remove-my-data', methods=['POST'])
+        def platform_remove_my_data():
+            if not _platform_action_allowed():
+                return jsonify({'success': False, 'message': 'Not allowed'}), 403
+            if not (request.get_json(silent=True) or {}).get('confirm'):
+                return jsonify({'success': False, 'message': 'Confirmation required'}), 400
+            done = platform_hooks.get().remove_user_data(self, sensitive_keys=SENSITIVE_TOKEN_KEYS)
+            threading.Timer(1.0, self.quit_app).start()
+            return jsonify({'success': True, 'message': 'Your data was removed (' + ', '.join(done) +
+                            '). TimeTracker is closing.'})
 
     # ============================================================================
     # ADMIN HELPER METHODS
@@ -10066,7 +10202,10 @@ class TimeTracker:
     def get_pause_settings_file_path(self):
         """Get the path to the pause settings file"""
         # Store in user's app data directory
-        if sys.platform == 'win32':
+        provider = platform_hooks.get()
+        if provider is not None and hasattr(provider, 'config_dir'):
+            settings_dir = provider.config_dir()
+        elif sys.platform == 'win32':
             app_data = os.environ.get('APPDATA', os.path.expanduser('~'))
             settings_dir = os.path.join(app_data, 'TimeTracker')
         else:
@@ -10468,6 +10607,44 @@ class TimeTracker:
 
         return (False, None)
 
+    # Time spent OCR-ing throttled screenshots before each batch upload. A fixed
+    # cap of 3 dropped ~45% of them (O-1); a time budget keeps the tracking
+    # thread bounded while processing as many as fit.
+    BACKFILL_TIME_BUDGET_S = 20
+
+    def _backfill_pending_ocr(self, pending_entries, budget_s=None, clock=time.monotonic):
+        """OCR saved throttled screenshots, newest first, until the time budget is used.
+
+        Returns the number of entries processed.
+        """
+        if not pending_entries:
+            return 0
+        if not self.ocr_processor:
+            print("[BATCH] OCR not available yet - skipping backfill")
+            return 0
+        budget_s = self.BACKFILL_TIME_BUDGET_S if budget_s is None else budget_s
+        start = clock()
+        processed = 0
+        items = list(pending_entries.items())
+        for (pk_title, pk_app), saved_screenshot in reversed(items):
+            if clock() - start >= budget_s:
+                break
+            if saved_screenshot is not None:
+                ocr_result = self.ocr_processor.ocr_from_image(saved_screenshot)
+                del saved_screenshot
+            else:
+                # Fallback: no saved screenshot (shouldn't happen, but be safe)
+                print(f"[WARN] No saved screenshot for backfill: {pk_app} - {pk_title[:50]}")
+                ocr_result = self.ocr_processor.capture_and_ocr()
+            if ocr_result and not ocr_result.get('throttled'):
+                self.session_manager.backfill_ocr(pk_title, pk_app, ocr_result)
+            processed += 1
+        skipped = len(items) - processed
+        if skipped:
+            print(f"[BATCH] Backfill OCR time budget ({budget_s}s) used — {processed} processed, "
+                  f"{skipped} skipped")
+        return processed
+
     def upload_activity_batch(self):
         """Upload accumulated activity records to Supabase as a single batch.
         Called every 5 minutes (batch_upload_interval).
@@ -10484,30 +10661,7 @@ class TimeTracker:
             # Backfill OCR for any sessions that were throttled during rapid window switches.
             # Uses the ORIGINAL screenshot captured at throttle time, not a new one,
             # so the OCR text matches the window the user was actually viewing.
-            # Capped at 3 per batch to prevent CPU lag when many windows were rapidly switched
-            # (e.g. switching between chat conversations every 2 seconds generates 10+ backfill jobs,
-            # each taking several seconds of OCR — that blocks the main thread).
-            MAX_BACKFILL_PER_BATCH = 3
-            pending_entries = self.session_manager.get_pending_ocr_entries()
-            backfill_count = 0
-            for (pk_title, pk_app), saved_screenshot in pending_entries.items():
-                if backfill_count >= MAX_BACKFILL_PER_BATCH:
-                    print(f"[BATCH] Backfill OCR cap reached ({MAX_BACKFILL_PER_BATCH}) — skipping remaining {len(pending_entries) - backfill_count} entries")
-                    break
-                # Skip OCR backfill if OCR processor not ready yet
-                if not self.ocr_processor:
-                    print("[BATCH] OCR not available yet - skipping backfill")
-                    break
-                if saved_screenshot is not None:
-                    ocr_result = self.ocr_processor.ocr_from_image(saved_screenshot)
-                    del saved_screenshot
-                else:
-                    # Fallback: no saved screenshot (shouldn't happen, but be safe)
-                    print(f"[WARN] No saved screenshot for backfill: {pk_app} - {pk_title[:50]}")
-                    ocr_result = self.ocr_processor.capture_and_ocr()
-                if ocr_result and not ocr_result.get('throttled'):
-                    self.session_manager.backfill_ocr(pk_title, pk_app, ocr_result)
-                backfill_count += 1
+            self._backfill_pending_ocr(self.session_manager.get_pending_ocr_entries())
 
             # Atomically harvest all sessions and clear SQLite in one locked operation.
             # This prevents the race condition where new sessions could be inserted
@@ -11344,6 +11498,12 @@ class TimeTracker:
     def _is_screen_locked(self):
         """Check if the screen is currently locked by inspecting the foreground window.
         Returns True when the foreground process is a Windows lock/logon screen."""
+        provider = platform_hooks.get()
+        if provider is not None and hasattr(provider, 'is_screen_locked'):
+            try:
+                return bool(provider.is_screen_locked())
+            except Exception:
+                return False
         if not WIN32_AVAILABLE:
             return False
         try:
@@ -11356,18 +11516,28 @@ class TimeTracker:
 
     def get_active_window(self):
         """Get active window information and detect window switches for event-based tracking"""
-        if not WIN32_AVAILABLE:
+        provider = platform_hooks.get()
+        if provider is None and not WIN32_AVAILABLE:
             return {'title': 'Unknown', 'app': 'Unknown', 'window_key': 'unknown', 'is_new_window': False}
-        
+
         try:
-            hwnd = win32gui.GetForegroundWindow()
-            title = win32gui.GetWindowText(hwnd)
-            
-            # Get process name
-            _, pid = win32process.GetWindowThreadProcessId(hwnd)
-            process = psutil.Process(pid)
-            app_name = process.name()
-            
+            if provider is not None:
+                focused = provider.get_focused_window()
+                if not focused:
+                    # Nothing reliable is focused (or no window source): keep the
+                    # current session, never open an "Unknown" one.
+                    return {'title': 'Unknown', 'app': 'Unknown', 'window_key': 'unknown', 'is_new_window': False}
+                title = focused.get('title') or ''
+                app_name = focused.get('app') or 'Unknown'
+            else:
+                hwnd = win32gui.GetForegroundWindow()
+                title = win32gui.GetWindowText(hwnd)
+
+                # Get process name
+                _, pid = win32process.GetWindowThreadProcessId(hwnd)
+                process = psutil.Process(pid)
+                app_name = process.name()
+
             # Create unique window key (app + title) to detect window switches
             window_key = f"{app_name}|||{title}"
             
@@ -12161,6 +12331,12 @@ class TimeTracker:
         alive. Returns None on non-Windows or if the call fails (caller falls
         back to the pynput-derived last_activity_time).
         """
+        provider = platform_hooks.get()
+        if provider is not None and hasattr(provider, 'get_system_idle_seconds'):
+            try:
+                return provider.get_system_idle_seconds()
+            except Exception:
+                return None
         try:
             import ctypes
 
@@ -12220,6 +12396,17 @@ class TimeTracker:
 
     def monitor_user_activity(self):
         """Monitor mouse and keyboard activity for idle detection"""
+        provider = platform_hooks.get()
+        if provider is not None and hasattr(provider, 'use_input_hooks') and not provider.use_input_hooks():
+            # The platform idle clock is authoritative (e.g. Wayland, where
+            # global input hooks see nothing). Keep the watchdog heartbeat alive.
+            self._activity_monitor_heartbeat = time.time()
+            print("[OK] Activity monitoring via the system idle clock (no input hooks)")
+            while self.running:
+                self._activity_monitor_heartbeat = time.time()
+                time.sleep(1)
+            return
+
         try:
             from pynput import mouse, keyboard
         except ImportError:
@@ -12277,6 +12464,57 @@ class TimeTracker:
             print(f"[ERROR] Activity monitor failed to start: {e}")
             print("[INFO] Fallback: idle detection via window switches")
             self._activity_monitor_failed = True  # B-1: Mark failure for fallback
+
+    # --- System event actions (shared by the Win32 monitor and platform providers) ---
+
+    def _on_system_sleep(self):
+        print("[INFO] System sleep detected — entering idle state")
+        self.enter_idle("system sleep")
+
+    def _on_system_wake(self):
+        print("[INFO] System wake detected — will resume tracking on activity")
+        self._create_idle_record("system sleep")
+        self.idle_resume_event.set()  # B-3: Use Event
+
+    def _on_screen_lock(self):
+        print("[INFO] Screen lock detected — entering idle state")
+        self.enter_idle("screen lock")
+
+    def _on_screen_unlock(self):
+        print("[INFO] Screen unlock detected — will resume tracking on activity")
+        self._create_idle_record("screen lock")
+        self.idle_resume_event.set()  # B-3: Use Event
+
+    def _on_system_shutdown(self):
+        print("[INFO] System shutdown detected — saving state")
+        try:
+            # Finalize current session
+            self._finalize_active_session("system shutdown")
+            # Emergency save to SQLite
+            if hasattr(self, 'session_manager'):
+                self.session_manager.emergency_save()
+            # Upload pending data
+            self.upload_activity_batch()
+            print("[OK] Emergency shutdown save completed")
+        except Exception as e:
+            print(f"[ERROR] Emergency shutdown save failed: {e}")
+
+    def _start_system_event_monitor(self):
+        """Start sleep/lock/shutdown detection: Win32 message window or platform provider."""
+        if WIN32_AVAILABLE:
+            if not self._system_event_thread or not self._system_event_thread.is_alive():
+                self._system_event_thread = threading.Thread(
+                    target=self.monitor_system_events, daemon=True
+                )
+                self._system_event_thread.start()
+            return
+        provider = platform_hooks.get()
+        if provider is not None and hasattr(provider, 'start_session_events'):
+            try:
+                if provider.start_session_events(self):
+                    print("[OK] System event monitoring started (platform provider)")
+            except Exception as e:
+                print(f"[WARN] Platform system event monitoring failed to start: {e}")
 
     def monitor_system_events(self):
         """Monitor Windows sleep/lock events to instantly detect inactivity.
@@ -12363,33 +12601,16 @@ class TimeTracker:
                 try:
                     if msg == WM_POWERBROADCAST:
                         if wparam == PBT_APMSUSPEND:
-                            print("[INFO] System sleep detected — entering idle state")
-                            self.enter_idle("system sleep")
+                            self._on_system_sleep()
                         elif wparam == PBT_APMRESUMEAUTOMATIC:
-                            print("[INFO] System wake detected — will resume tracking on activity")
-                            self._create_idle_record("system sleep")
-                            self.idle_resume_event.set()  # B-3: Use Event
+                            self._on_system_wake()
                     elif msg == WM_WTSSESSION_CHANGE:
                         if wparam == WTS_SESSION_LOCK:
-                            print("[INFO] Screen lock detected — entering idle state")
-                            self.enter_idle("screen lock")
+                            self._on_screen_lock()
                         elif wparam == WTS_SESSION_UNLOCK:
-                            print("[INFO] Screen unlock detected — will resume tracking on activity")
-                            self._create_idle_record("screen lock")
-                            self.idle_resume_event.set()  # B-3: Use Event
+                            self._on_screen_unlock()
                     elif msg == WM_ENDSESSION:  # B-9: Windows shutdown
-                        print("[INFO] System shutdown detected — saving state")
-                        try:
-                            # Finalize current session
-                            self._finalize_active_session("system shutdown")
-                            # Emergency save to SQLite
-                            if hasattr(self, 'session_manager'):
-                                self.session_manager.emergency_save()
-                            # Upload pending data
-                            self.upload_activity_batch()
-                            print("[OK] Emergency shutdown save completed")
-                        except Exception as e:
-                            print(f"[ERROR] Emergency shutdown save failed: {e}")
+                        self._on_system_shutdown()
                 except Exception as e:
                     print(f"[ERROR] Error in system event handler: {e}")
                 return user32.DefWindowProcW(hwnd, msg, wparam, lparam)
@@ -13231,12 +13452,8 @@ class TimeTracker:
         # Start activity monitoring thread (for idle detection)
         self._start_activity_monitor()  # B-2: Use helper method for watchdog restart
 
-        # Start system event monitoring thread (sleep/lock detection)
-        if WIN32_AVAILABLE and (not self._system_event_thread or not self._system_event_thread.is_alive()):
-            self._system_event_thread = threading.Thread(
-                target=self.monitor_system_events, daemon=True
-            )
-            self._system_event_thread.start()
+        # Start system event monitoring (sleep/lock detection)
+        self._start_system_event_monitor()
     
     def _start_activity_monitor(self):
         """B-2: Start or restart activity monitor thread (helper for watchdog)."""
@@ -15471,6 +15688,7 @@ loadData();
             </div>
         </div>
 
+{self._platform_html('consent_section_html')}
         <div class="section retention">
             <div class="section-title">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -16100,6 +16318,7 @@ loadData();
                 -->
 
                 <div id="status-message" class="status-message"></div>
+                <!--PLATFORM_SETTINGS_SECTION-->
             </div>
         </div>
         <a href="/" class="back-link">&#8592; Back to TimeTracker</a>
@@ -16185,7 +16404,19 @@ loadData();
     </script>
 </body>
 </html>'''
-        return html
+        return html.replace('                <!--PLATFORM_SETTINGS_SECTION-->\n',
+                            self._platform_html('settings_section_html'))
+
+    def _platform_html(self, method_name):
+        """HTML fragment from the platform provider (Linux), or '' (Windows)."""
+        provider = platform_hooks.get()
+        if provider is None or not hasattr(provider, method_name):
+            return ''
+        try:
+            return getattr(provider, method_name)()
+        except Exception as e:
+            print(f"[WARN] Platform UI section failed: {e}")
+            return ''
 
     def render_admin_dashboard(self):
         html = '''<!DOCTYPE html>
@@ -17006,7 +17237,10 @@ def main():
             logger.error("=" * 70)
         print(f"[ERROR] Application error: {e}")
         traceback.print_exc()
-        input("Press Enter to exit...")
+        # Only wait for a keypress when there is a console to read from
+        # (autostart / desktop launches have no stdin).
+        if sys.stdin is not None and sys.stdin.isatty():
+            input("Press Enter to exit...")
     finally:
         if APP_LOGGER_AVAILABLE:
             logger = get_logger(__name__, 'MAIN')

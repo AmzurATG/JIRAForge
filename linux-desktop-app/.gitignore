@@ -1,0 +1,8 @@
+# Build outputs (build/build_linux.sh)
+dist/
+build/work/
+build/.venv/
+build/.requirements-core.txt
+gnome-extension/dist/
+.venv/
+build/logs/

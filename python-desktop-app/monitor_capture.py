@@ -10,7 +10,8 @@ Architectural review items addressed:
 - P0-2: Privacy-safe fallback (focused → primary → skip); never all-screens
 - P0-3: Foreground window stability (debounce, transient window filtering)
 - P0-4: Minimized/cloaked window detection, spanning window handling
-- P1-5: Platform scope (Windows-only; passthrough on other platforms)
+- P1-5: Platform scope (Windows here; other platforms use a registered
+        platform_hooks provider, and skip capture when none is registered)
 - P1-6: Monitor topology re-enumerated per capture (no stale cache)
 - P1-11: Feature flag via MULTIMON_CAPTURE_MODE env var
 
@@ -25,6 +26,8 @@ import time
 import logging
 
 from PIL import ImageGrab
+
+import platform_hooks
 
 logger = logging.getLogger(__name__)
 
@@ -329,6 +332,18 @@ def get_capture_stats():
     return dict(_capture_stats)
 
 
+def get_capture_status():
+    """Return the platform provider's last capture status, or None."""
+    provider = platform_hooks.get()
+    if provider is None:
+        return None
+    try:
+        return provider.get_capture_status()
+    except Exception as e:
+        logger.warning(f"Platform provider capture status failed: {e}")
+        return None
+
+
 def capture_focused_monitor():
     """Capture the monitor containing the current foreground window.
     
@@ -346,12 +361,20 @@ def capture_focused_monitor():
     """
     _capture_stats['total'] += 1
 
-    # Non-Windows: passthrough to default capture (P1-5)
-    if not _WIN32_AVAILABLE:
+    # Platform provider (e.g. Linux) owns capture when registered (P1-5)
+    provider = platform_hooks.get()
+    if provider is not None:
         try:
-            return ImageGrab.grab()
-        except Exception:
+            return provider.capture_focused_monitor()
+        except Exception as e:
+            logger.warning(f"Platform provider capture failed: {e}")
             return None
+
+    # Non-Windows without a provider: skip. A bare ImageGrab.grab() would
+    # capture every monitor on X11 (violates P0-2) and black on Wayland.
+    if not _WIN32_AVAILABLE:
+        _capture_stats['tier3_skipped'] += 1
+        return None
 
     # --- Tier 1: Focused-monitor capture ---
     hwnd = _get_stable_foreground_hwnd()
@@ -456,6 +479,13 @@ def is_rdp_session():
 def log_display_environment():
     """Log the current display environment for support diagnostics.
     Call once at startup."""
+    provider = platform_hooks.get()
+    if provider is not None and hasattr(provider, 'log_display_environment'):
+        try:
+            provider.log_display_environment()
+        except Exception as e:
+            logger.warning(f"Platform display environment logging failed: {e}")
+        return
     if not _WIN32_AVAILABLE:
         logger.info("Display environment: non-Windows platform, multi-monitor N/A")
         return

@@ -1,0 +1,88 @@
+name: Linux desktop app
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'linux-desktop-app/**'
+      - 'python-desktop-app/**'
+      - '.github/workflows/linux-desktop.yml'
+  pull_request:
+    paths:
+      - 'linux-desktop-app/**'
+      - 'python-desktop-app/**'
+      - '.github/workflows/linux-desktop.yml'
+  workflow_dispatch:
+    inputs:
+      build_packages:
+        description: 'Build .deb/.rpm/.tar.gz and run the multi-distro smoke tests'
+        type: boolean
+        default: false
+
+jobs:
+  unit:
+    name: Unit + integration tests
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: System packages (session helper runs on the system python3)
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq dbus python3-gi gir1.2-gstreamer-1.0 gstreamer1.0-plugins-base \
+               gstreamer1.0-plugins-good gir1.2-atspi-2.0 libgl1
+      - name: Python dependencies
+        run: |
+          grep -vE '^(pyinstaller|opencv-python)==' python-desktop-app/requirements.txt > /tmp/req.txt
+          pip install -r /tmp/req.txt -r linux-desktop-app/requirements-linux.txt \
+              'opencv-python-headless==4.10.0.84' pytest
+      - name: Linux layer tests
+        working-directory: linux-desktop-app
+        run: dbus-run-session -- python -m pytest tests -q -p no:cacheprovider
+      - name: Shared-core seam and OCR tests
+        working-directory: python-desktop-app
+        env:
+          PYTHON_KEYRING_BACKEND: keyring.backends.null.Keyring
+        run: |
+          python -m pytest -q -p no:cacheprovider tests/test_platform_hooks.py tests/test_platform_seams.py \
+              tests/test_ocr_platform_engines.py tests/test_ocr_pipeline_reliability.py
+
+  gnome-headless:
+    name: GNOME Shell extension (headless)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: GNOME Shell and a Wayland test client
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq gnome-shell zenity dbus python3-jeepney python3-pil python3-xlib mesa-utils
+      - name: Extension syntax (both builds)
+        run: |
+          linux-desktop-app/gnome-extension/build.sh /tmp/ext
+          cp /tmp/ext/esm/timetracker@amzur.com/extension.js /tmp/esm.mjs && node --check /tmp/esm.mjs
+          node --check /tmp/ext/legacy/timetracker@amzur.com/extension.js
+      - name: Real extension in an isolated headless gnome-shell
+        env:
+          LIBGL_ALWAYS_SOFTWARE: '1'
+        run: linux-desktop-app/gnome-extension/tests/run_headless_test.sh /usr/bin/python3
+
+  packages:
+    name: Build packages + distro smoke tests
+    if: github.event_name == 'workflow_dispatch' && inputs.build_packages
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build in AlmaLinux 8 (glibc 2.28) and smoke-test on every distro family
+        working-directory: linux-desktop-app
+        run: build/build_linux.sh --smoke
+      - uses: actions/upload-artifact@v4
+        with:
+          name: timetracker-linux
+          path: |
+            linux-desktop-app/dist/*.deb
+            linux-desktop-app/dist/*.rpm
+            linux-desktop-app/dist/*.tar.gz
+            linux-desktop-app/dist/SHA256SUMS

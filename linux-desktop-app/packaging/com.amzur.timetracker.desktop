@@ -1,0 +1,15 @@
+[Desktop Entry]
+Type=Application
+Name=TimeTracker
+GenericName=Jira Time Tracker
+Comment=Tracks the time you spend on Jira work
+# Exec must be the real binary, not a wrapper script: KWin grants the
+# restricted ScreenShot2 interface by matching the caller's executable path,
+# and the GNOME extension accepts only this path.
+Exec=/opt/timetracker/TimeTracker
+Icon=com.amzur.timetracker
+Terminal=false
+Categories=Office;ProjectManagement;
+StartupWMClass=TimeTracker
+StartupNotify=false
+X-KDE-DBUS-Restricted-Interfaces=org.kde.KWin.ScreenShot2

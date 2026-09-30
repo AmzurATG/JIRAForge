@@ -32,6 +32,19 @@ from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 import logging
 
+try:
+    import platform_hooks
+except ImportError:  # auth used on its own (e.g. utility scripts)
+    platform_hooks = None
+
+
+def _provider_key_material() -> Optional[str]:
+    """Stable machine key material from a platform provider (Linux), or None."""
+    provider = platform_hooks.get() if platform_hooks else None
+    if provider is not None and hasattr(provider, 'machine_key_material'):
+        return provider.machine_key_material()
+    return None
+
 logger = logging.getLogger(__name__)
 
 # Try to import keyring
@@ -600,7 +613,11 @@ class SecureTokenStorage:
         
         On Windows: Uses MachineGuid from registry
         On other OS: Uses hostname + username
+        (Linux build: account name + /etc/machine-id from the platform provider)
         """
+        material = _provider_key_material()
+        if material:
+            return hashlib.sha256(f"{material}_salt".encode('utf-8')).digest()
         if platform.system() == 'Windows':
             try:
                 import winreg
@@ -627,6 +644,9 @@ class SecureTokenStorage:
     
     def _get_machine_password(self) -> str:
         """Generate machine-specific password component."""
+        material = _provider_key_material()
+        if material:
+            return f"{material}_{platform.system()}"
         components = [
             platform.node(),
             platform.system(),

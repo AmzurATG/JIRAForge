@@ -9,12 +9,56 @@ Pattern: OCR_<ENGINE>_<SETTING>=value
 Example: OCR_GOOGLE_VISION_API_KEY=secret123
 """
 import os
+import sys
 import json
 import logging
 from dataclasses import dataclass, field
-from typing import List, Dict, Optional, Any
+from typing import List, Dict, Optional, Any, Tuple
 
 logger = logging.getLogger(__name__)
+
+# Engines that can only load on Windows. The OCR config is shared by all
+# platforms, so these are dropped elsewhere instead of failing on every call.
+WINDOWS_ONLY_ENGINES = frozenset({'winrtocr', 'winrt'})
+
+# Always-bundled engine used when nothing else in the config can run.
+GUARANTEED_ENGINE = 'rapidocr'
+
+_logged_dropped_engines = set()
+
+
+def resolve_engines_for_platform(
+    primary: str,
+    fallbacks: List[str],
+    platform: Optional[str] = None,
+) -> Tuple[str, List[str]]:
+    """Return (primary, fallbacks) usable on the given platform.
+
+    Windows: returned unchanged. Elsewhere: Windows-only engines are removed,
+    a removed primary is replaced by the first remaining fallback, and
+    GUARANTEED_ENGINE becomes the primary if nothing is left.
+    """
+    platform = sys.platform if platform is None else platform
+    if platform == 'win32':
+        return primary, list(fallbacks or [])
+
+    primary = (primary or '').strip().lower()
+    fallbacks = [e.strip().lower() for e in (fallbacks or []) if e and e.strip()]
+
+    ordered = []
+    for engine in [primary] + fallbacks:
+        if not engine or engine in ordered:
+            continue
+        if engine in WINDOWS_ONLY_ENGINES:
+            if engine not in _logged_dropped_engines:
+                _logged_dropped_engines.add(engine)
+                logger.info(f"OCR engine '{engine}' is Windows-only; skipped on {platform}")
+            continue
+        ordered.append(engine)
+
+    if not ordered:
+        ordered = [GUARANTEED_ENGINE]
+    return ordered[0], ordered[1:]
 
 
 @dataclass
@@ -71,7 +115,10 @@ class OCRConfig:
         # Fallback engines (comma-separated)
         fallback = os.getenv('OCR_FALLBACK_ENGINES', 'winrtocr')
         config.fallback_engines = [e.strip().lower() for e in fallback.split(',') if e.strip()]
-        
+        config.primary_engine, config.fallback_engines = resolve_engines_for_platform(
+            config.primary_engine, config.fallback_engines
+        )
+
         # Preprocessing
         config.use_preprocessing = os.getenv('OCR_USE_PREPROCESSING', 'true').lower() == 'true'
         config.max_image_dimension = int(os.getenv('OCR_MAX_IMAGE_DIMENSION', '4096'))
@@ -169,6 +216,9 @@ class OCRConfig:
         config = cls()
         config.primary_engine = data.get('primary_engine', 'rapidocr')
         config.fallback_engines = data.get('fallback_engines', ['winrtocr'])
+        config.primary_engine, config.fallback_engines = resolve_engines_for_platform(
+            config.primary_engine, config.fallback_engines
+        )
         config.use_preprocessing = data.get('use_preprocessing', True)
         config.max_image_dimension = data.get('max_image_dimension', 4096)
         

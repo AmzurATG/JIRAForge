@@ -1,0 +1,99 @@
+# One package definition for .deb (Debian/Ubuntu/Mint/Pop) and .rpm
+# (Fedora/RHEL/Alma/Rocky/openSUSE). Built by build/build_linux.sh:
+#   VERSION=1.4.13 ARCH=amd64 nfpm pkg -f packaging/nfpm.yaml -p deb -t dist/
+# Paths are relative to linux-desktop-app/.
+name: timetracker
+arch: ${ARCH}
+platform: linux
+version: ${VERSION}
+section: utils
+priority: optional
+maintainer: Amzur TimeTracker <support@amzur.com>
+vendor: Amzur Technologies
+homepage: https://timetracker-forge.amzur.com
+license: Proprietary
+description: |
+  TimeTracker desktop client for Jira.
+  Tracks active application and window titles, reads on-screen text locally
+  (OCR, never uploaded as images) and syncs work sessions to Jira.
+
+contents:
+  # PyInstaller one-dir bundle
+  - src: dist/TimeTracker/
+    dst: /opt/timetracker/
+    type: tree
+  - src: session-helper/tt_session_helper.py
+    dst: /opt/timetracker/session-helper/tt_session_helper.py
+    file_info: {mode: 0644}
+  # Both GNOME extension builds; postinstall copies the one matching the installed GNOME
+  - src: dist/gnome-extension/esm/
+    dst: /opt/timetracker/gnome-extension/esm/
+    type: tree
+  - src: dist/gnome-extension/legacy/
+    dst: /opt/timetracker/gnome-extension/legacy/
+    type: tree
+  - src: dist/kwin-script/timetracker-focus/
+    dst: /usr/share/kwin/scripts/timetracker-focus/
+    type: tree
+  - src: packaging/com.amzur.timetracker.desktop
+    dst: /usr/share/applications/com.amzur.timetracker.desktop
+    file_info: {mode: 0644}
+  - src: dist/icons/
+    dst: /usr/share/icons/hicolor/
+    type: tree
+  - src: packaging/scripts/lib.sh
+    dst: /opt/timetracker/share/scripts/lib.sh
+    file_info: {mode: 0644}
+  - src: dist/repo/
+    dst: /opt/timetracker/share/repo/
+    type: tree
+  - src: /opt/timetracker/TimeTracker
+    dst: /usr/bin/timetracker
+    type: symlink
+
+scripts:
+  postinstall: packaging/scripts/postinstall.sh
+  preremove: packaging/scripts/preremove.sh
+  postremove: packaging/scripts/postremove.sh
+
+overrides:
+  deb:
+    depends:
+      - libc6 (>= 2.28)
+      - python3                       # session helper (system Python, >= 3.6)
+      - python3-gi
+    recommends:
+      - gstreamer1.0-pipewire         # portal ScreenCast fallback
+      - gir1.2-gstreamer-1.0
+      - gir1.2-gst-plugins-base-1.0
+      - gstreamer1.0-plugins-base
+      - xdg-desktop-portal
+      - gir1.2-atspi-2.0              # AT-SPI window fallback
+      - at-spi2-core
+      - gnome-keyring | kwalletmanager | keepassxc
+      - libnotify-bin
+    suggests:
+      - grim                          # wlroots capture (Sway, Hyprland, labwc)
+      - network-manager               # office Wi-Fi detection
+      - gnome-shell-extension-appindicator
+  rpm:
+    depends:
+      - glibc >= 2.28
+      - python3
+      - python3-gobject-base
+    recommends:
+      - pipewire-gstreamer
+      - gstreamer1-plugins-base
+      - xdg-desktop-portal
+      - at-spi2-core
+    suggests:
+      - grim
+      - NetworkManager
+      - gnome-shell-extension-appindicator
+
+deb:
+  compression: xz
+rpm:
+  compression: xz
+  summary: TimeTracker desktop client for Jira
+  group: Applications/Productivity

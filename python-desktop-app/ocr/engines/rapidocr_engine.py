@@ -63,6 +63,18 @@ class RapidOCREngine(BaseOCREngine):
             logger.info("RapidOCR engine initialized")
         return self._ocr
 
+    @staticmethod
+    def _to_bgr(image: np.ndarray) -> np.ndarray:
+        """RapidOCR follows the OpenCV convention (BGR); PIL-based callers pass RGB/RGBA."""
+        import cv2
+        if image.ndim == 2:
+            return cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
+        if image.ndim == 3 and image.shape[2] == 4:
+            return cv2.cvtColor(image, cv2.COLOR_RGBA2BGR)
+        if image.ndim == 3 and image.shape[2] == 3:
+            return cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
+        return image
+
     def extract_text(self, image: np.ndarray) -> Dict[str, Any]:
         if not self.is_available():
             return self._create_error_result('RapidOCR not available')
@@ -72,6 +84,8 @@ class RapidOCREngine(BaseOCREngine):
             if ocr is None:
                 return self._create_error_result('Failed to initialize RapidOCR')
 
+            if isinstance(image, np.ndarray):
+                image = self._to_bgr(image)
             result = ocr(image)
 
             if not result or not result[0]:

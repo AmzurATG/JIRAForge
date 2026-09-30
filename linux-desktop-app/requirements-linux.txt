@@ -1,0 +1,7 @@
+# Linux-only runtime dependencies (installed on top of ../python-desktop-app/requirements.txt).
+# Pure Python unless noted; no GTK / PyGObject in the frozen app (see session-helper/).
+jeepney>=0.8.0              # D-Bus (portal-free services, tray, notifications, logind)
+secretstorage>=3.3.3        # keyring's Secret Service backend (bundled explicitly)
+python-xlib>=0.33           # X11 window info, XScreenSaver idle, RandR monitors
+mss>=9.0.1                  # X11 XShm capture of one monitor
+sqlcipher3-wheels>=0.5.0    # encrypted offline DB (manylinux wheel; the core pins it win32-only)
