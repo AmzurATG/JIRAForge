@@ -836,6 +836,24 @@ def show_update_notification(update_info, callback=None, state='available', web_
     except Exception as e:
         print(f"[WARN] Could not show update notification: {e}")
 
+def _suspend_clock_snapshot():
+    """(CLOCK_MONOTONIC, CLOCK_BOOTTIME) readings, or None where BOOTTIME is missing.
+
+    MONOTONIC stops while the system is suspended; BOOTTIME keeps counting. Their
+    drift between two snapshots is the time actually spent suspended, which tells
+    a real sleep apart from the tracking loop merely being blocked (e.g. slow OCR).
+    """
+    try:
+        return time.clock_gettime(time.CLOCK_MONOTONIC), time.clock_gettime(time.CLOCK_BOOTTIME)
+    except (AttributeError, OSError):
+        return None
+
+def _seconds_suspended_between(earlier, later):
+    """Seconds spent suspended between two _suspend_clock_snapshot() values, or None."""
+    if earlier is None or later is None:
+        return None
+    return max(0.0, (later[1] - earlier[1]) - (later[0] - earlier[0]))
+
 def _utc_ts_to_local_date(utc_str):
     """Convert a UTC timestamp string to the local calendar date (YYYY-MM-DD).
 
@@ -6076,6 +6094,12 @@ class LocalOCRProcessor:
         # Log which OCR engines are configured from environment (with defaults)
         primary = os.getenv('OCR_PRIMARY_ENGINE', 'rapidocr')
         fallback = os.getenv('OCR_FALLBACK_ENGINES', 'winrtocr')
+        try:
+            from ocr.config import resolve_engines_for_platform
+            primary, fallbacks = resolve_engines_for_platform(primary, fallback.split(','))
+            fallback = ', '.join(fallbacks) or 'none'
+        except Exception:
+            pass
         print(f"[OCR] Primary engine: {primary}, Fallback: {fallback}")
 
         # Async OCR worker infrastructure
@@ -12359,9 +12383,14 @@ class TimeTracker:
 
     def _compute_idle_duration(self):
         """Seconds since genuine user input. Prefers the OS clock, falls back to
-        the last_activity_time maintained by our (jitter-filtered) pynput hooks."""
+        the last_activity_time maintained by our (jitter-filtered) pynput hooks.
+
+        When the OS clock is available, last_activity_time is advanced to match
+        it: without input hooks (Wayland) nothing else updates it, and the idle
+        anchor / session finalize backdate to it."""
         sys_idle = self.get_system_idle_seconds()
         if sys_idle is not None:
+            self.last_activity_time = max(self.last_activity_time, time.time() - sys_idle)
             return sys_idle
         return time.time() - self.last_activity_time
 
@@ -12963,16 +12992,22 @@ class TimeTracker:
 
         # Track loop timing for suspension detection
         last_loop_time = time.time()
+        last_loop_clocks = _suspend_clock_snapshot()
 
         while self.running:
             try:
                 current_loop_time = time.time()
+                current_loop_clocks = _suspend_clock_snapshot()
 
                 # === Detect system suspension/resume ===
                 # If the loop iteration took much longer than expected (we sleep 2-5s),
                 # the system was likely suspended (sleep/hibernate).
                 time_since_last_loop = current_loop_time - last_loop_time
-                if time_since_last_loop > 30:  # 30s threshold (loop normally runs every 2-5s)
+                suspended_s = _seconds_suspended_between(last_loop_clocks, current_loop_clocks)
+                if time_since_last_loop > 30 and suspended_s is not None and suspended_s < 1:
+                    # The loop was blocked (e.g. a slow OCR backfill), the system never slept.
+                    print(f"[INFO] Tracking loop was busy for {int(time_since_last_loop)}s (not suspended)")
+                elif time_since_last_loop > 30:  # 30s threshold (loop normally runs every 2-5s)
                     print(f"[INFO] Large time gap detected: {int(time_since_last_loop)}s — system was likely suspended")
                     # Finalize current session using last known activity time
                     self._finalize_active_session("system suspension detected")
@@ -13007,6 +13042,7 @@ class TimeTracker:
                         self.needs_idle_resume = False
                         self.current_window_key = None
                         last_loop_time = current_loop_time
+                        last_loop_clocks = current_loop_clocks
                         continue
 
                     # Reset ALL tracking state — new session starts fresh
@@ -13016,9 +13052,11 @@ class TimeTracker:
                     self.last_interval_time = current_loop_time
                     self.last_activity_time = current_loop_time
                     last_loop_time = current_loop_time
+                    last_loop_clocks = current_loop_clocks
                     self.add_admin_log('INFO', f'System suspension detected ({int(time_since_last_loop)}s gap) — session finalized and uploaded')
                     continue
                 last_loop_time = current_loop_time
+                last_loop_clocks = current_loop_clocks
                 
                 # B-2: Watchdog check for activity monitor thread
                 if time.time() - self._last_activity_monitor_check > 60:

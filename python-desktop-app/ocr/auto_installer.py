@@ -131,7 +131,7 @@ def get_engine_dependencies(engine_name: str) -> List[str]:
     
     elif engine_name in ('winrtocr', 'winrt'):
         if os_type != 'windows':
-            logger.warning("WinRTocr is only available on Windows")
+            logger.debug("WinRTocr is only available on Windows")
             return []
         # winrtocr pulls in winsdk and other deps automatically via pip
         return ['winrtocr']
@@ -407,6 +407,11 @@ def get_missing_dependencies(engine_name: str) -> List[str]:
     Returns:
         List of missing package specifications for current platform
     """
+    # Windows-only engines have nothing to install elsewhere; without this the
+    # dynamic-engine guess below reports 'winrtocr' as a missing package.
+    if engine_name in ('winrtocr', 'winrt') and get_os_type() != 'windows':
+        return []
+
     # Get platform-specific dependencies
     dependencies = get_engine_dependencies(engine_name)
     

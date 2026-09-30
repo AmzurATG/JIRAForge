@@ -299,3 +299,19 @@ class TestLauncher:
         launcher.run_app(provider_factory=lambda: _provider(window={'window_id': 'w'}))
         assert order == ['tray', 'signals', ('main', True, True)]
         platform_hooks.clear()
+
+    def test_second_launch_exits_before_core_import(self, monkeypatch):
+        """A second copy must not run the core's init (keyring, DB) or its atexit flush."""
+        from timetracker_linux.compat import winotify
+        opened = []
+        monkeypatch.setattr(winotify, 'open_url', opened.append)
+        monkeypatch.delitem(sys.modules, 'desktop_app', raising=False)
+        monkeypatch.delenv('WEB_PORT', raising=False)
+        monkeypatch.setattr(launcher, 'prepare_directories', lambda: None)
+        monkeypatch.setattr(launcher, 'install_browser', lambda: None)
+        monkeypatch.setattr(launcher, 'install_tray', Mock(side_effect=AssertionError('tray installed')))
+        held = SimpleNamespace(acquire=lambda: False, release=lambda: None)
+        assert launcher.run_app(provider_factory=lambda: _provider(instance_lock=held)) == launcher.EXIT_ALREADY_RUNNING
+        assert 'desktop_app' not in sys.modules
+        assert opened == ['http://localhost:51778/']
+        platform_hooks.clear()

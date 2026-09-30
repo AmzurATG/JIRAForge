@@ -143,6 +143,11 @@ def run_app(provider_factory=None):
     install_browser()
     from .provider import LinuxPlatformProvider, install
     provider = install(provider_factory() if provider_factory else LinuxPlatformProvider())
+    # Before desktop_app is imported: a second copy must not touch the keyring or
+    # the shared SQLite DB, and its atexit flush would upload the running copy's sessions.
+    if not provider.acquire_single_instance():
+        logger.info('[LINUX] another instance is already running; opened its page and exiting')
+        return EXIT_ALREADY_RUNNING
     tray = install_tray(provider)
     install_signal_handlers()
     provider.tray_kind = tray

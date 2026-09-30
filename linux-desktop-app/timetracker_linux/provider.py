@@ -26,6 +26,7 @@ from .window.service import WindowService
 logger = logging.getLogger(__name__)
 
 FRAME_REUSE_S = 10.0       # the core's OCR throttle; a newer frame would not be used
+DEFAULT_WEB_PORT = '51778'  # desktop_app.EMBEDDED_CONFIG['WEB_PORT']
 
 
 def _safe_bus(kind):
@@ -298,7 +299,11 @@ class LinuxPlatformProvider:
         page (login or dashboard) instead of exiting with nothing visible."""
         from .compat.winotify import open_url
         core = sys.modules.get('desktop_app')
-        port = core.get_env_var('WEB_PORT', 51777) if core is not None else 51777
+        if core is not None:
+            port = core.get_env_var('WEB_PORT', 51777)
+        else:
+            # The launcher checks before the core is imported; mirror its EMBEDDED_CONFIG default.
+            port = os.environ.get('WEB_PORT') or DEFAULT_WEB_PORT
         open_url(f'http://localhost:{port}/')
 
     def release_single_instance(self):

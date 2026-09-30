@@ -1,5 +1,6 @@
 """Tkinter popup window for description-quality nudges (Enhancement #13)."""
 
+import gc
 import json
 import logging
 import threading
@@ -69,7 +70,20 @@ class DqNudgePopupWindow:
             args=([n['id'] for n in self.nudges], 'viewed', None),
             daemon=True,
         ).start()
-        self._window.mainloop()
+        try:
+            self._window.mainloop()
+        finally:
+            self._release_tk_objects()
+
+    def _release_tk_objects(self) -> None:
+        # Tk variables/fonts must be freed on the thread that owns the interpreter;
+        # if a later GC on another thread frees them, tkinter raises
+        # "RuntimeError: main thread is not in main loop".
+        self._close_window()
+        self.sort_var = None
+        self.scrollable_frame = None
+        self._count_label = None
+        gc.collect()
 
     def _create_window(self) -> ctk.CTk:
         win = ctk.CTk()

@@ -100,5 +100,33 @@ class TestConfigAppliesResolution(unittest.TestCase):
         self.assertEqual(config.fallback_engines, ['winrtocr'])
 
 
+class TestRapidOCRTextBoxCap(unittest.TestCase):
+    """Only the lines the facade keeps are sent to (slow) recognition."""
+
+    class _FakeRapidOCR:
+        def auto_text_det(self, img):
+            return [f'box{i}' for i in range(100)], 0.1
+
+    def test_detection_capped_in_reading_order(self):
+        from ocr.engines.rapidocr_engine import RapidOCREngine
+        ocr = self._FakeRapidOCR()
+        RapidOCREngine(max_text_boxes=48)._cap_text_boxes(ocr)
+        boxes, elapse = ocr.auto_text_det(None)
+        self.assertEqual(boxes, [f'box{i}' for i in range(48)])
+        self.assertEqual(elapse, 0.1)
+
+    def test_zero_disables_cap(self):
+        from ocr.engines.rapidocr_engine import RapidOCREngine
+        ocr = self._FakeRapidOCR()
+        RapidOCREngine(max_text_boxes=0)._cap_text_boxes(ocr)
+        self.assertEqual(len(ocr.auto_text_det(None)[0]), 100)
+
+    def test_no_detection_result_passes_through(self):
+        from ocr.engines.rapidocr_engine import RapidOCREngine
+        ocr = type('NoText', (), {'auto_text_det': lambda self, img: (None, 0.0)})()
+        RapidOCREngine()._cap_text_boxes(ocr)
+        self.assertEqual(ocr.auto_text_det(None), (None, 0.0))
+
+
 if __name__ == '__main__':
     unittest.main()

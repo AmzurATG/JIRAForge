@@ -263,3 +263,44 @@ def test_idle_record_created_outside_work_hours():
     assert len(t._pending_idle_records) == 1
     assert t._pending_idle_records[0]["is_idle"] is True
     assert t._pending_idle_records[0]["classification"] == "idle"
+
+
+# ---------------------------------------------------------------------------
+# Suspension vs. busy loop (MONOTONIC stops during suspend, BOOTTIME does not)
+
+def test_seconds_suspended_between_detects_real_sleep():
+    before = (100.0, 100.0)
+    after_sleep = (105.0, 605.0)        # 5 s awake, 500 s asleep
+    assert desktop_app._seconds_suspended_between(before, after_sleep) == 500.0
+
+
+def test_seconds_suspended_between_busy_loop_is_zero():
+    before = (100.0, 100.0)
+    after_busy = (135.0, 135.0)         # blocked 35 s by OCR, never asleep
+    assert desktop_app._seconds_suspended_between(before, after_busy) == 0.0
+
+
+def test_seconds_suspended_between_unknown_without_boottime():
+    assert desktop_app._seconds_suspended_between(None, (1.0, 1.0)) is None
+    assert desktop_app._seconds_suspended_between((1.0, 1.0), None) is None
+
+
+def test_suspend_clock_snapshot_shape():
+    snap = desktop_app._suspend_clock_snapshot()
+    if hasattr(desktop_app.time, 'CLOCK_BOOTTIME'):
+        assert len(snap) == 2 and snap[1] >= snap[0]
+    else:
+        assert snap is None
+
+
+def test_compute_idle_duration_syncs_last_activity_from_os_clock():
+    import time as _time
+    t = TimeTracker.__new__(TimeTracker)
+    t.last_activity_time = _time.time() - 3600       # stale: no input hooks on Wayland
+    t.get_system_idle_seconds = lambda: 42.0
+    assert t._compute_idle_duration() == 42.0
+    assert abs((_time.time() - t.last_activity_time) - 42.0) < 1.0
+    stamp = t.last_activity_time
+    t.get_system_idle_seconds = lambda: 5000.0       # never moves backwards
+    t._compute_idle_duration()
+    assert t.last_activity_time == stamp

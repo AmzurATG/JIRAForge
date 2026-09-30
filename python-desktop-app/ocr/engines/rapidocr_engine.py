@@ -15,6 +15,11 @@ from ..base_engine import BaseOCREngine
 
 logger = logging.getLogger(__name__)
 
+# Recognition costs ~0.1-0.3 s per text box on a laptop CPU and dominates OCR time.
+# The facade keeps only the first MAX_OCR_LINES (40) lines, so boxes beyond this
+# (a little headroom for low-confidence drops) were recognised and then discarded.
+DEFAULT_MAX_TEXT_BOXES = 48
+
 _RAPIDOCR_AVAILABLE = False
 _IMPORT_ERROR: Optional[str] = None
 
@@ -38,9 +43,11 @@ class RapidOCREngine(BaseOCREngine):
         use_gpu: bool = False,
         language: str = 'en',
         min_confidence: float = 0.5,
+        max_text_boxes: int = DEFAULT_MAX_TEXT_BOXES,
         **kwargs,
     ):
         self.min_confidence = min_confidence
+        self.max_text_boxes = max_text_boxes
         self._ocr: Optional[object] = None
         self._init_error: Optional[str] = _IMPORT_ERROR
 
@@ -60,8 +67,29 @@ class RapidOCREngine(BaseOCREngine):
         """Lazily create and cache the RapidOCR instance."""
         if self._ocr is None and _RAPIDOCR_AVAILABLE:
             self._ocr = _RapidOCR()
+            self._cap_text_boxes(self._ocr)
             logger.info("RapidOCR engine initialized")
         return self._ocr
+
+    def _cap_text_boxes(self, ocr) -> None:
+        """Recognise only the first max_text_boxes detected boxes (reading order).
+
+        auto_text_det() returns boxes sorted top-to-bottom, left-to-right, so the
+        kept boxes are exactly the lines the facade would keep. Skipped if the
+        installed rapidocr_onnxruntime has no auto_text_det (unpinned dependency).
+        """
+        limit = self.max_text_boxes
+        detect = getattr(ocr, 'auto_text_det', None)
+        if not limit or limit <= 0 or detect is None:
+            return
+
+        def capped_detect(img):
+            boxes, elapse = detect(img)
+            if boxes is not None and len(boxes) > limit:
+                boxes = boxes[:limit]
+            return boxes, elapse
+
+        ocr.auto_text_det = capped_detect
 
     @staticmethod
     def _to_bgr(image: np.ndarray) -> np.ndarray:

@@ -106,7 +106,12 @@ class PresidioDetector(BaseDetector):
             # Get entity types to detect
             entities = None  # None means all
             if self.config and self.config.pii_types:
-                entities = self.config.pii_types
+                # Presidio logs a warning per call for every entity it has no
+                # recognizer for; custom types are handled by other detectors.
+                supported = self._get_supported_entity_set()
+                entities = [e for e in self.config.pii_types if e in supported] if supported else self.config.pii_types
+                if not entities:
+                    return []
             
             # Run analysis
             results: List['RecognizerResult'] = self._analyzer.analyze(
@@ -146,6 +151,17 @@ class PresidioDetector(BaseDetector):
         """Check if Presidio is available"""
         return self._available and self._analyzer is not None
     
+    def _get_supported_entity_set(self) -> set:
+        """Entities the analyzer can actually recognize (cached). Empty set if unknown."""
+        cached = getattr(self, '_supported_entities', None)
+        if cached is None:
+            try:
+                cached = set(self._analyzer.get_supported_entities(language='en'))
+            except Exception:
+                cached = set()
+            self._supported_entities = cached
+        return cached
+
     def get_supported_entities(self) -> List[str]:
         """Get list of entity types Presidio can detect"""
         if not self._available or not self._analyzer:
